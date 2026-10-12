@@ -14,27 +14,11 @@ A local Python finance assistant with two selectable agents: Finance Agent for g
 cp .env.example .env
 ```
 
-Add an AI provider key to `.env` for OpenAI, Kimi, or Groq; you can also use a local Ollama model without a cloud API key. Cloud provider keys stay on the local server.
-
-For Kimi, create an API key in the [Kimi API Platform](https://platform.kimi.ai/) and set `KIMI_API_KEY`. For Groq, create a key in the [Groq Console](https://console.groq.com/keys) and set `GROQ_API_KEY`. OpenAI uses `OPENAI_API_KEY`. Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer.
+Add an API key for OpenAI (`OPENAI_API_KEY`) or Groq (`GROQ_API_KEY`) to `.env`. Groq keys are available from the [Groq Console](https://console.groq.com/keys). Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer. Provider keys stay on the local server.
 
 Groq requests are kept within a conservative input budget by prioritizing recent chat messages and shortening exceptionally large tool results. Adjust `GROQ_INPUT_TOKEN_BUDGET` and `GROQ_COMPLETION_TOKEN_LIMIT` in `.env` only if your Groq plan supports a different tokens-per-minute limit.
 
-### Use a local Ollama model
-
-Install [Ollama](https://ollama.com/download). Since the app runs in Docker, Ollama must accept connections from the Docker container. If you start Ollama from a terminal, use:
-
-```bash
-OLLAMA_HOST=0.0.0.0:11434 ollama serve
-```
-
-Keep that terminal open, then download a small model in another terminal:
-
-```bash
-ollama pull qwen2.5:3b
-```
-
-The [Ollama model library](https://ollama.com/library/qwen2.5) lists other model sizes. Binding to `0.0.0.0` lets Docker Desktop reach Ollama, and also makes Ollama reachable on your network; use it on a trusted network and limit access with your firewall. See Ollama's [network configuration notes](https://github.com/ollama/ollama/blob/main/docs/faq.mdx). The example `.env` uses `http://host.docker.internal:11434/v1`. If running the app directly with Python instead of Docker, change `OLLAMA_BASE_URL` to `http://localhost:11434/v1`. Select **Ollama (local)** in the provider menu. The app uses Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility). For local portfolio analysis, use an installed model that supports tool calling; Finance Agent is suitable for testing basic questions.
+Portfolio Analyzer exposes six core INDmoney tools to the AI: overall net-worth snapshot, asset-class allocation, holdings, and Indian stock, mutual fund, and US stock SIPs. This keeps account queries focused and reduces tool-selection noise.
 
 Then start the app:
 

@@ -9,6 +9,23 @@ import httpx
 
 DEFAULT_PROTOCOL_VERSION = "2025-03-26"
 
+# Keep the model's choices focused on the account tools most useful for
+# personal portfolio summaries, allocation, holdings, and recurring SIPs.
+IMPORTANT_PORTFOLIO_TOOL_NAMES = (
+    "networth_snapshot",
+    "networth_allocation_breakdown",
+    "networth_holdings",
+    "indian_stocks_sips",
+    "mf_sips",
+    "us_stocks_sips",
+)
+
+
+def filter_portfolio_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only the supported core portfolio tools, in a stable order."""
+    by_name = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
+    return [by_name[name] for name in IMPORTANT_PORTFOLIO_TOOL_NAMES if name in by_name]
+
 
 def _headers(token: str, protocol: str = DEFAULT_PROTOCOL_VERSION, session_id: str | None = None) -> dict[str, str]:
     result = {

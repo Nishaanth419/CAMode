@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .agent import configured_providers, default_provider, run_agent
-from .mcp_client import fetch_mcp_session
+from .mcp_client import fetch_mcp_session, filter_portfolio_tools
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ca_mode")
@@ -44,7 +44,7 @@ class ChatRequest(BaseModel):
     message: str
     chatId: str
     agentType: Literal["finance", "portfolio"] = "finance"
-    aiProvider: Literal["openai", "kimi", "groq", "ollama"] = "openai"
+    aiProvider: Literal["openai", "groq"] = "openai"
 
 
 class CreateChatRequest(BaseModel):
@@ -366,7 +366,7 @@ async def list_tools(request: Request):
         session = await fetch_mcp_session(MCP_RESOURCE, token)
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc
-    tools = session["tools"]
+    tools = filter_portfolio_tools(session["tools"])
     return {"mcpServer": MCP_RESOURCE, "connected": True, "toolCount": len(tools), "tools": [{"name": tool["name"], "description": tool.get("description", "")} for tool in tools]}
 
 

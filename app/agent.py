@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from .mcp_client import call_mcp_tool, fetch_mcp_session
+from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.agent")
 
@@ -35,15 +35,6 @@ PROVIDERS = {
         "model_env": "OPENAI_MODEL",
         "default_model": "gpt-4o",
     },
-    "kimi": {
-        "label": "Kimi",
-        "key_env": "KIMI_API_KEY",
-        "alternate_key_env": "MOONSHOT_API_KEY",
-        "base_url_env": "KIMI_BASE_URL",
-        "default_base_url": "https://api.moonshot.ai/v1",
-        "model_env": "KIMI_MODEL",
-        "default_model": "kimi-k3",
-    },
     "groq": {
         "label": "Groq",
         "key_env": "GROQ_API_KEY",
@@ -51,14 +42,6 @@ PROVIDERS = {
         "default_base_url": "https://api.groq.com/openai/v1",
         "model_env": "GROQ_MODEL",
         "default_model": "openai/gpt-oss-120b",
-    },
-    "ollama": {
-        "label": "Ollama (local)",
-        "local": True,
-        "base_url_env": "OLLAMA_BASE_URL",
-        "default_base_url": "http://host.docker.internal:11434/v1",
-        "model_env": "OLLAMA_MODEL",
-        "default_model": "qwen3:8b",
     },
 }
 
@@ -130,7 +113,7 @@ def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]
     if _estimated_request_tokens(result, compact_tools) > GROQ_INPUT_TOKEN_BUDGET:
         raise RuntimeError(
             "This request is still too large for Groq after shortening chat history and tool results. "
-            "Try a shorter question or select OpenAI/Kimi for this request."
+            "Try a shorter question or select OpenAI for this request."
         )
 
     # Add recent history one message at a time, newest first, stopping when the
@@ -151,13 +134,8 @@ def provider_config(provider: str) -> dict[str, str]:
     definition = PROVIDERS.get(provider)
     if not definition:
         raise RuntimeError(f"Unknown AI provider: {provider}")
-    if definition.get("local"):
-        api_key = os.getenv("OLLAMA_API_KEY") or "ollama"
-    else:
-        api_key = os.getenv(definition["key_env"], "")
-        if not api_key and definition.get("alternate_key_env"):
-            api_key = os.getenv(definition["alternate_key_env"], "")
-    if not definition.get("local") and (not api_key or api_key == "sk-your-key-here"):
+    api_key = os.getenv(definition["key_env"], "")
+    if not api_key or api_key == "sk-your-key-here":
         raise RuntimeError(f"{definition['label']} API key is not configured. Add {definition['key_env']} to .env and restart the app.")
     return {
         "label": definition["label"],
@@ -170,13 +148,8 @@ def provider_config(provider: str) -> dict[str, str]:
 def configured_providers() -> list[dict[str, str]]:
     available = []
     for provider, definition in PROVIDERS.items():
-        if definition.get("local"):
-            configured = True
-        else:
-            key = os.getenv(definition["key_env"], "")
-            if not key and definition.get("alternate_key_env"):
-                key = os.getenv(definition["alternate_key_env"], "")
-            configured = bool(key and key != "sk-your-key-here")
+        key = os.getenv(definition["key_env"], "")
+        configured = bool(key and key != "sk-your-key-here")
         available.append({
             "id": provider,
             "label": definition["label"],
@@ -209,7 +182,12 @@ async def run_agent(
         if not token:
             raise RuntimeError("Connect your INDmoney account to use Portfolio Analyzer.")
         session = await fetch_mcp_session(mcp_url, token)
-        tools = session["tools"]
+        tools = filter_portfolio_tools(session["tools"])
+        if not tools:
+            raise RuntimeError(
+                "INDmoney did not provide any of CA Mode's supported portfolio tools. "
+                "Reconnect INDmoney or check the MCP server's available tools."
+            )
     tool_map = {tool["name"]: tool for tool in tools}
     model_tools = [
         {"type": "function", "function": {
@@ -229,7 +207,6 @@ async def run_agent(
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
     messages.append({"role": "user", "content": message})
 
-    retried_empty_ollama_response = False
     retried_portfolio_tool_selection = False
     portfolio_tool_called = False
     async with httpx.AsyncClient(timeout=120) as client:
@@ -238,9 +215,8 @@ async def run_agent(
             payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
             if provider == "groq":
                 payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
-            # Keep INDmoney tools available when retrying a portfolio request:
-            # otherwise a weak local model may merely tell the user to run one.
-            tools_for_request = [] if retried_empty_ollama_response and agent_type != "portfolio" else model_tools
+            # Keep INDmoney tools available when retrying a portfolio request.
+            tools_for_request = model_tools
             if tools_for_request:
                 payload["tools"] = tools_for_request
                 payload["tool_choice"] = "auto"
@@ -251,11 +227,6 @@ async def run_agent(
                     json=payload,
                 )
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                if provider == "ollama":
-                    raise RuntimeError(
-                        f"Cannot reach Ollama at {config['base_url']}. Start Ollama on this computer, "
-                        f"then run `ollama pull {config['model']}`."
-                    ) from exc
                 raise
             if not response.is_success:
                 raise RuntimeError(f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}")
@@ -286,17 +257,6 @@ async def run_agent(
                     )
                 if isinstance(content, str) and content.strip():
                     return content
-                if provider == "ollama" and not retried_empty_ollama_response:
-                    logger.warning(
-                        "Ollama returned an empty completion; retrying with an explicit final-answer instruction (finish_reason=%s)",
-                        choice_data.get("finish_reason"),
-                    )
-                    retried_empty_ollama_response = True
-                    messages.append({
-                        "role": "user",
-                        "content": "Your previous response had no visible text. Answer the original question in plain text now. If tool data is present, use it; otherwise say what information is missing.",
-                    })
-                    continue
                 logger.error(
                     "%s returned an empty completion (finish_reason=%s)",
                     config["label"], choice_data.get("finish_reason"),
