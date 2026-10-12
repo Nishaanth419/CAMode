@@ -3,34 +3,46 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#f5f7f6" />
+  <meta name="theme-color" content="#0d1117" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="description" content="CA Mode: a finance assistant and personal portfolio analyzer." />
-  <title>CA Mode · Finance assistant</title>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="CA Mode: an AI-powered finance assistant and personal portfolio analyzer." />
+  <title>CA Mode · Finance Assistant</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/app.css" />
   <script src="/js/app.js" defer></script>
 </head>
 <body>
+  <div class="bg-grid" aria-hidden="true"></div>
+  <div class="bg-glow bg-glow-1" aria-hidden="true"></div>
+  <div class="bg-glow bg-glow-2" aria-hidden="true"></div>
+
   <header id="topbar">
     <a class="brand" href="/" aria-label="CA Mode home">
-      <span class="logo-mark" aria-hidden="true">CA</span>
+      <div class="logo-mark" aria-hidden="true">
+        <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M18.5 9.5 C17.5 7 10 7 9.5 11 C9 14 18.5 13 18.5 17 C18.5 21 10.5 21 9 18.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14 5 V23" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+      </div>
       <span class="brand-copy">
         <span class="logo-text">CA Mode</span>
-        <span class="logo-sub">FINANCE, IN CONTEXT</span>
+        <span class="logo-sub">FINANCE · IN CONTEXT</span>
       </span>
     </a>
     <div class="topbar-spacer"></div>
-    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
-      <svg id="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z" /></svg>
-    </button>
     <div id="status-badge" aria-live="polite">
       <span id="status-dot" class="status-dot"></span>
       <span id="status-text">Connecting…</span>
     </div>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to light mode" title="Switch to light mode">
+      <svg id="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z" /></svg>
+    </button>
     <button id="auth-button" class="auth-button" type="button">Connect INDmoney</button>
   </header>
 
@@ -47,24 +59,26 @@
             <span>New chat</span>
           </button>
         </div>
-        <div class="history-caption">Your recent conversations</div>
+        <div class="history-caption">RECENT CONVERSATIONS</div>
         <div id="chat-list"></div>
         <div class="sidebar-footer">
           <span class="local-dot" aria-hidden="true"></span>
-          <span>Saved on this device</span>
+          <span>Saved locally on this device</span>
         </div>
       </aside>
 
       <section id="chat-area" aria-label="CA Mode chat">
         <div class="chat-toolbar">
           <div class="chat-toolbar-title">
-            <span class="toolbar-icon" aria-hidden="true">CA</span>
+            <span class="toolbar-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M3 14l4-6 3.5 4.5L14 8l3 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
             <div>
               <strong id="agent-title">Finance Agent</strong>
               <span id="agent-description">General finance questions and explanations</span>
             </div>
           </div>
-          <label class="agent-picker-label" for="agent-picker">Choose agent</label>
+          <label class="agent-picker-label" for="agent-picker">Agent</label>
           <select id="agent-picker" class="agent-picker" aria-label="Choose an agent">
             <option value="finance">Finance Agent</option>
             <option value="portfolio">Portfolio Analyzer</option>
@@ -76,42 +90,56 @@
         </div>
 
         <div id="empty-state">
-          <div class="welcome-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48"><path d="M10 33.5 20.5 23 27 29.5 38 18.5M29 18.5h9v9" /></svg>
+          <div class="welcome-orb" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <path d="M10 33.5 20.5 23 27 29.5 38 18.5M29 18.5h9v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           </div>
           <p class="eyebrow welcome-eyebrow">CA MODE · <span id="welcome-agent-name">FINANCE AGENT</span></p>
           <h1 class="empty-title" id="welcome-title">What would you like to know?</h1>
           <p class="empty-sub" id="welcome-description">Ask basic finance questions and get clear explanations in plain language.</p>
           <div class="example-prompts" id="finance-prompts" aria-label="Finance Agent suggested questions">
             <button class="example-prompt" data-prompt="Explain the difference between stocks and bonds in simple terms." type="button">
-              <span class="prompt-icon prompt-green" aria-hidden="true">?</span>
+              <span class="prompt-icon prompt-green" aria-hidden="true">
+                <svg viewBox="0 0 18 18" fill="none"><path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
               <span><strong>Learn the basics</strong><small>Explain common finance concepts</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>
             <button class="example-prompt" data-prompt="What is compound interest, and how does it work?" type="button">
-              <span class="prompt-icon prompt-blue" aria-hidden="true">↗</span>
+              <span class="prompt-icon prompt-blue" aria-hidden="true">
+                <svg viewBox="0 0 18 18" fill="none"><path d="M3 9c0-3.31 2.69-6 6-6s6 2.69 6 6-2.69 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 6v3l2 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
               <span><strong>Understand interest</strong><small>Explore how compounding works</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>
             <button class="example-prompt" data-prompt="What should someone compare when evaluating a mutual fund?" type="button">
-              <span class="prompt-icon prompt-amber" aria-hidden="true">≋</span>
+              <span class="prompt-icon prompt-amber" aria-hidden="true">
+                <svg viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
               <span><strong>Compare funds</strong><small>Learn what fund details mean</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>
           </div>
           <div class="example-prompts" id="portfolio-prompts" aria-label="Portfolio Analyzer suggested questions" hidden>
             <button class="example-prompt" data-prompt="Summarize my portfolio allocation by asset class." type="button">
-              <span class="prompt-icon prompt-green" aria-hidden="true">◒</span>
+              <span class="prompt-icon prompt-green" aria-hidden="true">
+                <svg viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.8"/><path d="M9 9L14 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
               <span><strong>Portfolio allocation</strong><small>See how your investments are distributed</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>
             <button class="example-prompt" data-prompt="Show my top holdings by current value and explain the largest concentration." type="button">
-              <span class="prompt-icon prompt-blue" aria-hidden="true">▤</span>
+              <span class="prompt-icon prompt-blue" aria-hidden="true">
+                <svg viewBox="0 0 18 18" fill="none"><rect x="3" y="9" width="3" height="6" rx="1" stroke="currentColor" stroke-width="1.6"/><rect x="7.5" y="6" width="3" height="9" rx="1" stroke="currentColor" stroke-width="1.6"/><rect x="12" y="3" width="3" height="12" rx="1" stroke="currentColor" stroke-width="1.6"/></svg>
+              </span>
               <span><strong>Top holdings</strong><small>Find your largest positions and exposure</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>
             <button class="example-prompt" data-prompt="List my active SIPs and their monthly amounts." type="button">
-              <span class="prompt-icon prompt-amber" aria-hidden="true">↗</span>
+              <span class="prompt-icon prompt-amber" aria-hidden="true">
+                <svg viewBox="0 0 18 18" fill="none"><path d="M9 3v12M5 7l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
               <span><strong>Active SIPs</strong><small>Review your recurring investments</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>

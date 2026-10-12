@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -45,9 +45,6 @@ PROVIDERS = {
     },
 }
 
-# Groq's on-demand tier has a relatively tight tokens-per-minute budget. Keep
-# enough headroom for completion tokens as well as the serialized prompt and
-# tool definitions. This is a conservative estimate based on request size.
 def _positive_env_int(name: str, default: int) -> int:
     try:
         return max(1, int(os.getenv(name, str(default))))
@@ -61,7 +58,6 @@ GROQ_COMPLETION_TOKEN_LIMIT = _positive_env_int("GROQ_COMPLETION_TOKEN_LIMIT", 1
 
 def _estimated_request_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
     serialized = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, separators=(",", ":"))
-    # JSON and tool schemas tend to tokenize more densely than ordinary prose.
     return math.ceil(len(serialized) / 1.8)
 
 
@@ -70,8 +66,6 @@ def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]
     if not messages:
         return messages
 
-    # Long provider descriptions cost tokens but don't help the model choose
-    # the tool; preserve the actual input schema unchanged.
     compact_tools = []
     for tool in tools:
         item = dict(tool)
@@ -88,9 +82,6 @@ def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]
     current_user = dict(messages[last_user_index])
     suffix = [dict(item) for item in messages[last_user_index + 1:]]
 
-    # Bound current-turn tool data if it is exceptionally large. Keep the start
-    # and end of each result so identifiers and summary fields are more likely
-    # to survive; mark that the omitted middle must not be treated as complete.
     for item in suffix:
         if item.get("role") == "tool" and isinstance(item.get("content"), str) and len(item["content"]) > 6000:
             content = item["content"]
@@ -101,7 +92,6 @@ def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]
 
     result = [system, current_user, *suffix]
     if _estimated_request_tokens(result, compact_tools) > GROQ_INPUT_TOKEN_BUDGET:
-        # Further reduce oversized tool results before discarding chat history.
         for item in sorted((m for m in suffix if m.get("role") == "tool"), key=lambda m: len(m.get("content", "")), reverse=True):
             content = item.get("content", "")
             if len(content) > 1500:
@@ -116,8 +106,6 @@ def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]
             "Try a shorter question or select OpenAI for this request."
         )
 
-    # Add recent history one message at a time, newest first, stopping when the
-    # prompt is full. The saved conversation itself remains untouched.
     selected_history: list[dict[str, Any]] = []
     for item in reversed(history):
         candidate_history = [dict(item), *selected_history]
@@ -167,27 +155,54 @@ def default_provider() -> str:
     return configured[0]["id"] if configured else "openai"
 
 
-async def run_agent(
+# ── SSE event helpers ──────────────────────────────────────────────────────────
+
+def _sse(event: str, data: Any) -> str:
+    """Format a single SSE message."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ── Streaming agent ────────────────────────────────────────────────────────────
+
+async def stream_agent(
     message: str,
     mcp_url: str,
     token: str | None,
     history: list[dict[str, str]],
     agent_type: str = "finance",
     provider: str = "openai",
-) -> str:
+) -> AsyncIterator[str]:
+    """
+    Async generator that yields SSE-formatted strings.
+
+    Event types:
+      • tool_call   – { name, arguments }          tool is about to be called
+      • tool_result – { name, result, error? }      tool returned
+      • content     – { text }                      streamed answer chunk
+      • error       – { message }                   fatal error
+      • done        – {}                            stream finished
+    """
     config = provider_config(provider)
     session = None
-    tools = []
+    tools: list[dict[str, Any]] = []
+
     if agent_type == "portfolio":
         if not token:
-            raise RuntimeError("Connect your INDmoney account to use Portfolio Analyzer.")
-        session = await fetch_mcp_session(mcp_url, token)
+            yield _sse("error", {"message": "Connect your INDmoney account to use Portfolio Analyzer."})
+            yield _sse("done", {})
+            return
+        try:
+            session = await fetch_mcp_session(mcp_url, token)
+        except Exception as exc:
+            yield _sse("error", {"message": f"Could not connect to INDmoney: {exc}"})
+            yield _sse("done", {})
+            return
         tools = filter_portfolio_tools(session["tools"])
         if not tools:
-            raise RuntimeError(
-                "INDmoney did not provide any of CA Mode's supported portfolio tools. "
-                "Reconnect INDmoney or check the MCP server's available tools."
-            )
+            yield _sse("error", {"message": "INDmoney did not provide any supported portfolio tools. Reconnect INDmoney or check the MCP server."})
+            yield _sse("done", {})
+            return
+
     tool_map = {tool["name"]: tool for tool in tools}
     model_tools = [
         {"type": "function", "function": {
@@ -202,6 +217,7 @@ async def run_agent(
             description = tool["function"].get("description", "")
             if len(description) > 500:
                 tool["function"]["description"] = description[:497] + "..."
+
     prompt = PORTFOLIO_SYSTEM_PROMPT if agent_type == "portfolio" else FINANCE_SYSTEM_PROMPT
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
@@ -209,75 +225,157 @@ async def run_agent(
 
     retried_portfolio_tool_selection = False
     portfolio_tool_called = False
-    async with httpx.AsyncClient(timeout=120) as client:
-        for _ in range(5):
-            request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
-            payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
-            if provider == "groq":
-                payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
-            # Keep INDmoney tools available when retrying a portfolio request.
-            tools_for_request = model_tools
-            if tools_for_request:
-                payload["tools"] = tools_for_request
-                payload["tool_choice"] = "auto"
-            try:
-                response = await client.post(
-                    f"{config['base_url']}/chat/completions",
-                    headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
-                    json=payload,
-                )
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                raise
-            if not response.is_success:
-                raise RuntimeError(f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}")
-            completion = response.json()
-            choice_data = completion["choices"][0]
-            choice = choice_data["message"]
-            calls = choice.get("tool_calls") or []
-            if not calls:
-                content = choice.get("content")
-                if isinstance(content, list):
-                    content = "\n".join(
-                        part["text"] for part in content
-                        if isinstance(part, dict) and isinstance(part.get("text"), str)
-                    )
-                if agent_type == "portfolio" and not portfolio_tool_called:
-                    if not retried_portfolio_tool_selection:
-                        logger.warning("Portfolio model returned no INDmoney tool call; retrying with tool schemas available")
-                        retried_portfolio_tool_selection = True
-                        messages.append({"role": "assistant", "content": content or ""})
-                        messages.append({
-                            "role": "user",
-                            "content": "Do not tell me to run an account check. Use one of the available INDmoney tools now to retrieve the account data needed for my original question. After the tool returns, answer using that data only.",
-                        })
-                        continue
-                    raise RuntimeError(
-                        f"{config['label']} did not call an INDmoney account tool. "
-                        "No portfolio summary was generated; try a stronger tool-capable model or another provider."
-                    )
-                if isinstance(content, str) and content.strip():
-                    return content
-                logger.error(
-                    "%s returned an empty completion (finish_reason=%s)",
-                    config["label"], choice_data.get("finish_reason"),
-                )
-                raise RuntimeError(
-                    f"{config['label']} returned an empty response. Check that the selected model is available and try again."
-                )
-            messages.append({"role": "assistant", "content": choice.get("content"), "tool_calls": calls})
-            for call in calls:
-                function = call.get("function", {})
-                name = function.get("name", "")
-                if name not in tool_map:
-                    raise RuntimeError(f"Model requested an unknown INDmoney tool: {name}")
+    full_answer = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            for _ in range(5):
                 try:
-                    arguments = json.loads(function.get("arguments") or "{}")
-                    result = await call_mcp_tool(
-                        mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
+                    request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
+                except RuntimeError as exc:
+                    yield _sse("error", {"message": str(exc)})
+                    yield _sse("done", {})
+                    return
+
+                payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
+                if provider == "groq":
+                    payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
+                if model_tools:
+                    payload["tools"] = model_tools
+                    payload["tool_choice"] = "auto"
+
+                try:
+                    response = await client.post(
+                        f"{config['base_url']}/chat/completions",
+                        headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
+                        json=payload,
                     )
-                    if agent_type == "portfolio":
-                        portfolio_tool_called = True
-                except Exception as exc:
-                    raise RuntimeError(f"INDmoney data request failed: {exc}") from exc
-                messages.append({"role": "tool", "tool_call_id": call["id"], "content": str(result)})
-    return "I could not finish processing the INDmoney response within the tool-call limit."
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    yield _sse("error", {"message": f"Could not connect to {config['label']}: {exc}"})
+                    yield _sse("done", {})
+                    return
+
+                if not response.is_success:
+                    yield _sse("error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"})
+                    yield _sse("done", {})
+                    return
+
+                completion = response.json()
+                choice_data = completion["choices"][0]
+                choice = choice_data["message"]
+                calls = choice.get("tool_calls") or []
+
+                if not calls:
+                    content = choice.get("content")
+                    if isinstance(content, list):
+                        content = "\n".join(
+                            part["text"] for part in content
+                            if isinstance(part, dict) and isinstance(part.get("text"), str)
+                        )
+
+                    if agent_type == "portfolio" and not portfolio_tool_called:
+                        if not retried_portfolio_tool_selection:
+                            logger.warning("Portfolio model returned no INDmoney tool call; retrying")
+                            retried_portfolio_tool_selection = True
+                            messages.append({"role": "assistant", "content": content or ""})
+                            messages.append({
+                                "role": "user",
+                                "content": "Do not tell me to run an account check. Use one of the available INDmoney tools now to retrieve the account data needed for my original question. After the tool returns, answer using that data only.",
+                            })
+                            continue
+                        yield _sse("error", {"message": f"{config['label']} did not call an INDmoney account tool. No portfolio summary was generated; try a stronger tool-capable model or another provider."})
+                        yield _sse("done", {})
+                        return
+
+                    if isinstance(content, str) and content.strip():
+                        # Stream the content word by word for live feel
+                        words = content.split(" ")
+                        chunk_size = 4
+                        for i in range(0, len(words), chunk_size):
+                            chunk = " ".join(words[i:i + chunk_size])
+                            if i + chunk_size < len(words):
+                                chunk += " "
+                            full_answer += chunk
+                            yield _sse("content", {"text": chunk})
+                        yield _sse("done", {"answer": full_answer})
+                        return
+
+                    yield _sse("error", {"message": f"{config['label']} returned an empty response. Check that the selected model is available and try again."})
+                    yield _sse("done", {})
+                    return
+
+                # Process tool calls
+                messages.append({"role": "assistant", "content": choice.get("content"), "tool_calls": calls})
+                for call in calls:
+                    function = call.get("function", {})
+                    name = function.get("name", "")
+                    if name not in tool_map:
+                        yield _sse("error", {"message": f"Model requested an unknown INDmoney tool: {name}"})
+                        yield _sse("done", {})
+                        return
+
+                    try:
+                        arguments = json.loads(function.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+
+                    # Emit tool_call event
+                    yield _sse("tool_call", {"name": name, "arguments": arguments})
+
+                    try:
+                        result = await call_mcp_tool(
+                            mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
+                        )
+                        if agent_type == "portfolio":
+                            portfolio_tool_called = True
+                        # Emit tool_result event
+                        result_str = str(result)
+                        yield _sse("tool_result", {
+                            "name": name,
+                            "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
+                        })
+                        messages.append({"role": "tool", "tool_call_id": call["id"], "content": result_str})
+                    except Exception as exc:
+                        yield _sse("tool_result", {"name": name, "error": str(exc)})
+                        yield _sse("error", {"message": f"INDmoney data request failed: {exc}"})
+                        yield _sse("done", {})
+                        return
+
+    except Exception as exc:
+        yield _sse("error", {"message": str(exc)})
+        yield _sse("done", {})
+        return
+
+    yield _sse("error", {"message": "Could not finish processing the INDmoney response within the tool-call limit."})
+    yield _sse("done", {})
+
+
+# ── Legacy non-streaming wrapper (kept for internal use) ───────────────────────
+
+async def run_agent(
+    message: str,
+    mcp_url: str,
+    token: str | None,
+    history: list[dict[str, str]],
+    agent_type: str = "finance",
+    provider: str = "openai",
+) -> str:
+    """Collect the full answer from stream_agent (no SSE, just the text)."""
+    answer_parts: list[str] = []
+    last_error: str | None = None
+    async for raw in stream_agent(message, mcp_url, token, history, agent_type, provider):
+        for line in raw.splitlines():
+            if line.startswith("data:"):
+                payload = json.loads(line[5:].strip())
+                event_type = None
+                for el in raw.splitlines():
+                    if el.startswith("event:"):
+                        event_type = el[6:].strip()
+                if event_type == "content":
+                    answer_parts.append(payload.get("text", ""))
+                elif event_type == "error":
+                    last_error = payload.get("message", "Unknown error")
+    answer = "".join(answer_parts)
+    if not answer and last_error:
+        raise RuntimeError(last_error)
+    return answer
