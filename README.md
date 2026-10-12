@@ -1,62 +1,97 @@
 # CA Mode
 
-A local Python finance assistant with two selectable agents: Finance Agent for general finance questions, and Portfolio Analyzer for account-specific questions using INDmoney's MCP server. Sign in to INDmoney only when using Portfolio Analyzer. Chat history, OAuth, and settings run on this computer and are stored in `.data/codemode.sqlite3`.
+CA Mode is a local finance assistant with two agents:
+
+- **Finance Agent** answers general finance questions.
+- **Portfolio Analyzer** answers questions about the signed-in user's INDmoney account through its MCP server.
+
+The app supports OpenAI and Groq. It stores chats and INDmoney OAuth data locally.
+
+## Features
+
+- Start new chats and return to earlier conversations.
+- Keep each conversation associated with Finance Agent or Portfolio Analyzer.
+- Connect or disconnect INDmoney for portfolio questions.
+- Generate charts when account tools return comparable numeric data.
+- Switch between light and dark themes.
+- Focus Portfolio Analyzer on six account tools: net-worth snapshot, asset-class allocation, holdings, Indian stock SIPs, mutual fund SIPs, and US stock SIPs.
 
 ## Requirements
 
-- Docker Desktop, or Python 3.12+
-- An API key for at least one supported AI provider
-- An INDmoney account for Portfolio Analyzer
+- Docker Desktop, or Python 3.12 or newer
+- An OpenAI or Groq API key
+- An INDmoney account to use Portfolio Analyzer
 
-## Run locally with Docker
+## Configure providers
+
+Copy the example environment file and add at least one provider key:
 
 ```bash
 cp .env.example .env
 ```
 
-Add an API key for OpenAI (`OPENAI_API_KEY`) or Groq (`GROQ_API_KEY`) to `.env`. Groq keys are available from the [Groq Console](https://console.groq.com/keys). Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer. Provider keys stay on the local server.
+- `OPENAI_API_KEY` enables OpenAI. The default model is `gpt-4o`.
+- `GROQ_API_KEY` enables Groq. The default model is `openai/gpt-oss-120b`.
+- `AI_PROVIDER` chooses the initial provider (`openai` or `groq`).
 
-Groq requests are kept within a conservative input budget by prioritizing recent chat messages and shortening exceptionally large tool results. Adjust `GROQ_INPUT_TOKEN_BUDGET` and `GROQ_COMPLETION_TOKEN_LIMIT` in `.env` only if your Groq plan supports a different tokens-per-minute limit.
+You can add both keys and switch providers in the app. Groq requests use conservative context and completion limits to help stay within common tokens-per-minute limits; adjust `GROQ_INPUT_TOKEN_BUDGET` and `GROQ_COMPLETION_TOKEN_LIMIT` in `.env` only if your account supports different limits.
 
-Portfolio Analyzer exposes six core INDmoney tools to the AI: overall net-worth snapshot, asset-class allocation, holdings, and Indian stock, mutual fund, and US stock SIPs. This keeps account queries focused and reduces tool-selection noise.
+Chat messages are sent to the selected AI provider. Portfolio Analyzer also sends the INDmoney tool results needed to answer the question. Provider keys remain in the local server environment and are not sent to the browser.
 
-Then start the app:
+## Run with Docker
+
+After configuring `.env`, build and start the app:
 
 ```bash
 docker compose up --build -d
 ```
 
-Open [http://localhost:8003](http://localhost:8003) and choose **Finance Agent** or **Portfolio Analyzer**. Connect INDmoney to use the portfolio agent. OAuth will return to `http://localhost:8003/auth/indmoney/callback`. Keep using this same local address for the sign-in flow.
+Open [http://localhost:8003](http://localhost:8003). Use this same local address for INDmoney sign-in; the OAuth callback is `http://localhost:8003/auth/indmoney/callback`.
 
-To view server logs, run `docker compose logs -f`. To stop it, run `docker compose down`.
+To view logs or stop the app:
 
-The SQLite database is stored in `.data/` and remains on this computer across restarts. Do not commit `.env` or `.data/`.
-Use the sun/moon button in the header to switch between light and dark themes; the choice is remembered in this browser.
+```bash
+docker compose logs -f
+docker compose down
+```
 
-## Chat formatting
+## Run with Python
 
-Assistant replies support Markdown headings and pipe tables. Tables render as horizontally scrollable tables, including when a reply omits the Markdown separator row. Table text and headings use theme-aware colors so they remain readable in dark mode. The service worker cache is versioned so browsers can load updated app files after a release; if an old interface remains visible, refresh the page.
-
-## Run with local Python
+Create a virtual environment, install the app dependencies, and start the server:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-Add at least one provider API key to `.env`, then run:
-
-```bash
+python -m pip install -r requirements.txt
 uvicorn --env-file .env app.main:app --host 127.0.0.1 --port 8003
 ```
 
-Open [http://localhost:8003](http://localhost:8003).
+Open [http://localhost:8003](http://localhost:8003). Keep using this address during INDmoney sign-in.
+
+## Use the agents
+
+Choose **Finance Agent** for general topics such as budgeting, saving, and finance concepts. It does not access your INDmoney account.
+
+Choose **Portfolio Analyzer** for account questions, then connect INDmoney when prompted. The analyzer offers these core tools to the model:
+
+| Tool | What it retrieves |
+| --- | --- |
+| `networth_snapshot` | Overall portfolio and net-worth summary |
+| `networth_allocation_breakdown` | Breakdown for an asset class |
+| `networth_holdings` | Holdings for an asset class |
+| `indian_stocks_sips` | Indian stock SIPs |
+| `mf_sips` | Mutual fund SIPs |
+| `us_stocks_sips` | US stock SIPs |
+
+## Local data
+
+The SQLite database at `.data/codemode.sqlite3` stores chats and INDmoney OAuth tokens on this computer. Chat records are isolated by local session. Selecting **Disconnect** revokes the INDmoney access token and removes that session and its chats.
+
+Keep `.env` and `.data/` private; neither should be committed to Git.
 
 ## Development checks
 
-Install the development dependencies and run the same checks used by GitHub Actions:
+Install development dependencies and run the same checks as GitHub Actions:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -64,24 +99,20 @@ python -m compileall -q app tests
 python -m pytest -q
 ```
 
-The test suite exercises the API and local session/chat storage, OAuth and token refresh, provider selection, MCP protocol handling and tool filtering, and the agent's tool-call behavior. All network-facing services are mocked in tests.
-
-## Local data
-
-OAuth tokens, chats, and chat history are stored in `.data/codemode.sqlite3`. Selecting **Disconnect** revokes the INDmoney access token and removes that local session and its chats.
+The test suite uses mocked AI and INDmoney responses, so it does not make live API calls. GitHub Actions runs these checks on pushes and pull requests.
 
 ## Project structure
 
 ```text
 app/
-  main.py          Local API, INDmoney OAuth, and SQLite persistence
-  agent.py         OpenAI tool-call loop and conversation context
+  main.py          FastAPI routes, OAuth, and SQLite persistence
+  agent.py         Provider selection and AI tool-call loop
   mcp_client.py    INDmoney MCP discovery and tool calls
-frontend/          Local website, styles, JavaScript, and PWA assets
-  css/app.css      Interface styles
-  js/app.js        Chat and visualization behavior
-  index.html       App page structure
-requirements.txt   Python dependencies
-docker-compose.yml Local app container
+frontend/          Local web app and PWA assets
+tests/             API, agent, OAuth, and MCP tests
+.github/workflows/ GitHub Actions CI workflow
+requirements.txt   Runtime dependencies
+requirements-dev.txt  Test dependencies
+docker-compose.yml Local Docker setup
 Dockerfile         Python container image
 ```
