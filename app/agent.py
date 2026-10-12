@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any
 
@@ -49,6 +50,90 @@ PROVIDERS = {
         "default_model": "openai/gpt-oss-120b",
     },
 }
+
+# Groq's on-demand tier has a relatively tight tokens-per-minute budget. Keep
+# enough headroom for completion tokens as well as the serialized prompt and
+# tool definitions. This is a conservative estimate based on request size.
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+GROQ_INPUT_TOKEN_BUDGET = _positive_env_int("GROQ_INPUT_TOKEN_BUDGET", 5600)
+GROQ_COMPLETION_TOKEN_LIMIT = _positive_env_int("GROQ_COMPLETION_TOKEN_LIMIT", 1200)
+
+
+def _estimated_request_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
+    serialized = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, separators=(",", ":"))
+    # JSON and tool schemas tend to tokenize more densely than ordinary prose.
+    return math.ceil(len(serialized) / 1.8)
+
+
+def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the newest chat context that fits Groq's input budget."""
+    if not messages:
+        return messages
+
+    # Long provider descriptions cost tokens but don't help the model choose
+    # the tool; preserve the actual input schema unchanged.
+    compact_tools = []
+    for tool in tools:
+        item = dict(tool)
+        function = dict(item.get("function") or {})
+        description = function.get("description")
+        if isinstance(description, str) and len(description) > 500:
+            function["description"] = description[:497] + "..."
+        item["function"] = function
+        compact_tools.append(item)
+
+    system = messages[0]
+    last_user_index = next((i for i in range(len(messages) - 1, 0, -1) if messages[i].get("role") == "user"), len(messages) - 1)
+    history = messages[1:last_user_index]
+    current_user = dict(messages[last_user_index])
+    suffix = [dict(item) for item in messages[last_user_index + 1:]]
+
+    # Bound current-turn tool data if it is exceptionally large. Keep the start
+    # and end of each result so identifiers and summary fields are more likely
+    # to survive; mark that the omitted middle must not be treated as complete.
+    for item in suffix:
+        if item.get("role") == "tool" and isinstance(item.get("content"), str) and len(item["content"]) > 6000:
+            content = item["content"]
+            item["content"] = content[:4000] + "\n...[tool result shortened for request size]...\n" + content[-1500:]
+
+    if isinstance(current_user.get("content"), str) and len(current_user["content"]) > 8000:
+        current_user["content"] = current_user["content"][:8000] + "\n...[message shortened for request size]"
+
+    result = [system, current_user, *suffix]
+    if _estimated_request_tokens(result, compact_tools) > GROQ_INPUT_TOKEN_BUDGET:
+        # Further reduce oversized tool results before discarding chat history.
+        for item in sorted((m for m in suffix if m.get("role") == "tool"), key=lambda m: len(m.get("content", "")), reverse=True):
+            content = item.get("content", "")
+            if len(content) > 1500:
+                item["content"] = content[:1200] + "\n...[tool result shortened]"
+                result = [system, current_user, *suffix]
+                if _estimated_request_tokens(result, compact_tools) <= GROQ_INPUT_TOKEN_BUDGET:
+                    break
+
+    if _estimated_request_tokens(result, compact_tools) > GROQ_INPUT_TOKEN_BUDGET:
+        raise RuntimeError(
+            "This request is still too large for Groq after shortening chat history and tool results. "
+            "Try a shorter question or select OpenAI/Kimi for this request."
+        )
+
+    # Add recent history one message at a time, newest first, stopping when the
+    # prompt is full. The saved conversation itself remains untouched.
+    selected_history: list[dict[str, Any]] = []
+    for item in reversed(history):
+        candidate_history = [dict(item), *selected_history]
+        candidate = [system, *candidate_history, current_user, *suffix]
+        if _estimated_request_tokens(candidate, compact_tools) <= GROQ_INPUT_TOKEN_BUDGET:
+            selected_history = candidate_history
+        else:
+            break
+
+    return [system, *selected_history, current_user, *suffix]
 
 
 def provider_config(provider: str) -> dict[str, str]:
@@ -116,6 +201,11 @@ async def run_agent(
         }}
         for tool in tools
     ]
+    if provider == "groq":
+        for tool in model_tools:
+            description = tool["function"].get("description", "")
+            if len(description) > 500:
+                tool["function"]["description"] = description[:497] + "..."
     prompt = PORTFOLIO_SYSTEM_PROMPT if agent_type == "portfolio" else FINANCE_SYSTEM_PROMPT
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
@@ -123,7 +213,10 @@ async def run_agent(
 
     async with httpx.AsyncClient(timeout=120) as client:
         for _ in range(5):
-            payload: dict[str, Any] = {"model": config["model"], "messages": messages}
+            request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
+            payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
+            if provider == "groq":
+                payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
             if model_tools:
                 payload["tools"] = model_tools
                 payload["tool_choice"] = "auto"
