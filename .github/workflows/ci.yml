@@ -28,4 +28,4 @@ jobs:
         run: python -m compileall -q app tests
 
       - name: Run test suite
-        run: pytest -q
+        run: python -m pytest -q
