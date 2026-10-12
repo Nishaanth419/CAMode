@@ -47,7 +47,7 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
             "params": {
                 "protocolVersion": DEFAULT_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "code-mode-agent", "version": "1.0.0"},
+                "clientInfo": {"name": "ca-mode-agent", "version": "1.0.0"},
             },
         })
         if not init.is_success:

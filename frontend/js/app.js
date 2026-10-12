@@ -19,12 +19,55 @@ const messages   = document.getElementById('messages');
 const userInput  = document.getElementById('user-input');
 const sendBtn    = document.getElementById('send-btn');
 const authButton = document.getElementById('auth-button');
-const loginScreen = document.getElementById('login-screen');
-const loginCta = document.getElementById('login-cta');
 const mainLayout = document.getElementById('main');
 const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
+const agentPicker = document.getElementById('agent-picker');
+const providerPicker = document.getElementById('provider-picker');
+const agentTitle = document.getElementById('agent-title');
+const agentDescription = document.getElementById('agent-description');
+const welcomeAgentName = document.getElementById('welcome-agent-name');
+const welcomeDescription = document.getElementById('welcome-description');
+const financePrompts = document.getElementById('finance-prompts');
+const portfolioPrompts = document.getElementById('portfolio-prompts');
 let isConnected = false;
+let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
+let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
+let providerReady = false;
+
+async function loadProviders() {
+  const response = await fetch('/api/providers');
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not load AI providers.');
+  const providers = data.providers || [];
+  providerPicker.innerHTML = '';
+  for (const provider of providers) {
+    const option = document.createElement('option');
+    option.value = provider.id;
+    option.disabled = !provider.configured;
+    option.textContent = provider.configured
+      ? `${provider.label} · ${provider.model}`
+      : `${provider.label} · add API key in .env`;
+    providerPicker.appendChild(option);
+  }
+  const configured = providers.filter((provider) => provider.configured);
+  const savedProvider = configured.find((provider) => provider.id === selectedProvider);
+  selectedProvider = savedProvider?.id || data.defaultProvider || 'openai';
+  if (!configured.length) {
+    providerPicker.innerHTML = '<option value="">Add an AI API key in .env</option>';
+    providerPicker.disabled = true;
+  } else {
+    providerPicker.value = selectedProvider;
+    providerPicker.disabled = false;
+  }
+  providerReady = true;
+  localStorage.setItem('ca-mode-provider', selectedProvider);
+}
+
+providerPicker.addEventListener('change', () => {
+  selectedProvider = providerPicker.value;
+  localStorage.setItem('ca-mode-provider', selectedProvider);
+});
 
 function applyTheme(theme) {
   const selected = theme === 'dark' ? 'dark' : 'light';
@@ -44,6 +87,32 @@ themeToggle.addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 });
 
+function setAgent(agent) {
+  selectedAgent = agent === 'portfolio' ? 'portfolio' : 'finance';
+  agentPicker.value = selectedAgent;
+  const isPortfolio = selectedAgent === 'portfolio';
+  const name = isPortfolio ? 'Portfolio Analyzer' : 'Finance Agent';
+  agentTitle.textContent = name;
+  agentDescription.textContent = isPortfolio
+    ? 'Your INDmoney holdings, allocations, and portfolio questions'
+    : 'General finance questions and explanations';
+  welcomeAgentName.textContent = name.toUpperCase();
+  welcomeDescription.textContent = isPortfolio
+    ? 'Ask about your INDmoney investments, holdings, allocations, and account activity.'
+    : 'Ask basic finance questions and get clear explanations in plain language.';
+  financePrompts.hidden = isPortfolio;
+  portfolioPrompts.hidden = !isPortfolio;
+  userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask a finance question…';
+  localStorage.setItem('ca-mode-agent', selectedAgent);
+}
+
+agentPicker.addEventListener('change', () => {
+  if (isStreaming) return;
+  setAgent(agentPicker.value);
+  startNewChat().catch((error) => addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>'));
+});
+setAgent(selectedAgent);
+
 /* ── Status helpers ─────────────────────────────────────────────────── */
 function setStatus(state, label) {
   statusDot.className = 'status-dot ' + state;
@@ -53,37 +122,33 @@ function setStatus(state, label) {
 /* ── Load this signed-in user's conversations ───────────────────────── */
 async function loadChats() {
   try {
+    const sessionResponse = await fetch('/api/session');
+    if (!sessionResponse.ok) throw new Error('Could not initialize your local session.');
+    const session = await sessionResponse.json();
     const response = await fetch('/api/chats');
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) {
         isConnected = false;
-        authButton.style.display = 'none';
-        loginScreen.style.display = 'flex';
-        mainLayout.style.display = 'none';
-        setStatus('', 'Sign in required');
-        return;
+        throw new Error(data.error || 'Could not load chats.');
       }
       throw new Error(data.error || ('HTTP ' + response.status));
     }
-    isConnected = true;
-    authButton.textContent = 'Disconnect';
-    authButton.title = 'Disconnect your INDmoney account';
+    isConnected = Boolean(session.connected);
+    authButton.textContent = isConnected ? 'Disconnect' : 'Connect INDmoney';
+    authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
     authButton.style.display = '';
-    loginScreen.style.display = 'none';
     mainLayout.style.display = 'flex';
     chats = data.chats || [];
     renderChats();
     if (chats.length) await selectChat(chats[0].id);
     else await startNewChat();
-    setStatus('online', chats.length + ' chats');
+    setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
   } catch (err) {
     chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
     setStatus('error', 'Connection failed');
   }
 }
-
-loginCta.addEventListener('click', () => window.location.assign('/auth/indmoney/connect'));
 
 authButton.addEventListener('click', async () => {
   if (!isConnected) {
@@ -137,12 +202,16 @@ async function refreshChats() {
   if (!response.ok) throw new Error('Could not refresh the chat list.');
   chats = (await response.json()).chats || [];
   renderChats();
-  setStatus('online', chats.length + ' chats');
+  setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
 }
 
 async function startNewChat() {
   if (isStreaming) return;
-  const response = await fetch('/api/chats', { method: 'POST' });
+  const response = await fetch('/api/chats', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentType: selectedAgent }),
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not create a new chat.');
   chats.unshift(data);
@@ -160,6 +229,7 @@ async function selectChat(chatId) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not open this chat.');
   activeChatId = chatId;
+  setAgent(data.agentType || 'portfolio');
   messages.innerHTML = '';
   messages.classList.remove('has-messages');
   emptyState.style.display = '';
@@ -201,8 +271,8 @@ function addMessage(role, content) {
   showMessages();
   const div = document.createElement('div');
   div.className = `message ${role}`;
-  const avatar = role === 'user' ? 'U' : 'C';
-  const label  = role === 'user' ? 'You' : 'Agent';
+  const avatar = role === 'user' ? 'U' : 'CA';
+  const label  = role === 'user' ? 'You' : `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
   div.innerHTML = `
     <div class="message-header">
       <div class="message-avatar ${role}">${avatar}</div>
@@ -223,8 +293,8 @@ function addTypingIndicator() {
   div.id = 'typing-indicator';
   div.innerHTML = `
     <div class="message-header">
-      <div class="message-avatar assistant">C</div>
-      <div class="message-role">Agent</div>
+      <div class="message-avatar assistant">CA</div>
+      <div class="message-role">${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}</div>
     </div>
     <div class="message-body">
       <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -243,6 +313,10 @@ function removeTypingIndicator() {
 /* ── Streaming response handler ──────────────────────────────────────── */
 async function sendMessage(text) {
   if (!text.trim() || isStreaming) return;
+  if (!providerReady || providerPicker.disabled) {
+    addMessage('assistant', '<span style="color:var(--error)">Configure at least one AI API key in .env, then restart CA Mode.</span>');
+    return;
+  }
   isStreaming = true;
   sendBtn.disabled = true;
   setStatus('loading', 'Thinking…');
@@ -257,7 +331,7 @@ async function sendMessage(text) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: activeChatId }),
+      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent, aiProvider: selectedProvider }),
     });
 
     if (!res.ok) {
@@ -271,6 +345,7 @@ async function sendMessage(text) {
 
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '');
+    msgDiv.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
 
@@ -296,9 +371,10 @@ async function sendMessage(text) {
     await refreshChats();
   } catch (err) {
     removeTypingIndicator();
-    addMessage('assistant',
+    const errorMessage = addMessage('assistant',
       `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`
     );
+    errorMessage.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     setStatus('error', 'Request failed');
   } finally {
     isStreaming = false;
@@ -338,6 +414,39 @@ function renderMarkdown(text) {
     return `\x00CODE${idx}\x00`;
   });
 
+  // Render pipe tables even if a model omits the Markdown separator row.
+  const tableBlocks = [];
+  const lines = text.replace(/\\([|#])/g, '$1').split('\n');
+  const renderedLines = [];
+  const isTableRow = line => line.trim().startsWith('|') && (line.match(/\|/g) || []).length >= 2;
+  const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  const isTableDivider = line => tableCells(line).every(cell => /^:?-{3,}:?$/.test(cell));
+  const inlineTableCell = value => esc(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>');
+  const makeTable = rows => {
+    const hasDivider = rows.length > 1 && isTableDivider(rows[1]);
+    const header = hasDivider ? rows[0] : null;
+    const bodyRows = rows.filter((_, index) => !(hasDivider && index <= 1));
+    const headHtml = header
+      ? `<thead><tr>${tableCells(header).map(cell => `<th scope="col">${inlineTableCell(cell)}</th>`).join('')}</tr></thead>`
+      : '';
+    const bodyHtml = bodyRows.map(row => `<tr>${tableCells(row).map(cell => `<td>${inlineTableCell(cell)}</td>`).join('')}</tr>`).join('');
+    return `<div class="markdown-table-wrap"><table class="markdown-table">${headHtml}<tbody>${bodyHtml}</tbody></table></div>`;
+  };
+  for (let i = 0; i < lines.length;) {
+    if (!isTableRow(lines[i])) {
+      renderedLines.push(lines[i++]);
+      continue;
+    }
+    const rows = [];
+    while (i < lines.length && isTableRow(lines[i])) rows.push(lines[i++]);
+    const idx = tableBlocks.push(makeTable(rows)) - 1;
+    renderedLines.push('', `@@CA_TABLE_${idx}@@`, '');
+  }
+  text = renderedLines.join('\n');
+
   // Process inline elements
   text = esc(text);
 
@@ -351,6 +460,13 @@ function renderMarkdown(text) {
   // Links
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  const headingBlocks = [];
+  text = text.replace(/^(#{1,6})\s+(.+)$/gm, (_, marks, content) => {
+    const level = marks.length;
+    const idx = headingBlocks.push(`<h${level}>${content}</h${level}>`) - 1;
+    return `@@CA_HEADING_${idx}@@`;
+  });
 
   // Line breaks & paragraphs
   text = text.replace(/\n\n/g, '</p><p style="margin-top:12px">');
@@ -372,6 +488,11 @@ function renderMarkdown(text) {
         <pre>${highlighted}</pre>
       </div>`;
   });
+
+  text = text.replace(/<p(?: style="margin-top:12px")?>\s*@@CA_TABLE_(\d+)@@\s*<\/p>/g, (_, idx) => tableBlocks[idx]);
+  text = text.replace(/<p(?: style="margin-top:12px")?>\s*@@CA_HEADING_(\d+)@@\s*<\/p>/g, (_, idx) => headingBlocks[idx]);
+  text = text.replace(/@@CA_TABLE_(\d+)@@/g, (_, idx) => tableBlocks[idx]);
+  text = text.replace(/@@CA_HEADING_(\d+)@@/g, (_, idx) => headingBlocks[idx]);
 
   text = text.replace(/\x00CHART(\d+)\x00/g, (_, idx) => renderDataChart(chartBlocks[idx]));
 
@@ -515,5 +636,10 @@ document.querySelectorAll('.example-prompt').forEach(btn => {
 });
 
 /* ── Init ────────────────────────────────────────────────────────────── */
+loadProviders().catch((error) => {
+  providerPicker.innerHTML = `<option value="">${escHtml(error.message)}</option>`;
+  providerPicker.disabled = true;
+  providerReady = true;
+});
 loadChats();
 userInput.focus();

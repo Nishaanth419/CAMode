@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f5f7f6" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="description" content="A private assistant for understanding your INDmoney portfolio." />
-  <title>Code Mode · Portfolio assistant</title>
+  <meta name="description" content="CA Mode: a finance assistant and personal portfolio analyzer." />
+  <title>CA Mode · Finance assistant</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="apple-touch-icon" href="/icon.svg" />
@@ -16,11 +16,11 @@
 </head>
 <body>
   <header id="topbar">
-    <a class="brand" href="/" aria-label="Code Mode home">
-      <span class="logo-mark" aria-hidden="true">C</span>
+    <a class="brand" href="/" aria-label="CA Mode home">
+      <span class="logo-mark" aria-hidden="true">CA</span>
       <span class="brand-copy">
-        <span class="logo-text">Code Mode</span>
-        <span class="logo-sub">PORTFOLIO ASSISTANT</span>
+        <span class="logo-text">CA Mode</span>
+        <span class="logo-sub">FINANCE, IN CONTEXT</span>
       </span>
     </a>
     <div class="topbar-spacer"></div>
@@ -35,28 +35,7 @@
   </header>
 
   <main>
-    <section id="login-screen" aria-labelledby="login-title">
-      <div class="login-card">
-        <div class="login-art" aria-hidden="true">
-          <div class="login-art-orbit orbit-one"></div>
-          <div class="login-art-orbit orbit-two"></div>
-          <div class="login-art-mark">C</div>
-          <div class="login-art-caption">YOUR MONEY, IN CONTEXT</div>
-        </div>
-        <div class="login-content">
-          <p class="eyebrow">PRIVATE PORTFOLIO WORKSPACE</p>
-          <h1 class="login-title" id="login-title">Your portfolio, understood.</h1>
-          <p class="login-copy">Connect your INDmoney account to ask questions, explore your holdings, and pick up where you left off.</p>
-          <button id="login-cta" class="primary-button" type="button">
-            <span>Continue with INDmoney</span>
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M10 4l6 6-6 6" /></svg>
-          </button>
-          <p class="privacy-note"><span class="privacy-lock" aria-hidden="true">◈</span> Your account data stays in your local app session.</p>
-        </div>
-      </div>
-    </section>
-
-    <div id="main" style="display:none">
+    <div id="main">
       <aside id="sidebar" aria-label="Chat history">
         <div class="sidebar-header">
           <div>
@@ -76,26 +55,51 @@
         </div>
       </aside>
 
-      <section id="chat-area" aria-label="Portfolio assistant chat">
+      <section id="chat-area" aria-label="CA Mode chat">
         <div class="chat-toolbar">
           <div class="chat-toolbar-title">
-            <span class="toolbar-icon" aria-hidden="true">✳</span>
+            <span class="toolbar-icon" aria-hidden="true">CA</span>
             <div>
-              <strong>Portfolio assistant</strong>
-              <span>Connected to INDmoney</span>
+              <strong id="agent-title">Finance Agent</strong>
+              <span id="agent-description">General finance questions and explanations</span>
             </div>
           </div>
-          <span class="secure-pill"><span class="secure-dot"></span> Private session</span>
+          <label class="agent-picker-label" for="agent-picker">Choose agent</label>
+          <select id="agent-picker" class="agent-picker" aria-label="Choose an agent">
+            <option value="finance">Finance Agent</option>
+            <option value="portfolio">Portfolio Analyzer</option>
+          </select>
+          <label class="provider-picker-label" for="provider-picker">AI</label>
+          <select id="provider-picker" class="provider-picker" aria-label="Choose AI provider" disabled>
+            <option>Loading providers…</option>
+          </select>
         </div>
 
         <div id="empty-state">
           <div class="welcome-mark" aria-hidden="true">
             <svg viewBox="0 0 48 48"><path d="M10 33.5 20.5 23 27 29.5 38 18.5M29 18.5h9v9" /></svg>
           </div>
-          <p class="eyebrow welcome-eyebrow">YOUR FINANCIAL PICTURE, AT A GLANCE</p>
-          <h1 class="empty-title">What would you like to know?</h1>
-          <p class="empty-sub">Ask about your investments in plain language. Your assistant can compare holdings, explain allocations, and visualize your portfolio.</p>
-          <div class="example-prompts" aria-label="Suggested questions">
+          <p class="eyebrow welcome-eyebrow">CA MODE · <span id="welcome-agent-name">FINANCE AGENT</span></p>
+          <h1 class="empty-title" id="welcome-title">What would you like to know?</h1>
+          <p class="empty-sub" id="welcome-description">Ask basic finance questions and get clear explanations in plain language.</p>
+          <div class="example-prompts" id="finance-prompts" aria-label="Finance Agent suggested questions">
+            <button class="example-prompt" data-prompt="Explain the difference between stocks and bonds in simple terms." type="button">
+              <span class="prompt-icon prompt-green" aria-hidden="true">?</span>
+              <span><strong>Learn the basics</strong><small>Explain common finance concepts</small></span>
+              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button class="example-prompt" data-prompt="What is compound interest, and how does it work?" type="button">
+              <span class="prompt-icon prompt-blue" aria-hidden="true">↗</span>
+              <span><strong>Understand interest</strong><small>Explore how compounding works</small></span>
+              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button class="example-prompt" data-prompt="What should someone compare when evaluating a mutual fund?" type="button">
+              <span class="prompt-icon prompt-amber" aria-hidden="true">≋</span>
+              <span><strong>Compare funds</strong><small>Learn what fund details mean</small></span>
+              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            </button>
+          </div>
+          <div class="example-prompts" id="portfolio-prompts" aria-label="Portfolio Analyzer suggested questions" hidden>
             <button class="example-prompt" data-prompt="Summarize my portfolio allocation by asset class." type="button">
               <span class="prompt-icon prompt-green" aria-hidden="true">◒</span>
               <span><strong>Portfolio allocation</strong><small>See how your investments are distributed</small></span>
@@ -118,7 +122,7 @@
 
         <div id="input-area">
           <div id="input-wrap">
-            <textarea id="user-input" rows="1" placeholder="Ask about your portfolio…" aria-label="Message input"></textarea>
+            <textarea id="user-input" rows="1" placeholder="Ask a finance question…" aria-label="Message input"></textarea>
             <button id="send-btn" type="button" title="Send message (Enter)" aria-label="Send message">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12 20 4l-5 16-3-7-8-1Z" /><path d="m12 13 8-9" /></svg>
             </button>

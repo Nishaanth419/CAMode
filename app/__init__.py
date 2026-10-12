@@ -1,1 +1,1 @@
-"""Code Mode Agent Python backend."""
+"""CA Mode finance assistant backend."""

@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Code Mode Portfolio Assistant",
-  "short_name": "Code Mode",
-  "description": "Ask questions about your INDmoney portfolio and explore the answers with visualizations.",
+  "name": "CA Mode Finance Assistant",
+  "short_name": "CA Mode",
+  "description": "Ask finance questions or analyze your INDmoney portfolio.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
