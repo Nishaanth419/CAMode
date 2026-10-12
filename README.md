@@ -83,6 +83,8 @@ Choose **Portfolio Analyzer** for account questions, then connect INDmoney when 
 | `mf_sips` | Mutual fund SIPs |
 | `us_stocks_sips` | US stock SIPs |
 
+Use **Review portfolio** in Portfolio Analyzer to create a profile review in a new chat. It charts available allocation, largest holdings, and gains or losses; calls out concentration and laggards when the data supports those comparisons; and uses fund return history or market research data when available. This review is historical and informational: it does not forecast returns or select specific investments as “best.” Any allocation decision depends on goals, time horizon, liquidity needs, and risk tolerance. The review temporarily adds focused fund/stock research and identifier lookup tools to the six core tools; the regular chat and `/api/tools` listing remain limited to the core six.
+
 ## Local data
 
 The SQLite database at `.data/codemode.sqlite3` stores chats and INDmoney OAuth tokens on this computer. Chat records are isolated by local session. Selecting **Disconnect** revokes the INDmoney access token and removes that session and its chats.

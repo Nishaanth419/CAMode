@@ -45,6 +45,7 @@ class ChatRequest(BaseModel):
     chatId: str
     agentType: Literal["finance", "portfolio"] = "finance"
     aiProvider: Literal["openai", "groq"] = "openai"
+    profileReview: bool = False
 
 
 class CreateChatRequest(BaseModel):
@@ -383,13 +384,21 @@ async def chat(body: ChatRequest, request: Request):
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
     if body.agentType != data["agentType"]:
         return JSONResponse({"error": "This conversation belongs to a different agent. Start a new chat to switch agents."}, status_code=409)
+    if body.profileReview and body.agentType != "portfolio":
+        return JSONResponse({"error": "Portfolio profile review requires Portfolio Analyzer."}, status_code=400)
     token = None
     if body.agentType == "portfolio":
         sid, token = await access_token(request)
         if not sid or not token:
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
     try:
-        answer = await run_agent(message, MCP_RESOURCE, token, data.get("messages", []), body.agentType, body.aiProvider)
+        if body.profileReview:
+            answer = await run_agent(
+                message, MCP_RESOURCE, token, data.get("messages", []), body.agentType, body.aiProvider,
+                profile_review=True,
+            )
+        else:
+            answer = await run_agent(message, MCP_RESOURCE, token, data.get("messages", []), body.agentType, body.aiProvider)
     except Exception as exc:
         logger.exception("Chat agent request failed")
         details = str(exc)

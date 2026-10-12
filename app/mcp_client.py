@@ -20,11 +20,22 @@ IMPORTANT_PORTFOLIO_TOOL_NAMES = (
     "us_stocks_sips",
 )
 
+# Extra read-only research tools are exposed only when the user explicitly
+# requests a profile review; normal portfolio chats keep the smaller list.
+PORTFOLIO_PROFILE_TOOL_NAMES = IMPORTANT_PORTFOLIO_TOOL_NAMES + (
+    "lookup_ind_keys",
+    "get_mf_funds_details",
+    "get_indian_stocks_details",
+    "get_us_stocks_details",
+)
 
-def filter_portfolio_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only the supported core portfolio tools, in a stable order."""
+
+def filter_portfolio_tools(
+    tools: list[dict[str, Any]], allowed_names: tuple[str, ...] = IMPORTANT_PORTFOLIO_TOOL_NAMES,
+) -> list[dict[str, Any]]:
+    """Return only supported portfolio tools, in the requested stable order."""
     by_name = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
-    return [by_name[name] for name in IMPORTANT_PORTFOLIO_TOOL_NAMES if name in by_name]
+    return [by_name[name] for name in allowed_names if name in by_name]
 
 
 def _headers(token: str, protocol: str = DEFAULT_PROTOCOL_VERSION, session_id: str | None = None) -> dict[str, str]:

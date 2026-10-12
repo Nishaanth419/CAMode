@@ -73,6 +73,7 @@
           <select id="provider-picker" class="provider-picker" aria-label="Choose AI provider" disabled>
             <option>Loading providers…</option>
           </select>
+          <button id="profile-review-button" class="profile-review-button" type="button" hidden>Review portfolio</button>
         </div>
 
         <div id="empty-state">
@@ -113,6 +114,11 @@
             <button class="example-prompt" data-prompt="List my active SIPs and their monthly amounts." type="button">
               <span class="prompt-icon prompt-amber" aria-hidden="true">↗</span>
               <span><strong>Active SIPs</strong><small>Review your recurring investments</small></span>
+              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button class="example-prompt" data-profile-review="true" data-prompt="Create my portfolio profile review." type="button">
+              <span class="prompt-icon prompt-blue" aria-hidden="true">▥</span>
+              <span><strong>Portfolio profile</strong><small>Chart allocation, holdings, gains, and laggards</small></span>
               <span class="prompt-arrow" aria-hidden="true">↗</span>
             </button>
           </div>

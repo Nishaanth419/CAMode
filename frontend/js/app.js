@@ -24,6 +24,7 @@ const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
 const agentPicker = document.getElementById('agent-picker');
 const providerPicker = document.getElementById('provider-picker');
+const profileReviewButton = document.getElementById('profile-review-button');
 const agentTitle = document.getElementById('agent-title');
 const agentDescription = document.getElementById('agent-description');
 const welcomeAgentName = document.getElementById('welcome-agent-name');
@@ -102,6 +103,7 @@ function setAgent(agent) {
     : 'Ask basic finance questions and get clear explanations in plain language.';
   financePrompts.hidden = isPortfolio;
   portfolioPrompts.hidden = !isPortfolio;
+  profileReviewButton.hidden = !isPortfolio;
   userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask a finance question…';
   localStorage.setItem('ca-mode-agent', selectedAgent);
 }
@@ -257,6 +259,16 @@ newChatButton.addEventListener('click', () => startNewChat().catch((error) => {
   addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
 }));
 
+profileReviewButton.addEventListener('click', async () => {
+  if (isStreaming) return;
+  try {
+    await startNewChat();
+    await sendMessage('Create my portfolio profile review.', { profileReview: true });
+  } catch (error) {
+    addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
+  }
+});
+
 /* ── Chat ────────────────────────────────────────────────────────────── */
 function showMessages() {
   emptyState.style.display = 'none';
@@ -311,7 +323,7 @@ function removeTypingIndicator() {
 }
 
 /* ── Streaming response handler ──────────────────────────────────────── */
-async function sendMessage(text) {
+async function sendMessage(text, options = {}) {
   if (!text.trim() || isStreaming) return;
   if (!providerReady || providerPicker.disabled) {
     addMessage('assistant', '<span style="color:var(--error)">Configure at least one AI API key in .env, then restart CA Mode.</span>');
@@ -331,7 +343,7 @@ async function sendMessage(text) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent, aiProvider: selectedProvider }),
+      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent, aiProvider: selectedProvider, profileReview: Boolean(options.profileReview) }),
     });
 
     if (!res.ok) {
@@ -631,7 +643,7 @@ document.querySelectorAll('.example-prompt').forEach(btn => {
     const prompt = btn.dataset.prompt;
     userInput.value = prompt;
     autoResize();
-    sendMessage(prompt);
+    sendMessage(prompt, { profileReview: btn.dataset.profileReview === 'true' });
   });
 });
 

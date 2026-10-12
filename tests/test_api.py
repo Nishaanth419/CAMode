@@ -179,6 +179,40 @@ def test_chat_rejects_removed_provider(client):
     assert response.status_code == 422
 
 
+def test_profile_review_requires_portfolio_agent(client):
+    client.get("/api/session")
+    chat = client.post("/api/chats", json={"agentType": "finance"}).json()
+    response = client.post("/api/chat", json={
+        "message": "Create my portfolio profile review.", "chatId": chat["id"],
+        "agentType": "finance", "profileReview": True,
+    })
+    assert response.status_code == 400
+    assert "requires Portfolio Analyzer" in response.json()["error"]
+
+
+def test_profile_review_uses_extended_agent_mode(client, monkeypatch):
+    client.get("/api/session")
+    chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
+
+    async def fake_access_token(request):
+        return client.cookies.get(main.SESSION_COOKIE), "account-token"
+
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, profile_review=False):
+        assert token == "account-token"
+        assert agent_type == "portfolio"
+        assert profile_review is True
+        return "## Portfolio review"
+
+    monkeypatch.setattr(main, "access_token", fake_access_token)
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    response = client.post("/api/chat", json={
+        "message": "Create my portfolio profile review.", "chatId": chat["id"],
+        "agentType": "portfolio", "profileReview": True,
+    })
+    assert response.status_code == 200
+    assert response.text == "## Portfolio review"
+
+
 def test_tools_endpoint_returns_only_core_tools(client, monkeypatch):
     async def fake_access_token(request):
         return "session", "access-token"

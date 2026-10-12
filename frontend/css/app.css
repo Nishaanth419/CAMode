@@ -77,6 +77,8 @@ button { -webkit-tap-highlight-color: transparent; }
 :root[data-theme="dark"] .new-chat-button:hover { border-color: #4d765e; background: #294632; }
 :root[data-theme="dark"] .chat-select:hover { background: #202b25; color: var(--ink); }
 :root[data-theme="dark"] .chat-select.active { border-color: #385443; background: #20362a; color: #b1e3c4; }
+:root[data-theme="dark"] .profile-review-button { border-color: #355845; background: #20372a; color: #a9ddbf; }
+:root[data-theme="dark"] .profile-review-button:hover { border-color: #4d765e; background: #294632; }
 :root[data-theme="dark"] .chat-delete:hover { background: #3a2624; color: var(--red); }
 :root[data-theme="dark"] .toolbar-icon, :root[data-theme="dark"] .welcome-mark { border-color: #344b3b; background: linear-gradient(145deg, #23382b, #1c3024); color: #82c9a1; }
 :root[data-theme="dark"] .example-prompt { border-color: var(--line); background: #1a241e; }
@@ -177,6 +179,10 @@ main { height: calc(100% - 70px); min-height: 0; }
 .provider-picker-label { color: var(--muted); font-size: 10px; }
 .provider-picker { min-height: 34px; max-width: 140px; padding: 0 26px 0 9px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--paper); color: var(--ink); font: inherit; font-size: 11px; font-weight: 650; }
 .provider-picker:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.profile-review-button { min-height: 34px; padding: 0 11px; border: 1px solid #cde4d8; border-radius: 9px; background: var(--green-wash); color: var(--green-dark); font-size: 10px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.profile-review-button:hover { border-color: #9fcab5; background: #e4f3eb; }
+.profile-review-button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.profile-review-button[hidden] { display: none; }
 
 #empty-state { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 13px; overflow-y: auto; padding: 30px 24px 24px; text-align: center; }
 .welcome-mark { display: grid; width: 52px; height: 52px; place-items: center; margin-bottom: 1px; border: 1px solid #dcebe2; border-radius: 17px; background: linear-gradient(145deg, #f4faf6, #e4f2e9); color: var(--green); }
@@ -299,6 +305,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; backg
   .agent-picker { max-width: 145px; font-size: 10px; }
   .provider-picker-label { display: none; }
   .provider-picker { max-width: 100px; font-size: 10px; }
+  .profile-review-button { flex: 1 1 100%; }
   .secure-pill { font-size: 9px; }
   #empty-state { justify-content: flex-start; padding: 30px 18px 18px; }
   .empty-title { font-size: 25px; }

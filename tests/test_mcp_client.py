@@ -29,6 +29,21 @@ def test_filter_portfolio_tools_handles_empty_and_malformed_entries():
     assert mcp_client.filter_portfolio_tools([None, "bad", {"name": "unknown"}]) == []
 
 
+def test_profile_review_gets_research_tools_but_not_the_full_server_catalog():
+    supplied = [{"name": name} for name in (
+        "networth_snapshot", "networth_holdings", "lookup_ind_keys", "get_mf_funds_details",
+        "get_indian_stocks_details", "get_us_stocks_details", "get_indian_stocks_ohlc",
+        "get_family_portfolio",
+    )]
+
+    filtered = mcp_client.filter_portfolio_tools(supplied, mcp_client.PORTFOLIO_PROFILE_TOOL_NAMES)
+
+    assert [item["name"] for item in filtered] == [
+        "networth_snapshot", "networth_holdings", "lookup_ind_keys", "get_mf_funds_details",
+        "get_indian_stocks_details", "get_us_stocks_details",
+    ]
+
+
 def _response(payload, *, status=200, headers=None, content_type="application/json"):
     body = json.dumps(payload).encode()
     return httpx.Response(status, headers={"content-type": content_type, **(headers or {})}, content=body)

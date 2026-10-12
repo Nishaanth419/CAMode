@@ -168,6 +168,38 @@ async def test_portfolio_agent_calls_filtered_tool_then_answers(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_profile_review_exposes_research_tools_and_guardrails(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    tool_names = agent.PORTFOLIO_PROFILE_TOOL_NAMES
+
+    async def fake_fetch(url, token):
+        tools = [{"name": name, "description": name, "inputSchema": {"type": "object", "properties": {}}} for name in tool_names]
+        tools.append({"name": "unapproved_market_tool", "inputSchema": {"type": "object", "properties": {}}})
+        return {"tools": tools, "protocolVersion": "v", "sessionId": "sid"}
+
+    async def fake_call(url, token, protocol, session_id, name, arguments):
+        return '{"total_value":100,"holdings":[]}'
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    monkeypatch.setattr(agent, "call_mcp_tool", fake_call)
+    call = {"id": "call-profile", "function": {"name": "networth_snapshot", "arguments": "{}"}}
+    captured = []
+    fake_client = FakeAsyncClient([_completion(tool_calls=[call]), _completion("Profile review ready.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "Create my portfolio profile review.", "https://mcp", "token", [], "portfolio", "openai", profile_review=True
+    )
+
+    assert answer == "Profile review ready."
+    exposed = [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]]
+    assert exposed == list(tool_names)
+    system_prompt = captured[0]["payload"]["messages"][0]["content"]
+    assert "do not forecast or promise growth" in system_prompt.lower()
+    assert "do not name a specific security" in system_prompt.lower()
+
+
+@pytest.mark.asyncio
 async def test_portfolio_agent_rejects_when_model_never_calls_tool(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     async def fake_fetch(url, token):

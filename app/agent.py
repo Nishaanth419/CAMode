@@ -10,7 +10,12 @@ from typing import Any
 
 import httpx
 
-from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
+from .mcp_client import (
+    PORTFOLIO_PROFILE_TOOL_NAMES,
+    call_mcp_tool,
+    fetch_mcp_session,
+    filter_portfolio_tools,
+)
 
 logger = logging.getLogger("ca_mode.agent")
 
@@ -25,6 +30,12 @@ When tool results contain comparable numeric data (such as holdings, allocations
 Use `bar` to compare categories and `donut` for a part-to-whole split. Include only relevant items (usually 5–10), explain the largest concentration in the surrounding text, and chart only values returned by tools. If a tool fails or provides no numeric data, explain that clearly and do not fabricate a chart."""
 
 FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer basic, general finance questions in clear, plain language. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for follow-up questions."""
+
+PORTFOLIO_PROFILE_PROMPT = """In this portfolio profile review, give a concise, evidence-based overview using only INDmoney tool results. Call the relevant account tools for overall net worth, allocation, and holdings. For mutual funds, use fund details for historical 1/3/5-year returns when useful. Use stock details only for instruments actually held, and identify analyst information as third-party opinion if it appears.
+
+Include charts for asset allocation, the largest holdings by current value, and gains/losses when the returned data supports them. Explain concentration and identify laggards from holding P&L; compare with a benchmark only when the tool returns a comparable benchmark period. Clearly state when cost basis, return history, or other data is missing. Treat historical performance as historical and do not forecast or promise growth.
+
+For the question of where to invest next, do not name a specific security or claim an investment is best. Explain diversification gaps and concentration risks visible in this account, then offer general areas to research. Say that a suitable allocation depends on the user's goals, time horizon, liquidity needs, and risk tolerance. Use INR and USD figures separately. Never invent values, rankings, or growth estimates."""
 
 PROVIDERS = {
     "openai": {
@@ -174,6 +185,7 @@ async def run_agent(
     history: list[dict[str, str]],
     agent_type: str = "finance",
     provider: str = "openai",
+    profile_review: bool = False,
 ) -> str:
     config = provider_config(provider)
     session = None
@@ -182,7 +194,8 @@ async def run_agent(
         if not token:
             raise RuntimeError("Connect your INDmoney account to use Portfolio Analyzer.")
         session = await fetch_mcp_session(mcp_url, token)
-        tools = filter_portfolio_tools(session["tools"])
+        allowed_tools = PORTFOLIO_PROFILE_TOOL_NAMES if profile_review else None
+        tools = filter_portfolio_tools(session["tools"], allowed_tools) if allowed_tools else filter_portfolio_tools(session["tools"])
         if not tools:
             raise RuntimeError(
                 "INDmoney did not provide any of CA Mode's supported portfolio tools. "
@@ -203,6 +216,8 @@ async def run_agent(
             if len(description) > 500:
                 tool["function"]["description"] = description[:497] + "..."
     prompt = PORTFOLIO_SYSTEM_PROMPT if agent_type == "portfolio" else FINANCE_SYSTEM_PROMPT
+    if profile_review:
+        prompt += "\n\n" + PORTFOLIO_PROFILE_PROMPT
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
     messages.append({"role": "user", "content": message})
