@@ -54,6 +54,18 @@ uvicorn --env-file .env app.main:app --host 127.0.0.1 --port 8003
 
 Open [http://localhost:8003](http://localhost:8003).
 
+## Development checks
+
+Install the development dependencies and run the same checks used by GitHub Actions:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m compileall -q app tests
+python -m pytest -q
+```
+
+The test suite exercises the API and local session/chat storage, OAuth and token refresh, provider selection, MCP protocol handling and tool filtering, and the agent's tool-call behavior. All network-facing services are mocked in tests.
+
 ## Local data
 
 OAuth tokens, chats, and chat history are stored in `.data/codemode.sqlite3`. Selecting **Disconnect** revokes the INDmoney access token and removes that local session and its chats.
