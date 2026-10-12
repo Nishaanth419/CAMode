@@ -14,11 +14,21 @@ A local Python finance assistant with two selectable agents: Finance Agent for g
 cp .env.example .env
 ```
 
-Add at least one AI provider key to `.env`, then start the app. OpenAI, Kimi, and Groq are supported; configure any combination of them. The provider selector only enables providers with a key present. API keys stay on the local server.
+Add an AI provider key to `.env` for OpenAI, Kimi, or Groq; you can also use a local Ollama model without a cloud API key. Cloud provider keys stay on the local server.
 
 For Kimi, create an API key in the [Kimi API Platform](https://platform.kimi.ai/) and set `KIMI_API_KEY`. For Groq, create a key in the [Groq Console](https://console.groq.com/keys) and set `GROQ_API_KEY`. OpenAI uses `OPENAI_API_KEY`. Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer.
 
 Groq requests are kept within a conservative input budget by prioritizing recent chat messages and shortening exceptionally large tool results. Adjust `GROQ_INPUT_TOKEN_BUDGET` and `GROQ_COMPLETION_TOKEN_LIMIT` in `.env` only if your Groq plan supports a different tokens-per-minute limit.
+
+### Use a local Ollama model
+
+Install [Ollama](https://ollama.com/download), then download a small model to try:
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+The [Ollama model library](https://ollama.com/library/qwen2.5) lists other model sizes. The example `.env` uses `http://host.docker.internal:11434/v1` so the Docker app can reach Ollama running on macOS. If running the app directly with Python instead of Docker, change `OLLAMA_BASE_URL` to `http://localhost:11434/v1`. Select **Ollama (local)** in the provider menu. The app uses Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility). For local portfolio analysis, use an installed model that supports tool calling; Finance Agent is suitable for testing basic questions.
 
 Then start the app:
 

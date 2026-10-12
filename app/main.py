@@ -44,7 +44,7 @@ class ChatRequest(BaseModel):
     message: str
     chatId: str
     agentType: Literal["finance", "portfolio"] = "finance"
-    aiProvider: Literal["openai", "kimi", "groq"] = "openai"
+    aiProvider: Literal["openai", "kimi", "groq", "ollama"] = "openai"
 
 
 class CreateChatRequest(BaseModel):
