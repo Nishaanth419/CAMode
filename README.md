@@ -31,6 +31,10 @@ To view server logs, run `docker compose logs -f`. To stop it, run `docker compo
 The SQLite database is stored in `.data/` and remains on this computer across restarts. Do not commit `.env` or `.data/`.
 Use the sun/moon button in the header to switch between light and dark themes; the choice is remembered in this browser.
 
+## Chat formatting
+
+Assistant replies support Markdown headings and pipe tables. Tables render as horizontally scrollable tables, including when a reply omits the Markdown separator row. Table text and headings use theme-aware colors so they remain readable in dark mode. The service worker cache is versioned so browsers can load updated app files after a release; if an old interface remains visible, refresh the page.
+
 ## Run with local Python
 
 ```bash
