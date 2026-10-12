@@ -58,7 +58,7 @@ PROVIDERS = {
         "base_url_env": "OLLAMA_BASE_URL",
         "default_base_url": "http://host.docker.internal:11434/v1",
         "model_env": "OLLAMA_MODEL",
-        "default_model": "qwen2.5:3b",
+        "default_model": "qwen3:8b",
     },
 }
 
