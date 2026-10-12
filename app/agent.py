@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 import httpx
 
 from .mcp_client import call_mcp_tool, fetch_mcp_session
+
+logger = logging.getLogger("ca_mode.agent")
 
 PORTFOLIO_SYSTEM_PROMPT = """You are Portfolio Analyzer, a helpful assistant that answers questions using available INDmoney MCP tools. Use earlier user and assistant messages as context, especially for follow-up questions.
 
@@ -226,14 +229,16 @@ async def run_agent(
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
     messages.append({"role": "user", "content": message})
 
+    retried_empty_ollama_response = False
     async with httpx.AsyncClient(timeout=120) as client:
         for _ in range(5):
             request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
             payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
             if provider == "groq":
                 payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
-            if model_tools:
-                payload["tools"] = model_tools
+            tools_for_request = [] if retried_empty_ollama_response else model_tools
+            if tools_for_request:
+                payload["tools"] = tools_for_request
                 payload["tool_choice"] = "auto"
             try:
                 response = await client.post(
@@ -250,10 +255,37 @@ async def run_agent(
                 raise
             if not response.is_success:
                 raise RuntimeError(f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}")
-            choice = response.json()["choices"][0]["message"]
+            completion = response.json()
+            choice_data = completion["choices"][0]
+            choice = choice_data["message"]
             calls = choice.get("tool_calls") or []
             if not calls:
-                return choice.get("content") or ""
+                content = choice.get("content")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        part["text"] for part in content
+                        if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    )
+                if isinstance(content, str) and content.strip():
+                    return content
+                if provider == "ollama" and not retried_empty_ollama_response:
+                    logger.warning(
+                        "Ollama returned an empty completion; retrying once without tools (finish_reason=%s)",
+                        choice_data.get("finish_reason"),
+                    )
+                    retried_empty_ollama_response = True
+                    messages.append({
+                        "role": "user",
+                        "content": "Your previous response had no visible text. Answer the original question in plain text now. If tool data is present, use it; otherwise say what information is missing.",
+                    })
+                    continue
+                logger.error(
+                    "%s returned an empty completion (finish_reason=%s)",
+                    config["label"], choice_data.get("finish_reason"),
+                )
+                raise RuntimeError(
+                    f"{config['label']} returned an empty response. Check that the selected model is available and try again."
+                )
             messages.append({"role": "assistant", "content": choice.get("content"), "tool_calls": calls})
             for call in calls:
                 function = call.get("function", {})
