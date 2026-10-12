@@ -414,6 +414,39 @@ function renderMarkdown(text) {
     return `\x00CODE${idx}\x00`;
   });
 
+  // Render pipe tables even if a model omits the Markdown separator row.
+  const tableBlocks = [];
+  const lines = text.replace(/\\([|#])/g, '$1').split('\n');
+  const renderedLines = [];
+  const isTableRow = line => line.trim().startsWith('|') && (line.match(/\|/g) || []).length >= 2;
+  const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  const isTableDivider = line => tableCells(line).every(cell => /^:?-{3,}:?$/.test(cell));
+  const inlineTableCell = value => esc(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>');
+  const makeTable = rows => {
+    const hasDivider = rows.length > 1 && isTableDivider(rows[1]);
+    const header = hasDivider ? rows[0] : null;
+    const bodyRows = rows.filter((_, index) => !(hasDivider && index <= 1));
+    const headHtml = header
+      ? `<thead><tr>${tableCells(header).map(cell => `<th scope="col">${inlineTableCell(cell)}</th>`).join('')}</tr></thead>`
+      : '';
+    const bodyHtml = bodyRows.map(row => `<tr>${tableCells(row).map(cell => `<td>${inlineTableCell(cell)}</td>`).join('')}</tr>`).join('');
+    return `<div class="markdown-table-wrap"><table class="markdown-table">${headHtml}<tbody>${bodyHtml}</tbody></table></div>`;
+  };
+  for (let i = 0; i < lines.length;) {
+    if (!isTableRow(lines[i])) {
+      renderedLines.push(lines[i++]);
+      continue;
+    }
+    const rows = [];
+    while (i < lines.length && isTableRow(lines[i])) rows.push(lines[i++]);
+    const idx = tableBlocks.push(makeTable(rows)) - 1;
+    renderedLines.push('', `@@CA_TABLE_${idx}@@`, '');
+  }
+  text = renderedLines.join('\n');
+
   // Process inline elements
   text = esc(text);
 
@@ -427,6 +460,13 @@ function renderMarkdown(text) {
   // Links
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  const headingBlocks = [];
+  text = text.replace(/^(#{1,6})\s+(.+)$/gm, (_, marks, content) => {
+    const level = marks.length;
+    const idx = headingBlocks.push(`<h${level}>${content}</h${level}>`) - 1;
+    return `@@CA_HEADING_${idx}@@`;
+  });
 
   // Line breaks & paragraphs
   text = text.replace(/\n\n/g, '</p><p style="margin-top:12px">');
@@ -448,6 +488,11 @@ function renderMarkdown(text) {
         <pre>${highlighted}</pre>
       </div>`;
   });
+
+  text = text.replace(/<p(?: style="margin-top:12px")?>\s*@@CA_TABLE_(\d+)@@\s*<\/p>/g, (_, idx) => tableBlocks[idx]);
+  text = text.replace(/<p(?: style="margin-top:12px")?>\s*@@CA_HEADING_(\d+)@@\s*<\/p>/g, (_, idx) => headingBlocks[idx]);
+  text = text.replace(/@@CA_TABLE_(\d+)@@/g, (_, idx) => tableBlocks[idx]);
+  text = text.replace(/@@CA_HEADING_(\d+)@@/g, (_, idx) => headingBlocks[idx]);
 
   text = text.replace(/\x00CHART(\d+)\x00/g, (_, idx) => renderDataChart(chartBlocks[idx]));
 

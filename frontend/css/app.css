@@ -87,7 +87,14 @@ button { -webkit-tap-highlight-color: transparent; }
 :root[data-theme="dark"] .message.user .message-body { border-color: #344a3c; background: #21362a; color: #d0e9d9; }
 :root[data-theme="dark"] .message-avatar.user { background: #2c3932; color: #c0cec5; }
 :root[data-theme="dark"] .message-body strong { color: var(--ink); }
+:root[data-theme="dark"] .message-body { color: #e5eee8; }
+:root[data-theme="dark"] .message-body h1, :root[data-theme="dark"] .message-body h2, :root[data-theme="dark"] .message-body h3, :root[data-theme="dark"] .message-body h4, :root[data-theme="dark"] .message-body h5, :root[data-theme="dark"] .message-body h6 { color: #f0f5f1; }
 :root[data-theme="dark"] .message-body code { border-color: #394940; background: #202a24; color: #a5dbba; }
+:root[data-theme="dark"] .markdown-table-wrap { border-color: #526258; background: #18211c; }
+:root[data-theme="dark"] .markdown-table { color: #e5eee8; }
+:root[data-theme="dark"] .markdown-table th { border-color: #526258; background: #25332b; color: #f0f5f1; }
+:root[data-theme="dark"] .markdown-table td { border-color: #3b4a40; color: #d9e5dc; }
+:root[data-theme="dark"] .markdown-table td:first-child { color: #f0f5f1; }
 :root[data-theme="dark"] .data-chart { border-color: var(--line); background: #1a241e; }
 :root[data-theme="dark"] .donut-ring::after { border-color: #34443a; background: #1a241e; }
 :root[data-theme="dark"] .chart-track { background: #2b3830; }
@@ -200,14 +207,25 @@ main { height: calc(100% - 70px); min-height: 0; }
 .message-avatar.assistant { background: var(--green); color: #fff; }
 .message-role { color: var(--ink-soft); font-size: 10px; font-weight: 700; }
 .message-time { margin-left: auto; color: #9aa69f; font-size: 9px; }
-.message-body { color: #27372f; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.message-body { color: var(--ink); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .message.user .message-body { width: fit-content; max-width: min(620px, 100%); margin-left: auto; padding: 11px 14px; border: 1px solid #dcebe2; border-radius: 13px 4px 13px 13px; background: #eaf5ef; color: #1d4936; }
 .message.user .message-header { justify-content: flex-end; }
 .message.user .message-time { margin-left: 0; }
 .message-body p { margin: 0; }
-.message-body strong { color: #18251f; font-weight: 700; }
+.message-body strong { color: var(--ink); font-weight: 700; }
 .message-body a { color: var(--green); text-decoration: underline; text-underline-offset: 2px; }
 .message-body code { padding: 2px 5px; border: 1px solid #e0e8e3; border-radius: 5px; background: #f1f5f2; color: #27664d; font-family: var(--mono); font-size: 10px; }
+.message-body h1, .message-body h2, .message-body h3, .message-body h4, .message-body h5, .message-body h6 { margin: 20px 0 9px; color: var(--ink); font-weight: 700; line-height: 1.35; }
+.message-body h1 { font-size: 20px; }
+.message-body h2 { font-size: 18px; }
+.message-body h3 { font-size: 15px; }
+.message-body h4, .message-body h5, .message-body h6 { font-size: 13px; }
+.markdown-table-wrap { max-width: 100%; margin: 14px 0 18px; overflow-x: auto; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--paper); }
+.markdown-table { width: 100%; border-collapse: collapse; color: var(--ink); font-size: 11px; line-height: 1.65; }
+.markdown-table th, .markdown-table td { min-width: 110px; padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.markdown-table th { background: var(--paper-soft); color: var(--ink); font-weight: 700; }
+.markdown-table tr:last-child td { border-bottom: 0; }
+.markdown-table td:first-child { color: var(--ink); font-weight: 650; }
 .data-chart { margin: 14px 0 17px; padding: 17px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 4px 16px rgba(25,54,42,.04); }
 .data-chart-title { margin-bottom: 13px; color: var(--ink); font-size: 11px; font-weight: 750; }
 .chart-row { display: grid; grid-template-columns: minmax(85px, 1fr) minmax(100px, 2fr) auto; align-items: center; gap: 10px; margin: 9px 0; }
