@@ -230,13 +230,17 @@ async def run_agent(
     messages.append({"role": "user", "content": message})
 
     retried_empty_ollama_response = False
+    retried_portfolio_tool_selection = False
+    portfolio_tool_called = False
     async with httpx.AsyncClient(timeout=120) as client:
         for _ in range(5):
             request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
             payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
             if provider == "groq":
                 payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
-            tools_for_request = [] if retried_empty_ollama_response else model_tools
+            # Keep INDmoney tools available when retrying a portfolio request:
+            # otherwise a weak local model may merely tell the user to run one.
+            tools_for_request = [] if retried_empty_ollama_response and agent_type != "portfolio" else model_tools
             if tools_for_request:
                 payload["tools"] = tools_for_request
                 payload["tool_choice"] = "auto"
@@ -266,11 +270,25 @@ async def run_agent(
                         part["text"] for part in content
                         if isinstance(part, dict) and isinstance(part.get("text"), str)
                     )
+                if agent_type == "portfolio" and not portfolio_tool_called:
+                    if not retried_portfolio_tool_selection:
+                        logger.warning("Portfolio model returned no INDmoney tool call; retrying with tool schemas available")
+                        retried_portfolio_tool_selection = True
+                        messages.append({"role": "assistant", "content": content or ""})
+                        messages.append({
+                            "role": "user",
+                            "content": "Do not tell me to run an account check. Use one of the available INDmoney tools now to retrieve the account data needed for my original question. After the tool returns, answer using that data only.",
+                        })
+                        continue
+                    raise RuntimeError(
+                        f"{config['label']} did not call an INDmoney account tool. "
+                        "No portfolio summary was generated; try a stronger tool-capable model or another provider."
+                    )
                 if isinstance(content, str) and content.strip():
                     return content
                 if provider == "ollama" and not retried_empty_ollama_response:
                     logger.warning(
-                        "Ollama returned an empty completion; retrying once without tools (finish_reason=%s)",
+                        "Ollama returned an empty completion; retrying with an explicit final-answer instruction (finish_reason=%s)",
                         choice_data.get("finish_reason"),
                     )
                     retried_empty_ollama_response = True
@@ -297,6 +315,8 @@ async def run_agent(
                     result = await call_mcp_tool(
                         mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
                     )
+                    if agent_type == "portfolio":
+                        portfolio_tool_called = True
                 except Exception as exc:
                     raise RuntimeError(f"INDmoney data request failed: {exc}") from exc
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": str(result)})
