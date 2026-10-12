@@ -235,7 +235,7 @@ async function selectChat(chatId) {
   emptyState.style.display = '';
   for (const message of data.messages || []) {
     if (message.role === 'user') addMessage('user', escHtml(message.content).replace(/\n/g, '<br>'));
-    else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content));
+    else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content), message.trace || []);
   }
   renderChats();
 }
@@ -267,7 +267,7 @@ function timeStr() {
   return new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
 }
 
-function addMessage(role, content) {
+function addMessage(role, content, trace = []) {
   showMessages();
   const div = document.createElement('div');
   div.className = `message ${role}`;
@@ -280,10 +280,48 @@ function addMessage(role, content) {
       <div class="message-time">${timeStr()}</div>
     </div>
     <div class="message-body">${content}</div>
+    ${role === 'assistant' ? renderTraceDropdown(trace) : ''}
   `;
   messages.appendChild(div);
+  renderPlotlyCharts(div);
   messages.scrollTop = messages.scrollHeight;
   return div;
+}
+
+function renderTraceDropdown(trace) {
+  if (!Array.isArray(trace) || !trace.length) return '';
+  const steps = trace.map((step, index) => {
+    const isTool = step.kind === 'tool';
+    const title = isTool
+      ? `INDmoney · ${escHtml(step.name || 'tool')}`
+      : `${escHtml(step.provider || 'AI')} · ${escHtml(step.model || 'model request')}`;
+    const status = escHtml(step.status || 'sent');
+    let details = '';
+    if (isTool && step.arguments) {
+      let formatted = step.arguments;
+      try { formatted = JSON.stringify(JSON.parse(step.arguments), null, 2); } catch { /* Keep the short raw preview. */ }
+      details += `<div class="trace-detail-label">Arguments</div><pre class="trace-code">${escHtml(formatted)}</pre>`;
+    }
+    if (isTool && step.result_preview) {
+      let result = step.result_preview;
+      try { result = JSON.stringify(JSON.parse(result), null, 2); } catch { /* Keep the text preview. */ }
+      details += `<details class="trace-result"><summary>Returned data preview</summary><pre class="trace-code">${escHtml(result)}</pre></details>`;
+    }
+    if (step.error) details += `<div class="trace-error">${escHtml(step.error)}</div>`;
+    const duration = Number.isFinite(Number(step.duration_ms)) ? ` · ${Number(step.duration_ms)} ms` : '';
+    const attempt = !isTool && Number(step.attempt) > 1 ? ` · attempt ${Number(step.attempt)}` : '';
+    return `<li class="trace-step"><div class="trace-step-heading"><span class="trace-step-number">${index + 1}</span><strong>${title}</strong><span class="trace-status ${status === 'failed' ? 'is-error' : ''}">${status}${duration}${attempt}</span></div>${details}</li>`;
+  }).join('');
+  return `<details class="chat-trace"><summary>Trace · ${trace.length} step${trace.length === 1 ? '' : 's'}</summary><ol class="trace-list">${steps}</ol></details>`;
+}
+
+function parseTraceHeader(value) {
+  try {
+    const trace = JSON.parse(value || '[]');
+    return Array.isArray(trace) ? trace : [];
+  } catch {
+    return [];
+  }
 }
 
 function addTypingIndicator() {
@@ -336,15 +374,17 @@ async function sendMessage(text) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
       if (err.loginUrl) {
         const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
-        throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink });
+        throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
       }
-      throw new Error([err.error, err.details].filter(Boolean).join(': ') || `HTTP ${res.status}`);
+      throw Object.assign(new Error([err.error, err.details].filter(Boolean).join(': ') || `HTTP ${res.status}`), { trace });
     }
 
+    const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
     removeTypingIndicator();
-    const msgDiv = addMessage('assistant', '');
+    const msgDiv = addMessage('assistant', '', trace);
     msgDiv.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
@@ -360,6 +400,7 @@ async function sendMessage(text) {
       const chunk = decoder.decode(value, { stream: true });
       rawText += chunk;
       // Render the accumulated text as it comes in
+      destroyPlotlyCharts(bodyDiv);
       bodyDiv.innerHTML = renderMarkdown(rawText.trim());
       messages.scrollTop = messages.scrollHeight;
     }
@@ -367,12 +408,25 @@ async function sendMessage(text) {
     if (rawText.trim() === '') {
       bodyDiv.innerHTML = '<em>The model returned no text. Check the local server logs for details.</em>';
     }
+    renderPlotlyCharts(bodyDiv);
 
     await refreshChats();
+    try {
+      const savedResponse = await fetch('/api/chats/' + encodeURIComponent(activeChatId));
+      if (savedResponse.ok) {
+        const savedChat = await savedResponse.json();
+        const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
+        if (savedAssistant?.trace?.length) {
+          const currentTrace = msgDiv.querySelector('.chat-trace');
+          if (currentTrace) currentTrace.outerHTML = renderTraceDropdown(savedAssistant.trace);
+        }
+      }
+    } catch { /* The compact trace from the response header is still visible. */ }
   } catch (err) {
     removeTypingIndicator();
     const errorMessage = addMessage('assistant',
-      `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`
+      `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`,
+      err.trace || [],
     );
     errorMessage.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     setStatus('error', 'Request failed');
@@ -512,49 +566,169 @@ function parseChartSpec(json) {
       .replace(/&quot;/gi, '"')
       .replace(/&amp;/gi, '&');
     const spec = JSON.parse(normalized);
-    return spec && ['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data) ? spec : null;
+    return spec && (
+      (['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data)) ||
+      (spec.type === 'line' && Array.isArray(spec.series))
+    ) ? spec : null;
   } catch {
     return null;
   }
 }
 
+const chartSpecRegistry = new Map();
+
+function cleanChartText(value, maxLength = 120) {
+  return String(value ?? '').replace(/[<>]/g, '').slice(0, maxLength);
+}
+
+function chartRows(spec) {
+  return (Array.isArray(spec?.data) ? spec.data : []).slice(0, 24).map(item => ({
+    label: cleanChartText(item?.label, 80), value: Number(item?.value),
+  })).filter(item => item.label && Number.isFinite(item.value));
+}
+
+function chartSeries(spec) {
+  return (Array.isArray(spec?.series) ? spec.series : []).slice(0, 8).map(item => ({
+    name: cleanChartText(item?.name, 60),
+    points: (Array.isArray(item?.data) ? item.data : []).slice(0, 100).map(point => ({
+      label: cleanChartText(point?.label, 50), value: Number(point?.value),
+    })).filter(point => point.label && Number.isFinite(point.value)),
+  })).filter(item => item.name && item.points.length > 1);
+}
+
 function renderDataChart(spec) {
-  if (!spec || !['bar', 'donut'].includes(spec.type) || !Array.isArray(spec.data)) return '';
-  const rows = spec.data.slice(0, 12).map(item => ({
-    label: String(item?.label ?? '').slice(0, 80),
-    value: Number(item?.value),
-  })).filter(item => item.label && Number.isFinite(item.value) && item.value >= 0);
-  if (!rows.length) return '';
+  if (!spec || !['bar', 'donut', 'line'].includes(spec.type)) return '';
+  const isLine = spec.type === 'line';
+  const rows = isLine ? [] : chartRows(spec);
+  const series = isLine ? chartSeries(spec) : [];
+  if (isLine ? !series.length : !rows.length) return '';
+  const canPie = !isLine && rows.every(row => row.value >= 0) && rows.some(row => row.value > 0);
+  const id = `plotly-${Math.random().toString(36).slice(2)}`;
+  const safeSpec = isLine
+    ? { type: 'line', title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), series }
+    : { type: spec.type, title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), data: rows };
+  chartSpecRegistry.set(id, safeSpec);
+  const title = escHtml(safeSpec.title || 'Portfolio data');
+  const initialView = isLine ? 'line' : spec.type === 'donut' && canPie ? 'pie' : 'bar';
+  const controls = isLine ? '' : `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button ${initialView === 'bar' ? 'is-active' : ''}" aria-pressed="${initialView === 'bar'}" onclick="setChartView(this, 'bar')">Bars</button>${canPie ? `<button type="button" class="chart-view-button ${initialView === 'pie' ? 'is-active' : ''}" aria-pressed="${initialView === 'pie'}" onclick="setChartView(this, 'pie')">Donut</button>` : ''}<button type="button" class="chart-view-button" aria-pressed="false" onclick="setChartView(this, 'table')">Data</button></div>`;
+  const table = renderChartTable(safeSpec);
+  return `<figure class="data-chart${isLine ? ' line-chart' : ' category-chart'}" data-chart-id="${id}" data-chart-view="${initialView}"><div class="chart-heading"><figcaption class="data-chart-title">${title}</figcaption>${controls}</div><div class="plotly-chart" id="${id}" role="img" aria-label="Interactive chart: ${title}"></div><div class="chart-data-panel" hidden>${table}</div><p class="chart-hint">Hover for values. Use the Plotly toolbar to zoom, pan, reset, or export the chart.</p></figure>`;
+}
 
+function renderChartTable(spec) {
   const esc = escHtml;
-  const title = esc(String(spec.title || 'Data visualization').slice(0, 120));
-  const unit = String(spec.unit || '').slice(0, 12);
-  const formatValue = value => `${esc(unit)}${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(value)}`;
-  let visualization;
-
-  if (spec.type === 'bar') {
-    const max = Math.max(...rows.map(row => row.value), 1);
-    visualization = rows.map(row => `
-      <div class="chart-row" title="${esc(row.label)}: ${formatValue(row.value)}">
-        <span class="chart-label">${esc(row.label)}</span>
-        <div class="chart-track"><div class="chart-bar" style="width:${Math.max(row.value / max * 100, row.value ? 2 : 0)}%"></div></div>
-        <span class="chart-value">${formatValue(row.value)}</span>
-      </div>`).join('');
-  } else {
-    const colors = ['#27835e', '#6bb48a', '#5d88b5', '#d09b4f', '#a56d9a', '#8aa657', '#d16f62', '#4b9bb1', '#8973af', '#55a585', '#c87848', '#87958d'];
-    const total = rows.reduce((sum, row) => sum + row.value, 0);
-    if (!total) return '';
-    let cursor = 0;
-    const stops = rows.map((row, i) => {
-      const start = cursor;
-      cursor += row.value / total * 100;
-      return `${colors[i % colors.length]} ${start}% ${cursor}%`;
-    }).join(',');
-    visualization = `<div class="donut-layout"><div class="donut-ring" role="img" aria-label="${title}" style="background:conic-gradient(${stops})"></div><div class="donut-legend">${rows.map((row, i) => `
-      <div class="donut-item"><span class="donut-swatch" style="background:${colors[i % colors.length]}"></span><span>${esc(row.label)}</span><strong>${formatValue(row.value)}</strong></div>`).join('')}
-      </div></div>`;
+  if (spec.type === 'line') {
+    const rows = spec.series[0]?.points.map((point, index) => {
+      const values = spec.series.map(item => item.points[index]?.value);
+      return `<tr><td>${esc(point.label)}</td>${values.map(value => `<td>${Number.isFinite(value) ? new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(value) : '—'}</td>`).join('')}</tr>`;
+    }).join('') || '';
+    return `<div class="chart-data-scroll"><table class="chart-data-table"><thead><tr><th>Period</th>${spec.series.map(item => `<th>${esc(item.name)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
-  return `<figure class="data-chart"><figcaption class="data-chart-title">${title}</figcaption>${visualization}</figure>`;
+  const total = spec.data.every(row => row.value >= 0) ? spec.data.reduce((sum, row) => sum + row.value, 0) : 0;
+  const rows = spec.data.map(row => `<tr><td>${esc(row.label)}</td><td>${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(row.value)}</td><td>${total ? `${(row.value / total * 100).toFixed(1)}%` : '—'}</td></tr>`).join('');
+  return `<div class="chart-data-scroll"><table class="chart-data-table"><thead><tr><th>Category</th><th>Value</th><th>Share</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function plotlyLayout(spec, view) {
+  const style = getComputedStyle(document.body);
+  const text = style.getPropertyValue('--text').trim() || '#e5e7eb';
+  const muted = style.getPropertyValue('--text-soft').trim() || '#9ca3af';
+  const border = style.getPropertyValue('--border').trim() || '#374151';
+  const surface = style.getPropertyValue('--surface').trim() || '#111827';
+  const unit = spec.unit ? ` (${spec.unit})` : '';
+  const layout = {
+    title: { text: cleanChartText(spec.title || 'Portfolio data'), x: 0.02, xanchor: 'left', font: { size: 15 } },
+    autosize: true, height: 360, margin: { l: 64, r: 24, t: 56, b: 58 },
+    paper_bgcolor: surface, plot_bgcolor: surface,
+    font: { family: 'Inter, sans-serif', color: text, size: 12 },
+    colorway: ['#27835e', '#5d88b5', '#d09b4f', '#a56d9a', '#d16f62', '#4b9bb1', '#8aa657', '#8973af'],
+    legend: { orientation: 'h', y: -0.22, font: { color: muted } },
+    xaxis: { gridcolor: border, zerolinecolor: border, automargin: true },
+    yaxis: { gridcolor: border, zerolinecolor: border, automargin: true, title: { text: unit.trim() } },
+    hoverlabel: { bgcolor: surface, bordercolor: border, font: { color: text } },
+  };
+  if (view === 'pie') {
+    layout.margin = { l: 24, r: 24, t: 56, b: 24 };
+    layout.showlegend = true;
+  } else if (view === 'bar') {
+    layout.barmode = 'group';
+    layout.yaxis = { ...layout.yaxis, autorange: 'reversed' };
+  } else if (spec.type === 'line') {
+    layout.hovermode = 'x unified';
+    layout.xaxis = { ...layout.xaxis, rangeslider: { visible: spec.series[0]?.points.length > 8 } };
+  }
+  return layout;
+}
+
+function plotlyTraces(spec, view) {
+  if (spec.type === 'line') return spec.series.map(item => ({
+    type: 'scatter', mode: 'lines+markers', name: item.name,
+    x: item.points.map(point => point.label), y: item.points.map(point => point.value),
+    hovertemplate: '%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>',
+    line: { width: 2.5 }, marker: { size: 7 },
+  }));
+  if (view === 'pie') return [{
+    type: 'pie', hole: 0.52, labels: spec.data.map(row => row.label),
+    values: spec.data.map(row => row.value), sort: false,
+    textinfo: 'label+percent', textposition: 'outside', automargin: true,
+    hovertemplate: '%{label}<br>%{value:,.2f} (%{percent})<extra></extra>',
+  }];
+  return [{
+    type: 'bar', orientation: 'h',
+    x: spec.data.map(row => row.value), y: spec.data.map(row => row.label),
+    name: spec.title || 'Value',
+    hovertemplate: '%{y}<br>%{x:,.2f}<extra></extra>',
+  }];
+}
+
+function renderPlotlyCharts(container) {
+  const graphs = container.matches?.('.plotly-chart') ? [container] : container.querySelectorAll?.('.plotly-chart');
+  if (!graphs) return;
+  for (const graph of graphs) {
+    const spec = chartSpecRegistry.get(graph.id);
+    if (!spec || graph.dataset.plotlyReady) continue;
+    if (!window.Plotly) {
+      graph.textContent = 'Interactive charts could not load. Check your connection and refresh.';
+      graph.classList.add('plotly-chart-error');
+      continue;
+    }
+    graph.dataset.plotlyReady = 'true';
+    const view = graph.closest('.data-chart')?.dataset.chartView || (spec.type === 'line' ? 'line' : 'bar');
+    window.Plotly.newPlot(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), {
+      responsive: true, scrollZoom: true, displaylogo: false,
+      modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+    });
+  }
+}
+
+function destroyPlotlyCharts(container) {
+  container.querySelectorAll?.('.plotly-chart').forEach(graph => {
+    if (graph.dataset.plotlyReady && window.Plotly) window.Plotly.purge(graph);
+    chartSpecRegistry.delete(graph.id);
+  });
+}
+
+function setChartView(button, view) {
+  const chart = button.closest('.category-chart');
+  const graph = chart?.querySelector('.plotly-chart');
+  const panel = chart?.querySelector('.chart-data-panel');
+  const spec = graph && chartSpecRegistry.get(graph.id);
+  if (!chart || !graph || !panel || !spec) return;
+  chart.querySelectorAll('.chart-view-button').forEach(item => {
+    const active = item === button;
+    item.classList.toggle('is-active', active);
+    item.setAttribute('aria-pressed', String(active));
+  });
+  const showData = view === 'table';
+  graph.hidden = showData;
+  panel.hidden = !showData;
+  chart.dataset.chartView = view;
+  if (!showData && window.Plotly) {
+    window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), {
+      responsive: true, scrollZoom: true, displaylogo: false,
+      modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+    });
+  }
 }
 
 /* ── Minimal syntax highlighter ──────────────────────────────────────── */

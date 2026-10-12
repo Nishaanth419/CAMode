@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -16,15 +17,19 @@ logger = logging.getLogger("ca_mode.agent")
 
 PORTFOLIO_SYSTEM_PROMPT = """You are Portfolio Analyzer, a helpful assistant that answers questions using available INDmoney MCP tools. Use earlier user and assistant messages as context, especially for follow-up questions.
 
-Call relevant tools directly when the user asks about their account. Use only data returned by tools; never invent holdings, balances, transactions, or performance. If a tool fails, report its exact error and do not claim that data was retrieved or retry speculatively.
+Answer only what the user asked. Keep the response proportional to the question. Do not add unsolicited next steps, action plans, recommendations, or suggestions for what to invest in. In particular, when asked to analyze an equity or holding, provide the requested analysis and stop; do not append future-investment ideas or a generic “what to do next” section. Offer next steps or future-investment ideas only when the user explicitly asks for them.
 
-When tool results contain comparable numeric data (such as holdings, allocations, balances over time, or category totals), proactively include one chart in a `chart` fenced block using valid JSON, for example:
+Call relevant tools directly when the user asks about their account. Use only data returned by tools; never invent holdings, balances, transactions, returns, dates, or benchmark values. If a tool fails, report its exact error and do not claim that data was retrieved or retry speculatively. The connected tools may provide current holdings and SIPs but not historical performance or benchmark series. Compare portfolio returns with a benchmark only when the retrieved data includes comparable return values for both over the same period and on the same basis. State the period and source when available; otherwise say that the comparison needs historical portfolio and benchmark data and do not estimate it.
+
+Use clear headings and explain what the numbers mean. When useful numeric data is available, include a detailed, data-driven visualization in a `chart` fenced block. Supported formats are `bar` or `donut` with `data:[{"label":"...","value":123}]`, and `line` with `series:[{"name":"Portfolio","data":[{"label":"Jan","value":2.3}]}]`. Example for a valid return comparison:
 ```chart
-{"type":"bar","title":"Current value by holding","unit":"₹","data":[{"label":"Fund A","value":125000}]}
+{"type":"line","title":"Cumulative returns vs benchmark","unit":"%","series":[{"name":"Portfolio","data":[{"label":"Jan","value":2.3},{"label":"Feb","value":4.1}]},{"name":"Benchmark","data":[{"label":"Jan","value":1.8},{"label":"Feb","value":3.2}]}]}
 ```
-Use `bar` to compare categories and `donut` for a part-to-whole split. Include only relevant items (usually 5–10), explain the largest concentration in the surrounding text, and chart only values returned by tools. If a tool fails or provides no numeric data, explain that clearly and do not fabricate a chart."""
+Use line charts for dated trends or return comparisons, bars for category/holding comparisons, and donuts only for allocation splits. Include about 5–10 useful items, keep series labels and time periods aligned, and chart only tool-returned values. Never present current balances as returns. If no suitable numeric data is available, explain why and do not fabricate a chart.
 
-FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer basic, general finance questions in clear, plain language. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for follow-up questions."""
+If explicitly asked what to invest in next, offer cautious, educational ideas to research based on the information actually available (for example, diversification, costs, risk, time horizon, liquidity, and overlap with existing holdings). Do not tell the user to buy or sell a specific security, promise returns, or claim an investment is suitable for them. Clearly separate observations from possibilities and mention missing information that affects the decision. Whenever discussing future investment ideas, end with: “This is not investment advice. Research each investment, its risks, costs, and fit for your circumstances before investing; consider consulting a qualified financial adviser.”"""
+
+FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer only what the user asked, in clear and plain language; keep the answer proportional and do not add unsolicited next steps or investment suggestions. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. Offer possible investments only if the user explicitly asks for ideas; then frame them as educational topics to research, discuss their risks and costs, and say: “This is not investment advice. Research each investment, its risks, costs, and fit for your circumstances before investing; consider consulting a qualified financial adviser.” When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for follow-up questions."""
 
 PROVIDERS = {
     "openai": {
@@ -176,6 +181,7 @@ async def stream_agent(
     Async generator that yields SSE-formatted strings.
 
     Event types:
+      • model_call  – { provider, model, attempt }  model endpoint called
       • tool_call   – { name, arguments }          tool is about to be called
       • tool_result – { name, result, error? }      tool returned
       • content     – { text }                      streamed answer chunk
@@ -244,6 +250,9 @@ async def stream_agent(
                     payload["tools"] = model_tools
                     payload["tool_choice"] = "auto"
 
+                yield _sse("model_call", {
+                    "provider": config["label"], "model": config["model"], "attempt": _ + 1,
+                })
                 try:
                     response = await client.post(
                         f"{config['base_url']}/chat/completions",
@@ -352,6 +361,21 @@ async def stream_agent(
 
 # ── Legacy non-streaming wrapper (kept for internal use) ───────────────────────
 
+class AgentResult(str):
+    """String answer with compact trace metadata for the chat UI."""
+
+    def __new__(cls, answer: str, trace: list[dict[str, Any]]):
+        value = super().__new__(cls, answer)
+        value.trace = trace
+        return value
+
+
+class AgentRunError(RuntimeError):
+    def __init__(self, message: str, trace: list[dict[str, Any]]):
+        super().__init__(message)
+        self.trace = trace
+
+
 async def run_agent(
     message: str,
     mcp_url: str,
@@ -359,23 +383,58 @@ async def run_agent(
     history: list[dict[str, str]],
     agent_type: str = "finance",
     provider: str = "openai",
-) -> str:
-    """Collect the full answer from stream_agent (no SSE, just the text)."""
+) -> AgentResult:
+    """Collect the answer and call trace from the internal SSE event stream."""
     answer_parts: list[str] = []
+    trace: list[dict[str, Any]] = []
     last_error: str | None = None
+    active_model_step: dict[str, Any] | None = None
+
+    def finish_model_step(status: str) -> None:
+        if active_model_step and active_model_step.get("status") == "running":
+            active_model_step["status"] = status
+            active_model_step["duration_ms"] = round((time.perf_counter() - active_model_step.pop("_started")) * 1000)
+
     async for raw in stream_agent(message, mcp_url, token, history, agent_type, provider):
+        event_type = next((line[6:].strip() for line in raw.splitlines() if line.startswith("event:")), None)
         for line in raw.splitlines():
             if line.startswith("data:"):
                 payload = json.loads(line[5:].strip())
-                event_type = None
-                for el in raw.splitlines():
-                    if el.startswith("event:"):
-                        event_type = el[6:].strip()
                 if event_type == "content":
+                    finish_model_step("completed")
                     answer_parts.append(payload.get("text", ""))
+                elif event_type == "model_call":
+                    finish_model_step("completed")
+                    active_model_step = {
+                        "kind": "model", "provider": payload.get("provider", "AI"),
+                        "model": payload.get("model", ""), "attempt": payload.get("attempt", 1),
+                        "status": "running", "_started": time.perf_counter(),
+                    }
+                    trace.append(active_model_step)
+                elif event_type == "tool_call":
+                    finish_model_step("completed")
+                    arguments = payload.get("arguments", {})
+                    arguments_text = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+                    trace.append({
+                        "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
+                        "arguments": arguments_text[:600], "status": "running",
+                        "_started": time.perf_counter(),
+                    })
+                elif event_type == "tool_result":
+                    name = str(payload.get("name", ""))
+                    step = next((item for item in reversed(trace) if item.get("kind") == "tool" and item.get("name") == name and item.get("status") == "running"), None)
+                    if step:
+                        step["status"] = "failed" if payload.get("error") else "completed"
+                        step["duration_ms"] = round((time.perf_counter() - step.pop("_started")) * 1000)
+                        if payload.get("result"):
+                            step["result_preview"] = str(payload["result"])[:1000]
+                        if payload.get("error"):
+                            step["error"] = str(payload["error"])[:300]
                 elif event_type == "error":
+                    finish_model_step("failed")
                     last_error = payload.get("message", "Unknown error")
+    finish_model_step("completed")
     answer = "".join(answer_parts)
     if not answer and last_error:
-        raise RuntimeError(last_error)
-    return answer
+        raise AgentRunError(last_error, trace[:12])
+    return AgentResult(answer, trace[:12])
