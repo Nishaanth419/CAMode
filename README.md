@@ -14,9 +14,11 @@ A local Python finance assistant with two selectable agents: Finance Agent for g
 cp .env.example .env
 ```
 
-Add at least one AI provider key to `.env`, then start the app. OpenAI, Kimi, and Groq are supported; configure any combination of them. The provider selector only enables providers with a key present. API keys stay on the local server.
+Add an API key for OpenAI (`OPENAI_API_KEY`) or Groq (`GROQ_API_KEY`) to `.env`. Groq keys are available from the [Groq Console](https://console.groq.com/keys). Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer. Provider keys stay on the local server.
 
-For Kimi, create an API key in the [Kimi API Platform](https://platform.kimi.ai/) and set `KIMI_API_KEY`. For Groq, create a key in the [Groq Console](https://console.groq.com/keys) and set `GROQ_API_KEY`. OpenAI uses `OPENAI_API_KEY`. Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer.
+Groq requests are kept within a conservative input budget by prioritizing recent chat messages and shortening exceptionally large tool results. Adjust `GROQ_INPUT_TOKEN_BUDGET` and `GROQ_COMPLETION_TOKEN_LIMIT` in `.env` only if your Groq plan supports a different tokens-per-minute limit.
+
+Portfolio Analyzer exposes six core INDmoney tools to the AI: overall net-worth snapshot, asset-class allocation, holdings, and Indian stock, mutual fund, and US stock SIPs. This keeps account queries focused and reduces tool-selection noise.
 
 Then start the app:
 
