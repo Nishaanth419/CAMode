@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .agent import run_agent
+from .agent import configured_providers, default_provider, run_agent
 from .mcp_client import fetch_mcp_session
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -44,6 +44,7 @@ class ChatRequest(BaseModel):
     message: str
     chatId: str
     agentType: Literal["finance", "portfolio"] = "finance"
+    aiProvider: Literal["openai", "kimi", "groq"] = "openai"
 
 
 class CreateChatRequest(BaseModel):
@@ -180,6 +181,11 @@ async def no_store_api(request: Request, call_next):
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
+
+
+@app.get("/api/providers")
+async def list_ai_providers():
+    return {"providers": configured_providers(), "defaultProvider": default_provider()}
 
 
 @app.get("/api/session")
@@ -369,9 +375,6 @@ async def chat(body: ChatRequest, request: Request):
     message = body.message
     if not message.strip() or len(message) > 8000:
         return JSONResponse({"error": "Provide a message with no more than 8,000 characters."}, status_code=400)
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key or api_key == "sk-your-key-here":
-        return JSONResponse({"error": "OPENAI_API_KEY not configured"}, status_code=500)
     sid = session_id(request)
     if not sid:
         return auth_error("Initialize a local session before chatting.")
@@ -386,7 +389,7 @@ async def chat(body: ChatRequest, request: Request):
     if body.agentType != data["agentType"]:
         return JSONResponse({"error": "This conversation belongs to a different agent. Start a new chat to switch agents."}, status_code=409)
     try:
-        answer = await run_agent(message, api_key, MCP_RESOURCE, token, data.get("messages", []), body.agentType)
+        answer = await run_agent(message, MCP_RESOURCE, token, data.get("messages", []), body.agentType, body.aiProvider)
     except Exception as exc:
         logger.exception("Chat agent request failed")
         details = str(exc)

@@ -5,7 +5,7 @@ A local Python finance assistant with two selectable agents: Finance Agent for g
 ## Requirements
 
 - Docker Desktop, or Python 3.12+
-- An OpenAI API key
+- An API key for at least one supported AI provider
 - An INDmoney account for Portfolio Analyzer
 
 ## Run locally with Docker
@@ -14,13 +14,19 @@ A local Python finance assistant with two selectable agents: Finance Agent for g
 cp .env.example .env
 ```
 
-Add your OpenAI API key to `.env`, then start the app:
+Add at least one AI provider key to `.env`, then start the app. OpenAI, Kimi, and Groq are supported; configure any combination of them. The provider selector only enables providers with a key present. API keys stay on the local server.
+
+For Kimi, create an API key in the [Kimi API Platform](https://platform.kimi.ai/) and set `KIMI_API_KEY`. For Groq, create a key in the [Groq Console](https://console.groq.com/keys) and set `GROQ_API_KEY`. OpenAI uses `OPENAI_API_KEY`. Chat messages and, when using Portfolio Analyzer, retrieved portfolio information are sent to the provider you select to generate the answer.
+
+Then start the app:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 Open [http://localhost:8003](http://localhost:8003) and choose **Finance Agent** or **Portfolio Analyzer**. Connect INDmoney to use the portfolio agent. OAuth will return to `http://localhost:8003/auth/indmoney/callback`. Keep using this same local address for the sign-in flow.
+
+To view server logs, run `docker compose logs -f`. To stop it, run `docker compose down`.
 
 The SQLite database is stored in `.data/` and remains on this computer across restarts. Do not commit `.env` or `.data/`.
 Use the sun/moon button in the header to switch between light and dark themes; the choice is remembered in this browser.
@@ -34,7 +40,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Add your OpenAI API key to `.env`, then run:
+Add at least one provider API key to `.env`, then run:
 
 ```bash
 uvicorn --env-file .env app.main:app --host 127.0.0.1 --port 8003

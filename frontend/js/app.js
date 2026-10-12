@@ -23,6 +23,7 @@ const mainLayout = document.getElementById('main');
 const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
 const agentPicker = document.getElementById('agent-picker');
+const providerPicker = document.getElementById('provider-picker');
 const agentTitle = document.getElementById('agent-title');
 const agentDescription = document.getElementById('agent-description');
 const welcomeAgentName = document.getElementById('welcome-agent-name');
@@ -31,6 +32,42 @@ const financePrompts = document.getElementById('finance-prompts');
 const portfolioPrompts = document.getElementById('portfolio-prompts');
 let isConnected = false;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
+let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
+let providerReady = false;
+
+async function loadProviders() {
+  const response = await fetch('/api/providers');
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not load AI providers.');
+  const providers = data.providers || [];
+  providerPicker.innerHTML = '';
+  for (const provider of providers) {
+    const option = document.createElement('option');
+    option.value = provider.id;
+    option.disabled = !provider.configured;
+    option.textContent = provider.configured
+      ? `${provider.label} · ${provider.model}`
+      : `${provider.label} · add API key in .env`;
+    providerPicker.appendChild(option);
+  }
+  const configured = providers.filter((provider) => provider.configured);
+  const savedProvider = configured.find((provider) => provider.id === selectedProvider);
+  selectedProvider = savedProvider?.id || data.defaultProvider || 'openai';
+  if (!configured.length) {
+    providerPicker.innerHTML = '<option value="">Add an AI API key in .env</option>';
+    providerPicker.disabled = true;
+  } else {
+    providerPicker.value = selectedProvider;
+    providerPicker.disabled = false;
+  }
+  providerReady = true;
+  localStorage.setItem('ca-mode-provider', selectedProvider);
+}
+
+providerPicker.addEventListener('change', () => {
+  selectedProvider = providerPicker.value;
+  localStorage.setItem('ca-mode-provider', selectedProvider);
+});
 
 function applyTheme(theme) {
   const selected = theme === 'dark' ? 'dark' : 'light';
@@ -235,7 +272,7 @@ function addMessage(role, content) {
   const div = document.createElement('div');
   div.className = `message ${role}`;
   const avatar = role === 'user' ? 'U' : 'CA';
-  const label  = role === 'user' ? 'You' : (selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent');
+  const label  = role === 'user' ? 'You' : `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
   div.innerHTML = `
     <div class="message-header">
       <div class="message-avatar ${role}">${avatar}</div>
@@ -257,7 +294,7 @@ function addTypingIndicator() {
   div.innerHTML = `
     <div class="message-header">
       <div class="message-avatar assistant">CA</div>
-      <div class="message-role">${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'}</div>
+      <div class="message-role">${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}</div>
     </div>
     <div class="message-body">
       <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -276,6 +313,10 @@ function removeTypingIndicator() {
 /* ── Streaming response handler ──────────────────────────────────────── */
 async function sendMessage(text) {
   if (!text.trim() || isStreaming) return;
+  if (!providerReady || providerPicker.disabled) {
+    addMessage('assistant', '<span style="color:var(--error)">Configure at least one AI API key in .env, then restart CA Mode.</span>');
+    return;
+  }
   isStreaming = true;
   sendBtn.disabled = true;
   setStatus('loading', 'Thinking…');
@@ -290,7 +331,7 @@ async function sendMessage(text) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent }),
+      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent, aiProvider: selectedProvider }),
     });
 
     if (!res.ok) {
@@ -304,7 +345,7 @@ async function sendMessage(text) {
 
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '');
-    msgDiv.querySelector('.message-role').textContent = selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
+    msgDiv.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
 
@@ -333,7 +374,7 @@ async function sendMessage(text) {
     const errorMessage = addMessage('assistant',
       `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`
     );
-    errorMessage.querySelector('.message-role').textContent = selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
+    errorMessage.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     setStatus('error', 'Request failed');
   } finally {
     isStreaming = false;
@@ -550,5 +591,10 @@ document.querySelectorAll('.example-prompt').forEach(btn => {
 });
 
 /* ── Init ────────────────────────────────────────────────────────────── */
+loadProviders().catch((error) => {
+  providerPicker.innerHTML = `<option value="">${escHtml(error.message)}</option>`;
+  providerPicker.disabled = true;
+  providerReady = true;
+});
 loadChats();
 userInput.focus();
