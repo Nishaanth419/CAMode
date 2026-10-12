@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -24,7 +24,7 @@ from .agent import run_agent
 from .mcp_client import fetch_mcp_session
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("codemode")
+logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE = os.getenv("MCP_SERVER_URL", "https://mcp.indmoney.com/mcp")
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"
@@ -37,12 +37,17 @@ PUBLIC_DIR = Path(__file__).resolve().parent.parent / "frontend"
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", Path(__file__).resolve().parent.parent / ".data"))
 DATABASE_PATH = DATA_DIR / "codemode.sqlite3"
 
-app = FastAPI(title="Code Mode Agent", docs_url=None, redoc_url=None)
+app = FastAPI(title="CA Mode", docs_url=None, redoc_url=None)
 
 
 class ChatRequest(BaseModel):
     message: str
     chatId: str
+    agentType: Literal["finance", "portfolio"] = "finance"
+
+
+class CreateChatRequest(BaseModel):
+    agentType: Literal["finance", "portfolio"] = "finance"
 
 
 def connect_db() -> sqlite3.Connection:
@@ -69,11 +74,15 @@ def initialize_db() -> None:
                 messages TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
+                agent_type TEXT NOT NULL DEFAULT 'portfolio',
                 PRIMARY KEY (session_id, id)
             );
             CREATE INDEX IF NOT EXISTS chats_by_session_update
                 ON chats(session_id, updated_at DESC);
         """)
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(chats)")}
+        if "agent_type" not in columns:
+            connection.execute("ALTER TABLE chats ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'portfolio'")
     try:
         os.chmod(DATABASE_PATH, 0o600)
     except OSError:
@@ -173,10 +182,25 @@ async def healthz():
     return {"ok": True}
 
 
+@app.get("/api/session")
+async def local_session(request: Request):
+    sid = session_id(request)
+    if not sid:
+        sid = random_token()
+        save_session(sid, {})
+        response = JSONResponse({"connected": False})
+        response.set_cookie(value=sid, **cookie_options(request))
+        return response
+    if not get_session(sid):
+        save_session(sid, {})
+    _, token = await access_token(request)
+    return {"connected": bool(token)}
+
+
 @app.get("/auth/indmoney/connect")
 async def connect_indmoney(request: Request):
     redirect_uri = f"{request_origin(request)}/auth/indmoney/callback"
-    sid, state, verifier = random_token(), random_token(), random_token()
+    sid, state, verifier = session_id(request) or random_token(), random_token(), random_token()
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     async with httpx.AsyncClient(timeout=30) as client:
         resource_response = await client.get(MCP_RESOURCE_METADATA)
@@ -189,7 +213,7 @@ async def connect_indmoney(request: Request):
         metadata_response.raise_for_status()
         metadata = metadata_response.json()
         registration = await client.post(metadata["registration_endpoint"], json={
-            "client_name": "Code Mode Agent", "redirect_uris": [redirect_uri],
+            "client_name": "CA Mode", "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
             "token_endpoint_auth_method": "client_secret_post",
         })
@@ -260,22 +284,22 @@ async def disconnect_indmoney(request: Request):
 
 @app.get("/api/chats")
 async def list_chats(request: Request):
-    sid, token = await access_token(request)
-    if not sid or not token:
-        return auth_error("Sign in with INDmoney to access your private chat history.")
+    sid = session_id(request)
+    if not sid:
+        return auth_error("Initialize a local session to access your private chat history.")
     with connect_db() as connection:
         rows = connection.execute(
-            "SELECT id, title, updated_at FROM chats WHERE session_id = ? ORDER BY updated_at DESC LIMIT ?",
+            "SELECT id, title, updated_at, agent_type FROM chats WHERE session_id = ? ORDER BY updated_at DESC LIMIT ?",
             (sid, MAX_CHATS_PER_SESSION),
         ).fetchall()
-    return {"chats": [{"id": row["id"], "title": row["title"], "updatedAt": row["updated_at"]} for row in rows]}
+    return {"chats": [{"id": row["id"], "title": row["title"], "agentType": row["agent_type"], "updatedAt": row["updated_at"]} for row in rows]}
 
 
 @app.post("/api/chats", status_code=201)
-async def create_chat(request: Request):
-    sid, token = await access_token(request)
-    if not sid or not token:
-        return auth_error("Sign in with INDmoney to create a private chat.")
+async def create_chat(request: Request, body: CreateChatRequest):
+    sid = session_id(request)
+    if not sid:
+        return auth_error("Initialize a local session to create a private chat.")
     now = int(time.time() * 1000)
     identifier = random_token()
     expires_at = now + SESSION_MAX_AGE_SECONDS * 1000
@@ -287,28 +311,28 @@ async def create_chat(request: Request):
                 "(SELECT id FROM chats WHERE session_id = ? ORDER BY updated_at ASC LIMIT 1)", (sid, sid),
             )
         connection.execute(
-            "INSERT INTO chats(id, session_id, title, messages, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (identifier, sid, "New chat", "[]", now, expires_at),
+            "INSERT INTO chats(id, session_id, title, messages, updated_at, expires_at, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (identifier, sid, "New chat", "[]", now, expires_at, body.agentType),
         )
-    return {"id": identifier, "title": "New chat", "messages": [], "updatedAt": now, "sessionExpiresAt": expires_at}
+    return {"id": identifier, "title": "New chat", "messages": [], "agentType": body.agentType, "updatedAt": now, "sessionExpiresAt": expires_at}
 
 
 def read_chat(sid: str, chat_id: str) -> dict[str, Any] | None:
     with connect_db() as connection:
         row = connection.execute(
-            "SELECT id, title, messages, updated_at, expires_at FROM chats WHERE session_id = ? AND id = ?",
+            "SELECT id, title, messages, updated_at, expires_at, agent_type FROM chats WHERE session_id = ? AND id = ?",
             (sid, chat_id),
         ).fetchone()
     if row is None:
         return None
-    return {"id": row["id"], "title": row["title"], "messages": json.loads(row["messages"]), "updatedAt": row["updated_at"], "sessionExpiresAt": row["expires_at"]}
+    return {"id": row["id"], "title": row["title"], "messages": json.loads(row["messages"]), "agentType": row["agent_type"], "updatedAt": row["updated_at"], "sessionExpiresAt": row["expires_at"]}
 
 
 @app.get("/api/chats/{chat_id}")
 async def get_chat(chat_id: str, request: Request):
-    sid, token = await access_token(request)
-    if not sid or not token:
-        return auth_error("Sign in with INDmoney to access your chats.")
+    sid = session_id(request)
+    if not sid:
+        return auth_error("Initialize a local session to access your chats.")
     chat = read_chat(sid, chat_id)
     if chat is None:
         return JSONResponse({"error": "Chat not found."}, status_code=404)
@@ -317,9 +341,9 @@ async def get_chat(chat_id: str, request: Request):
 
 @app.delete("/api/chats/{chat_id}")
 async def delete_chat(chat_id: str, request: Request):
-    sid, token = await access_token(request)
-    if not sid or not token:
-        return auth_error("Sign in with INDmoney to delete your chats.")
+    sid = session_id(request)
+    if not sid:
+        return auth_error("Initialize a local session to delete your chats.")
     with connect_db() as connection:
         result = connection.execute("DELETE FROM chats WHERE session_id = ? AND id = ?", (sid, chat_id))
     if result.rowcount == 0:
@@ -348,14 +372,21 @@ async def chat(body: ChatRequest, request: Request):
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key or api_key == "sk-your-key-here":
         return JSONResponse({"error": "OPENAI_API_KEY not configured"}, status_code=500)
-    sid, token = await access_token(request)
-    if not sid or not token:
-        return auth_error("Connect your INDmoney account before chatting.")
+    sid = session_id(request)
+    if not sid:
+        return auth_error("Initialize a local session before chatting.")
+    token = None
+    if body.agentType == "portfolio":
+        sid, token = await access_token(request)
+        if not sid or not token:
+            return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
     data = read_chat(sid, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
+    if body.agentType != data["agentType"]:
+        return JSONResponse({"error": "This conversation belongs to a different agent. Start a new chat to switch agents."}, status_code=409)
     try:
-        answer = await run_agent(message, api_key, MCP_RESOURCE, token, data.get("messages", []))
+        answer = await run_agent(message, api_key, MCP_RESOURCE, token, data.get("messages", []), body.agentType)
     except Exception as exc:
         logger.exception("Chat agent request failed")
         details = str(exc)

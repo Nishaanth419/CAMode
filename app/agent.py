@@ -9,7 +9,7 @@ import httpx
 
 from .mcp_client import call_mcp_tool, fetch_mcp_session
 
-SYSTEM_PROMPT = """You are a helpful assistant that answers questions using available INDmoney MCP tools. Use earlier user and assistant messages as context, especially for follow-up questions.
+PORTFOLIO_SYSTEM_PROMPT = """You are Portfolio Analyzer, a helpful assistant that answers questions using available INDmoney MCP tools. Use earlier user and assistant messages as context, especially for follow-up questions.
 
 Call relevant tools directly when the user asks about their account. Use only data returned by tools; never invent holdings, balances, transactions, or performance. If a tool fails, report its exact error and do not claim that data was retrieved or retry speculatively.
 
@@ -19,10 +19,24 @@ When tool results contain comparable numeric data (such as holdings, allocations
 ```
 Use `bar` to compare categories and `donut` for a part-to-whole split. Include only relevant items (usually 5–10), explain the largest concentration in the surrounding text, and chart only values returned by tools. If a tool fails or provides no numeric data, explain that clearly and do not fabricate a chart."""
 
+FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer basic, general finance questions in clear, plain language. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for follow-up questions."""
 
-async def run_agent(message: str, api_key: str, mcp_url: str, token: str, history: list[dict[str, str]]) -> str:
-    session = await fetch_mcp_session(mcp_url, token)
-    tools = session["tools"]
+
+async def run_agent(
+    message: str,
+    api_key: str,
+    mcp_url: str,
+    token: str | None,
+    history: list[dict[str, str]],
+    agent_type: str = "finance",
+) -> str:
+    session = None
+    tools = []
+    if agent_type == "portfolio":
+        if not token:
+            raise RuntimeError("Connect your INDmoney account to use Portfolio Analyzer.")
+        session = await fetch_mcp_session(mcp_url, token)
+        tools = session["tools"]
     tool_map = {tool["name"]: tool for tool in tools}
     model_tools = [
         {"type": "function", "function": {
@@ -32,7 +46,8 @@ async def run_agent(message: str, api_key: str, mcp_url: str, token: str, histor
         }}
         for tool in tools
     ]
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    prompt = PORTFOLIO_SYSTEM_PROMPT if agent_type == "portfolio" else FINANCE_SYSTEM_PROMPT
+    messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
     messages.append({"role": "user", "content": message})
 

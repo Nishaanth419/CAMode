@@ -19,12 +19,18 @@ const messages   = document.getElementById('messages');
 const userInput  = document.getElementById('user-input');
 const sendBtn    = document.getElementById('send-btn');
 const authButton = document.getElementById('auth-button');
-const loginScreen = document.getElementById('login-screen');
-const loginCta = document.getElementById('login-cta');
 const mainLayout = document.getElementById('main');
 const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
+const agentPicker = document.getElementById('agent-picker');
+const agentTitle = document.getElementById('agent-title');
+const agentDescription = document.getElementById('agent-description');
+const welcomeAgentName = document.getElementById('welcome-agent-name');
+const welcomeDescription = document.getElementById('welcome-description');
+const financePrompts = document.getElementById('finance-prompts');
+const portfolioPrompts = document.getElementById('portfolio-prompts');
 let isConnected = false;
+let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 
 function applyTheme(theme) {
   const selected = theme === 'dark' ? 'dark' : 'light';
@@ -44,6 +50,32 @@ themeToggle.addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 });
 
+function setAgent(agent) {
+  selectedAgent = agent === 'portfolio' ? 'portfolio' : 'finance';
+  agentPicker.value = selectedAgent;
+  const isPortfolio = selectedAgent === 'portfolio';
+  const name = isPortfolio ? 'Portfolio Analyzer' : 'Finance Agent';
+  agentTitle.textContent = name;
+  agentDescription.textContent = isPortfolio
+    ? 'Your INDmoney holdings, allocations, and portfolio questions'
+    : 'General finance questions and explanations';
+  welcomeAgentName.textContent = name.toUpperCase();
+  welcomeDescription.textContent = isPortfolio
+    ? 'Ask about your INDmoney investments, holdings, allocations, and account activity.'
+    : 'Ask basic finance questions and get clear explanations in plain language.';
+  financePrompts.hidden = isPortfolio;
+  portfolioPrompts.hidden = !isPortfolio;
+  userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask a finance question…';
+  localStorage.setItem('ca-mode-agent', selectedAgent);
+}
+
+agentPicker.addEventListener('change', () => {
+  if (isStreaming) return;
+  setAgent(agentPicker.value);
+  startNewChat().catch((error) => addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>'));
+});
+setAgent(selectedAgent);
+
 /* ── Status helpers ─────────────────────────────────────────────────── */
 function setStatus(state, label) {
   statusDot.className = 'status-dot ' + state;
@@ -53,37 +85,33 @@ function setStatus(state, label) {
 /* ── Load this signed-in user's conversations ───────────────────────── */
 async function loadChats() {
   try {
+    const sessionResponse = await fetch('/api/session');
+    if (!sessionResponse.ok) throw new Error('Could not initialize your local session.');
+    const session = await sessionResponse.json();
     const response = await fetch('/api/chats');
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) {
         isConnected = false;
-        authButton.style.display = 'none';
-        loginScreen.style.display = 'flex';
-        mainLayout.style.display = 'none';
-        setStatus('', 'Sign in required');
-        return;
+        throw new Error(data.error || 'Could not load chats.');
       }
       throw new Error(data.error || ('HTTP ' + response.status));
     }
-    isConnected = true;
-    authButton.textContent = 'Disconnect';
-    authButton.title = 'Disconnect your INDmoney account';
+    isConnected = Boolean(session.connected);
+    authButton.textContent = isConnected ? 'Disconnect' : 'Connect INDmoney';
+    authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
     authButton.style.display = '';
-    loginScreen.style.display = 'none';
     mainLayout.style.display = 'flex';
     chats = data.chats || [];
     renderChats();
     if (chats.length) await selectChat(chats[0].id);
     else await startNewChat();
-    setStatus('online', chats.length + ' chats');
+    setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
   } catch (err) {
     chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
     setStatus('error', 'Connection failed');
   }
 }
-
-loginCta.addEventListener('click', () => window.location.assign('/auth/indmoney/connect'));
 
 authButton.addEventListener('click', async () => {
   if (!isConnected) {
@@ -137,12 +165,16 @@ async function refreshChats() {
   if (!response.ok) throw new Error('Could not refresh the chat list.');
   chats = (await response.json()).chats || [];
   renderChats();
-  setStatus('online', chats.length + ' chats');
+  setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
 }
 
 async function startNewChat() {
   if (isStreaming) return;
-  const response = await fetch('/api/chats', { method: 'POST' });
+  const response = await fetch('/api/chats', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentType: selectedAgent }),
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not create a new chat.');
   chats.unshift(data);
@@ -160,6 +192,7 @@ async function selectChat(chatId) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not open this chat.');
   activeChatId = chatId;
+  setAgent(data.agentType || 'portfolio');
   messages.innerHTML = '';
   messages.classList.remove('has-messages');
   emptyState.style.display = '';
@@ -201,8 +234,8 @@ function addMessage(role, content) {
   showMessages();
   const div = document.createElement('div');
   div.className = `message ${role}`;
-  const avatar = role === 'user' ? 'U' : 'C';
-  const label  = role === 'user' ? 'You' : 'Agent';
+  const avatar = role === 'user' ? 'U' : 'CA';
+  const label  = role === 'user' ? 'You' : (selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent');
   div.innerHTML = `
     <div class="message-header">
       <div class="message-avatar ${role}">${avatar}</div>
@@ -223,8 +256,8 @@ function addTypingIndicator() {
   div.id = 'typing-indicator';
   div.innerHTML = `
     <div class="message-header">
-      <div class="message-avatar assistant">C</div>
-      <div class="message-role">Agent</div>
+      <div class="message-avatar assistant">CA</div>
+      <div class="message-role">${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'}</div>
     </div>
     <div class="message-body">
       <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -257,7 +290,7 @@ async function sendMessage(text) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: activeChatId }),
+      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent }),
     });
 
     if (!res.ok) {
@@ -271,6 +304,7 @@ async function sendMessage(text) {
 
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '');
+    msgDiv.querySelector('.message-role').textContent = selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
 
@@ -296,9 +330,10 @@ async function sendMessage(text) {
     await refreshChats();
   } catch (err) {
     removeTypingIndicator();
-    addMessage('assistant',
+    const errorMessage = addMessage('assistant',
       `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`
     );
+    errorMessage.querySelector('.message-role').textContent = selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
     setStatus('error', 'Request failed');
   } finally {
     isStreaming = false;

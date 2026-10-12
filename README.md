@@ -1,12 +1,12 @@
-# Code Mode Agent
+# CA Mode
 
-A local Python web app that connects to INDmoney's MCP server and sends its tools directly to the AI model. INDmoney OAuth, chat history, and settings run on this computer. Chat history and OAuth sessions are stored in a local SQLite database at `.data/codemode.sqlite3`.
+A local Python finance assistant with two selectable agents: Finance Agent for general finance questions, and Portfolio Analyzer for account-specific questions using INDmoney's MCP server. Sign in to INDmoney only when using Portfolio Analyzer. Chat history, OAuth, and settings run on this computer and are stored in `.data/codemode.sqlite3`.
 
 ## Requirements
 
 - Docker Desktop, or Python 3.12+
 - An OpenAI API key
-- An INDmoney account
+- An INDmoney account for Portfolio Analyzer
 
 ## Run locally with Docker
 
@@ -20,7 +20,7 @@ Add your OpenAI API key to `.env`, then start the app:
 docker compose up --build
 ```
 
-Open [http://localhost:8003](http://localhost:8003) and choose **Connect INDmoney**. OAuth will return to `http://localhost:8003/auth/indmoney/callback`. Keep using this same local address for the sign-in flow.
+Open [http://localhost:8003](http://localhost:8003) and choose **Finance Agent** or **Portfolio Analyzer**. Connect INDmoney to use the portfolio agent. OAuth will return to `http://localhost:8003/auth/indmoney/callback`. Keep using this same local address for the sign-in flow.
 
 The SQLite database is stored in `.data/` and remains on this computer across restarts. Do not commit `.env` or `.data/`.
 Use the sun/moon button in the header to switch between light and dark themes; the choice is remembered in this browser.
