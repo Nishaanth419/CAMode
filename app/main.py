@@ -378,16 +378,16 @@ async def chat(body: ChatRequest, request: Request):
     sid = session_id(request)
     if not sid:
         return auth_error("Initialize a local session before chatting.")
-    token = None
-    if body.agentType == "portfolio":
-        sid, token = await access_token(request)
-        if not sid or not token:
-            return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
     data = read_chat(sid, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
     if body.agentType != data["agentType"]:
         return JSONResponse({"error": "This conversation belongs to a different agent. Start a new chat to switch agents."}, status_code=409)
+    token = None
+    if body.agentType == "portfolio":
+        sid, token = await access_token(request)
+        if not sid or not token:
+            return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
     try:
         answer = await run_agent(message, MCP_RESOURCE, token, data.get("messages", []), body.agentType, body.aiProvider)
     except Exception as exc:
