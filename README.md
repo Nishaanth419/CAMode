@@ -22,13 +22,19 @@ Groq requests are kept within a conservative input budget by prioritizing recent
 
 ### Use a local Ollama model
 
-Install [Ollama](https://ollama.com/download), then download a small model to try:
+Install [Ollama](https://ollama.com/download). Since the app runs in Docker, Ollama must accept connections from the Docker container. If you start Ollama from a terminal, use:
+
+```bash
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+```
+
+Keep that terminal open, then download a small model in another terminal:
 
 ```bash
 ollama pull qwen2.5:3b
 ```
 
-The [Ollama model library](https://ollama.com/library/qwen2.5) lists other model sizes. The example `.env` uses `http://host.docker.internal:11434/v1` so the Docker app can reach Ollama running on macOS. If running the app directly with Python instead of Docker, change `OLLAMA_BASE_URL` to `http://localhost:11434/v1`. Select **Ollama (local)** in the provider menu. The app uses Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility). For local portfolio analysis, use an installed model that supports tool calling; Finance Agent is suitable for testing basic questions.
+The [Ollama model library](https://ollama.com/library/qwen2.5) lists other model sizes. Binding to `0.0.0.0` lets Docker Desktop reach Ollama, and also makes Ollama reachable on your network; use it on a trusted network and limit access with your firewall. See Ollama's [network configuration notes](https://github.com/ollama/ollama/blob/main/docs/faq.mdx). The example `.env` uses `http://host.docker.internal:11434/v1`. If running the app directly with Python instead of Docker, change `OLLAMA_BASE_URL` to `http://localhost:11434/v1`. Select **Ollama (local)** in the provider menu. The app uses Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility). For local portfolio analysis, use an installed model that supports tool calling; Finance Agent is suitable for testing basic questions.
 
 Then start the app:
 
