@@ -4,8 +4,11 @@ import asyncio
 import json
 import base64
 import hashlib
+import sqlite3
+import time
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.agent import AgentRunError
@@ -412,3 +415,101 @@ def test_disconnect_revokes_token_and_clears_session_and_chats(client, monkeypat
 def test_api_responses_disable_caching(client):
     response = client.get("/api/providers")
     assert response.headers["cache-control"] == "no-store"
+
+
+class FailingAsyncClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get(self, *args, **kwargs):
+        raise main.httpx.ConnectError("network down")
+
+    async def post(self, *args, **kwargs):
+        raise main.httpx.ConnectError("network down")
+
+
+def test_connect_db_closes_connection():
+    with main.connect_db() as connection:
+        connection.execute("SELECT 1")
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
+
+
+def test_session_endpoint_slides_session_expiry(client):
+    client.get("/api/session")
+    sid = client.cookies.get(main.SESSION_COOKIE)
+    stale = int(time.time() * 1000) - 29 * 24 * 60 * 60 * 1000
+    with main.connect_db() as connection:
+        connection.execute("UPDATE oauth_sessions SET updated_at = ? WHERE id = ?", (stale, sid))
+
+    response = client.get("/api/session")
+
+    assert response.status_code == 200
+    assert f"{main.SESSION_COOKIE}={sid}" in response.headers["set-cookie"]
+    with main.connect_db() as connection:
+        updated_at = connection.execute("SELECT updated_at FROM oauth_sessions WHERE id = ?", (sid,)).fetchone()[0]
+    assert updated_at > stale
+
+
+def test_expired_chats_are_hidden_and_purged(client):
+    client.get("/api/session")
+    chat_id = client.post("/api/chats", json={"agentType": "finance"}).json()["id"]
+    with main.connect_db() as connection:
+        connection.execute("UPDATE chats SET expires_at = 1 WHERE id = ?", (chat_id,))
+
+    assert client.get("/api/chats").json()["chats"] == []
+    assert client.get(f"/api/chats/{chat_id}").status_code == 404
+    client.get("/api/session")
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone() is None
+
+
+def test_create_chat_recreates_missing_session_row(client):
+    client.cookies.set(main.SESSION_COOKIE, "session-row-was-deleted")
+
+    response = client.post("/api/chats", json={"agentType": "finance"})
+
+    assert response.status_code == 201
+    assert client.get("/api/chats").json()["chats"][0]["id"] == response.json()["id"]
+
+
+def test_access_token_refresh_network_error_returns_no_token(monkeypatch):
+    main.save_session("offline-refresh", {
+        "accessToken": "expired", "expiresAt": 1, "refreshToken": "refresh",
+        "clientId": "client-id", "clientSecret": "client-secret",
+    })
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FailingAsyncClient())
+    request = type("Request", (), {"cookies": {main.SESSION_COOKIE: "offline-refresh"}})()
+
+    assert asyncio.run(main.access_token(request)) == ("offline-refresh", None)
+
+
+def test_oauth_connect_upstream_failure_returns_502(client, monkeypatch):
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FailingAsyncClient())
+
+    response = client.get("/auth/indmoney/connect")
+
+    assert response.status_code == 502
+    assert "Could not reach INDmoney" in response.json()["detail"]
+
+
+def test_oauth_callback_without_access_token_returns_502(client, monkeypatch):
+    client.cookies.set(main.SESSION_COOKIE, "no-token-session")
+    main.save_session("no-token-session", {
+        "state": "expected", "verifier": "verifier", "clientId": "client", "clientSecret": "secret"
+    })
+
+    class EmptyTokenClient(FailingAsyncClient):
+        async def post(self, *args, **kwargs):
+            return OAuthResponse({"token_type": "Bearer"})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: EmptyTokenClient())
+
+    response = client.get("/auth/indmoney/callback?code=auth-code&state=expected")
+
+    assert response.status_code == 502
+    assert "did not return an access token" in response.text

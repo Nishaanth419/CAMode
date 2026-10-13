@@ -134,3 +134,16 @@ async def test_call_mcp_tool_surfaces_mcp_errors(monkeypatch):
     monkeypatch.setattr(mcp_client.httpx, "AsyncClient", lambda **kwargs: FakeClient())
     with pytest.raises(RuntimeError, match="account unavailable"):
         await mcp_client.call_mcp_tool("https://mcp.example/mcp", "token", "v", None, "tool", {})
+
+
+def test_rpc_body_skips_notifications_and_joins_multiline_data():
+    response = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=(
+            b'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}\n\n'
+            b'event: message\ndata: {"jsonrpc":"2.0","id":3,\ndata: "result":{"ok":true}}\n\n'
+        ),
+    )
+
+    assert mcp_client._rpc_body(response) == {"jsonrpc": "2.0", "id": 3, "result": {"ok": True}}

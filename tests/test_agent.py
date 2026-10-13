@@ -237,7 +237,7 @@ async def test_portfolio_agent_calls_filtered_tool_then_answers(monkeypatch):
     monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
     calls = []
 
-    async def fake_call(url, token, protocol, session_id, name, arguments):
+    async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
         calls.append((name, arguments))
         return "total current value: ₹42,000"
 
@@ -310,3 +310,96 @@ async def test_agent_rejects_empty_model_response(monkeypatch):
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
         await agent.run_agent("Explain saving", "https://unused", None, [], "finance", "openai")
+
+
+@pytest.mark.parametrize("question", [
+    "What is an IFSC code?",
+    "Where do I find the SWIFT code for an international transfer?",
+    "What is the ISIN code of a mutual fund?",
+    "Which tax code applies to my salary?",
+    "What is an HSN code?",
+    "What is a MICR code on a cheque?",
+])
+def test_finance_identifier_codes_are_not_blocked_as_code_requests(question):
+    assert agent._blocked_request_reason(question, []) is None
+
+
+@pytest.mark.parametrize("question", [
+    "Write python code to track my budget",
+    "Give me a script that calculates SIP returns",
+    "Write a function that computes loan EMI",
+])
+def test_real_code_requests_are_still_blocked(question):
+    assert "can’t write or debug code" in agent._blocked_request_reason(question, [])
+
+
+@pytest.mark.parametrize("answer", [
+    "EMI formula:\nLet P = principal, r = monthly rate.",
+    "Class A: shares with voting rights.",
+    "Import duties raise the landed cost of gold.",
+])
+def test_finance_prose_is_not_flagged_as_code_output(answer):
+    assert agent._contains_code_output(answer) is False
+
+
+@pytest.mark.parametrize("answer", ["import os\nprint(1)", "const total = 5;", "def emi(p):\n    return p"])
+def test_lowercase_code_is_still_flagged_as_code_output(answer):
+    assert agent._contains_code_output(answer) is True
+
+
+def test_refusal_text_does_not_grant_finance_scope_to_followups():
+    history = [
+        {"role": "user", "content": "Write me a poem about the sea"},
+        {"role": "assistant", "content": agent.FINANCE_ONLY_NOTICE},
+    ]
+
+    assert agent._blocked_request_reason("how do I bake a cake?", history) == agent.FINANCE_ONLY_NOTICE
+
+
+@pytest.mark.asyncio
+async def test_groq_context_keeps_original_question_after_retry_nudge(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(agent, "GROQ_INPUT_TOKEN_BUDGET", 5600)
+    question = "What is my portfolio worth? " + "Please include detail. " * 60
+
+    async def fake_fetch(url, token):
+        return {"tools": [{"name": "networth_snapshot", "description": "Net worth"}], "protocolVersion": "v", "sessionId": "sid"}
+
+    async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
+        return "row " * 1125  # Small enough to skip pre-shortening, large enough to crowd out the question.
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    monkeypatch.setattr(agent, "call_mcp_tool", fake_call)
+    captured = []
+    tool_call = {"id": "call-1", "function": {"name": "networth_snapshot", "arguments": "{}"}}
+    fake_client = FakeAsyncClient(
+        [_completion("I will check."), _completion(tool_calls=[tool_call]), _completion("Worth ₹42,000.")], captured,
+    )
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(question, "https://mcp", "token", [], "portfolio", "groq")
+
+    assert answer == "Worth ₹42,000."
+    final_messages = captured[-1]["payload"]["messages"]
+    assert any(item.get("content") == question for item in final_messages)
+    assert final_messages[-1]["role"] == "tool"
+
+
+@pytest.mark.asyncio
+async def test_truncated_model_answer_is_marked(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    truncated = FakeResponse({"choices": [{"finish_reason": "length", "message": {"content": "A budget is"}}]})
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([truncated], []))
+
+    answer = await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "openai")
+
+    assert answer == "A budget is" + agent.TRUNCATION_NOTICE
+
+
+@pytest.mark.asyncio
+async def test_malformed_provider_response_reports_error(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([FakeResponse({"choices": []})], []))
+
+    with pytest.raises(agent.AgentRunError, match="unexpected response"):
+        await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "openai")

@@ -13,8 +13,8 @@ The app supports OpenAI and Groq providers, stores chat history and OAuth tokens
 ## Architecture
 
 ### Backend Stack
-- **FastAPI** (`app/main.py`): HTTP routes, OAuth flow, SQLite persistence, WebSocket streaming for chat
-- **Agent Loop** (`app/agent.py`): Provider selection (OpenAI/Groq), streaming chat loop, request filtering
+- **FastAPI** (`app/main.py`): HTTP routes, OAuth flow, SQLite persistence; `POST /api/chat` returns the full answer as plain text with the call trace in an `X-Agent-Trace` header
+- **Agent Loop** (`app/agent.py`): Provider selection (OpenAI/Groq), tool-calling chat loop (`stream_agent` yields `(event, data)` tuples, `run_agent` collects them), request filtering
 - **MCP Client** (`app/mcp_client.py`): INDmoney OAuth-protected MCP discovery and tool execution
 - **Database**: SQLite (`oauth_sessions`, `chats` tables) with WAL mode for concurrency
 
@@ -33,13 +33,14 @@ The app supports OpenAI and Groq providers, stores chat history and OAuth tokens
 **MCP Session Management**:
 - `fetch_mcp_session()`: Initialize → tools/list → notifications/initialized flow
 - Async HTTP streaming for large responses; event-stream parsing
-- Session IDs and protocol versions tracked per user request
+- Session IDs and protocol versions tracked per user request; one pooled httpx client is reused for all tool calls in an agent run
 
 **Chat Persistence**:
 - Max 20 messages per conversation (oldest truncated as new messages arrive)
-- Max 12,000 chars per chat, Max 50 chats per session
-- `session_id` from INDmoney OAuth or ephemeral (no login → random token)
-- Chats expire after 30 days unless refreshed
+- Max 12,000 chars per stored message, max 50 chats per session (oldest evicted)
+- `session_id` is a random token in an HttpOnly cookie; INDmoney OAuth tokens attach to it
+- Sessions and the cookie slide forward on each `/api/session` visit; chats expire 30 days after their last message and are hidden/purged once expired
+- `connect_db()` is a context manager that commits/rolls back and always closes the connection
 
 ### Frontend
 - Static HTML/CSS/JS in `frontend/` (manifests as PWA)
@@ -97,16 +98,17 @@ python -m compileall -q app tests && python -m pytest -q
 
 ### `app/main.py`
 - FastAPI app setup, static file serving, JSON response wrappers
-- OAuth routes: `/auth/indmoney/login`, `/auth/indmoney/callback`, `/auth/indmoney/logout`
-- Chat routes: `POST /api/chats` (create), `GET /api/chats` (list), `POST /api/chats/{id}/messages` (stream)
-- Helper: `session_id(request)` reads or creates user session
+- OAuth routes: `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect`
+- Session/chat routes: `GET /api/session`, `POST /api/chats` (create), `GET /api/chats` (list), `GET`/`DELETE /api/chats/{id}`, `POST /api/chat` (send a message)
+- Other: `GET /api/providers`, `GET /api/tools`, `GET /healthz`
+- Helper: `session_id(request)` reads the session cookie; `touch_session()` creates/slides it
 - Database helpers: `connect_db()`, `initialize_db()`
 
 ### `app/agent.py`
 - `_blocked_request_reason()`: Detects and rejects non-finance requests
 - `_requires_indmoney_data()`: Determines if message needs Portfolio Analyzer tools
 - `_contains_code_output()`: Rejects model output with code (except `chart` blocks)
-- `run_agent()`: Streaming OpenAI/Groq chat loop; calls MCP tools if needed; handles retries
+- `stream_agent()` / `run_agent()`: OpenAI/Groq chat loop; calls MCP tools if needed; retries once if the portfolio model skips tools; marks answers cut off by `finish_reason == "length"`
 
 ### `app/mcp_client.py`
 - `fetch_mcp_session()`: Initialize MCP session, list tools, return capabilities
@@ -123,14 +125,11 @@ python -m compileall -q app tests && python -m pytest -q
 
 ## Testing Strategy
 
-Tests use mocked AI and MCP responses (no live API calls). Key fixtures in `conftest.py`:
-- Mocked OpenAI/Groq responses
-- Mocked INDmoney OAuth and tool calls
-- Ephemeral SQLite database per test
+Tests use mocked AI and MCP responses (no live API calls). `conftest.py` provides an ephemeral SQLite database per test and a `TestClient`; OpenAI/Groq, MCP and OAuth calls are faked per test with `monkeypatch`.
 
 Test coverage:
 - `test_api.py`: Routes, OAuth flow, chat creation/listing, message streaming
-- `test_agent.py`: Request filtering, Finance Agent logic, Portfolio Analyzer logic, error handling
+- `test_agent.py`: Request filtering, Finance Agent logic, Portfolio Analyzer logic, Groq context fitting, error handling
 - `test_mcp_client.py`: MCP session init, tool calls, tool filtering, error recovery
 
 ## Performance Notes
@@ -139,12 +138,12 @@ Test coverage:
 - Chat history trimmed to 20 messages to reduce token usage and API costs
 - Groq uses conservative context/completion limits (adjustable in `.env`)
 - Async HTTP for MCP calls (streaming supported)
-- Service worker enables offline browsing of past chats
+- Service worker serves the cached app shell when offline (API data is always fetched live)
 
 ## Debugging Tips
 
 - Logs go to stdout at `LOG_LEVEL` (set to `DEBUG` for verbose traces)
 - SQLite at `.data/codemode.sqlite3` (read-only access is safe for inspection)
 - Frontend console has chat/agent state and API response bodies
-- INDmoney OAuth tokens are revoked on logout; reconnect to test OAuth flow
+- INDmoney OAuth tokens are revoked on disconnect (which also deletes the session's chats); reconnect to test OAuth flow
 - MCP errors (401, 500) include hints in the exception message
