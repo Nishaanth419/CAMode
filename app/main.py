@@ -10,6 +10,8 @@ import os
 import secrets
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -51,17 +53,24 @@ class CreateChatRequest(BaseModel):
     agentType: Literal["finance", "portfolio"] = "finance"
 
 
-def connect_db() -> sqlite3.Connection:
+@contextmanager
+def connect_db() -> Iterator[sqlite3.Connection]:
+    """Yield a connection that commits on success, rolls back on error, and always closes."""
     DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     connection = sqlite3.connect(DATABASE_PATH, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA journal_mode = WAL")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def initialize_db() -> None:
     with connect_db() as connection:
+        # WAL is persistent in the database file, so it only needs setting once.
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.executescript("""
             CREATE TABLE IF NOT EXISTS oauth_sessions (
                 id TEXT PRIMARY KEY,
@@ -122,6 +131,18 @@ def get_session(sid: str) -> dict[str, Any]:
         return json.loads(row["data"])
 
 
+def touch_session(sid: str) -> None:
+    """Slide the session expiry forward, creating an empty session row if it is missing."""
+    now = int(time.time() * 1000)
+    with connect_db() as connection:
+        connection.execute(
+            "INSERT INTO oauth_sessions(id, data, updated_at) VALUES (?, '{}', ?) "
+            "ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at",
+            (sid, now),
+        )
+        connection.execute("DELETE FROM chats WHERE session_id = ? AND expires_at <= ?", (sid, now))
+
+
 def save_session(sid: str, values: dict[str, Any]) -> None:
     now = int(time.time() * 1000)
     stored = {**values, "updatedAt": now, "sessionExpiresAt": now + SESSION_MAX_AGE_SECONDS * 1000}
@@ -160,15 +181,25 @@ async def access_token(request: Request, *, force_refresh: bool = False) -> tupl
         return sid, token
     if not stored.get("refreshToken") or not stored.get("clientId") or not stored.get("clientSecret"):
         return sid, None
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post("https://mcp.indmoney.com/token", data={
-            "grant_type": "refresh_token", "refresh_token": stored["refreshToken"],
-            "client_id": stored["clientId"], "client_secret": stored["clientSecret"], "resource": MCP_RESOURCE,
-        })
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post("https://mcp.indmoney.com/token", data={
+                "grant_type": "refresh_token", "refresh_token": stored["refreshToken"],
+                "client_id": stored["clientId"], "client_secret": stored["clientSecret"], "resource": MCP_RESOURCE,
+            })
+    except httpx.HTTPError as exc:
+        logger.warning("INDmoney token refresh failed: %s", type(exc).__name__)
+        return sid, None
     if not response.is_success:
         logger.warning("INDmoney token refresh failed: HTTP %s", response.status_code)
         return sid, None
-    result = response.json()
+    try:
+        result = response.json()
+    except ValueError:
+        result = None
+    if not isinstance(result, dict) or not result.get("access_token"):
+        logger.warning("INDmoney token refresh returned no access token")
+        return sid, None
     stored["accessToken"] = result["access_token"]
     stored["refreshToken"] = result.get("refresh_token", stored["refreshToken"])
     stored["expiresAt"] = int(time.time() * 1000) + int(result.get("expires_in", 3600)) * 1000
@@ -212,22 +243,19 @@ async def local_session(request: Request):
         response = JSONResponse({"connected": False})
         response.set_cookie(value=sid, **cookie_options(request))
         return response
-    if not get_session(sid):
-        save_session(sid, {})
+    touch_session(sid)
     _, token = await access_token(request)
-    return {"connected": bool(token)}
+    response = JSONResponse({"connected": bool(token)})
+    response.set_cookie(value=sid, **cookie_options(request))
+    return response
 
 
-@app.get("/auth/indmoney/connect")
-async def connect_indmoney(request: Request):
-    redirect_uri = f"{request_origin(request)}/auth/indmoney/callback"
-    sid, state, verifier = session_id(request) or random_token(), random_token(), random_token()
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+async def register_oauth_client(redirect_uri: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Discover INDmoney's OAuth server and dynamically register this app as a client."""
     async with httpx.AsyncClient(timeout=30) as client:
         resource_response = await client.get(MCP_RESOURCE_METADATA)
         resource_response.raise_for_status()
-        resource_meta = resource_response.json()
-        servers = resource_meta.get("authorization_servers", [])
+        servers = resource_response.json().get("authorization_servers", [])
         if not servers:
             raise HTTPException(502, "INDmoney did not advertise an OAuth authorization server")
         metadata_response = await client.get(f"{servers[0].rstrip('/')}/.well-known/oauth-authorization-server")
@@ -241,6 +269,21 @@ async def connect_indmoney(request: Request):
         if not registration.is_success:
             raise HTTPException(502, f"INDmoney OAuth client registration failed: HTTP {registration.status_code} {registration.text[:300]}")
         client_info = registration.json()
+    if not metadata.get("authorization_endpoint"):
+        raise HTTPException(502, "INDmoney did not advertise an OAuth authorization endpoint")
+    return metadata, client_info
+
+
+@app.get("/auth/indmoney/connect")
+async def connect_indmoney(request: Request):
+    redirect_uri = f"{request_origin(request)}/auth/indmoney/callback"
+    sid, state, verifier = session_id(request) or random_token(), random_token(), random_token()
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    try:
+        metadata, client_info = await register_oauth_client(redirect_uri)
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("INDmoney OAuth discovery failed: %s", type(exc).__name__)
+        raise HTTPException(502, "Could not reach INDmoney sign-in. Try again shortly.") from exc
     if not client_info.get("client_id") or not client_info.get("client_secret"):
         raise HTTPException(502, "INDmoney registration did not return the required client credentials")
     save_session(sid, {"state": state, "verifier": verifier, "clientId": client_info["client_id"], "clientSecret": client_info["client_secret"], "redirectUri": redirect_uri})
@@ -264,16 +307,25 @@ async def finish_indmoney_login(request: Request):
     code = request.query_params.get("code")
     if not sid or not stored.get("state") or not stored.get("verifier") or not stored.get("clientId") or not stored.get("clientSecret") or not code or request.query_params.get("state") != stored.get("state"):
         return PlainTextResponse("INDmoney sign-in could not be verified. Please connect again.", status_code=400)
-    async with httpx.AsyncClient(timeout=30) as client:
-        token_response = await client.post("https://mcp.indmoney.com/token", data={
-            "grant_type": "authorization_code", "code": code,
-            "redirect_uri": stored.get("redirectUri", f"{request_origin(request)}/auth/indmoney/callback"),
-            "client_id": stored["clientId"], "client_secret": stored["clientSecret"],
-            "code_verifier": stored["verifier"], "resource": MCP_RESOURCE,
-        })
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            token_response = await client.post("https://mcp.indmoney.com/token", data={
+                "grant_type": "authorization_code", "code": code,
+                "redirect_uri": stored.get("redirectUri", f"{request_origin(request)}/auth/indmoney/callback"),
+                "client_id": stored["clientId"], "client_secret": stored["clientSecret"],
+                "code_verifier": stored["verifier"], "resource": MCP_RESOURCE,
+            })
+    except httpx.HTTPError as exc:
+        logger.warning("INDmoney token exchange failed: %s", type(exc).__name__)
+        return PlainTextResponse("Could not reach INDmoney to finish sign-in. Please connect again.", status_code=502)
     if not token_response.is_success:
         return PlainTextResponse(f"INDmoney token exchange failed: HTTP {token_response.status_code} {token_response.text[:500]}", status_code=502)
-    token = token_response.json()
+    try:
+        token = token_response.json()
+    except ValueError:
+        token = None
+    if not isinstance(token, dict) or not token.get("access_token"):
+        return PlainTextResponse("INDmoney sign-in did not return an access token. Please connect again.", status_code=502)
     stored.update({"accessToken": token["access_token"], "refreshToken": token.get("refresh_token"), "expiresAt": int(time.time() * 1000) + int(token.get("expires_in", 3600)) * 1000})
     stored.pop("state", None)
     stored.pop("verifier", None)
@@ -310,8 +362,9 @@ async def list_chats(request: Request):
         return auth_error("Initialize a local session to access your private chat history.")
     with connect_db() as connection:
         rows = connection.execute(
-            "SELECT id, title, updated_at, agent_type FROM chats WHERE session_id = ? ORDER BY updated_at DESC LIMIT ?",
-            (sid, MAX_CHATS_PER_SESSION),
+            "SELECT id, title, updated_at, agent_type FROM chats WHERE session_id = ? AND expires_at > ? "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (sid, int(time.time() * 1000), MAX_CHATS_PER_SESSION),
         ).fetchall()
     return {"chats": [{"id": row["id"], "title": row["title"], "agentType": row["agent_type"], "updatedAt": row["updated_at"]} for row in rows]}
 
@@ -324,6 +377,7 @@ async def create_chat(request: Request, body: CreateChatRequest):
     now = int(time.time() * 1000)
     identifier = random_token()
     expires_at = now + SESSION_MAX_AGE_SECONDS * 1000
+    touch_session(sid)  # The chats.session_id foreign key needs the session row to exist.
     with connect_db() as connection:
         existing = connection.execute("SELECT COUNT(*) AS n FROM chats WHERE session_id = ?", (sid,)).fetchone()["n"]
         if existing >= MAX_CHATS_PER_SESSION:
@@ -341,8 +395,9 @@ async def create_chat(request: Request, body: CreateChatRequest):
 def read_chat(sid: str, chat_id: str) -> dict[str, Any] | None:
     with connect_db() as connection:
         row = connection.execute(
-            "SELECT id, title, messages, updated_at, expires_at, agent_type FROM chats WHERE session_id = ? AND id = ?",
-            (sid, chat_id),
+            "SELECT id, title, messages, updated_at, expires_at, agent_type FROM chats "
+            "WHERE session_id = ? AND id = ? AND expires_at > ?",
+            (sid, chat_id, int(time.time() * 1000)),
         ).fetchone()
     if row is None:
         return None
