@@ -25,6 +25,13 @@ _CODE_REQUEST_RE = re.compile(
     r".{0,80}\b(?:program|function|algorithm)\b",
     re.IGNORECASE,
 )
+# Finance identifiers that contain the word "code" (IFSC code, ISIN code, ...) are
+# removed before the code-request check so they are not refused as programming.
+_FINANCE_CODE_TERM_RE = re.compile(
+    r"\b(?:ifsc|swift|isin|bic|micr|hsn|sac|sort|tax|bank|branch|scheme|amfi|nse|bse|"
+    r"ticker|stock|security|pin|zip|postal|routing|promo|referral|coupon)\s+codes?\b",
+    re.IGNORECASE,
+)
 _FINANCE_TOPIC_RE = re.compile(
     r"\b(?:financ\w*|money|budget\w*|saving\w*|spend\w*|bank\w*|cash|income|salary|"
     r"expense\w*|debt|loan\w*|credit|mortgage|interest|tax\w*|insurance|retire\w*|"
@@ -37,7 +44,7 @@ _FINANCE_TOPIC_RE = re.compile(
     r"theta|vega|iv|vwap|pcr|max\s+pain|breakout\w*|support|resistance|volatil\w*|"
     r"expense\s+ratio|category|large.?cap|mid.?cap|small.?cap|elss|ppf|epf|nps|fixed\s+deposit|"
     r"real\s+estate|margin|breakeven|risk.?reward|call\s+oi|put\s+oi|"
-    r"parag\s+parikh|flexi.?cap|small.?cap|large.?cap|mid.?cap)\b",
+    r"parag\s+parikh|flexi.?cap|ifsc|swift|isin|bic|micr|hsn|cheque\w*)\b",
     re.IGNORECASE,
 )
 _GREETING_RE = re.compile(r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!.?\s]*$", re.IGNORECASE)
@@ -48,12 +55,15 @@ _FINANCE_FOLLOWUP_RE = re.compile(
     r"can\s+you\s+(?:explain|compare|clarify)\s+(?:it|that|this)\b)",
     re.IGNORECASE,
 )
+# Case-sensitive on purpose: Python/JS keywords are lowercase, while finance prose
+# such as "Let P = principal", "Class A: ..." or "Import duties ..." is capitalised.
 _CODE_OUTPUT_RE = re.compile(
     r"```(?!chart\s*(?:\n|$))|(?:^|\n)\s*(?:import\s+\w+|from\s+\w+\s+import\s+|"
     r"def\s+\w+\s*\(|class\s+\w+\s*[:(]|print\s*\(|(?:const|let|var)\s+\w+\s*=)|"
     r"if\s+__name__\s*==",
-    re.IGNORECASE | re.MULTILINE,
+    re.MULTILINE,
 )
+TRUNCATION_NOTICE = "\n\n_(This response was cut off at the model's length limit. Ask a narrower question for the rest.)_"
 _INDMONEY_DATA_REQUEST_RE = re.compile(
     r"\b(?:my\s+(?:portfolio|net\s+worth|holdings|stocks?|funds?|sips?|watchlist|account)|"
     r"portfolio|holdings|net\s+worth|allocation|watchlist|sips?|option\s+chain|options?|"
@@ -70,11 +80,13 @@ _INDMONEY_DATA_REQUEST_RE = re.compile(
 
 def _blocked_request_reason(message: str, history: list[dict[str, str]]) -> str | None:
     """Apply request boundaries before any user text reaches the model."""
-    if _CODE_REQUEST_RE.search(message):
+    if _CODE_REQUEST_RE.search(_FINANCE_CODE_TERM_RE.sub(" ", message)):
         return "I can answer finance questions, but I can’t write or debug code. " + FINANCE_ONLY_NOTICE
 
     if not _GREETING_RE.fullmatch(message.strip()):
-        context = " ".join(item.get("content", "") for item in history[-6:])
+        # Only the user's own recent turns establish finance context; assistant
+        # replies (including FINANCE_ONLY_NOTICE itself) are full of finance words.
+        context = " ".join(item.get("content", "") for item in history[-6:] if item.get("role") == "user")
         finance_topic_in_message = bool(_FINANCE_TOPIC_RE.search(message))
         finance_followup = bool(_FINANCE_FOLLOWUP_RE.search(message.strip()))
         finance_topic_in_context = bool(_FINANCE_TOPIC_RE.search(context))
@@ -153,26 +165,31 @@ def _estimated_request_tokens(messages: list[dict[str, Any]], tools: list[dict[s
     return math.ceil(len(serialized) / 1.8)
 
 
-def _fit_groq_context(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the newest chat context that fits Groq's input budget."""
+def _fit_groq_context(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    current_user_index: int | None = None,
+) -> list[dict[str, Any]]:
+    """Keep the newest chat context that fits Groq's input budget.
+
+    The system prompt, the current user question (``current_user_index``; defaults
+    to the last user message) and everything after it are always kept, so an
+    injected retry instruction can never push the real question out of context.
+    """
     if not messages:
         return messages
 
-    compact_tools = []
-    for tool in tools:
-        item = dict(tool)
-        function = dict(item.get("function") or {})
-        description = function.get("description")
-        if isinstance(description, str) and len(description) > 500:
-            function["description"] = description[:497] + "..."
-        item["function"] = function
-        compact_tools.append(item)
-
+    compact_tools = tools
     system = messages[0]
-    last_user_index = next((i for i in range(len(messages) - 1, 0, -1) if messages[i].get("role") == "user"), len(messages) - 1)
-    history = messages[1:last_user_index]
-    current_user = dict(messages[last_user_index])
-    suffix = [dict(item) for item in messages[last_user_index + 1:]]
+    if current_user_index is None:
+        current_user_index = next(
+            (i for i in range(len(messages) - 1, 0, -1) if messages[i].get("role") == "user"),
+            len(messages) - 1,
+        )
+    history = messages[1:current_user_index]
+    current_user = dict(messages[current_user_index])
+    suffix = [dict(item) for item in messages[current_user_index + 1:]]
 
     for item in suffix:
         if item.get("role") == "tool" and isinstance(item.get("content"), str) and len(item["content"]) > 6000:
@@ -247,14 +264,36 @@ def default_provider() -> str:
     return configured[0]["id"] if configured else "openai"
 
 
-# ── SSE event helpers ──────────────────────────────────────────────────────────
+# ── Agent event stream ─────────────────────────────────────────────────────────
 
-def _sse(event: str, data: Any) -> str:
-    """Format a single SSE message."""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+AgentEvent = tuple[str, dict[str, Any]]
 
 
-# ── Streaming agent ────────────────────────────────────────────────────────────
+def _model_tools(tools: list[dict[str, Any]], provider: str) -> list[dict[str, Any]]:
+    """Convert MCP tool definitions to OpenAI-compatible function tools."""
+    model_tools = []
+    for tool in tools:
+        description = tool.get("description") or f"Call the {tool['name']} tool"
+        # Groq's small input budget cannot afford long tool descriptions.
+        if provider == "groq" and len(description) > 500:
+            description = description[:497] + "..."
+        model_tools.append({"type": "function", "function": {
+            "name": tool["name"],
+            "description": description,
+            "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
+        }})
+    return model_tools
+
+
+def _message_text(content: Any) -> str | None:
+    """Flatten a chat-completions message content (string or text parts)."""
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"] for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    return content if isinstance(content, str) else None
+
 
 async def stream_agent(
     message: str,
@@ -263,22 +302,22 @@ async def stream_agent(
     history: list[dict[str, str]],
     agent_type: str = "finance",
     provider: str = "openai",
-) -> AsyncIterator[str]:
+) -> AsyncIterator[AgentEvent]:
     """
-    Async generator that yields SSE-formatted strings.
+    Async generator that yields ``(event, data)`` tuples.
 
     Event types:
       • model_call  – { provider, model, attempt }  model endpoint called
       • tool_call   – { name, arguments }          tool is about to be called
       • tool_result – { name, result, error? }      tool returned
-      • content     – { text }                      streamed answer chunk
+      • content     – { text }                      final answer text
       • error       – { message }                   fatal error
       • done        – {}                            stream finished
     """
     blocked_reason = _blocked_request_reason(message, history)
     if blocked_reason:
-        yield _sse("content", {"text": blocked_reason})
-        yield _sse("done", {"answer": blocked_reason})
+        yield "content", {"text": blocked_reason}
+        yield "done", {}
         return
 
     config = provider_config(provider)
@@ -288,53 +327,44 @@ async def stream_agent(
     requires_indmoney_data = agent_type == "portfolio" and _requires_indmoney_data(message, history)
     if requires_indmoney_data:
         if not token:
-            yield _sse("error", {"message": "Connect your INDmoney account to use Portfolio Analyzer."})
-            yield _sse("done", {})
+            yield "error", {"message": "Connect your INDmoney account to use Portfolio Analyzer."}
+            yield "done", {}
             return
         try:
             session = await fetch_mcp_session(mcp_url, token)
         except Exception as exc:
-            yield _sse("error", {"message": f"Could not connect to INDmoney: {exc}"})
-            yield _sse("done", {})
+            yield "error", {"message": f"Could not connect to INDmoney: {exc}"}
+            yield "done", {}
             return
         tools = filter_portfolio_tools(session["tools"])
         if not tools:
-            yield _sse("error", {"message": "INDmoney did not provide any of CA Mode's supported portfolio tools. Reconnect INDmoney or check the MCP server."})
-            yield _sse("done", {})
+            yield "error", {"message": "INDmoney did not provide any of CA Mode's supported portfolio tools. Reconnect INDmoney or check the MCP server."}
+            yield "done", {}
             return
 
-    tool_map = {tool["name"]: tool for tool in tools}
-    model_tools = [
-        {"type": "function", "function": {
-            "name": tool["name"],
-            "description": tool.get("description") or f"Call the {tool['name']} tool",
-            "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
-        }}
-        for tool in tools
-    ]
-    if provider == "groq":
-        for tool in model_tools:
-            description = tool["function"].get("description", "")
-            if len(description) > 500:
-                tool["function"]["description"] = description[:497] + "..."
+    tool_names = {tool["name"] for tool in tools}
+    model_tools = _model_tools(tools, provider)
 
     prompt = PORTFOLIO_SYSTEM_PROMPT if agent_type == "portfolio" else FINANCE_SYSTEM_PROMPT
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
     messages.append({"role": "user", "content": message})
+    current_user_index = len(messages) - 1
 
     retried_portfolio_tool_selection = False
     portfolio_tool_called = False
-    full_answer = ""
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            for _ in range(12):
+        async with httpx.AsyncClient(timeout=120) as client, httpx.AsyncClient(timeout=90) as mcp_client:
+            for attempt in range(1, 13):
                 try:
-                    request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
+                    request_messages = (
+                        _fit_groq_context(messages, model_tools, current_user_index=current_user_index)
+                        if provider == "groq" else messages
+                    )
                 except RuntimeError as exc:
-                    yield _sse("error", {"message": str(exc)})
-                    yield _sse("done", {})
+                    yield "error", {"message": str(exc)}
+                    yield "done", {}
                     return
 
                 payload: dict[str, Any] = {"model": config["model"], "messages": request_messages}
@@ -344,9 +374,7 @@ async def stream_agent(
                     payload["tools"] = model_tools
                     payload["tool_choice"] = "auto"
 
-                yield _sse("model_call", {
-                    "provider": config["label"], "model": config["model"], "attempt": _ + 1,
-                })
+                yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": attempt}
                 try:
                     response = await client.post(
                         f"{config['base_url']}/chat/completions",
@@ -354,27 +382,27 @@ async def stream_agent(
                         json=payload,
                     )
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    yield _sse("error", {"message": f"Could not connect to {config['label']}: {exc}"})
-                    yield _sse("done", {})
+                    yield "error", {"message": f"Could not connect to {config['label']}: {exc}"}
+                    yield "done", {}
                     return
 
                 if not response.is_success:
-                    yield _sse("error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"})
-                    yield _sse("done", {})
+                    yield "error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"}
+                    yield "done", {}
                     return
 
                 completion = response.json()
-                choice_data = completion["choices"][0]
-                choice = choice_data["message"]
+                choices = completion.get("choices") if isinstance(completion, dict) else None
+                choice_data = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+                choice = choice_data.get("message")
+                if not isinstance(choice, dict):
+                    yield "error", {"message": f"{config['label']} returned an unexpected response with no message. Try again or select another provider."}
+                    yield "done", {}
+                    return
                 calls = choice.get("tool_calls") or []
 
                 if not calls:
-                    content = choice.get("content")
-                    if isinstance(content, list):
-                        content = "\n".join(
-                            part["text"] for part in content
-                            if isinstance(part, dict) and isinstance(part.get("text"), str)
-                        )
+                    content = _message_text(choice.get("content"))
 
                     if requires_indmoney_data and not portfolio_tool_called:
                         if not retried_portfolio_tool_selection:
@@ -386,30 +414,22 @@ async def stream_agent(
                                 "content": "Do not tell me to run an account check. Use one of the available INDmoney tools now to retrieve the account data needed for my original question. After the tool returns, answer using that data only.",
                             })
                             continue
-                        yield _sse("error", {"message": f"{config['label']} did not call an INDmoney account tool. No portfolio summary was generated; try a stronger tool-capable model or another provider."})
-                        yield _sse("done", {})
+                        yield "error", {"message": f"{config['label']} did not call an INDmoney account tool. No portfolio summary was generated; try a stronger tool-capable model or another provider."}
+                        yield "done", {}
                         return
 
-                    if isinstance(content, str) and content.strip():
+                    if content and content.strip():
                         if _contains_code_output(content):
-                            logger.warning("Blocked code-shaped model output for finance agent")
-                            yield _sse("content", {"text": FINANCE_ONLY_NOTICE})
-                            yield _sse("done", {"answer": FINANCE_ONLY_NOTICE})
-                            return
-                        # Stream the content word by word for live feel
-                        words = content.split(" ")
-                        chunk_size = 4
-                        for i in range(0, len(words), chunk_size):
-                            chunk = " ".join(words[i:i + chunk_size])
-                            if i + chunk_size < len(words):
-                                chunk += " "
-                            full_answer += chunk
-                            yield _sse("content", {"text": chunk})
-                        yield _sse("done", {"answer": full_answer})
+                            logger.warning("Blocked code-shaped model output for %s agent", agent_type)
+                            content = FINANCE_ONLY_NOTICE
+                        elif choice_data.get("finish_reason") == "length":
+                            content += TRUNCATION_NOTICE
+                        yield "content", {"text": content}
+                        yield "done", {}
                         return
 
-                    yield _sse("error", {"message": f"{config['label']} returned an empty response. Check that the selected model is available and try again."})
-                    yield _sse("done", {})
+                    yield "error", {"message": f"{config['label']} returned an empty response. Check that the selected model is available and try again."}
+                    yield "done", {}
                     return
 
                 # Process tool calls
@@ -417,9 +437,9 @@ async def stream_agent(
                 for call in calls:
                     function = call.get("function", {})
                     name = function.get("name", "")
-                    if name not in tool_map:
-                        yield _sse("error", {"message": f"Model requested an unknown INDmoney tool: {name}"})
-                        yield _sse("done", {})
+                    if name not in tool_names:
+                        yield "error", {"message": f"Model requested an unknown INDmoney tool: {name}"}
+                        yield "done", {}
                         return
 
                     try:
@@ -427,38 +447,36 @@ async def stream_agent(
                     except json.JSONDecodeError:
                         arguments = {}
 
-                    # Emit tool_call event
-                    yield _sse("tool_call", {"name": name, "arguments": arguments})
+                    yield "tool_call", {"name": name, "arguments": arguments}
 
                     try:
                         result = await call_mcp_tool(
                             mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
+                            client=mcp_client,
                         )
-                        if requires_indmoney_data:
-                            portfolio_tool_called = True
-                        # Emit tool_result event
-                        result_str = str(result)
-                        yield _sse("tool_result", {
-                            "name": name,
-                            "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
-                        })
-                        messages.append({"role": "tool", "tool_call_id": call["id"], "content": result_str})
                     except Exception as exc:
-                        yield _sse("tool_result", {"name": name, "error": str(exc)})
-                        yield _sse("error", {"message": f"INDmoney data request failed: {exc}"})
-                        yield _sse("done", {})
+                        yield "tool_result", {"name": name, "error": str(exc)}
+                        yield "error", {"message": f"INDmoney data request failed: {exc}"}
+                        yield "done", {}
                         return
+                    portfolio_tool_called = True
+                    result_str = str(result)
+                    yield "tool_result", {
+                        "name": name,
+                        "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
+                    }
+                    messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
 
     except Exception as exc:
-        yield _sse("error", {"message": str(exc)})
-        yield _sse("done", {})
+        yield "error", {"message": str(exc)}
+        yield "done", {}
         return
 
-    yield _sse("error", {"message": "Could not finish processing the INDmoney response within the tool-call limit."})
-    yield _sse("done", {})
+    yield "error", {"message": "Could not finish processing the INDmoney response within the tool-call limit."}
+    yield "done", {}
 
 
-# ── Legacy non-streaming wrapper (kept for internal use) ───────────────────────
+# ── Non-streaming wrapper used by the HTTP API ─────────────────────────────────
 
 class AgentResult(str):
     """String answer with compact trace metadata for the chat UI."""
@@ -483,7 +501,7 @@ async def run_agent(
     agent_type: str = "finance",
     provider: str = "openai",
 ) -> AgentResult:
-    """Collect the answer and call trace from the internal SSE event stream."""
+    """Collect the answer and call trace from the agent event stream."""
     answer_parts: list[str] = []
     trace: list[dict[str, Any]] = []
     last_error: str | None = None
@@ -494,44 +512,39 @@ async def run_agent(
             active_model_step["status"] = status
             active_model_step["duration_ms"] = round((time.perf_counter() - active_model_step.pop("_started")) * 1000)
 
-    async for raw in stream_agent(message, mcp_url, token, history, agent_type, provider):
-        event_type = next((line[6:].strip() for line in raw.splitlines() if line.startswith("event:")), None)
-        for line in raw.splitlines():
-            if line.startswith("data:"):
-                payload = json.loads(line[5:].strip())
-                if event_type == "content":
-                    finish_model_step("completed")
-                    answer_parts.append(payload.get("text", ""))
-                elif event_type == "model_call":
-                    finish_model_step("completed")
-                    active_model_step = {
-                        "kind": "model", "provider": payload.get("provider", "AI"),
-                        "model": payload.get("model", ""), "attempt": payload.get("attempt", 1),
-                        "status": "running", "_started": time.perf_counter(),
-                    }
-                    trace.append(active_model_step)
-                elif event_type == "tool_call":
-                    finish_model_step("completed")
-                    arguments = payload.get("arguments", {})
-                    arguments_text = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
-                    trace.append({
-                        "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
-                        "arguments": arguments_text[:600], "status": "running",
-                        "_started": time.perf_counter(),
-                    })
-                elif event_type == "tool_result":
-                    name = str(payload.get("name", ""))
-                    step = next((item for item in reversed(trace) if item.get("kind") == "tool" and item.get("name") == name and item.get("status") == "running"), None)
-                    if step:
-                        step["status"] = "failed" if payload.get("error") else "completed"
-                        step["duration_ms"] = round((time.perf_counter() - step.pop("_started")) * 1000)
-                        if payload.get("result"):
-                            step["result_preview"] = str(payload["result"])[:1000]
-                        if payload.get("error"):
-                            step["error"] = str(payload["error"])[:300]
-                elif event_type == "error":
-                    finish_model_step("failed")
-                    last_error = payload.get("message", "Unknown error")
+    async for event_type, payload in stream_agent(message, mcp_url, token, history, agent_type, provider):
+        if event_type == "content":
+            finish_model_step("completed")
+            answer_parts.append(payload.get("text", ""))
+        elif event_type == "model_call":
+            finish_model_step("completed")
+            active_model_step = {
+                "kind": "model", "provider": payload.get("provider", "AI"),
+                "model": payload.get("model", ""), "attempt": payload.get("attempt", 1),
+                "status": "running", "_started": time.perf_counter(),
+            }
+            trace.append(active_model_step)
+        elif event_type == "tool_call":
+            finish_model_step("completed")
+            arguments_text = json.dumps(payload.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
+            trace.append({
+                "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
+                "arguments": arguments_text[:600], "status": "running",
+                "_started": time.perf_counter(),
+            })
+        elif event_type == "tool_result":
+            name = str(payload.get("name", ""))
+            step = next((item for item in reversed(trace) if item.get("kind") == "tool" and item.get("name") == name and item.get("status") == "running"), None)
+            if step:
+                step["status"] = "failed" if payload.get("error") else "completed"
+                step["duration_ms"] = round((time.perf_counter() - step.pop("_started")) * 1000)
+                if payload.get("result"):
+                    step["result_preview"] = str(payload["result"])[:1000]
+                if payload.get("error"):
+                    step["error"] = str(payload["error"])[:300]
+        elif event_type == "error":
+            finish_model_step("failed")
+            last_error = payload.get("message", "Unknown error")
     finish_model_step("completed")
     answer = "".join(answer_parts)
     if not answer and last_error:
