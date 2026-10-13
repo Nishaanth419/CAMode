@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
+from app.agent import AgentRunError
 from app import main
 
 
@@ -109,6 +110,43 @@ def test_chat_message_is_saved_and_agent_type_is_enforced(client, monkeypatch):
         "message": "my net worth?", "chatId": chat["id"], "agentType": "portfolio"
     })
     assert mismatch.status_code == 409
+
+
+def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, monkeypatch):
+    client.get("/api/session")
+    chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
+    refreshed = []
+
+    async def fake_access_token(request, *, force_refresh=False):
+        if force_refresh:
+            refreshed.append(True)
+            return "session", "fresh-token"
+        return "session", "stale-token"
+
+    calls = []
+
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider):
+        calls.append(token)
+        if token == "stale-token":
+            raise AgentRunError(
+                'MCP tools/call failed for "get_indian_stocks_option_chain": 401 '
+                '{"error":"invalid_token","error_description":"Authentication required"}',
+                [],
+            )
+        return "Option-chain data from refreshed INDmoney session."
+
+    monkeypatch.setattr(main, "access_token", fake_access_token)
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    response = client.post("/api/chat", json={
+        "message": "Show the Nifty option chain for the next monthly expiry.",
+        "chatId": chat["id"], "agentType": "portfolio",
+    })
+
+    assert response.status_code == 200
+    assert response.text == "Option-chain data from refreshed INDmoney session."
+    assert refreshed == [True]
+    assert calls == ["stale-token", "fresh-token"]
 
 
 def test_chat_rejects_empty_and_overlong_messages(client):

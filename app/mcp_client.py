@@ -9,20 +9,29 @@ import httpx
 
 DEFAULT_PROTOCOL_VERSION = "2025-03-26"
 
-# Keep the model's choices focused on the account tools most useful for
-# personal portfolio summaries, allocation, holdings, and recurring SIPs.
+# Allow only INDmoney's documented read-only finance and market capabilities.
 IMPORTANT_PORTFOLIO_TOOL_NAMES = (
+    "lookup_ind_keys",
     "networth_snapshot",
     "networth_allocation_breakdown",
     "networth_holdings",
+    "get_indian_stocks_ohlc",
+    "get_indian_stocks_details",
+    "get_indian_stocks_option_chain",
+    "get_indian_stocks_greeks_history",
+    "user_watchlist",
     "indian_stocks_sips",
+    "get_mf_by_category",
+    "get_mf_funds_details",
     "mf_sips",
+    "get_us_stocks_details",
+    # Retain this tool for INDmoney MCP deployments that expose it.
     "us_stocks_sips",
 )
 
 
 def filter_portfolio_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only the supported core portfolio tools, in a stable order."""
+    """Return only documented read-only finance tools in a stable order."""
     by_name = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
     return [by_name[name] for name in IMPORTANT_PORTFOLIO_TOOL_NAMES if name in by_name]
 

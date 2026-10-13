@@ -8,7 +8,7 @@ import pytest
 from app import mcp_client
 
 
-def test_filter_portfolio_tools_keeps_only_core_tools_in_stable_order():
+def test_filter_portfolio_tools_keeps_documented_finance_tools_in_stable_order():
     supplied = [
         {"name": "unrelated_market_tool"},
         {"name": "mf_sips", "inputSchema": {"type": "object"}},
@@ -22,6 +22,14 @@ def test_filter_portfolio_tools_keeps_only_core_tools_in_stable_order():
         "networth_snapshot", "networth_holdings", "mf_sips"
     ]
     assert {tool["name"] for tool in filtered}.issubset(mcp_client.IMPORTANT_PORTFOLIO_TOOL_NAMES)
+
+
+def test_filter_portfolio_tools_supports_all_advertised_use_cases():
+    supplied = [{"name": name} for name in reversed(mcp_client.IMPORTANT_PORTFOLIO_TOOL_NAMES)]
+
+    filtered = mcp_client.filter_portfolio_tools(supplied)
+
+    assert [item["name"] for item in filtered] == list(mcp_client.IMPORTANT_PORTFOLIO_TOOL_NAMES)
 
 
 def test_filter_portfolio_tools_handles_empty_and_malformed_entries():
