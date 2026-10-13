@@ -205,7 +205,7 @@ async def stream_agent(
             return
         tools = filter_portfolio_tools(session["tools"])
         if not tools:
-            yield _sse("error", {"message": "INDmoney did not provide any supported portfolio tools. Reconnect INDmoney or check the MCP server."})
+            yield _sse("error", {"message": "INDmoney did not provide any of CA Mode's supported portfolio tools. Reconnect INDmoney or check the MCP server."})
             yield _sse("done", {})
             return
 
