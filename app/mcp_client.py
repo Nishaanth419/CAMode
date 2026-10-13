@@ -48,15 +48,29 @@ def _headers(token: str, protocol: str = DEFAULT_PROTOCOL_VERSION, session_id: s
     return result
 
 
+def _sse_messages(text: str) -> list[dict[str, Any]]:
+    """Parse JSON payloads from an event stream, joining multi-line ``data:`` fields."""
+    messages: list[dict[str, Any]] = []
+    data_lines: list[str] = []
+    for line in [*text.splitlines(), ""]:
+        if line.startswith("data:"):
+            data_lines.append(line[5:].removeprefix(" "))
+        elif not line.strip() and data_lines:
+            payload = "\n".join(data_lines).strip()
+            data_lines = []
+            if payload and payload != "[DONE]":
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict):
+                    messages.append(parsed)
+    return messages
+
+
 def _rpc_body(response: httpx.Response) -> dict[str, Any] | None:
     content_type = response.headers.get("content-type", "")
     if "text/event-stream" in content_type:
-        for line in response.text.splitlines():
-            if line.startswith("data:"):
-                payload = line[5:].strip()
-                if payload and payload != "[DONE]":
-                    return json.loads(payload)
-        return None
+        # Servers may stream notifications (e.g. progress) before the JSON-RPC response.
+        messages = _sse_messages(response.text)
+        return next((item for item in messages if "result" in item or "error" in item), messages[-1] if messages else None)
     if not response.content:
         return None
     return response.json()
@@ -105,12 +119,24 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
         return {"tools": tools, "sessionId": session_id, "protocolVersion": protocol}
 
 
-async def call_mcp_tool(url: str, token: str, protocol: str, session_id: str | None, name: str, arguments: dict[str, Any]) -> Any:
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await _post(client, url, _headers(token, protocol, session_id), {
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        })
+async def call_mcp_tool(
+    url: str,
+    token: str,
+    protocol: str,
+    session_id: str | None,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> Any:
+    """Call one MCP tool; pass ``client`` to reuse a connection pool across calls."""
+    payload = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+    headers = _headers(token, protocol, session_id)
+    if client is None:
+        async with httpx.AsyncClient(timeout=90) as own_client:
+            response = await _post(own_client, url, headers, payload)
+    else:
+        response = await _post(client, url, headers, payload)
     if not response.is_success:
         raise RuntimeError(f'MCP tools/call failed for "{name}": {response.status_code} {response.text[:500]}')
     rpc = _rpc_body(response) or {}
