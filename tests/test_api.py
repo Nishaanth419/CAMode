@@ -1,18 +1,61 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import base64
 import hashlib
+import json
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main, snapshots, users
 from app.agent import AgentRunError
-from app import main
+
+
+def connect_user_to_indmoney(user_id: str, **overrides) -> None:
+    users.save_indmoney(user_id, {
+        "accessToken": "access-token", "refreshToken": "refresh", "expiresAt": users.now_ms() + 3_600_000,
+        "clientId": "client-id", "clientSecret": "client-secret", **overrides,
+    })
+
+
+class OAuthResponse:
+    is_success = True
+    status_code = 200
+    text = ""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        return None
+
+
+class FailingAsyncClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get(self, *args, **kwargs):
+        raise main.httpx.ConnectError("network down")
+
+    async def post(self, *args, **kwargs):
+        raise main.httpx.ConnectError("network down")
+
+
+@pytest.fixture
+def stored_user():
+    """A profile created directly in the database (no browser session)."""
+    return users.create_user("Ravi", users.hash_pin("1357"))["id"]
 
 
 def test_health_and_frontend_routes(client):
@@ -37,7 +80,7 @@ def test_provider_endpoint_exposes_only_openai_and_groq(client, monkeypatch):
 def test_session_initialization_sets_http_only_cookie(client):
     response = client.get("/api/session")
 
-    assert response.json() == {"connected": False}
+    assert response.json() == {"connected": False, "user": None, "profiles": []}
     cookie = response.headers["set-cookie"].lower()
     assert "indmoney_session=" in cookie
     assert "httponly" in cookie
@@ -50,7 +93,7 @@ def test_session_cookie_is_secure_for_https_requests():
 
 
 def test_expired_local_session_is_removed():
-    main.save_session("expired", {"accessToken": "stale"})
+    main.save_session("expired", {"state": "stale"})
     with main.connect_db() as connection:
         connection.execute("UPDATE oauth_sessions SET updated_at = ? WHERE id = ?", (0, "expired"))
 
@@ -59,44 +102,36 @@ def test_expired_local_session_is_removed():
         assert connection.execute("SELECT 1 FROM oauth_sessions WHERE id = ?", ("expired",)).fetchone() is None
 
 
-def test_chat_endpoints_require_local_session(client):
-    response = client.get("/api/chats")
-    assert response.status_code == 401
-    assert response.json()["loginUrl"] == "/auth/indmoney/connect"
-
-
-def test_chat_crud_and_session_isolation(client):
-    client.get("/api/session")
+def test_chat_crud_and_profile_isolation(client, signed_in):
     created = client.post("/api/chats", json={"agentType": "finance"})
     assert created.status_code == 201
     chat_id = created.json()["id"]
     assert client.get("/api/chats").json()["chats"][0]["id"] == chat_id
     assert client.get(f"/api/chats/{chat_id}").json()["messages"] == []
 
-    other_user = type(client)(main.app, follow_redirects=False)
-    assert other_user.get(f"/api/chats/{chat_id}").status_code == 401
-    assert other_user.delete(f"/api/chats/{chat_id}").status_code == 401
+    other_browser = TestClient(main.app, follow_redirects=False)
+    assert other_browser.get(f"/api/chats/{chat_id}").status_code == 401
+    assert other_browser.delete(f"/api/chats/{chat_id}").status_code == 401
 
     deleted = client.delete(f"/api/chats/{chat_id}")
     assert deleted.json() == {"deleted": True}
     assert client.get(f"/api/chats/{chat_id}").status_code == 404
 
 
-def test_create_chat_rejects_invalid_agent_type(client):
-    client.get("/api/session")
+def test_create_chat_rejects_invalid_agent_type(client, signed_in):
     response = client.post("/api/chats", json={"agentType": "local"})
     assert response.status_code == 422
 
 
-def test_chat_message_is_saved_and_agent_type_is_enforced(client, monkeypatch):
-    client.get("/api/session")
+def test_chat_message_is_saved_and_agent_type_is_enforced(client, signed_in, monkeypatch):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
         assert message == "What is diversification?"
         assert history == []
         assert agent_type == "finance"
         assert provider == "openai"
+        assert context is None
         return "Diversification spreads risk across investments."
 
     monkeypatch.setattr(main, "run_agent", fake_run_agent)
@@ -115,21 +150,22 @@ def test_chat_message_is_saved_and_agent_type_is_enforced(client, monkeypatch):
     assert mismatch.status_code == 409
 
 
-def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, monkeypatch):
-    client.get("/api/session")
+def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, signed_in, monkeypatch):
+    connect_user_to_indmoney(signed_in["id"])
     chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
     refreshed = []
 
-    async def fake_access_token(request, *, force_refresh=False):
+    async def fake_user_access_token(user_id, *, force_refresh=False):
         if force_refresh:
-            refreshed.append(True)
-            return "session", "fresh-token"
-        return "session", "stale-token"
+            refreshed.append(user_id)
+            return "fresh-token"
+        return "stale-token"
 
     calls = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
         calls.append(token)
+        assert context is not None
         if token == "stale-token":
             raise AgentRunError(
                 'MCP tools/call failed for "get_indian_stocks_option_chain": 401 '
@@ -138,7 +174,7 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, monkeypatch):
             )
         return "Option-chain data from refreshed INDmoney session."
 
-    monkeypatch.setattr(main, "access_token", fake_access_token)
+    monkeypatch.setattr(users, "user_access_token", fake_user_access_token)
     monkeypatch.setattr(main, "run_agent", fake_run_agent)
 
     response = client.post("/api/chat", json={
@@ -148,12 +184,35 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.text == "Option-chain data from refreshed INDmoney session."
-    assert refreshed == [True]
+    assert refreshed == [signed_in["id"]]
     assert calls == ["stale-token", "fresh-token"]
 
 
-def test_chat_rejects_empty_and_overlong_messages(client):
-    client.get("/api/session")
+def test_portfolio_chat_passes_profile_and_snapshot_context(client, signed_in, monkeypatch):
+    connect_user_to_indmoney(signed_in["id"])
+    client.put("/api/profile", json={"riskAppetite": "moderate", "primaryGoal": "Buy a home"})
+    snapshots.store_snapshot(
+        signed_in["id"], datetime(2026, 10, 13, 9, 0, tzinfo=snapshots.SNAPSHOT_TIMEZONE),
+        {"networth_snapshot": '{"net_worth": 4200000}'}, {},
+    )
+    chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
+    seen = {}
+
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+        seen["context"] = context
+        return "ok"
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    client.post("/api/chat", json={"message": "What is my net worth?", "chatId": chat["id"], "agentType": "portfolio"})
+
+    context = seen["context"]
+    assert {tool.name for tool in context.local_tools} == {"get_portfolio_snapshot", "get_networth_history"}
+    assert "Risk appetite: moderate" in context.profile_context
+    assert "Buy a home" in context.profile_context
+    assert "2026-10-13T09:00" in context.profile_context
+
+
+def test_chat_rejects_empty_and_overlong_messages(client, signed_in):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     empty = client.post("/api/chat", json={"message": " ", "chatId": chat["id"]})
     long = client.post("/api/chat", json={"message": "x" * 8001, "chatId": chat["id"]})
@@ -161,14 +220,13 @@ def test_chat_rejects_empty_and_overlong_messages(client):
     assert long.status_code == 400
 
 
-def test_chat_history_is_passed_to_agent_and_trimmed_to_limit(client, monkeypatch):
-    client.get("/api/session")
+def test_chat_history_is_passed_to_agent_and_trimmed_to_limit(client, signed_in, monkeypatch):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     history = [{"role": "user", "content": f"question-{i}"} for i in range(main.MAX_HISTORY_MESSAGES)]
     with main.connect_db() as connection:
         connection.execute("UPDATE chats SET messages = ? WHERE id = ?", (json.dumps(history), chat["id"]))
 
-    async def fake_run_agent(message, mcp_url, token, previous, agent_type, provider):
+    async def fake_run_agent(message, mcp_url, token, previous, agent_type, provider, *, context=None):
         assert previous == history
         return "answer"
 
@@ -181,28 +239,25 @@ def test_chat_history_is_passed_to_agent_and_trimmed_to_limit(client, monkeypatc
     assert saved[-1] == {"role": "assistant", "content": "answer"}
 
 
-def test_chat_limit_evicts_oldest_chat(client):
-    client.get("/api/session")
-    sid = client.cookies.get(main.SESSION_COOKIE)
-    now = int(main.time.time() * 1000)
+def test_chat_limit_evicts_oldest_chat(client, signed_in):
+    now = users.now_ms()
     with main.connect_db() as connection:
-        for i in range(main.MAX_CHATS_PER_SESSION):
+        for i in range(main.MAX_CHATS_PER_USER):
             connection.execute(
-                "INSERT INTO chats(id, session_id, title, messages, updated_at, expires_at, agent_type) "
+                "INSERT INTO chats(id, user_id, title, messages, updated_at, expires_at, agent_type) "
                 "VALUES (?, ?, ?, '[]', ?, ?, 'finance')",
-                (f"chat-{i}", sid, f"chat {i}", now + i, now + main.SESSION_MAX_AGE_SECONDS * 1000),
+                (f"chat-{i}", signed_in["id"], f"chat {i}", now + i, now + main.SESSION_MAX_AGE_SECONDS * 1000),
             )
 
     created = client.post("/api/chats", json={"agentType": "finance"})
 
     assert created.status_code == 201
     chat_ids = {item["id"] for item in client.get("/api/chats").json()["chats"]}
-    assert len(chat_ids) == main.MAX_CHATS_PER_SESSION
+    assert len(chat_ids) == main.MAX_CHATS_PER_USER
     assert "chat-0" not in chat_ids
 
 
-def test_portfolio_chat_requires_indmoney_connection(client):
-    client.get("/api/session")
+def test_portfolio_chat_requires_indmoney_connection(client, signed_in):
     chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
     response = client.post("/api/chat", json={
         "message": "Summarize my allocation", "chatId": chat["id"], "agentType": "portfolio"
@@ -211,8 +266,7 @@ def test_portfolio_chat_requires_indmoney_connection(client):
     assert "Connect your INDmoney account" in response.json()["error"]
 
 
-def test_chat_rejects_removed_provider(client):
-    client.get("/api/session")
+def test_chat_rejects_removed_provider(client, signed_in):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     response = client.post("/api/chat", json={
         "message": "hello", "chatId": chat["id"], "agentType": "finance", "aiProvider": "kimi"
@@ -220,18 +274,17 @@ def test_chat_rejects_removed_provider(client):
     assert response.status_code == 422
 
 
-def test_tools_endpoint_returns_only_core_tools(client, monkeypatch):
-    async def fake_access_token(request):
-        return "session", "access-token"
+def test_tools_endpoint_returns_only_core_tools(client, signed_in, monkeypatch):
+    connect_user_to_indmoney(signed_in["id"])
 
     async def fake_fetch(url, token):
+        assert token == "access-token"
         return {"tools": [
             {"name": "get_indian_stocks_movers", "description": "market movers"},
             {"name": "networth_snapshot", "description": "portfolio value"},
             {"name": "mf_sips", "description": "mutual fund SIPs"},
         ]}
 
-    monkeypatch.setattr(main, "access_token", fake_access_token)
     monkeypatch.setattr(main, "fetch_mcp_session", fake_fetch)
 
     response = client.get("/api/tools")
@@ -241,7 +294,7 @@ def test_tools_endpoint_returns_only_core_tools(client, monkeypatch):
     assert [item["name"] for item in response.json()["tools"]] == ["networth_snapshot", "mf_sips"]
 
 
-def test_tools_endpoint_without_login_does_not_call_mcp(client, monkeypatch):
+def test_tools_endpoint_without_login_does_not_call_mcp(client, signed_in, monkeypatch):
     async def fail_if_called(url, token):
         raise AssertionError("MCP should not be called without a user token")
 
@@ -253,11 +306,24 @@ def test_tools_endpoint_without_login_does_not_call_mcp(client, monkeypatch):
     assert response.json()["loginUrl"] == "/auth/indmoney/connect"
 
 
-def test_oauth_callback_rejects_bad_state(client):
-    client.cookies.set(main.SESSION_COOKIE, "oauth-session")
-    main.save_session("oauth-session", {
-        "state": "expected", "verifier": "verifier", "clientId": "client", "clientSecret": "secret"
+def test_oauth_connect_requires_profile(client):
+    client.get("/api/session")
+    response = client.get("/auth/indmoney/connect")
+    assert response.status_code == 302
+    assert response.headers["location"] == "http://testserver/"
+
+
+def _start_oauth(client) -> str:
+    sid = client.cookies.get(main.SESSION_COOKIE)
+    main.save_session(sid, {
+        "state": "expected-state", "verifier": "pkce-verifier", "clientId": "client-id",
+        "clientSecret": "client-secret", "redirectUri": "http://localhost/auth/indmoney/callback",
     })
+    return sid
+
+
+def test_oauth_callback_rejects_bad_state(client, signed_in):
+    _start_oauth(client)
 
     response = client.get("/auth/indmoney/callback?code=auth-code&state=wrong")
 
@@ -265,22 +331,7 @@ def test_oauth_callback_rejects_bad_state(client):
     assert "could not be verified" in response.text
 
 
-class OAuthResponse:
-    is_success = True
-    status_code = 200
-    text = ""
-
-    def __init__(self, payload):
-        self.payload = payload
-
-    def json(self):
-        return self.payload
-
-    def raise_for_status(self):
-        return None
-
-
-def test_oauth_connect_registers_client_and_uses_pkce(client, monkeypatch):
+def test_oauth_connect_registers_client_and_uses_pkce(client, signed_in, monkeypatch):
     calls = {"gets": [], "posts": []}
 
     class FakeAsyncClient:
@@ -315,20 +366,16 @@ def test_oauth_connect_registers_client_and_uses_pkce(client, monkeypatch):
     assert len(query["state"][0]) >= 32
     assert calls["posts"][0][1]["json"]["client_name"] == "CA Mode"
 
-    sid = response.cookies[main.SESSION_COOKIE]
-    stored = main.get_session(sid)
+    stored = main.get_session(client.cookies.get(main.SESSION_COOKIE))
     expected_challenge = base64.urlsafe_b64encode(hashlib.sha256(stored["verifier"].encode()).digest()).decode().rstrip("=")
     assert query["code_challenge"] == [expected_challenge]
     assert stored["state"] == query["state"][0]
 
 
-def test_oauth_callback_exchanges_code_and_saves_token(client, monkeypatch):
-    client.cookies.set(main.SESSION_COOKIE, "oauth-session")
-    main.save_session("oauth-session", {
-        "state": "expected-state", "verifier": "pkce-verifier", "clientId": "client-id",
-        "clientSecret": "client-secret", "redirectUri": "http://localhost/auth/indmoney/callback",
-    })
+def test_oauth_callback_exchanges_code_and_saves_token_on_profile(client, signed_in, monkeypatch):
+    sid = _start_oauth(client)
     requests = []
+    background = []
 
     class FakeAsyncClient:
         async def __aenter__(self):
@@ -341,24 +388,28 @@ def test_oauth_callback_exchanges_code_and_saves_token(client, monkeypatch):
             requests.append((url, data))
             return OAuthResponse({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
 
+    async def fake_refresh(user_id):
+        background.append(user_id)
+
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(main, "refresh_snapshot_in_background", fake_refresh)
     response = client.get("/auth/indmoney/callback?code=auth-code&state=expected-state")
 
     assert response.status_code == 302
     assert response.headers["location"] == "http://testserver/"
     assert requests[0][1]["code"] == "auth-code"
     assert requests[0][1]["code_verifier"] == "pkce-verifier"
-    stored = main.get_session("oauth-session")
+    stored = users.get_indmoney(signed_in["id"])
     assert stored["accessToken"] == "access"
     assert stored["refreshToken"] == "refresh"
-    assert "state" not in stored and "verifier" not in stored
+    assert stored["clientId"] == "client-id"
+    session = main.get_session(sid)
+    assert "state" not in session and "verifier" not in session
+    assert background == [signed_in["id"]]
 
 
-def test_access_token_refreshes_expired_access_token(monkeypatch):
-    main.save_session("refresh-session", {
-        "accessToken": "expired", "expiresAt": 1, "refreshToken": "refresh",
-        "clientId": "client-id", "clientSecret": "client-secret",
-    })
+def test_user_access_token_refreshes_expired_access_token(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
     requests = []
 
     class FakeAsyncClient:
@@ -372,22 +423,19 @@ def test_access_token_refreshes_expired_access_token(monkeypatch):
             requests.append((url, data))
             return OAuthResponse({"access_token": "fresh", "refresh_token": "new-refresh", "expires_in": 3600})
 
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
-    request = type("Request", (), {"cookies": {main.SESSION_COOKIE: "refresh-session"}})()
+    monkeypatch.setattr(users.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
 
-    sid, token = asyncio.run(main.access_token(request))
+    token = asyncio.run(users.user_access_token(stored_user))
 
-    assert sid == "refresh-session"
     assert token == "fresh"
     assert requests[0][1]["grant_type"] == "refresh_token"
-    assert main.get_session("refresh-session")["refreshToken"] == "new-refresh"
+    assert users.get_indmoney(stored_user)["refreshToken"] == "new-refresh"
 
 
-def test_disconnect_revokes_token_and_clears_session_and_chats(client, monkeypatch):
-    client.cookies.set(main.SESSION_COOKIE, "signed-in")
-    main.save_session("signed-in", {
-        "accessToken": "token", "clientId": "client-id", "clientSecret": "client-secret"
-    })
+def test_disconnect_keeps_chats_and_clears_snapshots(client, signed_in, monkeypatch):
+    connect_user_to_indmoney(signed_in["id"], accessToken="token")
+    users.cache_mcp_tools(signed_in["id"], [{"name": "networth_snapshot"}])
+    snapshots.store_snapshot(signed_in["id"], datetime.now(snapshots.SNAPSHOT_TIMEZONE), {"networth_snapshot": "{}"}, {})
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     revoked = []
 
@@ -407,28 +455,53 @@ def test_disconnect_revokes_token_and_clears_session_and_chats(client, monkeypat
 
     assert response.json() == {"connected": False}
     assert revoked[0][1]["token"] == "token"
-    assert main.get_session("signed-in") == {}
-    client.get("/api/session")
-    assert client.get("/api/chats").json()["chats"] == []
+    user = users.get_user(signed_in["id"])
+    assert user["indmoney"] == {} and user["mcpTools"] is None
+    assert snapshots.latest_snapshot(signed_in["id"]) is None
+    assert [item["id"] for item in client.get("/api/chats").json()["chats"]] == [chat["id"]]
+
+
+def test_snapshots_endpoint_returns_latest_and_history(client, signed_in):
+    today = datetime.now(snapshots.SNAPSHOT_TIMEZONE).replace(hour=9, minute=0, second=0, microsecond=0)
+    for days_ago, value in ((2, 100.0), (1, 110.0), (0, 125.5)):
+        snapshots.store_snapshot(
+            signed_in["id"], today - timedelta(days=days_ago),
+            {"networth_snapshot": json.dumps({"net_worth": value})}, {"networth_holdings": "timeout"},
+        )
+
+    response = client.get("/api/snapshots?days=7")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest"]["networthInr"] == 125.5
+    assert body["latest"]["unavailable"] == {"networth_holdings": "timeout"}
+    assert [point["networthInr"] for point in body["history"]] == [100.0, 110.0, 125.5]
+    assert body["schedule"] == "09:00 Asia/Kolkata"
+
+
+def test_snapshot_refresh_requires_indmoney(client, signed_in):
+    response = client.post("/api/snapshots/refresh")
+    assert response.status_code == 401
+    assert "Connect your INDmoney account" in response.json()["error"]
+
+
+def test_snapshot_refresh_runs_capture(client, signed_in, monkeypatch):
+    connect_user_to_indmoney(signed_in["id"])
+
+    async def fake_refresh_user(user_id, *, mcp_url, now=None):
+        assert user_id == signed_in["id"]
+        return {"asOfDate": "2026-10-13", "capturedAt": 1, "networthInr": 5.0, "errors": {}}
+
+    monkeypatch.setattr(snapshots, "refresh_user", fake_refresh_user)
+    response = client.post("/api/snapshots/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["latest"]["networthInr"] == 5.0
 
 
 def test_api_responses_disable_caching(client):
     response = client.get("/api/providers")
     assert response.headers["cache-control"] == "no-store"
-
-
-class FailingAsyncClient:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return None
-
-    async def get(self, *args, **kwargs):
-        raise main.httpx.ConnectError("network down")
-
-    async def post(self, *args, **kwargs):
-        raise main.httpx.ConnectError("network down")
 
 
 def test_connect_db_closes_connection():
@@ -455,8 +528,7 @@ def test_session_endpoint_slides_session_expiry(client):
     assert updated_at > stale
 
 
-def test_expired_chats_are_hidden_and_purged(client):
-    client.get("/api/session")
+def test_expired_chats_are_hidden_and_purged(client, signed_in):
     chat_id = client.post("/api/chats", json={"agentType": "finance"}).json()["id"]
     with main.connect_db() as connection:
         connection.execute("UPDATE chats SET expires_at = 1 WHERE id = ?", (chat_id,))
@@ -468,27 +540,14 @@ def test_expired_chats_are_hidden_and_purged(client):
         assert connection.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone() is None
 
 
-def test_create_chat_recreates_missing_session_row(client):
-    client.cookies.set(main.SESSION_COOKIE, "session-row-was-deleted")
+def test_user_access_token_refresh_network_error_returns_no_token(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+    monkeypatch.setattr(users.httpx, "AsyncClient", lambda **kwargs: FailingAsyncClient())
 
-    response = client.post("/api/chats", json={"agentType": "finance"})
-
-    assert response.status_code == 201
-    assert client.get("/api/chats").json()["chats"][0]["id"] == response.json()["id"]
+    assert asyncio.run(users.user_access_token(stored_user)) is None
 
 
-def test_access_token_refresh_network_error_returns_no_token(monkeypatch):
-    main.save_session("offline-refresh", {
-        "accessToken": "expired", "expiresAt": 1, "refreshToken": "refresh",
-        "clientId": "client-id", "clientSecret": "client-secret",
-    })
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FailingAsyncClient())
-    request = type("Request", (), {"cookies": {main.SESSION_COOKIE: "offline-refresh"}})()
-
-    assert asyncio.run(main.access_token(request)) == ("offline-refresh", None)
-
-
-def test_oauth_connect_upstream_failure_returns_502(client, monkeypatch):
+def test_oauth_connect_upstream_failure_returns_502(client, signed_in, monkeypatch):
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FailingAsyncClient())
 
     response = client.get("/auth/indmoney/connect")
@@ -497,11 +556,8 @@ def test_oauth_connect_upstream_failure_returns_502(client, monkeypatch):
     assert "Could not reach INDmoney" in response.json()["detail"]
 
 
-def test_oauth_callback_without_access_token_returns_502(client, monkeypatch):
-    client.cookies.set(main.SESSION_COOKIE, "no-token-session")
-    main.save_session("no-token-session", {
-        "state": "expected", "verifier": "verifier", "clientId": "client", "clientSecret": "secret"
-    })
+def test_oauth_callback_without_access_token_returns_502(client, signed_in, monkeypatch):
+    _start_oauth(client)
 
     class EmptyTokenClient(FailingAsyncClient):
         async def post(self, *args, **kwargs):
@@ -509,7 +565,7 @@ def test_oauth_callback_without_access_token_returns_502(client, monkeypatch):
 
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: EmptyTokenClient())
 
-    response = client.get("/auth/indmoney/callback?code=auth-code&state=expected")
+    response = client.get("/auth/indmoney/callback?code=auth-code&state=expected-state")
 
     assert response.status_code == 502
     assert "did not return an access token" in response.text

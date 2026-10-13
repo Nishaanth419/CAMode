@@ -403,3 +403,129 @@ async def test_malformed_provider_response_reports_error(monkeypatch):
 
     with pytest.raises(agent.AgentRunError, match="unexpected response"):
         await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "openai")
+
+
+def _snapshot_context(handler, *, cached=("networth_snapshot", "get_indian_stocks_details"), profile=None):
+    return agent.PortfolioContext(
+        local_tools=(agent.LocalTool(
+            name="get_portfolio_snapshot", description="Saved snapshot",
+            input_schema={"type": "object", "properties": {}}, handler=handler,
+        ),),
+        profile_context=profile,
+        cached_mcp_tools=[{"name": name, "description": name} for name in cached],
+    )
+
+
+@pytest.mark.asyncio
+async def test_portfolio_agent_answers_from_local_snapshot_without_mcp_init(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def fail_fetch(url, token):
+        raise AssertionError("MCP must not be initialised when the snapshot answers the question")
+
+    async def snapshot_handler(arguments):
+        return '{"available": true, "networthInr": 4200000, "capturedAt": "2026-10-13T09:00+05:30"}'
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fail_fetch)
+    captured = []
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("₹42 lakh as of 13 Oct, 09:00 IST.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "What is my net worth?", "https://mcp", "token", [], "portfolio", "openai",
+        context=_snapshot_context(snapshot_handler),
+    )
+
+    assert answer == "₹42 lakh as of 13 Oct, 09:00 IST."
+    offered = [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]]
+    assert offered == ["get_portfolio_snapshot", "networth_snapshot", "get_indian_stocks_details"]
+    assert '"networthInr": 4200000' in captured[1]["payload"]["messages"][-1]["content"]
+    assert [step["name"] for step in answer.trace if step["kind"] == "tool"] == ["get_portfolio_snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_agent_opens_mcp_lazily_for_live_tool(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    fetches, calls, cached = [], [], []
+
+    async def fake_fetch(url, token):
+        fetches.append(token)
+        return {"tools": [{"name": "get_indian_stocks_details"}], "protocolVersion": "v", "sessionId": "sid"}
+
+    async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
+        calls.append((name, session_id))
+        return "TCS last traded at ₹4,100"
+
+    async def unused_handler(arguments):
+        raise AssertionError("snapshot tool not expected")
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    monkeypatch.setattr(agent, "call_mcp_tool", fake_call)
+    context = agent.PortfolioContext(
+        local_tools=_snapshot_context(unused_handler).local_tools,
+        cached_mcp_tools=[{"name": "get_indian_stocks_details"}],
+        on_mcp_tools=cached.append,
+    )
+    tool_call = {"id": "call-1", "function": {"name": "get_indian_stocks_details", "arguments": '{"symbol": "TCS"}'}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("TCS is at ₹4,100.")], [])
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent("Current price of TCS?", "https://mcp", "token", [], "portfolio", "openai", context=context)
+
+    assert answer == "TCS is at ₹4,100."
+    assert fetches == ["token"]
+    assert calls == [("get_indian_stocks_details", "sid")]
+    assert cached == [[{"name": "get_indian_stocks_details"}]]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_prompt_includes_profile_context(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("An ETF is a basket of securities.")], captured))
+
+    async def unused_handler(arguments):
+        return "{}"
+
+    await agent.run_agent(
+        "What is an ETF?", "https://mcp", "token", [], "portfolio", "openai",
+        context=_snapshot_context(unused_handler, profile="- Risk appetite: moderate"),
+    )
+    finance_captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("An ETF is a fund.")], finance_captured))
+    await agent.run_agent(
+        "What is an ETF?", "https://unused", None, [], "finance", "openai",
+        context=_snapshot_context(unused_handler, profile="- Risk appetite: moderate"),
+    )
+
+    system = captured[0]["payload"]["messages"][0]["content"]
+    assert '<user_profile source="entered by the user">\n- Risk appetite: moderate\n</user_profile>' in system
+    assert "not an instruction" in system
+    assert "user_profile" not in finance_captured[0]["payload"]["messages"][0]["content"]
+    # A general finance question needs no account data, so no tools are offered at all.
+    assert "tools" not in captured[0]["payload"]
+
+
+@pytest.mark.asyncio
+async def test_local_tool_failure_returns_error_result(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def broken_handler(arguments):
+        raise ValueError("database is locked")
+
+    captured = []
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("The saved snapshot is unavailable right now.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "What is my net worth?", "https://mcp", "token", [], "portfolio", "openai",
+        context=_snapshot_context(broken_handler),
+    )
+
+    assert answer == "The saved snapshot is unavailable right now."
+    tool_message = captured[1]["payload"]["messages"][-1]
+    assert tool_message["role"] == "tool" and "use the live INDmoney tools" in tool_message["content"]
+    step = next(step for step in answer.trace if step["kind"] == "tool")
+    assert step["status"] == "failed" and "database is locked" in step["error"]
