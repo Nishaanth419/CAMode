@@ -2,6 +2,7 @@ node_modules/
 dist/
 .wrangler/
 .data/
+.data-backup*/
 .venv/
 __pycache__/
 *.py[cod]
