@@ -5,10 +5,13 @@ CA Mode is a local finance assistant with two agents:
 - **Finance Agent** answers general finance questions.
 - **Portfolio Analyzer** answers questions about the signed-in user's INDmoney account through its MCP server.
 
-The app supports OpenAI and Groq. It stores chats and INDmoney OAuth data locally.
+The app supports OpenAI and Groq. Several people can share one computer: each person has a PIN-protected profile with their own chats, INDmoney connection, and daily portfolio snapshots, all stored locally.
 
 ## Features
 
+- Create a profile per person (name + PIN) and switch between profiles.
+- Save optional profile details (risk appetite, horizon, goal, monthly investment, age band) that Portfolio Analyzer uses as context.
+- Save a daily INDmoney portfolio snapshot at 09:00 IST and show net worth with a 30-day trend.
 - Start new chats and return to earlier conversations.
 - Keep each conversation associated with Finance Agent or Portfolio Analyzer.
 - Connect or disconnect INDmoney for portfolio questions.
@@ -92,11 +95,25 @@ Choose **Portfolio Analyzer** for account and market questions, then connect IND
 | `mf_sips` | Mutual fund SIPs |
 | `us_stocks_sips` | US stock SIPs |
 
+### Daily portfolio snapshots
+
+Once a profile connects INDmoney, CA Mode saves a snapshot of `networth_snapshot`, `networth_allocation_breakdown`, and `networth_holdings` right away and then every day at 09:00 IST (before the 09:15 market open, so it captures the previous close). The app must be running to take the snapshot; if it was closed or the laptop was asleep at 09:00, it catches up within five minutes of starting or waking. Use **Refresh snapshot now** in the portfolio card to take one on demand.
+
+Portfolio Analyzer answers net-worth, allocation, holdings, and trend questions from the saved snapshots (`get_portfolio_snapshot`, `get_networth_history`) and says when the snapshot was captured. It still calls INDmoney live for current prices, SIPs, watchlists, options, and anything the snapshot lacks. Snapshots are kept for 365 days.
+
+Snapshots are stored as SQLite rows, not in a vector database: net worth and holdings are exact numbers that need latest-value, date-range, and sorting queries, which similarity search cannot answer reliably.
+
 The Portfolio Analyzer can combine these read-only tools for portfolio breakdowns, fund comparisons, watchlist scans, price and candle charts, and options scenario calculations. The MCP server's current tool list determines which capabilities are available for the connected account. It cannot place trades or change account settings.
 
 ## Local data
 
-The SQLite database at `.data/codemode.sqlite3` stores chats and INDmoney OAuth tokens on this computer. Chat records are isolated by local session. Selecting **Disconnect** revokes the INDmoney access token and removes that session and its chats.
+The SQLite database at `.data/codemode.sqlite3` stores profiles, chats, INDmoney OAuth tokens, and portfolio snapshots on this computer. Each profile only sees its own data. PINs are stored as salted scrypt hashes, and five wrong PINs pause sign-in for five minutes.
+
+- **Disconnect** revokes the INDmoney access token and deletes that profile's snapshots; its chats are kept.
+- **Delete this profile** (in the profile dialog) removes the profile with its chats, snapshots, and INDmoney connection.
+- Upgrading from a version without profiles: the first profile created or unlocked in a browser adopts that browser's existing chats and INDmoney connection. Back up `.data/` before upgrading.
+
+The PIN is a local lock for people sharing one computer, not internet-grade authentication, and tokens and snapshots are not encrypted beyond the file's `0600` permissions. Add real authentication and encryption at rest before exposing CA Mode to a network.
 
 Keep `.env` and `.data/` private; neither should be committed to Git.
 
@@ -116,7 +133,10 @@ The test suite uses mocked AI and INDmoney responses, so it does not make live A
 
 ```text
 app/
-  main.py          FastAPI routes, OAuth, and SQLite persistence
+  main.py          FastAPI routes, OAuth, and the snapshot scheduler lifespan
+  db.py            SQLite connection, schema, and migrations
+  users.py         Profiles, PIN sign-in, sessions, and per-profile INDmoney tokens
+  snapshots.py     Daily portfolio snapshots, history, scheduler, and agent tools
   agent.py         Provider selection and AI tool-call loop
   mcp_client.py    INDmoney MCP discovery and tool calls
 frontend/          Local web app and PWA assets

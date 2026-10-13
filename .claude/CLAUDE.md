@@ -16,7 +16,9 @@ The app supports OpenAI and Groq providers, stores chat history and OAuth tokens
 - **FastAPI** (`app/main.py`): HTTP routes, OAuth flow, SQLite persistence; `POST /api/chat` returns the full answer as plain text with the call trace in an `X-Agent-Trace` header
 - **Agent Loop** (`app/agent.py`): Provider selection (OpenAI/Groq), tool-calling chat loop (`stream_agent` yields `(event, data)` tuples, `run_agent` collects them), request filtering
 - **MCP Client** (`app/mcp_client.py`): INDmoney OAuth-protected MCP discovery and tool execution
-- **Database**: SQLite (`oauth_sessions`, `chats` tables) with WAL mode for concurrency
+- **Profiles** (`app/users.py`): PIN-protected local profiles (scrypt hashes, account-bound lockout); each profile owns its chats, INDmoney tokens, profile fields and snapshots
+- **Snapshots** (`app/snapshots.py`): daily 09:00 IST capture of net worth/allocation/holdings, history queries, the polling scheduler, and the agent's local read-only tools
+- **Database** (`app/db.py`): SQLite (`users`, `oauth_sessions`, `chats`, `portfolio_snapshots`) with WAL mode; a pre-profile `chats` table is migrated to `chats_legacy` and adopted on first sign-in
 
 ### Key Design Patterns
 
@@ -38,7 +40,7 @@ The app supports OpenAI and Groq providers, stores chat history and OAuth tokens
 **Chat Persistence**:
 - Max 20 messages per conversation (oldest truncated as new messages arrive)
 - Max 12,000 chars per stored message, max 50 chats per session (oldest evicted)
-- `session_id` is a random token in an HttpOnly cookie; INDmoney OAuth tokens attach to it
+- `session_id` is a random HttpOnly cookie bound to a profile (`oauth_sessions.user_id`), rotated on sign-in; INDmoney tokens live on the profile (`users.indmoney`)
 - Sessions and the cookie slide forward on each `/api/session` visit; chats expire 30 days after their last message and are hidden/purged once expired
 - `connect_db()` is a context manager that commits/rolls back and always closes the connection
 
@@ -99,7 +101,9 @@ python -m compileall -q app tests && python -m pytest -q
 ### `app/main.py`
 - FastAPI app setup, static file serving, JSON response wrappers
 - OAuth routes: `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect`
-- Session/chat routes: `GET /api/session`, `POST /api/chats` (create), `GET /api/chats` (list), `GET`/`DELETE /api/chats/{id}`, `POST /api/chat` (send a message)
+- Profile routes: `GET /api/session` (current user + profile list), `POST /api/users` (create + sign in), `POST /api/session/login`, `POST /api/session/logout`, `GET`/`PUT /api/profile`, `DELETE /api/users/me`
+- Chat routes (profile required): `POST /api/chats` (create), `GET /api/chats` (list), `GET`/`DELETE /api/chats/{id}`, `POST /api/chat` (send a message)
+- Snapshot routes: `GET /api/snapshots?days=`, `POST /api/snapshots/refresh`
 - Other: `GET /api/providers`, `GET /api/tools`, `GET /healthz`
 - Helper: `session_id(request)` reads the session cookie; `touch_session()` creates/slides it
 - Database helpers: `connect_db()`, `initialize_db()`
@@ -119,6 +123,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `OPENAI_API_KEY` (or `GROQ_API_KEY`): Enables provider
 - `AI_PROVIDER`: Default provider (`openai` or `groq`); user can switch in app
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default: `https://mcp.indmoney.com/mcp`)
+- `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: daily snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; tests set it to `false`)
 - `GROQ_INPUT_TOKEN_BUDGET`, `GROQ_COMPLETION_TOKEN_LIMIT`: Rate limits for Groq
 - `APP_DATA_DIR`: SQLite data directory (default: `.data/`)
 - `LOG_LEVEL`: Logging verbosity (default: `INFO`)
@@ -131,6 +136,8 @@ Test coverage:
 - `test_api.py`: Routes, OAuth flow, chat creation/listing, message streaming
 - `test_agent.py`: Request filtering, Finance Agent logic, Portfolio Analyzer logic, Groq context fitting, error handling
 - `test_mcp_client.py`: MCP session init, tool calls, tool filtering, error recovery
+- `test_users.py`: PIN hashing, sign-in/lockout, session rotation, legacy adoption, profile isolation
+- `test_snapshots.py`: net-worth parsing, IST schedule, capture, due-user selection, scheduler, local tools, retention
 
 ## Performance Notes
 
