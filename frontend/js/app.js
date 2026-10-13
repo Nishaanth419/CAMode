@@ -13,23 +13,32 @@ if ('serviceWorker' in navigator) {
 const statusDot  = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const chatList   = document.getElementById('chat-list');
+const chatCount  = document.getElementById('chat-count');
+const chatSearch = document.getElementById('chat-search');
 const newChatButton = document.getElementById('new-chat-button');
 const emptyState = document.getElementById('empty-state');
 const messages   = document.getElementById('messages');
+const chatScroll = document.getElementById('chat-scroll');
 const userInput  = document.getElementById('user-input');
 const sendBtn    = document.getElementById('send-btn');
 const authButton = document.getElementById('auth-button');
-const mainLayout = document.getElementById('main');
 const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
-const agentPicker = document.getElementById('agent-picker');
+const agentNavItems = document.querySelectorAll('.nav-item[data-agent]');
 const providerPicker = document.getElementById('provider-picker');
-const agentTitle = document.getElementById('agent-title');
-const agentDescription = document.getElementById('agent-description');
+const greeting = document.getElementById('greeting');
 const welcomeAgentName = document.getElementById('welcome-agent-name');
 const welcomeDescription = document.getElementById('welcome-description');
-const financePrompts = document.getElementById('finance-prompts');
-const portfolioPrompts = document.getElementById('portfolio-prompts');
+const followUps = document.getElementById('follow-ups');
+const accountName = document.getElementById('account-name');
+const accountPlan = document.getElementById('account-plan');
+const accountAvatar = document.querySelector('.account-avatar');
+const portfolioPill = document.getElementById('portfolio-pill');
+const portfolioCopy = document.getElementById('portfolio-copy');
+const portfolioCta = document.getElementById('portfolio-cta');
+const menuToggle = document.getElementById('menu-toggle');
+const sidebarScrim = document.getElementById('sidebar-scrim');
+const promptButtons = document.querySelectorAll('[data-prompt]');
 let isConnected = false;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
@@ -78,45 +87,101 @@ function applyTheme(theme) {
   themeToggleIcon.innerHTML = selected === 'dark'
     ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>'
     : '<path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z"/>';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', selected === 'dark' ? '#111815' : '#f5f7f6');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', selected === 'dark' ? '#0d1613' : '#f4f7f5');
   localStorage.setItem('code-mode-theme', selected);
 }
 
 applyTheme(localStorage.getItem('code-mode-theme') || 'light');
 themeToggle.addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  // Plotly bakes colors into each chart, so redraw open charts for the new theme.
+  document.querySelectorAll('.plotly-chart[data-plotly-ready]').forEach(graph => {
+    const spec = chartSpecRegistry.get(graph.id);
+    const view = graph.closest('.data-chart')?.dataset.chartView;
+    if (spec && window.Plotly && view !== 'table') window.Plotly.relayout(graph, plotlyLayout(spec, view));
+  });
 });
+
+function updateGreeting() {
+  const hour = new Date().getHours();
+  greeting.textContent = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+}
+updateGreeting();
+
+/* ── Mobile navigation drawer ───────────────────────────────────────── */
+function setSidebarOpen(open) {
+  document.body.classList.toggle('sidebar-open', open);
+  sidebarScrim.hidden = !open;
+  menuToggle.setAttribute('aria-expanded', String(open));
+}
+menuToggle.addEventListener('click', () => setSidebarOpen(!document.body.classList.contains('sidebar-open')));
+sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setSidebarOpen(false);
+});
+
+function agentName(agent = selectedAgent) {
+  return agent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
+}
+
+function assistantLabel() {
+  return `${agentName()} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
+}
 
 function setAgent(agent) {
   selectedAgent = agent === 'portfolio' ? 'portfolio' : 'finance';
-  agentPicker.value = selectedAgent;
   const isPortfolio = selectedAgent === 'portfolio';
-  const name = isPortfolio ? 'Portfolio Analyzer' : 'Finance Agent';
-  agentTitle.textContent = name;
-  agentDescription.textContent = isPortfolio
-    ? 'Your INDmoney holdings, allocations, and portfolio questions'
-    : 'General finance questions and explanations';
-  welcomeAgentName.textContent = name.toUpperCase();
+  agentNavItems.forEach((item) => item.setAttribute('aria-pressed', String(item.dataset.agent === selectedAgent)));
+  welcomeAgentName.textContent = agentName();
   welcomeDescription.textContent = isPortfolio
     ? 'Ask about your INDmoney investments, holdings, allocations, and account activity.'
     : 'Ask basic finance questions and get clear explanations in plain language.';
-  financePrompts.hidden = isPortfolio;
-  portfolioPrompts.hidden = !isPortfolio;
-  userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask a finance question…';
+  userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask anything about your finances…';
   localStorage.setItem('ca-mode-agent', selectedAgent);
 }
 
-agentPicker.addEventListener('change', () => {
+async function switchAgent(agent) {
   if (isStreaming) return;
-  setAgent(agentPicker.value);
-  startNewChat().catch((error) => addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>'));
-});
+  setAgent(agent);
+  await startNewChat();
+}
+
+agentNavItems.forEach((item) => item.addEventListener('click', () => {
+  setSidebarOpen(false);
+  if (item.dataset.agent === selectedAgent) return;
+  switchAgent(item.dataset.agent).catch(showError);
+}));
 setAgent(selectedAgent);
+
+function showError(error) {
+  addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
+}
 
 /* ── Status helpers ─────────────────────────────────────────────────── */
 function setStatus(state, label) {
   statusDot.className = 'status-dot ' + state;
   statusText.textContent = label;
+}
+
+function setBusy(busy) {
+  isStreaming = busy;
+  sendBtn.disabled = busy;
+  promptButtons.forEach((button) => { button.disabled = busy; });
+  agentNavItems.forEach((item) => { item.disabled = busy; });
+}
+
+function renderAccount() {
+  authButton.textContent = isConnected ? 'Disconnect' : 'Connect';
+  authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
+  accountName.textContent = isConnected ? 'INDmoney linked' : 'Guest';
+  accountPlan.textContent = isConnected ? 'Portfolio access on' : 'Not connected';
+  accountAvatar.classList.toggle('is-connected', isConnected);
+  portfolioPill.textContent = isConnected ? 'Connected' : 'Not connected';
+  portfolioPill.classList.toggle('is-connected', isConnected);
+  portfolioCopy.textContent = isConnected
+    ? 'Your INDmoney account is linked. Ask the Portfolio Analyzer for a live snapshot of your net worth and holdings.'
+    : 'Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.';
+  portfolioCta.textContent = isConnected ? 'Get net worth snapshot' : 'Connect INDmoney';
 }
 
 /* ── Load this signed-in user's conversations ───────────────────────── */
@@ -135,10 +200,7 @@ async function loadChats() {
       throw new Error(data.error || ('HTTP ' + response.status));
     }
     isConnected = Boolean(session.connected);
-    authButton.textContent = isConnected ? 'Disconnect' : 'Connect INDmoney';
-    authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
-    authButton.style.display = '';
-    mainLayout.style.display = 'flex';
+    renderAccount();
     chats = data.chats || [];
     renderChats();
     if (chats.length) await selectChat(chats[0].id);
@@ -150,7 +212,7 @@ async function loadChats() {
   }
 }
 
-authButton.addEventListener('click', async () => {
+async function toggleConnection() {
   if (!isConnected) {
     window.location.assign('/auth/indmoney/connect');
     return;
@@ -160,28 +222,65 @@ authButton.addEventListener('click', async () => {
     await fetch('/auth/indmoney/disconnect', { method: 'POST' });
     messages.innerHTML = '';
     messages.classList.remove('has-messages');
-    emptyState.style.display = '';
+    emptyState.hidden = false;
+    followUps.hidden = true;
     chats = [];
     activeChatId = null;
     await loadChats();
   } finally {
     authButton.disabled = false;
   }
+}
+
+authButton.addEventListener('click', toggleConnection);
+portfolioCta.addEventListener('click', () => {
+  if (!isConnected) {
+    toggleConnection();
+    return;
+  }
+  runPrompt('Give me a snapshot of my current net worth.', 'portfolio').catch(showError);
 });
+
+function relativeDay(timestamp) {
+  if (!Number.isFinite(Number(timestamp))) return '';
+  const startOfDay = (value) => new Date(value).setHours(0, 0, 0, 0);
+  const days = Math.round((startOfDay(Date.now()) - startOfDay(Number(timestamp))) / 86_400_000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  return new Date(Number(timestamp)).toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
 
 function renderChats() {
   chatList.innerHTML = '';
-  for (const chat of chats) {
+  const query = chatSearch.value.trim().toLowerCase();
+  const visible = query ? chats.filter((chat) => (chat.title || 'New chat').toLowerCase().includes(query)) : chats;
+  chatCount.textContent = chats.length ? String(chats.length) : '';
+  if (!visible.length) {
+    const empty = document.createElement('div');
+    empty.className = 'chat-empty';
+    empty.textContent = query ? 'No chats match your search.' : 'No conversations yet.';
+    chatList.appendChild(empty);
+    return;
+  }
+  for (const chat of visible) {
     const row = document.createElement('div');
     row.className = 'chat-row';
     const select = document.createElement('button');
     select.type = 'button';
     select.className = 'chat-select' + (chat.id === activeChatId ? ' active' : '');
-    select.textContent = chat.title || 'New chat';
-    select.title = select.textContent;
-    select.addEventListener('click', () => selectChat(chat.id).catch((error) => {
-      addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
-    }));
+    select.title = chat.title || 'New chat';
+    const title = document.createElement('span');
+    title.className = 'chat-title';
+    title.textContent = chat.title || 'New chat';
+    const meta = document.createElement('span');
+    meta.className = 'chat-meta';
+    meta.textContent = [agentName(chat.agentType), relativeDay(chat.updatedAt)].filter(Boolean).join(' · ');
+    select.append(title, meta);
+    select.addEventListener('click', () => {
+      setSidebarOpen(false);
+      selectChat(chat.id).catch(showError);
+    });
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'chat-delete';
@@ -190,12 +289,14 @@ function renderChats() {
     remove.setAttribute('aria-label', 'Delete ' + (chat.title || 'chat'));
     remove.addEventListener('click', (event) => {
       event.stopPropagation();
-      deleteChat(chat.id).catch((error) => addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>'));
+      deleteChat(chat.id).catch(showError);
     });
     row.append(select, remove);
     chatList.appendChild(row);
   }
 }
+
+chatSearch.addEventListener('input', renderChats);
 
 async function refreshChats() {
   const response = await fetch('/api/chats');
@@ -203,6 +304,14 @@ async function refreshChats() {
   chats = (await response.json()).chats || [];
   renderChats();
   setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
+}
+
+function resetConversationView() {
+  messages.innerHTML = '';
+  messages.classList.remove('has-messages');
+  emptyState.hidden = false;
+  followUps.hidden = true;
+  chatScroll.scrollTop = 0;
 }
 
 async function startNewChat() {
@@ -216,9 +325,7 @@ async function startNewChat() {
   if (!response.ok) throw new Error(data.error || 'Could not create a new chat.');
   chats.unshift(data);
   activeChatId = data.id;
-  messages.innerHTML = '';
-  messages.classList.remove('has-messages');
-  emptyState.style.display = '';
+  resetConversationView();
   renderChats();
   userInput.focus();
 }
@@ -230,9 +337,7 @@ async function selectChat(chatId) {
   if (!response.ok) throw new Error(data.error || 'Could not open this chat.');
   activeChatId = chatId;
   setAgent(data.agentType || 'portfolio');
-  messages.innerHTML = '';
-  messages.classList.remove('has-messages');
-  emptyState.style.display = '';
+  resetConversationView();
   for (const message of data.messages || []) {
     if (message.role === 'user') addMessage('user', escHtml(message.content).replace(/\n/g, '<br>'));
     else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content), message.trace || []);
@@ -253,38 +358,53 @@ async function deleteChat(chatId) {
   } else renderChats();
 }
 
-newChatButton.addEventListener('click', () => startNewChat().catch((error) => {
-  addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
-}));
+newChatButton.addEventListener('click', () => {
+  setSidebarOpen(false);
+  startNewChat().catch(showError);
+});
 
 /* ── Chat ────────────────────────────────────────────────────────────── */
 function showMessages() {
-  emptyState.style.display = 'none';
+  emptyState.hidden = true;
   messages.classList.add('has-messages');
+  followUps.hidden = false;
+}
+
+function scrollToBottom() {
+  chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
 function timeStr() {
   return new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
 }
 
+const ASSISTANT_AVATAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="4"/><path d="M12 4v4M9.5 13h0M14.5 13h0"/></svg>';
+
+function messageShell(role, label, time = '') {
+  const avatar = role === 'user' ? 'You' : ASSISTANT_AVATAR;
+  return `
+    <div class="message-header">
+      <div class="message-avatar ${role}">${avatar}</div>
+      <div class="message-meta">
+        <div class="message-role">${escHtml(label)}</div>
+        ${time ? `<div class="message-time">${time}</div>` : ''}
+      </div>
+    </div>`;
+}
+
 function addMessage(role, content, trace = []) {
   showMessages();
   const div = document.createElement('div');
   div.className = `message ${role}`;
-  const avatar = role === 'user' ? 'U' : 'CA';
-  const label  = role === 'user' ? 'You' : `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
+  const label = role === 'user' ? 'You' : assistantLabel();
   div.innerHTML = `
-    <div class="message-header">
-      <div class="message-avatar ${role}">${avatar}</div>
-      <div class="message-role">${label}</div>
-      <div class="message-time">${timeStr()}</div>
-    </div>
+    ${messageShell(role, label, timeStr())}
     <div class="message-body">${content}</div>
     ${role === 'assistant' ? renderTraceDropdown(trace) : ''}
   `;
   messages.appendChild(div);
   renderPlotlyCharts(div);
-  messages.scrollTop = messages.scrollHeight;
+  scrollToBottom();
   return div;
 }
 
@@ -330,16 +450,13 @@ function addTypingIndicator() {
   div.className = 'message assistant';
   div.id = 'typing-indicator';
   div.innerHTML = `
-    <div class="message-header">
-      <div class="message-avatar assistant">CA</div>
-      <div class="message-role">${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}</div>
-    </div>
+    ${messageShell('assistant', assistantLabel())}
     <div class="message-body">
       <div class="typing-indicator"><span></span><span></span><span></span></div>
     </div>
   `;
   messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
+  scrollToBottom();
   return div;
 }
 
@@ -355,8 +472,7 @@ async function sendMessage(text) {
     addMessage('assistant', '<span style="color:var(--error)">Configure at least one AI API key in .env, then restart CA Mode.</span>');
     return;
   }
-  isStreaming = true;
-  sendBtn.disabled = true;
+  setBusy(true);
   setStatus('loading', 'Thinking…');
 
   addMessage('user', escHtml(text).replace(/\n/g, '<br>'));
@@ -385,7 +501,6 @@ async function sendMessage(text) {
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '', trace);
-    msgDiv.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
 
@@ -402,7 +517,7 @@ async function sendMessage(text) {
       // Render the accumulated text as it comes in
       destroyPlotlyCharts(bodyDiv);
       bodyDiv.innerHTML = renderMarkdown(rawText.trim());
-      messages.scrollTop = messages.scrollHeight;
+      scrollToBottom();
     }
 
     if (rawText.trim() === '') {
@@ -424,16 +539,14 @@ async function sendMessage(text) {
     } catch { /* The compact trace from the response header is still visible. */ }
   } catch (err) {
     removeTypingIndicator();
-    const errorMessage = addMessage('assistant',
+    addMessage('assistant',
       `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`,
       err.trace || [],
     );
-    errorMessage.querySelector('.message-role').textContent = `${selectedAgent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent'} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
     setStatus('error', 'Request failed');
   } finally {
-    isStreaming = false;
-    sendBtn.disabled = false;
-    messages.scrollTop = messages.scrollHeight;
+    setBusy(false);
+    scrollToBottom();
   }
 }
 
@@ -568,7 +681,8 @@ function parseChartSpec(json) {
     const spec = JSON.parse(normalized);
     return spec && (
       (['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data)) ||
-      (spec.type === 'line' && Array.isArray(spec.series))
+      (spec.type === 'line' && Array.isArray(spec.series)) ||
+      (spec.type === 'candlestick' && Array.isArray(spec.candles))
     ) ? spec : null;
   } catch {
     return null;
@@ -596,27 +710,47 @@ function chartSeries(spec) {
   })).filter(item => item.name && item.points.length > 1);
 }
 
+function chartCandles(spec) {
+  return (Array.isArray(spec?.candles) ? spec.candles : []).slice(0, 300).map(item => ({
+    label: cleanChartText(item?.label, 50),
+    open: Number(item?.open), high: Number(item?.high),
+    low: Number(item?.low), close: Number(item?.close),
+  })).filter(item => item.label && [item.open, item.high, item.low, item.close].every(Number.isFinite)
+    && item.high >= Math.max(item.open, item.close, item.low)
+    && item.low <= Math.min(item.open, item.close, item.high));
+}
+
 function renderDataChart(spec) {
-  if (!spec || !['bar', 'donut', 'line'].includes(spec.type)) return '';
+  if (!spec || !['bar', 'donut', 'line', 'candlestick'].includes(spec.type)) return '';
   const isLine = spec.type === 'line';
-  const rows = isLine ? [] : chartRows(spec);
+  const isCandlestick = spec.type === 'candlestick';
+  const rows = isLine || isCandlestick ? [] : chartRows(spec);
   const series = isLine ? chartSeries(spec) : [];
-  if (isLine ? !series.length : !rows.length) return '';
+  const candles = isCandlestick ? chartCandles(spec) : [];
+  if (isLine ? !series.length : isCandlestick ? !candles.length : !rows.length) return '';
   const canPie = !isLine && rows.every(row => row.value >= 0) && rows.some(row => row.value > 0);
   const id = `plotly-${Math.random().toString(36).slice(2)}`;
-  const safeSpec = isLine
+  const safeSpec = isCandlestick
+    ? { type: 'candlestick', title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), candles }
+    : isLine
     ? { type: 'line', title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), series }
     : { type: spec.type, title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), data: rows };
   chartSpecRegistry.set(id, safeSpec);
   const title = escHtml(safeSpec.title || 'Portfolio data');
-  const initialView = isLine ? 'line' : spec.type === 'donut' && canPie ? 'pie' : 'bar';
-  const controls = isLine ? '' : `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button ${initialView === 'bar' ? 'is-active' : ''}" aria-pressed="${initialView === 'bar'}" onclick="setChartView(this, 'bar')">Bars</button>${canPie ? `<button type="button" class="chart-view-button ${initialView === 'pie' ? 'is-active' : ''}" aria-pressed="${initialView === 'pie'}" onclick="setChartView(this, 'pie')">Donut</button>` : ''}<button type="button" class="chart-view-button" aria-pressed="false" onclick="setChartView(this, 'table')">Data</button></div>`;
+  const initialView = isLine ? 'line' : isCandlestick ? 'candlestick' : spec.type === 'donut' && canPie ? 'pie' : 'bar';
+  const controls = isLine ? '' : isCandlestick
+    ? `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button is-active" aria-pressed="true" onclick="setChartView(this, 'candlestick')">Candles</button><button type="button" class="chart-view-button" aria-pressed="false" onclick="setChartView(this, 'table')">Data</button></div>`
+    : `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button ${initialView === 'bar' ? 'is-active' : ''}" aria-pressed="${initialView === 'bar'}" onclick="setChartView(this, 'bar')">Bars</button>${canPie ? `<button type="button" class="chart-view-button ${initialView === 'pie' ? 'is-active' : ''}" aria-pressed="${initialView === 'pie'}" onclick="setChartView(this, 'pie')">Donut</button>` : ''}<button type="button" class="chart-view-button" aria-pressed="false" onclick="setChartView(this, 'table')">Data</button></div>`;
   const table = renderChartTable(safeSpec);
   return `<figure class="data-chart${isLine ? ' line-chart' : ' category-chart'}" data-chart-id="${id}" data-chart-view="${initialView}"><div class="chart-heading"><figcaption class="data-chart-title">${title}</figcaption>${controls}</div><div class="plotly-chart" id="${id}" role="img" aria-label="Interactive chart: ${title}"></div><div class="chart-data-panel" hidden>${table}</div><p class="chart-hint">Hover for values. Use the Plotly toolbar to zoom, pan, reset, or export the chart.</p></figure>`;
 }
 
 function renderChartTable(spec) {
   const esc = escHtml;
+  if (spec.type === 'candlestick') {
+    const rows = spec.candles.map(item => `<tr><td>${esc(item.label)}</td><td>${item.open}</td><td>${item.high}</td><td>${item.low}</td><td>${item.close}</td></tr>`).join('');
+    return `<div class="chart-data-scroll"><table class="chart-data-table"><thead><tr><th>Period</th><th>Open</th><th>High</th><th>Low</th><th>Close</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
   if (spec.type === 'line') {
     const rows = spec.series[0]?.points.map((point, index) => {
       const values = spec.series.map(item => item.points[index]?.value);
@@ -656,11 +790,25 @@ function plotlyLayout(spec, view) {
   } else if (spec.type === 'line') {
     layout.hovermode = 'x unified';
     layout.xaxis = { ...layout.xaxis, rangeslider: { visible: spec.series[0]?.points.length > 8 } };
+  } else if (spec.type === 'candlestick') {
+    layout.hovermode = 'x unified';
+    layout.xaxis = { ...layout.xaxis, rangeslider: { visible: spec.candles.length > 8 } };
   }
   return layout;
 }
 
 function plotlyTraces(spec, view) {
+  if (spec.type === 'candlestick') return [{
+    type: 'candlestick',
+    x: spec.candles.map(item => item.label),
+    open: spec.candles.map(item => item.open),
+    high: spec.candles.map(item => item.high),
+    low: spec.candles.map(item => item.low),
+    close: spec.candles.map(item => item.close),
+    increasing: { line: { color: '#27835e' } },
+    decreasing: { line: { color: '#d16f62' } },
+    hoverlabel: { namelength: -1 },
+  }];
   if (spec.type === 'line') return spec.series.map(item => ({
     type: 'scatter', mode: 'lines+markers', name: item.name,
     x: item.points.map(point => point.label), y: item.points.map(point => point.value),
@@ -799,14 +947,18 @@ userInput.addEventListener('keydown', (e) => {
 /* ── Send button ─────────────────────────────────────────────────────── */
 sendBtn.addEventListener('click', () => sendMessage(userInput.value));
 
-/* ── Example prompts ─────────────────────────────────────────────────── */
-document.querySelectorAll('.example-prompt').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const prompt = btn.dataset.prompt;
-    userInput.value = prompt;
-    autoResize();
-    sendMessage(prompt);
-  });
+/* ── Suggested prompts (feature cards, rail, quick tools, follow-ups) ── */
+async function runPrompt(prompt, agent) {
+  if (isStreaming) return;
+  // Agents keep separate conversations, so a prompt for the other agent
+  // opens a fresh chat with that agent before sending.
+  if (agent && agent !== selectedAgent) await switchAgent(agent);
+  setSidebarOpen(false);
+  await sendMessage(prompt);
+}
+
+promptButtons.forEach(btn => {
+  btn.addEventListener('click', () => runPrompt(btn.dataset.prompt, btn.dataset.agent).catch(showError));
 });
 
 /* ── Init ────────────────────────────────────────────────────────────── */

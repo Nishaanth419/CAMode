@@ -71,6 +71,46 @@ def test_groq_context_keeps_latest_user_question():
     assert fitted[0]["role"] == "system"
 
 
+def test_unrelated_question_does_not_inherit_finance_scope_from_history():
+    history = [
+        {"role": "user", "content": "Summarize my portfolio allocation."},
+        {"role": "assistant", "content": "Your portfolio allocation is ..."},
+    ]
+
+    assert agent._blocked_request_reason("Who is the PM of India?", history) == agent.FINANCE_ONLY_NOTICE
+    assert agent._blocked_request_reason("Why?", history) is None
+
+
+@pytest.mark.parametrize("question", [
+    "What's my total net worth right now?",
+    "Show the Nifty option chain for next monthly expiry.",
+    "Get the 5-minute chart for HDFC Bank today.",
+    "Top 5 flexi-cap funds by 3-year returns.",
+    "Current price of Apple and Tesla?",
+    "Scan my Indian stock watchlist for breakouts.",
+])
+def test_indmoney_documented_market_questions_pass_scope_and_require_data(question):
+    assert agent._blocked_request_reason(question, []) is None
+    assert agent._requires_indmoney_data(question, []) is True
+
+
+@pytest.mark.asyncio
+async def test_portfolio_agent_can_answer_general_finance_without_account_tool(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(
+        agent.httpx, "AsyncClient",
+        lambda **kwargs: FakeAsyncClient([_completion("Compound interest earns interest on prior interest.")], captured),
+    )
+
+    answer = await agent.run_agent(
+        "What is compound interest?", "https://unused", None, [], "portfolio", "openai",
+    )
+
+    assert answer == "Compound interest earns interest on prior interest."
+    assert "tools" not in captured[0]["payload"]
+
+
 class FakeResponse:
     is_success = True
     status_code = 200
@@ -115,6 +155,50 @@ async def test_finance_agent_returns_answer_without_mcp(monkeypatch):
     assert answer == "A budget tracks income and spending."
     assert captured[0]["payload"]["messages"][-1]["content"] == "What is a budget?"
     assert "tools" not in captured[0]["payload"]
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_blocks_net_worth_code_requests_before_provider_call(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    answer = await agent.run_agent(
+        "Write Python code to retrieve my net worth",
+        "https://unused", None, [], "finance", "openai",
+    )
+
+    assert "can’t write or debug code" in answer
+    assert "finance questions" in answer
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_replaces_code_shaped_model_output(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    fake_client = FakeAsyncClient(
+        [_completion("```python\nprint('net worth')\n```")], [],
+    )
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "How is net worth calculated?", "https://unused", None, [], "finance", "openai",
+    )
+
+    assert "```" not in answer
+    assert "print(" not in answer
+    assert "finance questions" in answer
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_allows_inline_markdown_in_finance_answers(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    answer_text = "Nifty PCR (`put-call ratio`) is 0.98. If PCR is above 1: call open interest exceeds put open interest."
+    fake_client = FakeAsyncClient([_completion(answer_text)], [])
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "What is the Nifty PCR?", "https://unused", None, [], "finance", "openai",
+    )
+
+    assert answer == answer_text
 
 
 @pytest.mark.asyncio

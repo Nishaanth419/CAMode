@@ -150,13 +150,13 @@ def cookie_options(request: Request) -> dict[str, Any]:
     return {"key": SESSION_COOKIE, "httponly": True, "secure": is_secure_request(request), "samesite": "lax", "path": "/", "max_age": SESSION_MAX_AGE_SECONDS}
 
 
-async def access_token(request: Request) -> tuple[str | None, str | None]:
+async def access_token(request: Request, *, force_refresh: bool = False) -> tuple[str | None, str | None]:
     sid = session_id(request)
     if not sid:
         return None, None
     stored = get_session(sid)
     token = stored.get("accessToken")
-    if token and stored.get("expiresAt", 0) > time.time() * 1000 + 30_000:
+    if not force_refresh and token and stored.get("expiresAt", 0) > time.time() * 1000 + 30_000:
         return sid, token
     if not stored.get("refreshToken") or not stored.get("clientId") or not stored.get("clientSecret"):
         return sid, None
@@ -178,6 +178,11 @@ async def access_token(request: Request) -> tuple[str | None, str | None]:
 
 def auth_error(message: str) -> JSONResponse:
     return JSONResponse({"error": message, "loginUrl": "/auth/indmoney/connect"}, status_code=401, headers={"Cache-Control": "no-store"})
+
+
+def is_indmoney_auth_error(error: Exception) -> bool:
+    details = str(error).lower()
+    return "401" in details and any(term in details for term in ("invalid_token", "authentication required", "unauthorized"))
 
 
 @app.middleware("http")
@@ -401,14 +406,32 @@ async def chat(body: ChatRequest, request: Request):
     try:
         answer = await run_agent(message, MCP_RESOURCE, token, data.get("messages", []), body.agentType, body.aiProvider)
     except Exception as exc:
-        logger.exception("Chat agent request failed")
-        details = str(exc)
-        error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
-        trace = getattr(exc, "trace", [])[:12]
-        return JSONResponse(
-            {"error": error, "details": details}, status_code=502,
-            headers={"X-Agent-Trace": trace_header(trace)},
-        )
+        if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
+            try:
+                refreshed_sid, refreshed_token = await access_token(request, force_refresh=True)
+            except Exception:
+                logger.exception("INDmoney token refresh failed after an MCP authorization error")
+                return auth_error("Your INDmoney session needs to be renewed. Reconnect your account and try again.")
+            if not refreshed_sid or not refreshed_token:
+                return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
+            try:
+                answer = await run_agent(message, MCP_RESOURCE, refreshed_token, data.get("messages", []), body.agentType, body.aiProvider)
+            except Exception as retry_exc:
+                if is_indmoney_auth_error(retry_exc):
+                    return auth_error("INDmoney rejected the renewed session. Reconnect your account and try again.")
+                exc = retry_exc
+            else:
+                exc = None
+
+        if exc is not None:
+            logger.error("Chat agent request failed: %s", exc)
+            details = str(exc)
+            error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
+            trace = getattr(exc, "trace", [])[:12]
+            return JSONResponse(
+                {"error": error, "details": details}, status_code=502,
+                headers={"X-Agent-Trace": trace_header(trace)},
+            )
     answer_text = str(answer)
     trace = getattr(answer, "trace", [])[:12]
     if answer_text.strip():

@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from typing import Any, AsyncIterator
 
@@ -15,13 +16,99 @@ from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.agent")
 
-PORTFOLIO_SYSTEM_PROMPT = """You are Portfolio Analyzer, a helpful assistant that answers questions using available INDmoney MCP tools. Use earlier user and assistant messages as context, especially for follow-up questions.
+FINANCE_ONLY_NOTICE = "I can help with finance questions and portfolio analysis. Ask me about budgeting, saving, banking, investing concepts, financial products, or your connected portfolio."
+
+_CODE_REQUEST_RE = re.compile(
+    r"\b(?:code|coding|programming|script|snippet|source\s+file|"
+    r"python|javascript|typescript|java|c\+\+|rust|html|css)\b|"
+    r"\b(?:write|create|generate|build|make|show|give|debug|fix|implement)\b"
+    r".{0,80}\b(?:program|function|algorithm)\b",
+    re.IGNORECASE,
+)
+_FINANCE_TOPIC_RE = re.compile(
+    r"\b(?:financ\w*|money|budget\w*|saving\w*|spend\w*|bank\w*|cash|income|salary|"
+    r"expense\w*|debt|loan\w*|credit|mortgage|interest|tax\w*|insurance|retire\w*|"
+    r"invest\w*|stock\w*|share\w*|equity|bond\w*|portfolio|holding\w*|account|net\s+worth|"
+    r"balance\w*|allocation\w*|transaction\w*|mutual\s+fund\w*|funds?|nav|aum|xirr|p\s*&\s*l|"
+    r"etf\w*|sip\w*|dividend\w*|return\w*|benchmark\w*|asset\w*|liabilit\w*|"
+    r"inflation|market\w*|crypto\w*|pension|rupee\w*|dollar\w*|price\w*|quote\w*|ticker\w*|"
+    r"nifty|sensex|index\w*|option\w*|derivative\w*|f\s*&\s*o|futures?|expiry|strike\w*|"
+    r"candle\w*|ohlc|watchlist|analyst\w*|target\s+price|sentiment|news|greeks?|delta|gamma|"
+    r"theta|vega|iv|vwap|pcr|max\s+pain|breakout\w*|support|resistance|volatil\w*|"
+    r"expense\s+ratio|category|large.?cap|mid.?cap|small.?cap|elss|ppf|epf|nps|fixed\s+deposit|"
+    r"real\s+estate|margin|breakeven|risk.?reward|call\s+oi|put\s+oi|"
+    r"parag\s+parikh|flexi.?cap|small.?cap|large.?cap|mid.?cap)\b",
+    re.IGNORECASE,
+)
+_GREETING_RE = re.compile(r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!.?\s]*$", re.IGNORECASE)
+_FINANCE_FOLLOWUP_RE = re.compile(
+    r"^(?:and\b|also\b|what\s+about\b|how\s+about\b|why\b|how\b|"
+    r"what\s+does\s+(?:it|that|this)\b|what\s+if\b|compare\s+(?:it|that|this)\b|"
+    r"explain\s+(?:it|that|this)\b|break\s+(?:it|that|this)\s+down\b|"
+    r"can\s+you\s+(?:explain|compare|clarify)\s+(?:it|that|this)\b)",
+    re.IGNORECASE,
+)
+_CODE_OUTPUT_RE = re.compile(
+    r"```(?!chart\s*(?:\n|$))|(?:^|\n)\s*(?:import\s+\w+|from\s+\w+\s+import\s+|"
+    r"def\s+\w+\s*\(|class\s+\w+\s*[:(]|print\s*\(|(?:const|let|var)\s+\w+\s*=)|"
+    r"if\s+__name__\s*==",
+    re.IGNORECASE | re.MULTILINE,
+)
+_INDMONEY_DATA_REQUEST_RE = re.compile(
+    r"\b(?:my\s+(?:portfolio|net\s+worth|holdings|stocks?|funds?|sips?|watchlist|account)|"
+    r"portfolio|holdings|net\s+worth|allocation|watchlist|sips?|option\s+chain|options?|"
+    r"derivatives?|f\s*&\s*o|iron\s+condor|put\s+spread|call\s+spread|strangle|straddle|"
+    r"greeks?|ohlc|candles?|chart|price|quotes?|analyst|target\s+price|sentiment|news|"
+    r"breakout|support|resistance|vwap|market\s+cap|xirr|p\s*&\s*l|exposure|concentration|"
+    r"sector\s+(?:breakdown|exposure|allocation)|underperform\w*|outperform\w*|"
+    r"dues|expiry|nifty|sensex|"
+    r"latest\s+news|live\s+(?:market|price)|current\s+price|top\s+\d+\s+.+funds?|"
+    r"best\s+.+funds?|compare\s+.+funds?|deep\s+dive\s+.+funds?)\b",
+    re.IGNORECASE,
+)
+
+
+def _blocked_request_reason(message: str, history: list[dict[str, str]]) -> str | None:
+    """Apply request boundaries before any user text reaches the model."""
+    if _CODE_REQUEST_RE.search(message):
+        return "I can answer finance questions, but I can’t write or debug code. " + FINANCE_ONLY_NOTICE
+
+    if not _GREETING_RE.fullmatch(message.strip()):
+        context = " ".join(item.get("content", "") for item in history[-6:])
+        finance_topic_in_message = bool(_FINANCE_TOPIC_RE.search(message))
+        finance_followup = bool(_FINANCE_FOLLOWUP_RE.search(message.strip()))
+        finance_topic_in_context = bool(_FINANCE_TOPIC_RE.search(context))
+        if not (finance_topic_in_message or (finance_followup and finance_topic_in_context)):
+            return FINANCE_ONLY_NOTICE
+    return None
+
+
+def _requires_indmoney_data(message: str, history: list[dict[str, str]]) -> bool:
+    """Identify account/live-data requests; general finance questions need no MCP call."""
+    if _INDMONEY_DATA_REQUEST_RE.search(message):
+        return True
+    # Keep tool-backed follow-ups attached to a recent MCP result.
+    recent = " ".join(item.get("content", "") for item in history[-4:])
+    return bool(_FINANCE_FOLLOWUP_RE.match(message.strip()) and _INDMONEY_DATA_REQUEST_RE.search(recent))
+
+
+def _contains_code_output(content: str) -> bool:
+    """Reject code-shaped model output but allow the app's chart data blocks."""
+    code_fences = re.findall(r"```([^\n`]*)", content)[::2]
+    if any(label.strip().lower() != "chart" for label in code_fences):
+        return True
+    without_chart_blocks = re.sub(r"```chart\s*.*?```", "", content, flags=re.IGNORECASE | re.DOTALL)
+    return bool(_CODE_OUTPUT_RE.search(without_chart_blocks))
+
+PORTFOLIO_SYSTEM_PROMPT = """You are Portfolio Analyzer in CA Mode. Answer personal-finance, investment, portfolio, and market-data questions using the available INDmoney MCP tools. Stay within those topics; politely decline unrelated requests. Never write, explain, or debug programming code. The MCP tools are read-only: never claim to place trades, alter SIPs, move money, or change the account. Use earlier user and assistant messages for relevant follow-ups, but answer only the current request.
 
 Answer only what the user asked. Keep the response proportional to the question. Do not add unsolicited next steps, action plans, recommendations, or suggestions for what to invest in. In particular, when asked to analyze an equity or holding, provide the requested analysis and stop; do not append future-investment ideas or a generic “what to do next” section. Offer next steps or future-investment ideas only when the user explicitly asks for them.
 
-Call relevant tools directly when the user asks about their account. Use only data returned by tools; never invent holdings, balances, transactions, returns, dates, or benchmark values. If a tool fails, report its exact error and do not claim that data was retrieved or retry speculatively. The connected tools may provide current holdings and SIPs but not historical performance or benchmark series. Compare portfolio returns with a benchmark only when the retrieved data includes comparable return values for both over the same period and on the same basis. State the period and source when available; otherwise say that the comparison needs historical portfolio and benchmark data and do not estimate it.
+Choose tools from their names, descriptions, and input schemas. Resolve a named stock, index, derivative, or fund with `lookup_ind_keys` when another tool requires its INDmoney identifier. For portfolio health and allocation questions, use the net-worth snapshot, relevant allocation breakdowns, and holdings. For listed-stock price, chart, and technical questions, use live details and OHLC tools; use watchlist first for watchlist scans. For options questions, retrieve the option chain and, when relevant, Greeks history before calculating scenario payoffs. For fund discovery, use category search; for a named fund or comparisons, use fund details and request comparable return periods, benchmark, fee, allocation, or holdings data as needed. Use SIP tools for the requested SIP type. Chain multiple read-only calls when the question needs them, and stop once the requested facts are supported.
 
-Use clear headings and explain what the numbers mean. When useful numeric data is available, include a detailed, data-driven visualization in a `chart` fenced block. Supported formats are `bar` or `donut` with `data:[{"label":"...","value":123}]`, and `line` with `series:[{"name":"Portfolio","data":[{"label":"Jan","value":2.3}]}]`. Example for a valid return comparison:
+Use only tool-returned values; never invent holdings, balances, transactions, live quotes, historical prices, returns, analyst targets, news, option Greeks, margin, or benchmark values. If a tool fails or returns no data, say which requested data is unavailable. Compare returns only for matching periods and bases. For calculations, show the inputs and formula in plain language; calculate only from returned values or assumptions clearly supplied by the user. If a margin requirement or other value is not returned and cannot be derived from supplied data, say so instead of estimating it. Never claim a trade or strategy is suitable or tell the user to enter it. When discussing an options strategy, state that it is a hypothetical scenario, not a trade recommendation, and include the key loss exposure and assumptions.
+
+Use clear headings and explain what the numbers mean. When useful numeric data is available, include a detailed, data-driven visualization in a `chart` fenced block. Supported formats are `bar` or `donut` with `data:[{"label":"...","value":123}]`, `line` with `series:[{"name":"Portfolio","data":[{"label":"Jan","value":2.3}]}]`, and `candlestick` with `candles:[{"label":"2026-01-01","open":100,"high":105,"low":98,"close":103}]`. Use a candlestick chart only with complete OHLC values returned by the market-data tool; otherwise use a line chart of returned closes. Example for a valid return comparison:
 ```chart
 {"type":"line","title":"Cumulative returns vs benchmark","unit":"%","series":[{"name":"Portfolio","data":[{"label":"Jan","value":2.3},{"label":"Feb","value":4.1}]},{"name":"Benchmark","data":[{"label":"Jan","value":1.8},{"label":"Feb","value":3.2}]}]}
 ```
@@ -29,7 +116,7 @@ Use line charts for dated trends or return comparisons, bars for category/holdin
 
 If explicitly asked what to invest in next, offer cautious, educational ideas to research based on the information actually available (for example, diversification, costs, risk, time horizon, liquidity, and overlap with existing holdings). Do not tell the user to buy or sell a specific security, promise returns, or claim an investment is suitable for them. Clearly separate observations from possibilities and mention missing information that affects the decision. Whenever discussing future investment ideas, end with: “This is not investment advice. Research each investment, its risks, costs, and fit for your circumstances before investing; consider consulting a qualified financial adviser.”"""
 
-FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer only what the user asked, in clear and plain language; keep the answer proportional and do not add unsolicited next steps or investment suggestions. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. Offer possible investments only if the user explicitly asks for ideas; then frame them as educational topics to research, discuss their risks and costs, and say: “This is not investment advice. Research each investment, its risks, costs, and fit for your circumstances before investing; consider consulting a qualified financial adviser.” When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for follow-up questions."""
+FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer only finance questions, in clear and plain language; keep the answer proportional and do not add unsolicited next steps or investment suggestions. If asked for anything outside finance, briefly decline and invite a finance question. Never write, explain, or debug programming code, even if asked. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. Offer possible investments only if the user explicitly asks for ideas; then frame them as educational topics to research, discuss their risks and costs, and say: “This is not investment advice. Research each investment, its risks, costs, and fit for your circumstances before investing; consider consulting a qualified financial adviser.” When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for finance follow-up questions."""
 
 PROVIDERS = {
     "openai": {
@@ -188,11 +275,18 @@ async def stream_agent(
       • error       – { message }                   fatal error
       • done        – {}                            stream finished
     """
+    blocked_reason = _blocked_request_reason(message, history)
+    if blocked_reason:
+        yield _sse("content", {"text": blocked_reason})
+        yield _sse("done", {"answer": blocked_reason})
+        return
+
     config = provider_config(provider)
     session = None
     tools: list[dict[str, Any]] = []
 
-    if agent_type == "portfolio":
+    requires_indmoney_data = agent_type == "portfolio" and _requires_indmoney_data(message, history)
+    if requires_indmoney_data:
         if not token:
             yield _sse("error", {"message": "Connect your INDmoney account to use Portfolio Analyzer."})
             yield _sse("done", {})
@@ -235,7 +329,7 @@ async def stream_agent(
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            for _ in range(5):
+            for _ in range(12):
                 try:
                     request_messages = _fit_groq_context(messages, model_tools) if provider == "groq" else messages
                 except RuntimeError as exc:
@@ -282,7 +376,7 @@ async def stream_agent(
                             if isinstance(part, dict) and isinstance(part.get("text"), str)
                         )
 
-                    if agent_type == "portfolio" and not portfolio_tool_called:
+                    if requires_indmoney_data and not portfolio_tool_called:
                         if not retried_portfolio_tool_selection:
                             logger.warning("Portfolio model returned no INDmoney tool call; retrying")
                             retried_portfolio_tool_selection = True
@@ -297,6 +391,11 @@ async def stream_agent(
                         return
 
                     if isinstance(content, str) and content.strip():
+                        if _contains_code_output(content):
+                            logger.warning("Blocked code-shaped model output for finance agent")
+                            yield _sse("content", {"text": FINANCE_ONLY_NOTICE})
+                            yield _sse("done", {"answer": FINANCE_ONLY_NOTICE})
+                            return
                         # Stream the content word by word for live feel
                         words = content.split(" ")
                         chunk_size = 4
@@ -335,7 +434,7 @@ async def stream_agent(
                         result = await call_mcp_tool(
                             mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
                         )
-                        if agent_type == "portfolio":
+                        if requires_indmoney_data:
                             portfolio_tool_called = True
                         # Emit tool_result event
                         result_str = str(result)

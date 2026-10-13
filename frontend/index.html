@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#0d1117" />
+  <meta name="theme-color" content="#f4f7f5" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="description" content="CA Mode: an AI-powered finance assistant and personal portfolio analyzer." />
@@ -13,153 +13,228 @@
   <link rel="apple-touch-icon" href="/icon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=8" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/app.css?v=10" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=8" defer></script>
+  <script src="/js/app.js?v=10" defer></script>
 </head>
 <body>
-  <div class="bg-grid" aria-hidden="true"></div>
-  <div class="bg-glow bg-glow-1" aria-hidden="true"></div>
-  <div class="bg-glow bg-glow-2" aria-hidden="true"></div>
+  <div id="app">
+    <!-- ── Left sidebar ─────────────────────────────────────────────── -->
+    <aside id="sidebar" aria-label="Navigation and chat history">
+      <a class="brand" href="/" aria-label="CA Mode home">
+        <span class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 28 28" fill="none">
+            <path d="M14 23V13" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+            <path d="M14 14c0-4 2.6-6.8 7-7-.1 4.4-3 7-7 7Z" fill="currentColor"/>
+            <path d="M14 16c0-3.4-2.3-5.8-6-6 .1 3.7 2.6 6 6 6Z" fill="currentColor" opacity=".75"/>
+          </svg>
+        </span>
+        <span class="brand-copy">
+          <span class="logo-text">CA Mode</span>
+          <span class="logo-sub">Your Financial Co-Pilot</span>
+        </span>
+      </a>
 
-  <header id="topbar">
-    <a class="brand" href="/" aria-label="CA Mode home">
-      <div class="logo-mark" aria-hidden="true">
-        <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M18.5 9.5 C17.5 7 10 7 9.5 11 C9 14 18.5 13 18.5 17 C18.5 21 10.5 21 9 18.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M14 5 V23" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
-        </svg>
+      <button id="new-chat-button" class="new-chat-button" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
+        <span>New Chat</span>
+      </button>
+
+      <nav class="agent-nav" aria-label="Choose an agent">
+        <button class="nav-item" type="button" data-agent="finance" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1Z"/></svg>
+          <span class="nav-copy"><span>Finance Agent</span><small>General finance questions</small></span>
+        </button>
+        <button class="nav-item" type="button" data-agent="portfolio" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8 15 3-3 2 2 3-4"/></svg>
+          <span class="nav-copy"><span>Portfolio Analyzer</span><small>Your INDmoney holdings</small></span>
+        </button>
+      </nav>
+
+      <div class="sidebar-section-head">
+        <span>Recent Chats</span>
+        <span id="chat-count" class="chat-count"></span>
       </div>
-      <span class="brand-copy">
-        <span class="logo-text">CA Mode</span>
-        <span class="logo-sub">FINANCE · IN CONTEXT</span>
-      </span>
-    </a>
-    <div class="topbar-spacer"></div>
-    <div id="status-badge" aria-live="polite">
-      <span id="status-dot" class="status-dot"></span>
-      <span id="status-text">Connecting…</span>
-    </div>
-    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to light mode" title="Switch to light mode">
-      <svg id="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z" /></svg>
-    </button>
-    <button id="auth-button" class="auth-button" type="button">Connect INDmoney</button>
-  </header>
+      <div id="chat-list"></div>
 
-  <main>
-    <div id="main">
-      <aside id="sidebar" aria-label="Chat history">
-        <div class="sidebar-header">
-          <div>
-            <p class="eyebrow">WORKSPACE</p>
-            <h2 class="sidebar-title">Your chats</h2>
-          </div>
-          <button id="new-chat-button" class="new-chat-button" type="button" aria-label="Start a new chat" title="Start a new chat">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
-            <span>New chat</span>
-          </button>
-        </div>
-        <div class="history-caption">RECENT CONVERSATIONS</div>
-        <div id="chat-list"></div>
-        <div class="sidebar-footer">
-          <span class="local-dot" aria-hidden="true"></span>
-          <span>Saved locally on this device</span>
-        </div>
-      </aside>
+      <div class="sidebar-account">
+        <span class="account-avatar" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19.5c1.2-3.3 3.6-5 6.5-5s5.3 1.7 6.5 5"/></svg>
+        </span>
+        <span class="account-copy">
+          <strong id="account-name">Guest</strong>
+          <small id="account-plan">Not connected</small>
+        </span>
+        <button id="auth-button" class="auth-button" type="button">Connect</button>
+      </div>
+    </aside>
+    <div id="sidebar-scrim" hidden></div>
 
-      <section id="chat-area" aria-label="CA Mode chat">
-        <div class="chat-toolbar">
-          <div class="chat-toolbar-title">
-            <span class="toolbar-icon" aria-hidden="true">
-              <svg viewBox="0 0 20 20" fill="none"><path d="M3 14l4-6 3.5 4.5L14 8l3 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </span>
-            <div>
-              <strong id="agent-title">Finance Agent</strong>
-              <span id="agent-description">General finance questions and explanations</span>
+    <!-- ── Main column ──────────────────────────────────────────────── -->
+    <section id="chat-area" aria-label="CA Mode chat">
+      <header id="topbar">
+        <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <label class="search-box">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+          <input id="chat-search" type="search" placeholder="Search your conversations…" aria-label="Search your conversations" autocomplete="off" />
+        </label>
+        <div class="topbar-spacer"></div>
+        <div id="status-badge" aria-live="polite">
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Connecting…</span>
+        </div>
+        <button id="theme-toggle" class="icon-button" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
+          <svg id="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z" /></svg>
+        </button>
+      </header>
+
+      <div id="chat-scroll">
+        <div id="empty-state">
+          <div class="hero">
+            <div class="hero-copy">
+              <p class="hero-eyebrow"><span id="welcome-agent-name">Finance Agent</span></p>
+              <h1 class="hero-title"><span id="greeting">Hi there</span> <span aria-hidden="true">👋</span><br>How can I help with your finances today?</h1>
+              <p class="hero-sub" id="welcome-description">Ask basic finance questions and get clear explanations in plain language.</p>
+            </div>
+            <div class="hero-art" aria-hidden="true">
+              <span class="hero-tag tag-invest">Invest</span>
+              <span class="hero-tag tag-grow">Grow</span>
+              <span class="hero-tag tag-achieve">Achieve</span>
+              <svg viewBox="0 0 260 170" fill="none">
+                <path d="M0 150c40-30 70-60 110-55s60-50 95-60 45-25 55-30v165H0Z" class="hill-back"/>
+                <path d="M0 165c50-25 95-35 140-30s80-30 120-40v75H0Z" class="hill-front"/>
+                <g class="coins">
+                  <ellipse cx="150" cy="152" rx="30" ry="7"/>
+                  <rect x="120" y="134" width="60" height="18" rx="3"/>
+                  <ellipse cx="150" cy="134" rx="30" ry="7"/>
+                  <rect x="126" y="118" width="48" height="16" rx="3"/>
+                  <ellipse cx="150" cy="118" rx="24" ry="6"/>
+                  <rect x="130" y="104" width="40" height="14" rx="3"/>
+                  <ellipse cx="150" cy="104" rx="20" ry="5"/>
+                </g>
+                <path d="M150 100V62" class="stem"/>
+                <path d="M150 74c0-14 9-24 27-25-1 16-11 25-27 25Z" class="leaf"/>
+                <path d="M150 82c0-12-8-21-23-22 1 14 9 22 23 22Z" class="leaf leaf-soft"/>
+                <path d="M150 64c0-10 5-17 15-19 0 11-6 18-15 19Z" class="leaf"/>
+              </svg>
             </div>
           </div>
-          <label class="agent-picker-label" for="agent-picker">Agent</label>
-          <select id="agent-picker" class="agent-picker" aria-label="Choose an agent">
-            <option value="finance">Finance Agent</option>
-            <option value="portfolio">Portfolio Analyzer</option>
-          </select>
-          <label class="provider-picker-label" for="provider-picker">AI</label>
-          <select id="provider-picker" class="provider-picker" aria-label="Choose AI provider" disabled>
-            <option>Loading providers…</option>
-          </select>
-        </div>
 
-        <div id="empty-state">
-          <div class="welcome-orb" aria-hidden="true">
-            <svg viewBox="0 0 48 48" fill="none">
-              <path d="M10 33.5 20.5 23 27 29.5 38 18.5M29 18.5h9v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </div>
-          <p class="eyebrow welcome-eyebrow">CA MODE · <span id="welcome-agent-name">FINANCE AGENT</span></p>
-          <h1 class="empty-title" id="welcome-title">What would you like to know?</h1>
-          <p class="empty-sub" id="welcome-description">Ask basic finance questions and get clear explanations in plain language.</p>
-          <div class="example-prompts" id="finance-prompts" aria-label="Finance Agent suggested questions">
-            <button class="example-prompt" data-prompt="Explain the difference between stocks and bonds in simple terms." type="button">
-              <span class="prompt-icon prompt-green" aria-hidden="true">
-                <svg viewBox="0 0 18 18" fill="none"><path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              </span>
-              <span><strong>Learn the basics</strong><small>Explain common finance concepts</small></span>
-              <span class="prompt-arrow" aria-hidden="true">↗</span>
+          <div class="feature-cards" aria-label="Suggested questions">
+            <button class="feature-card tone-green" type="button" data-agent="portfolio" data-prompt="Summarize my portfolio allocation by asset class.">
+              <span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7Z"/><path d="M10 12h5M10 16h5M10 8h2"/></svg></span>
+              <span class="feature-copy"><strong>Portfolio Analysis</strong><small>Review how your investments are allocated</small></span>
+              <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
-            <button class="example-prompt" data-prompt="What is compound interest, and how does it work?" type="button">
-              <span class="prompt-icon prompt-blue" aria-hidden="true">
-                <svg viewBox="0 0 18 18" fill="none"><path d="M3 9c0-3.31 2.69-6 6-6s6 2.69 6 6-2.69 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 6v3l2 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              </span>
-              <span><strong>Understand interest</strong><small>Explore how compounding works</small></span>
-              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            <button class="feature-card tone-blue" type="button" data-agent="portfolio" data-prompt="Show my top holdings by current value and explain the largest concentration.">
+              <span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="12" width="4" height="8" rx="1"/><rect x="10" y="8" width="4" height="12" rx="1"/><rect x="16" y="4" width="4" height="16" rx="1"/></svg></span>
+              <span class="feature-copy"><strong>Top Holdings</strong><small>Find your largest positions and exposure</small></span>
+              <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
-            <button class="example-prompt" data-prompt="What should someone compare when evaluating a mutual fund?" type="button">
-              <span class="prompt-icon prompt-amber" aria-hidden="true">
-                <svg viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              </span>
-              <span><strong>Compare funds</strong><small>Learn what fund details mean</small></span>
-              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            <button class="feature-card tone-amber" type="button" data-agent="finance" data-prompt="How should I plan a long-term financial goal like buying a home? Walk me through the steps.">
+              <span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg></span>
+              <span class="feature-copy"><strong>Goal Planning</strong><small>Plan for future goals step by step</small></span>
+              <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
-          </div>
-          <div class="example-prompts" id="portfolio-prompts" aria-label="Portfolio Analyzer suggested questions" hidden>
-            <button class="example-prompt" data-prompt="Summarize my portfolio allocation by asset class." type="button">
-              <span class="prompt-icon prompt-green" aria-hidden="true">
-                <svg viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.8"/><path d="M9 9L14 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              </span>
-              <span><strong>Portfolio allocation</strong><small>See how your investments are distributed</small></span>
-              <span class="prompt-arrow" aria-hidden="true">↗</span>
-            </button>
-            <button class="example-prompt" data-prompt="Show my top holdings by current value and explain the largest concentration." type="button">
-              <span class="prompt-icon prompt-blue" aria-hidden="true">
-                <svg viewBox="0 0 18 18" fill="none"><rect x="3" y="9" width="3" height="6" rx="1" stroke="currentColor" stroke-width="1.6"/><rect x="7.5" y="6" width="3" height="9" rx="1" stroke="currentColor" stroke-width="1.6"/><rect x="12" y="3" width="3" height="12" rx="1" stroke="currentColor" stroke-width="1.6"/></svg>
-              </span>
-              <span><strong>Top holdings</strong><small>Find your largest positions and exposure</small></span>
-              <span class="prompt-arrow" aria-hidden="true">↗</span>
-            </button>
-            <button class="example-prompt" data-prompt="List my active SIPs and their monthly amounts." type="button">
-              <span class="prompt-icon prompt-amber" aria-hidden="true">
-                <svg viewBox="0 0 18 18" fill="none"><path d="M9 3v12M5 7l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </span>
-              <span><strong>Active SIPs</strong><small>Review your recurring investments</small></span>
-              <span class="prompt-arrow" aria-hidden="true">↗</span>
+            <button class="feature-card tone-violet" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
+              <span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19 5 5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/></svg></span>
+              <span class="feature-copy"><strong>Tax Optimization</strong><small>Learn about tax-saving opportunities</small></span>
+              <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
           </div>
         </div>
 
         <div id="messages" aria-live="polite"></div>
+      </div>
 
-        <div id="input-area">
-          <div id="input-wrap">
-            <textarea id="user-input" rows="1" placeholder="Ask a finance question…" aria-label="Message input"></textarea>
-            <button id="send-btn" type="button" title="Send message (Enter)" aria-label="Send message">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12 20 4l-5 16-3-7-8-1Z" /><path d="m12 13 8-9" /></svg>
-            </button>
-          </div>
-          <div id="input-hint">Press <kbd>Enter</kbd> to send <span>·</span> <kbd>Shift + Enter</kbd> for a new line</div>
+      <div id="input-area">
+        <div id="follow-ups" class="follow-ups" aria-label="Follow-up suggestions" hidden>
+          <button class="chip" type="button" data-prompt="Can you explain that in more detail?">Show more detail</button>
+          <button class="chip" type="button" data-prompt="Explain that in simple terms.">Explain in simple terms</button>
+          <button class="chip" type="button" data-prompt="Summarize the key takeaways as a short list.">Key takeaways</button>
+          <button class="chip" type="button" data-prompt="Show that as a chart.">Show as a chart</button>
+        </div>
+        <div id="input-wrap">
+          <textarea id="user-input" rows="1" placeholder="Ask anything about your finances…" aria-label="Message input"></textarea>
+          <select id="provider-picker" class="provider-picker" aria-label="Choose AI provider" disabled>
+            <option>Loading…</option>
+          </select>
+          <button id="send-btn" type="button" title="Send message (Enter)" aria-label="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+          </button>
+        </div>
+        <div id="input-hint">Press <kbd>Enter</kbd> to send · <kbd>Shift + Enter</kbd> for a new line</div>
+      </div>
+    </section>
+
+    <!-- ── Right rail ───────────────────────────────────────────────── -->
+    <aside id="right-rail" aria-label="Portfolio and quick tools">
+      <section class="rail-card portfolio-card">
+        <div class="rail-head">
+          <h2>Your Portfolio</h2>
+          <span id="portfolio-pill" class="pill">Not connected</span>
+        </div>
+        <svg class="portfolio-spark" viewBox="0 0 240 70" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="currentColor" stop-opacity=".28"/>
+              <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path d="M0 62 30 56 55 58 80 47 105 50 130 38 155 40 180 26 205 28 240 6V70H0Z" fill="url(#spark-fill)"/>
+          <path d="M0 62 30 56 55 58 80 47 105 50 130 38 155 40 180 26 205 28 240 6" class="spark-line"/>
+        </svg>
+        <p id="portfolio-copy" class="rail-copy">Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.</p>
+        <button id="portfolio-cta" class="rail-button" type="button">Connect INDmoney</button>
+      </section>
+
+      <section class="rail-card">
+        <div class="rail-head"><h2>Portfolio Questions</h2></div>
+        <ul class="insight-list">
+          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="Give me a snapshot of my current net worth.">
+            <span class="insight-icon tone-green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18h16M6 15l4-4 3 3 5-6"/></svg></span>
+            <span><strong>Net worth snapshot</strong><small>Total value across your accounts</small></span>
+          </button></li>
+          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="List my active SIPs and their monthly amounts.">
+            <span class="insight-icon tone-amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v16M7 9l5-5 5 5"/></svg></span>
+            <span><strong>Active SIPs</strong><small>Your recurring investments</small></span>
+          </button></li>
+          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices.">
+            <span class="insight-icon tone-blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/></svg></span>
+            <span><strong>Watchlist</strong><small>Stocks you are tracking</small></span>
+          </button></li>
+          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="Break down my net worth allocation and show it as a donut chart.">
+            <span class="insight-icon tone-violet" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg></span>
+            <span><strong>Allocation chart</strong><small>See your mix as a donut chart</small></span>
+          </button></li>
+        </ul>
+      </section>
+
+      <section class="rail-card">
+        <div class="rail-head"><h2>Quick Tools</h2></div>
+        <div class="tool-grid">
+          <button class="tool-tile tone-green" type="button" data-agent="finance" data-prompt="Help me calculate the future value of a monthly SIP. Ask me for the amount, expected return, and duration.">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M8 18h2M12 18h4"/></svg>
+            <span>SIP Calculator</span>
+          </button>
+          <button class="tool-tile tone-red" type="button" data-agent="finance" data-prompt="Help me plan for a financial goal. Ask me for the target amount and timeline, then estimate the monthly saving needed.">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg>
+            <span>Goal Planner</span>
+          </button>
+          <button class="tool-tile tone-blue" type="button" data-agent="finance" data-prompt="Explain how income tax is calculated in India under the old and new tax regimes.">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5 5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/></svg>
+            <span>Tax Basics</span>
+          </button>
+          <button class="tool-tile tone-violet" type="button" data-agent="finance" data-prompt="What should I compare when choosing between two mutual funds?">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M20 20H3"/></svg>
+            <span>Compare Funds</span>
+          </button>
         </div>
       </section>
-    </div>
-  </main>
+    </aside>
+  </div>
 </body>
 </html>

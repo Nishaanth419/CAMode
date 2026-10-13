@@ -72,7 +72,7 @@ Open [http://localhost:8003](http://localhost:8003). Keep using this address dur
 
 Choose **Finance Agent** for general topics such as budgeting, saving, and finance concepts. It does not access your INDmoney account.
 
-Choose **Portfolio Analyzer** for account questions, then connect INDmoney when prompted. The analyzer offers these core tools to the model:
+Choose **Portfolio Analyzer** for account and market questions, then connect INDmoney when prompted. CA Mode exposes INDmoney's documented read-only finance capabilities when the connected MCP server provides them:
 
 | Tool | What it retrieves |
 | --- | --- |
@@ -80,8 +80,19 @@ Choose **Portfolio Analyzer** for account questions, then connect INDmoney when 
 | `networth_allocation_breakdown` | Breakdown for an asset class |
 | `networth_holdings` | Holdings for an asset class |
 | `indian_stocks_sips` | Indian stock SIPs |
+| `lookup_ind_keys` | Resolve stock, index, derivative, and fund names to INDmoney identifiers |
+| `get_indian_stocks_ohlc` | Historical OHLC candles for Indian stocks, indices, and derivatives |
+| `get_indian_stocks_details` | Indian market prices, analyst data, and news |
+| `get_indian_stocks_option_chain` | Option-chain strikes, premiums, open interest, and implied volatility |
+| `get_indian_stocks_greeks_history` | Historical option Greeks and volatility measures |
+| `user_watchlist` | Connected Indian and US stock watchlists |
+| `get_mf_by_category` | Mutual-fund category search and ranking |
+| `get_mf_funds_details` | Mutual-fund profiles, returns, benchmarks, and allocations |
+| `get_us_stocks_details` | US market prices, analyst data, and news |
 | `mf_sips` | Mutual fund SIPs |
 | `us_stocks_sips` | US stock SIPs |
+
+The Portfolio Analyzer can combine these read-only tools for portfolio breakdowns, fund comparisons, watchlist scans, price and candle charts, and options scenario calculations. The MCP server's current tool list determines which capabilities are available for the connected account. It cannot place trades or change account settings.
 
 ## Local data
 
