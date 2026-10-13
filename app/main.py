@@ -101,6 +101,16 @@ def session_id(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
 
 
+def trace_header(trace: list[dict[str, Any]]) -> str:
+    compact = []
+    for step in trace[:12]:
+        item = {key: value for key, value in step.items() if key != "result_preview" and not key.startswith("_")}
+        if isinstance(item.get("arguments"), str):
+            item["arguments"] = item["arguments"][:180]
+        compact.append(item)
+    return json.dumps(compact, ensure_ascii=True, separators=(",", ":"))
+
+
 def get_session(sid: str) -> dict[str, Any]:
     with connect_db() as connection:
         row = connection.execute("SELECT data, updated_at FROM oauth_sessions WHERE id = ?", (sid,)).fetchone()
@@ -394,11 +404,20 @@ async def chat(body: ChatRequest, request: Request):
         logger.exception("Chat agent request failed")
         details = str(exc)
         error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
-        return JSONResponse({"error": error, "details": details}, status_code=502)
-    if answer.strip():
+        trace = getattr(exc, "trace", [])[:12]
+        return JSONResponse(
+            {"error": error, "details": details}, status_code=502,
+            headers={"X-Agent-Trace": trace_header(trace)},
+        )
+    answer_text = str(answer)
+    trace = getattr(answer, "trace", [])[:12]
+    if answer_text.strip():
         now = int(time.time() * 1000)
         messages = list(data.get("messages", []))
-        messages += [{"role": "user", "content": message[:MAX_HISTORY_MESSAGE_CHARS]}, {"role": "assistant", "content": answer[:MAX_HISTORY_MESSAGE_CHARS]}]
+        assistant_message = {"role": "assistant", "content": answer_text[:MAX_HISTORY_MESSAGE_CHARS]}
+        if trace:
+            assistant_message["trace"] = trace
+        messages += [{"role": "user", "content": message[:MAX_HISTORY_MESSAGE_CHARS]}, assistant_message]
         messages = messages[-MAX_HISTORY_MESSAGES:]
         title = data.get("title", "New chat")
         if title == "New chat":
@@ -408,7 +427,9 @@ async def chat(body: ChatRequest, request: Request):
                 "UPDATE chats SET messages = ?, title = ?, updated_at = ?, expires_at = ? WHERE session_id = ? AND id = ?",
                 (json.dumps(messages), title, now, now + SESSION_MAX_AGE_SECONDS * 1000, sid, body.chatId),
             )
-    return PlainTextResponse(answer)
+    return PlainTextResponse(answer_text, headers={
+        "X-Agent-Trace": trace_header(trace),
+    })
 
 
 @app.get("/")

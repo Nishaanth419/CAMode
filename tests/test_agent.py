@@ -132,8 +132,12 @@ async def test_portfolio_agent_fails_if_no_supported_tools_are_available(monkeyp
         return {"tools": [{"name": "unrelated_market_tool"}], "protocolVersion": "v", "sessionId": "sid"}
 
     monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
-    with pytest.raises(RuntimeError, match="CA Mode's supported portfolio tools"):
+    with pytest.raises(agent.AgentRunError) as exc_info:
         await agent.run_agent("Summarize my portfolio", "https://mcp", "token", [], "portfolio", "openai")
+
+    assert "supported portfolio tools" in str(exc_info.value)
+    assert "Reconnect INDmoney" in str(exc_info.value)
+    assert exc_info.value.trace == []
 
 
 @pytest.mark.asyncio
