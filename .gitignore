@@ -13,3 +13,4 @@ firebase-debug.log
 ui-debug.log
 *.jks
 *.keystore
+.agent-loop/
