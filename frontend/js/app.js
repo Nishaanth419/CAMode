@@ -220,10 +220,7 @@ async function toggleConnection() {
   authButton.disabled = true;
   try {
     await fetch('/auth/indmoney/disconnect', { method: 'POST' });
-    messages.innerHTML = '';
-    messages.classList.remove('has-messages');
-    emptyState.hidden = false;
-    followUps.hidden = true;
+    resetConversationView();
     chats = [];
     activeChatId = null;
     await loadChats();
@@ -307,6 +304,7 @@ async function refreshChats() {
 }
 
 function resetConversationView() {
+  destroyPlotlyCharts(messages);
   messages.innerHTML = '';
   messages.classList.remove('has-messages');
   emptyState.hidden = false;
@@ -624,9 +622,13 @@ function renderMarkdown(text) {
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-  // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Links: model output is untrusted, so only allow web/mail URLs and keep
+  // quotes from breaking out of the href attribute.
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label, url) => {
+    const href = url.replace(/&amp;/g, '&');
+    if (!/^(?:https?:\/\/|mailto:)/i.test(href)) return label;
+    return `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
 
   const headingBlocks = [];
   text = text.replace(/^(#{1,6})\s+(.+)$/gm, (_, marks, content) => {
@@ -650,7 +652,7 @@ function renderMarkdown(text) {
         <div class="code-block-header">
           <span class="lang-badge">${esc(lang || 'code')}</span>
           Code snippet
-          <button class="copy-btn" id="${btnId}" onclick="copyCode(this, ${JSON.stringify(code)})">Copy</button>
+          <button class="copy-btn" id="${btnId}" onclick="copyCode(this, ${escHtml(JSON.stringify(code))})">Copy</button>
         </div>
         <pre>${highlighted}</pre>
       </div>`;
