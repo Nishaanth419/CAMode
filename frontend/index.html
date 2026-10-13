@@ -14,9 +14,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=11" />
+  <link rel="stylesheet" href="/css/app.css?v=12" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=11" defer></script>
+  <script src="/js/app.js?v=12" defer></script>
 </head>
 <body>
   <div id="app">
@@ -59,13 +59,15 @@
       <div id="chat-list"></div>
 
       <div class="sidebar-account">
-        <span class="account-avatar" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19.5c1.2-3.3 3.6-5 6.5-5s5.3 1.7 6.5 5"/></svg>
-        </span>
-        <span class="account-copy">
-          <strong id="account-name">Guest</strong>
-          <small id="account-plan">Not connected</small>
-        </span>
+        <button id="account-trigger" class="account-trigger" type="button" title="Edit your profile" aria-haspopup="dialog">
+          <span class="account-avatar" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19.5c1.2-3.3 3.6-5 6.5-5s5.3 1.7 6.5 5"/></svg>
+          </span>
+          <span class="account-copy">
+            <strong id="account-name">Guest</strong>
+            <small id="account-plan">Not connected</small>
+          </span>
+        </button>
         <button id="auth-button" class="auth-button" type="button">Connect</button>
       </div>
     </aside>
@@ -177,18 +179,20 @@
           <h2>Your Portfolio</h2>
           <span id="portfolio-pill" class="pill">Not connected</span>
         </div>
-        <svg class="portfolio-spark" viewBox="0 0 240 70" preserveAspectRatio="none" aria-hidden="true">
+        <p id="portfolio-figure" class="portfolio-figure" hidden></p>
+        <svg id="portfolio-spark" class="portfolio-spark" viewBox="0 0 240 70" preserveAspectRatio="none" role="img" aria-label="Net worth trend" hidden>
           <defs>
             <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stop-color="currentColor" stop-opacity=".28"/>
               <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
             </linearGradient>
           </defs>
-          <path d="M0 62 30 56 55 58 80 47 105 50 130 38 155 40 180 26 205 28 240 6V70H0Z" fill="url(#spark-fill)"/>
-          <path d="M0 62 30 56 55 58 80 47 105 50 130 38 155 40 180 26 205 28 240 6" class="spark-line"/>
+          <path id="spark-area" fill="url(#spark-fill)"/>
+          <path id="spark-line" class="spark-line"/>
         </svg>
         <p id="portfolio-copy" class="rail-copy">Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.</p>
         <button id="portfolio-cta" class="rail-button" type="button">Connect INDmoney</button>
+        <button id="snapshot-refresh" class="rail-link" type="button" hidden>Refresh snapshot now</button>
       </section>
 
       <section class="rail-card">
@@ -236,5 +240,81 @@
       </section>
     </aside>
   </div>
+
+  <!-- ── Profile picker (shown until someone signs in) ────────────────── -->
+  <div id="profile-gate" class="profile-gate" hidden>
+    <section class="gate-card" aria-labelledby="gate-title">
+      <span class="logo-mark gate-logo" aria-hidden="true">
+        <svg viewBox="0 0 28 28" fill="none">
+          <path d="M14 23V13" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M14 14c0-4 2.6-6.8 7-7-.1 4.4-3 7-7 7Z" fill="currentColor"/>
+          <path d="M14 16c0-3.4-2.3-5.8-6-6 .1 3.7 2.6 6 6 6Z" fill="currentColor" opacity=".75"/>
+        </svg>
+      </span>
+      <h1 id="gate-title" class="gate-title">Who's using CA Mode?</h1>
+      <p class="gate-sub">Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.</p>
+
+      <div id="profile-list" class="profile-list"></div>
+      <button id="show-create-profile" class="gate-link" type="button">+ Add a profile</button>
+
+      <form id="profile-unlock-form" class="gate-form" hidden>
+        <p class="gate-form-title">Enter the PIN for <strong id="unlock-name"></strong></p>
+        <label class="field"><span>PIN</span><input id="unlock-pin" type="password" inputmode="numeric" autocomplete="current-password" minlength="4" maxlength="64" required /></label>
+        <div class="gate-actions">
+          <button class="gate-secondary" type="button" data-gate-back>Back</button>
+          <button class="rail-button" type="submit">Unlock</button>
+        </div>
+      </form>
+
+      <form id="profile-create-form" class="gate-form" hidden>
+        <p class="gate-form-title">Create a profile</p>
+        <label class="field"><span>Name</span><input id="create-name" type="text" maxlength="40" autocomplete="nickname" required /></label>
+        <label class="field"><span>PIN (at least 4 characters)</span><input id="create-pin" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="64" required /></label>
+        <label class="field"><span>Confirm PIN</span><input id="create-pin-confirm" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="64" required /></label>
+        <div class="gate-actions">
+          <button class="gate-secondary" type="button" data-gate-back>Back</button>
+          <button class="rail-button" type="submit">Create profile</button>
+        </div>
+      </form>
+
+      <p id="gate-error" class="gate-error" role="alert" hidden></p>
+      <p class="gate-note">The PIN keeps people on this computer out of each other's data. It is not a substitute for a device password.</p>
+    </section>
+  </div>
+
+  <!-- ── Profile settings ─────────────────────────────────────────────── -->
+  <dialog id="profile-dialog" class="profile-dialog" aria-labelledby="profile-dialog-title">
+    <form id="profile-form" method="dialog">
+      <header class="dialog-head">
+        <h2 id="profile-dialog-title">Your profile</h2>
+        <button class="icon-button" type="button" value="cancel" data-close-dialog aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <p class="dialog-sub">Optional. Portfolio Analyzer uses this to relate its analysis to your goals. It is not personalised investment advice.</p>
+      <div class="field-grid">
+        <label class="field"><span>Risk appetite</span>
+          <select id="field-riskAppetite"><option value="">Not set</option><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option></select>
+        </label>
+        <label class="field"><span>Age band</span>
+          <select id="field-ageBand"><option value="">Not set</option><option>under-25</option><option>25-34</option><option>35-44</option><option>45-54</option><option>55+</option></select>
+        </label>
+        <label class="field"><span>Investment horizon (years)</span><input id="field-investmentHorizonYears" type="number" min="0" max="60" step="1" /></label>
+        <label class="field"><span>Monthly investment (₹)</span><input id="field-monthlyInvestmentInr" type="number" min="0" step="500" /></label>
+        <label class="field field-wide"><span>Primary goal</span><input id="field-primaryGoal" type="text" maxlength="200" placeholder="e.g. Buy a home in 8 years" /></label>
+      </div>
+      <p id="profile-form-status" class="dialog-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="switch-profile" class="gate-secondary" type="button">Switch profile</button>
+        <button class="rail-button dialog-save" type="submit">Save</button>
+      </div>
+      <details class="danger-zone">
+        <summary>Delete this profile</summary>
+        <p>Deletes this profile's chats, snapshots, and INDmoney connection from this computer.</p>
+        <label class="field"><span>Confirm with your PIN</span><input id="delete-pin" type="password" autocomplete="current-password" /></label>
+        <button id="delete-profile" class="danger-button" type="button">Delete profile</button>
+      </details>
+    </form>
+  </dialog>
 </body>
 </html>

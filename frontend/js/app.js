@@ -39,7 +39,27 @@ const portfolioCta = document.getElementById('portfolio-cta');
 const menuToggle = document.getElementById('menu-toggle');
 const sidebarScrim = document.getElementById('sidebar-scrim');
 const promptButtons = document.querySelectorAll('[data-prompt]');
+const accountTrigger = document.getElementById('account-trigger');
+const portfolioFigure = document.getElementById('portfolio-figure');
+const portfolioSpark = document.getElementById('portfolio-spark');
+const sparkArea = document.getElementById('spark-area');
+const sparkLine = document.getElementById('spark-line');
+const snapshotRefresh = document.getElementById('snapshot-refresh');
+const profileGate = document.getElementById('profile-gate');
+const profileList = document.getElementById('profile-list');
+const showCreateProfile = document.getElementById('show-create-profile');
+const unlockForm = document.getElementById('profile-unlock-form');
+const unlockName = document.getElementById('unlock-name');
+const unlockPin = document.getElementById('unlock-pin');
+const createForm = document.getElementById('profile-create-form');
+const gateError = document.getElementById('gate-error');
+const profileDialog = document.getElementById('profile-dialog');
+const profileForm = document.getElementById('profile-form');
+const profileFormStatus = document.getElementById('profile-form-status');
+const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal'];
 let isConnected = false;
+let currentUser = null;
+let unlockTarget = null;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
 let providerReady = false;
@@ -173,16 +193,74 @@ function setBusy(busy) {
 function renderAccount() {
   authButton.textContent = isConnected ? 'Disconnect' : 'Connect';
   authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
-  accountName.textContent = isConnected ? 'INDmoney linked' : 'Guest';
-  accountPlan.textContent = isConnected ? 'Portfolio access on' : 'Not connected';
+  accountName.textContent = currentUser?.displayName || 'Guest';
+  accountPlan.textContent = isConnected ? 'Connected' : 'Not connected';
+  accountPlan.title = accountPlan.textContent;
   accountAvatar.classList.toggle('is-connected', isConnected);
   portfolioPill.textContent = isConnected ? 'Connected' : 'Not connected';
   portfolioPill.classList.toggle('is-connected', isConnected);
   portfolioCopy.textContent = isConnected
     ? 'Your INDmoney account is linked. Ask the Portfolio Analyzer for a live snapshot of your net worth and holdings.'
     : 'Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.';
-  portfolioCta.textContent = isConnected ? 'Get net worth snapshot' : 'Connect INDmoney';
+  portfolioCta.textContent = isConnected ? 'Ask about my net worth' : 'Connect INDmoney';
+  snapshotRefresh.hidden = !isConnected;
+  if (!isConnected) renderSnapshot(null, []);
 }
+
+/* ── Daily portfolio snapshot card ──────────────────────────────────── */
+const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+
+function formatCaptured(timestamp) {
+  return new Date(Number(timestamp)).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderSnapshot(latest, history, schedule = '09:00') {
+  const values = history.map(point => point.networthInr).filter(Number.isFinite);
+  portfolioFigure.hidden = !Number.isFinite(latest?.networthInr);
+  portfolioFigure.textContent = portfolioFigure.hidden ? '' : inr.format(latest.networthInr);
+  // SVG elements have no `hidden` property, so toggle the attribute directly.
+  portfolioSpark.toggleAttribute('hidden', values.length < 2);
+  if (values.length >= 2) {
+    const min = Math.min(...values);
+    const range = Math.max(...values) - min || 1;
+    const points = values.map((value, index) => [
+      (index / (values.length - 1)) * 240,
+      62 - ((value - min) / range) * 54,
+    ].map(n => n.toFixed(1)).join(' '));
+    sparkLine.setAttribute('d', `M${points.join(' L')}`);
+    sparkArea.setAttribute('d', `M${points.join(' L')} V70 H0 Z`);
+  }
+  if (!isConnected) return;
+  portfolioCopy.textContent = latest
+    ? `Snapshot captured ${formatCaptured(latest.capturedAt)}. It refreshes every day at ${schedule.split(' ')[0]}.`
+    : `Your first snapshot is being saved. After that it refreshes every day at ${schedule.split(' ')[0]}.`;
+}
+
+async function loadSnapshot() {
+  if (!isConnected) return;
+  try {
+    const response = await fetch('/api/snapshots?days=30');
+    if (!response.ok) return;
+    const data = await response.json();
+    renderSnapshot(data.latest, data.history || [], data.schedule);
+  } catch { /* The card keeps its connected copy; chat still works. */ }
+}
+
+snapshotRefresh.addEventListener('click', async () => {
+  snapshotRefresh.disabled = true;
+  snapshotRefresh.textContent = 'Refreshing…';
+  try {
+    const response = await fetch('/api/snapshots/refresh', { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not refresh the snapshot.');
+    await loadSnapshot();
+  } catch (error) {
+    portfolioCopy.textContent = error.message;
+  } finally {
+    snapshotRefresh.disabled = false;
+    snapshotRefresh.textContent = 'Refresh snapshot now';
+  }
+});
 
 /* ── Load this signed-in user's conversations ───────────────────────── */
 async function loadChats() {
@@ -190,39 +268,201 @@ async function loadChats() {
     const sessionResponse = await fetch('/api/session');
     if (!sessionResponse.ok) throw new Error('Could not initialize your local session.');
     const session = await sessionResponse.json();
-    const response = await fetch('/api/chats');
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401) {
-        isConnected = false;
-        throw new Error(data.error || 'Could not load chats.');
-      }
-      throw new Error(data.error || ('HTTP ' + response.status));
-    }
+    currentUser = session.user;
     isConnected = Boolean(session.connected);
     renderAccount();
+    if (!currentUser) {
+      chats = [];
+      activeChatId = null;
+      resetConversationView();
+      renderChats();
+      showProfileGate(session.profiles || []);
+      setStatus('online', 'Choose a profile');
+      return;
+    }
+    hideProfileGate();
+    const response = await fetch('/api/chats');
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
     chats = data.chats || [];
     renderChats();
     if (chats.length) await selectChat(chats[0].id);
     else await startNewChat();
     setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
+    loadSnapshot();
   } catch (err) {
     chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
     setStatus('error', 'Connection failed');
   }
 }
 
+/* ── Profile picker ─────────────────────────────────────────────────── */
+function showGateError(message) {
+  gateError.textContent = message || '';
+  gateError.hidden = !message;
+}
+
+function showGateView(view) {
+  profileList.hidden = view !== 'list';
+  showCreateProfile.hidden = view !== 'list';
+  unlockForm.hidden = view !== 'unlock';
+  createForm.hidden = view !== 'create';
+  showGateError('');
+  const focusTarget = view === 'unlock' ? unlockPin : view === 'create' ? document.getElementById('create-name') : profileList.querySelector('button');
+  focusTarget?.focus();
+}
+
+function showProfileGate(profiles) {
+  profileList.innerHTML = '';
+  for (const profile of profiles) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'profile-choice';
+    const initial = document.createElement('span');
+    initial.className = 'profile-initial';
+    initial.setAttribute('aria-hidden', 'true');
+    initial.textContent = (profile.displayName || '?').trim().charAt(0).toUpperCase();
+    const name = document.createElement('span');
+    name.textContent = profile.displayName;
+    button.append(initial, name);
+    button.addEventListener('click', () => {
+      unlockTarget = profile;
+      unlockName.textContent = profile.displayName;
+      unlockPin.value = '';
+      showGateView('unlock');
+    });
+    profileList.appendChild(button);
+  }
+  profileGate.hidden = false;
+  document.body.classList.add('gate-open');
+  showGateView(profiles.length ? 'list' : 'create');
+  createForm.querySelector('[data-gate-back]').hidden = !profiles.length;
+}
+
+function hideProfileGate() {
+  profileGate.hidden = true;
+  document.body.classList.remove('gate-open');
+  unlockForm.reset();
+  createForm.reset();
+}
+
+async function submitGate(url, body, form) {
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  showGateError('');
+  try {
+    const response = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 429) {
+      const minutes = Math.ceil(Number(data.retryAfterSeconds || response.headers.get('Retry-After') || 300) / 60);
+      throw new Error(`Too many incorrect PINs. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+    }
+    if (!response.ok) {
+      // 404/405 here usually means the server is older than this page: restart it.
+      throw new Error(data.error || `Could not sign in (HTTP ${response.status}). If you just updated CA Mode, restart the server.`);
+    }
+    await loadChats();
+  } catch (error) {
+    showGateError(error.message);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+showCreateProfile.addEventListener('click', () => showGateView('create'));
+profileGate.querySelectorAll('[data-gate-back]').forEach(button => button.addEventListener('click', () => showGateView('list')));
+unlockForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (unlockTarget) submitGate('/api/session/login', { userId: unlockTarget.id, pin: unlockPin.value }, unlockForm);
+});
+createForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const pin = document.getElementById('create-pin').value;
+  if (pin !== document.getElementById('create-pin-confirm').value) {
+    showGateError('The two PINs do not match.');
+    return;
+  }
+  submitGate('/api/users', { displayName: document.getElementById('create-name').value, pin }, createForm);
+});
+
+/* ── Profile settings dialog ────────────────────────────────────────── */
+async function openProfileDialog() {
+  if (!currentUser || isStreaming) return;
+  profileFormStatus.textContent = '';
+  document.getElementById('delete-pin').value = '';
+  profileForm.querySelector('.danger-zone').open = false;
+  const response = await fetch('/api/profile');
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not load your profile.');
+  document.getElementById('profile-dialog-title').textContent = data.displayName;
+  for (const field of PROFILE_FIELDS) {
+    document.getElementById(`field-${field}`).value = data.profile?.[field] ?? '';
+  }
+  profileDialog.showModal();
+}
+
+accountTrigger.addEventListener('click', () => {
+  setSidebarOpen(false);
+  openProfileDialog().catch(showError);
+});
+profileDialog.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => profileDialog.close()));
+
+profileForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = {};
+  for (const field of PROFILE_FIELDS) {
+    const input = document.getElementById(`field-${field}`);
+    const value = input.value.trim();
+    if (value === '') continue;
+    body[field] = input.type === 'number' ? Number(value) : value;
+  }
+  const response = await fetch('/api/profile', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (response.ok) {
+    profileFormStatus.textContent = 'Saved.';
+    setTimeout(() => profileDialog.close(), 600);
+  } else {
+    const data = await response.json().catch(() => ({}));
+    profileFormStatus.textContent = Array.isArray(data.detail) ? 'Check the highlighted values and try again.' : (data.error || 'Could not save your profile.');
+  }
+});
+
+document.getElementById('switch-profile').addEventListener('click', async () => {
+  profileDialog.close();
+  await fetch('/api/session/logout', { method: 'POST' });
+  await loadChats();
+});
+
+document.getElementById('delete-profile').addEventListener('click', async () => {
+  const pin = document.getElementById('delete-pin').value;
+  if (!pin) {
+    profileFormStatus.textContent = 'Enter your PIN to delete this profile.';
+    return;
+  }
+  const response = await fetch('/api/users/me', {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    profileFormStatus.textContent = data.error || 'Could not delete this profile.';
+    return;
+  }
+  profileDialog.close();
+  await loadChats();
+});
+
 async function toggleConnection() {
   if (!isConnected) {
     window.location.assign('/auth/indmoney/connect');
     return;
   }
+  if (!window.confirm('Disconnect INDmoney? Saved portfolio snapshots for this profile will be deleted; your chats are kept.')) return;
   authButton.disabled = true;
   try {
     await fetch('/auth/indmoney/disconnect', { method: 'POST' });
-    resetConversationView();
-    chats = [];
-    activeChatId = null;
     await loadChats();
   } finally {
     authButton.disabled = false;
@@ -489,6 +729,11 @@ async function sendMessage(text) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
       const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
+      if (err.profileRequired) {
+        removeTypingIndicator();
+        await loadChats();
+        return;
+      }
       if (err.loginUrl) {
         const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
         throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
