@@ -22,6 +22,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/agent.py`**: Provider selection (OpenAI/Groq), request filtering, and the tool-calling loop (`stream_agent` yields `(event, data)` tuples; `run_agent` collects them into an answer plus trace).
 - **`app/sealing.py`**: Per-profile X25519 keypairs, wrapping the private key with a PIN or recovery code (scrypt + SecretBox), recovery codes, and `ProfileKeys` (`seal()` / `open()`).
 - **`app/unlock.py`**: Key creation, `unlock_with_pin()`, `recover()`, `replace_recovery_code()`, and the in-memory map of unlocked browser sessions (`activate()`, `keys_for_session()`).
+- **`app/backup.py`**: Daily database backups (`backup_if_due()` from the scheduler loop, `create_backup()` via SQLite's online backup API with `journal_mode = DELETE` so each backup is one file, verified before it is kept), pruning to `BACKUP_KEEP`, `verify_backup()`, and `restore_backup()` (moves the current database aside). Never copies the master key. CLI: `python -m scripts.backup now|list|verify|restore`
 - **`app/vault.py`**: Master key resolution (`APP_MASTER_KEY`, `APP_MASTER_KEY_FILE`, default `~/.config/ca-mode/master.key`) and Fernet `encrypt()` / `decrypt()` for secrets stored in SQLite.
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
 
@@ -151,6 +152,7 @@ python -m compileall -q app tests && python -m pytest -q
 - Profile routes: `GET /api/session` (current user, `consentRequired`, `storageMode`, profile list), `POST /api/users` (create + sign in), `POST /api/session/login`, `POST /api/session/logout`, `GET`/`PUT /api/profile`, `DELETE /api/users/me`
 - Chat routes: `POST /api/chats`, `GET /api/chats`, `GET`/`DELETE /api/chats/{id}`, `POST /api/chat`
 - Snapshot routes: `GET /api/snapshots?days=`, `POST /api/snapshots/refresh`
+- Backup routes: `GET /api/backups` (status), `POST /api/backups` (back up now)
 - Other: `GET /api/providers`, `GET /api/tools`, `GET /healthz`
 - Helpers: `current_user(request)`, `profile_required()`, `auth_error()`, `lifespan()` (scheduler)
 - Re-exports `connect_db`, `initialize_db`, `get_session`, `save_session`, `touch_session` for tests
@@ -197,6 +199,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `APP_ORIGIN`: public origin for the OAuth callback
 - `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; falls back to a fixed +05:30 offset when tz data is missing)
 - `APP_MASTER_KEY_FILE` / `APP_MASTER_KEY`: token encryption key (default file `~/.config/ca-mode/master.key`, created on first start)
+- `BACKUP_DIR` (default `~/ca-mode-backups`), `BACKUP_KEEP` (14), `BACKUP_ENABLED` (true): daily backups; `conftest.py` points `BACKUP_DIR` at a temp folder
 - `APP_DATA_DIR`: SQLite directory (default `.data/`); `LOG_LEVEL` (default `INFO`); `PORT` (Docker, default `8080`)
 
 ## Testing Strategy
@@ -210,6 +213,7 @@ Test coverage:
 - `test_snapshots.py`: net-worth parsing, IST schedule, capture, due-profile selection and backoff, scheduler, local tools, retention
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
 - `test_unlock.py`: sealed storage, restart locking, per-session unlock, recovery and its lockout, new recovery codes, upgrading profiles from before encryption, export while locked
+- `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API, CLI
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers

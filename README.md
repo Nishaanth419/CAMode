@@ -81,6 +81,9 @@ cp .env.example .env
 | `SNAPSHOT_RETENTION_DAYS` | `365` | How long snapshots are kept |
 | `SNAPSHOT_SCHEDULER_ENABLED` | `true` | Set to `false` to stop the background snapshot job |
 | `APP_DATA_DIR` | `.data/` | Folder for the SQLite database |
+| `BACKUP_DIR` | `~/ca-mode-backups` | Where daily database backups are written |
+| `BACKUP_KEEP` | `14` | How many backups to keep |
+| `BACKUP_ENABLED` | `true` | Set to `false` to stop daily backups |
 | `APP_MASTER_KEY_FILE` | `~/.config/ca-mode/master.key` | File holding the key that encrypts stored INDmoney tokens (created on first start) |
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
@@ -208,6 +211,20 @@ The PIN is a local lock for people sharing one computer, not internet-grade auth
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
+### Backups
+
+While the app runs, it backs up the database once a day to `~/ca-mode-backups` (`BACKUP_DIR`) and keeps the last 14. **Back up now** under **Your data and privacy** makes one immediately. Backups use SQLite's online backup API, so they are consistent while the app is running, and each is checked with SQLite's integrity check before it is kept.
+
+- Chats, snapshots, and profile details in a backup stay sealed with each profile's PIN, so the file is safe to copy to an external drive or cloud folder. Point `BACKUP_DIR` there for copies that survive losing this disk.
+- The master key (`~/.config/ca-mode/master.key`) is never copied into backups, because keeping it beside the database would undo the token encryption. Losing it only means reconnecting INDmoney; keep a copy in a password manager if you want to avoid that.
+- Keep your recovery code too: a restored profile unlocks with the PIN it had when the backup was made.
+
+```bash
+python -m scripts.backup list                 # backups, newest first
+python -m scripts.backup verify FILE          # integrity check and row counts
+python -m scripts.backup restore FILE         # stop the app first; the current database is moved aside, not deleted
+```
+
 ### Upgrading from a version without profiles
 
 The first start of the profiles version reorganises the database. Stop the server, back up the data folder, then start the new version:
@@ -287,6 +304,7 @@ app/
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
   vault.py         Master key and encryption for stored INDmoney tokens
+  backup.py        Daily database backups, verification, pruning, and restore
   sealing.py       Per-profile keypairs, PIN and recovery-code key wrapping, sealing
   unlock.py        Key setup, unlocking, recovery, and the in-memory unlocked sessions
 frontend/
