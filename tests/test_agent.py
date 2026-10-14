@@ -367,7 +367,8 @@ async def test_groq_context_keeps_original_question_after_retry_nudge(monkeypatc
         return {"tools": [{"name": "networth_snapshot", "description": "Net worth"}], "protocolVersion": "v", "sessionId": "sid"}
 
     async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
-        return "row " * 1125  # Small enough to skip pre-shortening, large enough to crowd out the question.
+        # Small enough to skip pre-shortening, large enough to crowd out the question.
+        return "net worth 42000 " + "row " * 1121
 
     monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
     monkeypatch.setattr(agent, "call_mcp_tool", fake_call)

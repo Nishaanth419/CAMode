@@ -44,7 +44,7 @@ flowchart LR
    - **INDmoney tools** (the allowlisted read-only MCP tools below) fetch live data. When INDmoney's tool list was cached in the last 24 hours, the MCP session is opened only if the model actually calls one, so answers from the snapshot need no INDmoney MCP calls.
 5. The answer is saved to the chat (the last 20 messages are kept) and returned as text, with the call trace in the `X-Agent-Trace` header.
 
-**The daily snapshot:** a background task checks the clock every five minutes. For each profile connected to INDmoney whose last snapshot is older than today's 09:00 IST, it calls `networth_snapshot`, `networth_allocation_breakdown`, and `networth_holdings` and stores one row per profile per day. Because it checks the wall clock, it catches up after the app starts or the laptop wakes. A failed attempt is retried at most once an hour.
+**The daily snapshot:** a background task checks the clock every five minutes. For each profile connected to INDmoney whose last snapshot is older than today's 09:00 IST, it calls `networth_snapshot`, then `networth_holdings` once for each asset type the snapshot shows you hold (stocks, mutual funds, US stocks, EPF and so on), and stores one row per profile per day. Because it checks the wall clock, it catches up after the app starts or the laptop wakes. A failed attempt is retried at most once an hour.
 
 Snapshots are SQLite rows, not vector-database chunks: net worth and holdings are exact numbers that need latest-value, date-range, and sorting queries, which similarity search cannot answer reliably.
 
@@ -131,7 +131,7 @@ Choose **Portfolio Analyzer** for questions about your account and the market. I
 
 | Tool | What it retrieves |
 | --- | --- |
-| `get_portfolio_snapshot` | Saved daily snapshot: net worth, allocation, and holdings (local) |
+| `get_portfolio_snapshot` | Figures computed from the saved daily snapshot: totals, P&L, splits by asset type and broker, concentration, holdings (local) |
 | `get_networth_history` | Daily net worth from saved snapshots, up to 365 days (local) |
 | `networth_snapshot` | Live portfolio and net-worth summary |
 | `networth_allocation_breakdown` | Breakdown for an asset class |
@@ -161,6 +161,25 @@ For net worth, allocation, holdings, and trends it reads the saved snapshot firs
 - Kept for the retention the profile chose (30, 90, 180, or 365 days; never longer than `SNAPSHOT_RETENTION_DAYS`). **Disconnect** deletes the profile's snapshots.
 - Not captured for profiles in private mode or profiles that haven't accepted the current privacy notice.
 - The net-worth total is read from INDmoney's `networth_snapshot` result. If it cannot be read, the trend line is hidden and the agent works from the raw snapshot text.
+
+## How the numbers are computed
+
+Portfolio figures are calculated in code (`app/portfolio_math.py`, exact decimal arithmetic), not by the AI model. The model receives finished figures and is told to quote them, never to add up or work out percentages itself:
+
+- Net worth, current value, invested amount, and liabilities as INDmoney reports them.
+- P&L only over holdings with a reported invested amount. Linked (non-INDmoney) brokers often report it as 0; those holdings are left out of P&L instead of showing a 100% gain, and the answer says so.
+- Shares of the whole portfolio for each holding, asset type, asset class, and broker. INDmoney's own `holding_percent` is a share of one asset type only.
+- Concentration: the largest holding and the top 5 and top 10 as a share of the portfolio.
+- US stocks in INR and USD separately; USD is never added to INR totals.
+
+After each Portfolio Analyzer answer, every amount and percentage in it is checked against the numbers the tools returned, allowing for rounding and lakh/crore. Figures that match nothing get a warning under the answer ("I couldn't match these figures to your INDmoney data"). The check is a safety net, not proof: a wrong figure that happens to equal another number in the data is not caught.
+
+To measure this against your AI provider with made-up portfolio data (about two model calls per question):
+
+```bash
+set -a; source .env; set +a
+python -m scripts.eval_numbers --provider groq --delay 70   # the delay keeps within Groq's free-tier limits
+```
 
 ## Local data and privacy
 

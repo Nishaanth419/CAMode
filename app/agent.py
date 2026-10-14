@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from . import router
+from . import number_check, router
 from .mcp_client import IMPORTANT_PORTFOLIO_TOOL_NAMES, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.agent")
@@ -148,6 +148,8 @@ Answer only what the user asked. Keep the response proportional to the question.
 Saved snapshots: for net worth, allocation, holdings, or concentration questions, call `get_portfolio_snapshot` first when it is available and state when the snapshot was captured; use `get_networth_history` for trends or growth over time. Use the live INDmoney tools when the user asks for live or current prices, intraday moves, SIPs, watchlists, options, or anything the snapshot lacks, or when no snapshot exists.
 
 Choose tools from their names, descriptions, and input schemas. Resolve a named stock, index, derivative, or fund with `lookup_ind_keys` when another tool requires its INDmoney identifier. For portfolio health and allocation questions, use the net-worth snapshot, relevant allocation breakdowns, and holdings. For listed-stock price, chart, and technical questions, use live details and OHLC tools; use watchlist first for watchlist scans. For options questions, retrieve the option chain and, when relevant, Greeks history before calculating scenario payoffs. For fund discovery, use category search; for a named fund or comparisons, use fund details and request comparable return periods, benchmark, fee, allocation, or holdings data as needed. Use SIP tools for the requested SIP type. Chain multiple read-only calls when the question needs them, and stop once the requested facts are supported.
+
+Numbers: get_portfolio_snapshot returns `figures` computed exactly in code. Quote those figures as given (you may round them or convert to lakh/crore) and never add, subtract, average, or compute percentages or P&L yourself; if a figure you need is not returned, say it is not available. A holding's share of the whole portfolio is `share_of_portfolio_pct`; never present INDmoney's `holding_percent` as that. Mention relevant `data_notes`, such as holdings left out of P&L because a linked broker reported no invested amount. Never add USD amounts to INR amounts.
 
 Use only tool-returned values; never invent holdings, balances, transactions, live quotes, historical prices, returns, analyst targets, news, option Greeks, margin, or benchmark values. If a tool fails or returns no data, say which requested data is unavailable. Compare returns only for matching periods and bases. For calculations, show the inputs and formula in plain language; calculate only from returned values or assumptions clearly supplied by the user. If a margin requirement or other value is not returned and cannot be derived from supplied data, say so instead of estimating it. Never claim a trade or strategy is suitable or tell the user to enter it. When discussing an options strategy, state that it is a hypothetical scenario, not a trade recommendation, and include the key loss exposure and assumptions.
 
@@ -298,6 +300,18 @@ def default_provider() -> str:
     if any(item["id"] == requested for item in configured):
         return requested
     return configured[0]["id"] if configured else "openai"
+
+
+def _number_warning(content: str, messages: list[dict[str, Any]], agent_type: str, message: str) -> str:
+    """A warning to append when a portfolio answer cites figures that no tool returned, else ""."""
+    tool_results = [item["content"] for item in messages if item.get("role") == "tool" and isinstance(item.get("content"), str)]
+    if agent_type != "portfolio" or not tool_results:
+        return ""
+    unverified = number_check.unverified_numbers(content, [*tool_results, message])
+    if not unverified:
+        return ""
+    logger.warning("portfolio_answer_unverified_numbers", extra={"count": len(unverified)})
+    return number_check.warning_note(unverified)
 
 
 # ── Request routing ────────────────────────────────────────────────────────────
@@ -588,8 +602,10 @@ async def stream_agent(
                         if _contains_code_output(content):
                             logger.warning("Blocked code-shaped model output for %s agent", agent_type)
                             content = FINANCE_ONLY_NOTICE
-                        elif choice_data.get("finish_reason") == "length":
-                            content += TRUNCATION_NOTICE
+                        else:
+                            content += _number_warning(content, messages, agent_type, message)
+                            if choice_data.get("finish_reason") == "length":
+                                content += TRUNCATION_NOTICE
                         yield "content", {"text": content}
                         yield "done", {}
                         return

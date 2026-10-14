@@ -56,9 +56,15 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 **Daily snapshots** (`snapshots.py`):
 - `run_scheduler()` polls the wall clock every 5 minutes (macOS monotonic time pauses during sleep) and refreshes consenting `device`-mode profiles whose last capture predates the latest `SNAPSHOT_TIME` in `SNAPSHOT_TIMEZONE`; failures retry at most hourly (`users.snapshot_attempted_at`); a per-profile asyncio lock prevents overlapping runs
-- `capture_snapshot()` calls `networth_snapshot`, `networth_allocation_breakdown`, `networth_holdings` on one shared client, keeps partial results, caches the filtered MCP tool list on the profile, and upserts one row per profile per local date
+- `capture_snapshot()` calls `networth_snapshot`, then `networth_holdings` (which requires `asset_type`) for each held type from `holdings_types_to_fetch()` (every served type if the names don't match), up to 4 in parallel on one shared client. Results are keyed `networth_snapshot` and `networth_holdings:<TYPE>`; partial results are kept, the filtered MCP tool list is cached, and one row is upserted per profile per local date
 - `extract_networth_inr()` is a best-effort parse (INDmoney's format is undocumented); `networth_inr` is NULL when unclear
 - Snapshots are SQLite rows, deliberately not a vector store (exact values, date ranges, sorting)
+
+**Portfolio numbers** (`portfolio_math.py`, `number_check.py`):
+- `compute_metrics()` turns stored results into `figures` (totals, P&L over holdings with a cost basis, splits by asset type/class/market cap/broker, concentration, top holdings, USD kept separate, `data_notes`), all in `Decimal`. `get_portfolio_snapshot` returns these instead of raw text (raw only for old, unparseable snapshots); `include_all_holdings` returns every row in compact form to fit Groq's 6,000-char tool-result limit
+- INDmoney traps: linked brokers report `invested_amount` 0 (excluded from P&L, noted); `holding_percent` is per asset type; US rows carry INR and USD
+- The portfolio prompt says to quote `figures`, never compute. `agent._number_warning()` runs `number_check.unverified_numbers()` on every portfolio answer that used tools and appends `warning_note()` for amounts/percentages matching no tool number (counts, years, list numbering and links are skipped)
+- `tests/fixtures/indmoney_sample.py` is synthetic data in the real response layout; `scripts/inspect_indmoney_shapes.py` prints a live response's layout with values removed; `scripts/eval_numbers.py` scores answers on the fixture
 
 **Request routing** (`router.py`, `agent.py`):
 - `_route_request()` labels every message `off_topic`, `code_request`, `general_finance` or `account_data` with one classifier call (`router.classify()`: forced `classify_request` tool call, enum validated in code, user text sent as a JSON object of untrusted data, last 3 user turns as context). `off_topic` and `code_request` are refused without calling the answer model
@@ -205,6 +211,8 @@ Test coverage:
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
 - `test_unlock.py`: sealed storage, restart locking, per-session unlock, recovery and its lockout, new recovery codes, upgrading profiles from before encryption, export while locked
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
+- `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch
+- `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers
 - `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
 

@@ -8,6 +8,7 @@ import pytest
 
 from app import db, privacy, snapshots, users
 from app.sealing import ProfileKeys
+from fixtures import indmoney_sample
 
 IST = snapshots.SNAPSHOT_TIMEZONE
 
@@ -65,9 +66,12 @@ def fake_indmoney(monkeypatch, *, failing: set[str] = frozenset(), offered: tupl
 
     async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
         calls.append((name, arguments, client is not None))
-        if name in failing:
+        if name in failing or f"{name}:{arguments.get('asset_type')}" in failing:
             raise RuntimeError(f"{name} timed out")
-        return json.dumps({"net_worth": 4200000}) if name == "networth_snapshot" else f"{name} data"
+        if name == "networth_snapshot":
+            return json.dumps(indmoney_sample.SNAPSHOT)
+        rows = {"IND_STOCK": indmoney_sample.IND_STOCK, "MF": indmoney_sample.MF}.get(arguments["asset_type"], [])
+        return json.dumps(indmoney_sample.holdings(rows))
 
     monkeypatch.setattr(users, "user_access_token", fake_token)
     monkeypatch.setattr(snapshots, "fetch_mcp_session", fake_fetch)
@@ -82,11 +86,14 @@ def test_capture_snapshot_stores_row_and_caches_tools(monkeypatch):
     result = asyncio.run(snapshots.capture_snapshot(user_id, mcp_url="https://mcp", now=at(13, 9, 2)))
 
     assert result["asOfDate"] == "2026-10-13"
-    assert result["networthInr"] == 4200000.0
-    assert [name for name, _, _ in calls] == list(snapshots.SNAPSHOT_TOOL_NAMES)
+    assert result["networthInr"] == 1200000.0
+    # The summary first, then holdings for each asset type it shows as held.
+    assert calls[0][:2] == ("networth_snapshot", {})
+    assert sorted(arguments["asset_type"] for name, arguments, _ in calls[1:]) == ["EPF", "IND_STOCK", "MF", "US_STOCK"]
+    assert all(name == "networth_holdings" for name, _, _ in calls[1:])
     assert all(shared for _, _, shared in calls)
     stored = snapshots.latest_snapshot(user_id)
-    assert stored["results"]["networth_holdings"] == "networth_holdings data"
+    assert json.loads(stored["results"]["networth_holdings:IND_STOCK"])["holdings"][0]["investment"] == "Infosys"
     assert stored["errors"] == {}
     cached = users.get_user(user_id)["mcpTools"]
     assert [tool["name"] for tool in cached] == list(snapshots.SNAPSHOT_TOOL_NAMES)
@@ -94,15 +101,16 @@ def test_capture_snapshot_stores_row_and_caches_tools(monkeypatch):
 
 def test_capture_snapshot_keeps_partial_results(monkeypatch):
     user_id = make_user()
-    fake_indmoney(monkeypatch, failing={"networth_holdings"}, offered=("networth_snapshot", "networth_holdings"))
+    fake_indmoney(monkeypatch, failing={"networth_holdings:MF"})
 
     result = asyncio.run(snapshots.capture_snapshot(user_id, mcp_url="https://mcp", now=at(13, 9)))
 
-    assert result["networthInr"] == 4200000.0
-    assert result["errors"] == {
-        "networth_allocation_breakdown": "INDmoney did not offer this tool.",
-        "networth_holdings": "networth_holdings timed out",
-    }
+    assert result["networthInr"] == 1200000.0
+    assert result["errors"] == {"networth_holdings:MF": "networth_holdings timed out"}
+
+    fake_indmoney(monkeypatch, offered=("networth_snapshot",))
+    result = asyncio.run(snapshots.capture_snapshot(user_id, mcp_url="https://mcp", now=at(13, 10)))
+    assert result["errors"]["networth_holdings:IND_STOCK"] == "INDmoney did not offer this tool."
 
     fake_indmoney(monkeypatch, failing=set(snapshots.SNAPSHOT_TOOL_NAMES))
     with pytest.raises(snapshots.SnapshotError, match="no portfolio data"):
@@ -157,7 +165,8 @@ def test_snapshot_local_tools_return_latest_and_history():
     for days_ago, value in ((3, 100), (1, 110), (0, 125)):
         snapshots.store_snapshot(
             user_id, today - timedelta(days=days_ago),
-            {"networth_snapshot": json.dumps({"net_worth": value}), "networth_holdings": f"holdings {value}"}, {},
+            {**indmoney_sample.results(), "networth_snapshot": json.dumps({**indmoney_sample.SNAPSHOT, "total_networth": value})},
+            {},
         )
     tools = {tool.name: tool for tool in snapshots.snapshot_tools(user_id, ProfileKeys())}
 
@@ -166,9 +175,13 @@ def test_snapshot_local_tools_return_latest_and_history():
     invalid = json.loads(asyncio.run(tools["get_portfolio_snapshot"].handler({"date": "13/10/2026"})))
     history = json.loads(asyncio.run(tools["get_networth_history"].handler({"days": 7})))
 
-    assert latest["networthInr"] == 125 and latest["data"]["networth_holdings"] == "holdings 125"
+    assert latest["figures"]["totals"]["net_worth_inr"] == 125
+    assert latest["figures"]["pnl"]["pnl_inr"] == 140000.0 and "raw" not in latest
+    assert "all_holdings" not in latest["figures"]
     assert latest["capturedAt"].endswith("09:00+05:30")
-    assert earlier["networthInr"] == 100
+    assert earlier["figures"]["totals"]["net_worth_inr"] == 100
+    every = json.loads(asyncio.run(tools["get_portfolio_snapshot"].handler({"include_all_holdings": True})))
+    assert len(every["figures"]["all_holdings"]) == 6
     assert "error" in invalid
     assert [point["networthInr"] for point in history["points"]] == [100, 110, 125]
     assert "networthSnapshot" not in history["points"][0]
