@@ -81,6 +81,9 @@ cp .env.example .env
 | `SNAPSHOT_RETENTION_DAYS` | `365` | How long snapshots are kept |
 | `SNAPSHOT_SCHEDULER_ENABLED` | `true` | Set to `false` to stop the background snapshot job |
 | `APP_DATA_DIR` | `.data/` | Folder for the SQLite database |
+| `BACKUP_DIR` | `~/ca-mode-backups` | Where daily database backups are written |
+| `BACKUP_KEEP` | `14` | How many backups to keep |
+| `BACKUP_ENABLED` | `true` | Set to `false` to stop daily backups |
 | `APP_MASTER_KEY_FILE` | `~/.config/ca-mode/master.key` | File holding the key that encrypts stored INDmoney tokens (created on first start) |
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
@@ -162,6 +165,16 @@ For net worth, allocation, holdings, and trends it reads the saved snapshot firs
 - Not captured for profiles in private mode or profiles that haven't accepted the current privacy notice.
 - The net-worth total is read from INDmoney's `networth_snapshot` result. If it cannot be read, the trend line is hidden and the agent works from the raw snapshot text.
 
+## Holdings at other brokers (CAS)
+
+INDmoney may not see every broker you use. A **Consolidated Account Statement (CAS)** does: NSDL and CDSL email one each month listing every demat account at every broker, plus mutual fund folios and NPS. CAMS and KFintech statements (mutual funds only) are also accepted.
+
+1. Find the latest CAS email from NSDL or CDSL (or request one on their websites) and save the PDF.
+2. In the **Other brokers** card on the right (shown on windows at least 1280px wide), choose the PDF, enter its password (usually your PAN in capital letters), and select **Upload statement**.
+3. Ask Portfolio Analyzer, for example "Using my latest CAS statement, list my holdings grouped by broker".
+
+The PDF is read in memory with [`casparser`](https://github.com/codereverser/casparser), offline. Only the holdings are kept (name, ISIN, broker, units, price, value, and cost where the statement gives one), sealed with your PIN like snapshots; the last 12 statements are kept. The PDF, its password, and your name, PAN, address, contact details, and DP/client IDs are never stored. CAS figures are as of the statement date, not live, and overlap INDmoney's, so the agent never adds the two together. Demat statements usually give no purchase cost for shares, so their P&L covers only holdings with a cost.
+
 ## How the numbers are computed
 
 Portfolio figures are calculated in code (`app/portfolio_math.py`, exact decimal arithmetic), not by the AI model. The model receives finished figures and is told to quote them, never to add up or work out percentages itself:
@@ -208,6 +221,20 @@ The PIN is a local lock for people sharing one computer, not internet-grade auth
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
+### Backups
+
+While the app runs, it backs up the database once a day to `~/ca-mode-backups` (`BACKUP_DIR`) and keeps the last 14. **Back up now** under **Your data and privacy** makes one immediately. Backups use SQLite's online backup API, so they are consistent while the app is running, and each is checked with SQLite's integrity check before it is kept.
+
+- Chats, snapshots, and profile details in a backup stay sealed with each profile's PIN, so the file is safe to copy to an external drive or cloud folder. Point `BACKUP_DIR` there for copies that survive losing this disk.
+- The master key (`~/.config/ca-mode/master.key`) is never copied into backups, because keeping it beside the database would undo the token encryption. Losing it only means reconnecting INDmoney; keep a copy in a password manager if you want to avoid that.
+- Keep your recovery code too: a restored profile unlocks with the PIN it had when the backup was made.
+
+```bash
+python -m scripts.backup list                 # backups, newest first
+python -m scripts.backup verify FILE          # integrity check and row counts
+python -m scripts.backup restore FILE         # stop the app first; the current database is moved aside, not deleted
+```
+
 ### Upgrading from a version without profiles
 
 The first start of the profiles version reorganises the database. Stop the server, back up the data folder, then start the new version:
@@ -233,7 +260,8 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/privacy` | Privacy notice, its version, whether it needs accepting, and the profile's storage settings |
 | `POST /api/privacy/consent` | Accept the notice and set storage settings (body: `{"policyVersion", "storageMode": "device" \| "private", "snapshotRetentionDays": 30 \| 90 \| 180 \| 365}`) |
 | `POST /api/users/me/export` | Download the profile's data as JSON (body: `{"pin": ...}`) |
-| `DELETE /api/users/me/history` | Delete the profile's chats and snapshots |
+| `DELETE /api/users/me/history` | Delete the profile's chats, snapshots, and CAS holdings |
+| `GET /api/cas`, `POST /api/cas`, `DELETE /api/cas/{id}` | List, upload (body: `{"password", "pdfBase64"}`), or delete CAS statements |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
 | `GET /api/chats/{id}`, `DELETE /api/chats/{id}` | Read or delete a chat |
 | `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace` |
@@ -287,6 +315,10 @@ app/
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
   vault.py         Master key and encryption for stored INDmoney tokens
+  backup.py        Daily database backups, verification, pruning, and restore
+  cas.py           CAS statement parsing (holdings only) and sealed storage
+  portfolio_math.py  Portfolio figures computed in code
+  number_check.py  Checks that answer figures match tool data
   sealing.py       Per-profile keypairs, PIN and recovery-code key wrapping, sealing
   unlock.py        Key setup, unlocking, recovery, and the in-memory unlocked sessions
 frontend/

@@ -28,6 +28,8 @@ from app import db, main, privacy, users
 def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "codemode.sqlite3")
+    # Never write to the real ~/ca-mode-backups.
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
     # Production scrypt cost (~128 MiB per hash) would make every sign-in test slow.
     monkeypatch.setattr(users, "SCRYPT_N", 2**10)
     db.initialize_db()

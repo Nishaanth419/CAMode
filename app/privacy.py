@@ -19,8 +19,8 @@ from pydantic import BaseModel, ConfigDict
 from . import chats, users
 from .db import connect_db
 
-# Bumped for PIN-locked history: users must know a lost PIN and recovery code loses their history.
-POLICY_VERSION: Final = "2026-10-14.2"
+# .2: PIN-locked history (a lost PIN and recovery code loses it). .3: uploaded CAS holdings are saved.
+POLICY_VERSION: Final = "2026-10-14.3"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -32,14 +32,15 @@ NOTICE: Final = (
             "Your profile name, a scrypt hash of your PIN, the optional profile details you enter, and your INDmoney "
             "connection tokens. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
-            "period you pick. Everything is in a SQLite file readable only by this computer's user account. INDmoney "
+            "period you pick, and the holdings from any CAS statement you upload (the last 12; never the PDF, its "
+            "password, or your name, PAN or contact details). Everything is in a SQLite file readable only by this computer's user account. INDmoney "
             "tokens are encrypted with a key kept outside that file."
         ),
     },
     {
         "title": "Locked with your PIN",
         "body": (
-            "Your saved chats, portfolio snapshots and profile details are encrypted with a key that only your PIN or "
+            "Your saved chats, portfolio snapshots, CAS holdings and profile details are encrypted with a key that only your PIN or "
             "your recovery code can unlock. Nobody else using this computer, and nobody with a copy of the database, "
             "can read them. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
             "code lets you set a new one. If you lose both, your saved history cannot be recovered by anyone."
@@ -58,7 +59,8 @@ NOTICE: Final = (
         "title": "Private mode",
         "body": (
             "Chats are kept in memory only and are gone when you sign out or the app restarts. No portfolio snapshots "
-            "are taken, and switching to private mode deletes the chats and snapshots already saved for this profile. "
+            "are taken, CAS statements cannot be uploaded, and switching to private mode deletes the chats, snapshots and "
+            "CAS holdings already saved for this profile. "
             "Your INDmoney connection tokens are still saved so you stay connected; disconnect INDmoney to remove them."
         ),
     },
@@ -122,6 +124,7 @@ def privacy_state(user: dict[str, Any]) -> dict[str, Any]:
 def _delete_saved_history(connection: Any, user_id: str) -> None:
     connection.execute("DELETE FROM chats WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ?", (user_id,))
+    connection.execute("DELETE FROM cas_statements WHERE user_id = ?", (user_id,))
     connection.execute("UPDATE users SET snapshot_attempted_at = 0 WHERE id = ?", (user_id,))
 
 
@@ -157,7 +160,9 @@ def clear_history(user_id: str) -> None:
     chats.forget_private_chats(user_id)
 
 
-def export_data(user: dict[str, Any], snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+def export_data(
+    user: dict[str, Any], snapshots: list[dict[str, Any]], cas_statements: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Return everything stored for the profile except its PIN hash, keys and INDmoney tokens.
 
     ``user["keys"]`` must be unlocked; ``snapshots`` are the profile's decrypted snapshots.
@@ -179,4 +184,5 @@ def export_data(user: dict[str, Any], snapshots: list[dict[str, Any]]) -> dict[s
         ],
         "chats": chats.export_chats(user),
         "snapshots": snapshots,
+        "casStatements": cas_statements or [],
     }

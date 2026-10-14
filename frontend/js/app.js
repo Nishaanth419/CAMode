@@ -284,6 +284,86 @@ snapshotRefresh.addEventListener('click', async () => {
   }
 });
 
+/* ── CAS statements (holdings at every broker) ──────────────────────── */
+const casCard = document.getElementById('cas-card');
+const casForm = document.getElementById('cas-form');
+const casPill = document.getElementById('cas-pill');
+const casCopy = document.getElementById('cas-copy');
+const casStatus = document.getElementById('cas-status');
+const casAsk = document.getElementById('cas-ask');
+
+function renderCas(latest) {
+  casPill.textContent = latest ? `As of ${latest.periodTo}` : 'No statement';
+  casPill.classList.toggle('is-connected', Boolean(latest));
+  casAsk.hidden = !latest;
+  if (latest) {
+    const brokers = latest.brokers.length;
+    casCopy.textContent = `${inr.format(latest.valueInr)} in ${latest.holdings} holdings across ${brokers} account${brokers === 1 ? '' : 's'} (${latest.source} statement). Upload a newer one each month.`;
+  }
+}
+
+async function loadCasStatus() {
+  casCard.hidden = !currentUser;
+  if (!currentUser) return;
+  if (storageMode === 'private') {
+    casForm.hidden = true;
+    casAsk.hidden = true;
+    casCopy.textContent = 'Private mode saves no history, so CAS statements cannot be uploaded.';
+    return;
+  }
+  casForm.hidden = false;
+  try {
+    const response = await fetch('/api/cas');
+    if (response.ok) renderCas((await response.json()).statements?.[0]);
+  } catch { /* The card keeps its default text. */ }
+}
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+casForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const file = document.getElementById('cas-file').files[0];
+  const password = document.getElementById('cas-password');
+  if (!file) return;
+  if (file.size > 15 * 1024 * 1024) {
+    casStatus.classList.add('is-error');
+    casStatus.textContent = 'That file is larger than 15 MB; a CAS is usually much smaller.';
+    return;
+  }
+  const submit = casForm.querySelector('[type="submit"]');
+  submit.disabled = true;
+  casStatus.classList.remove('is-error');
+  casStatus.textContent = 'Reading your statement…';
+  try {
+    const response = await fetch('/api/cas', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password.value, pdfBase64: await readAsBase64(file) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not read that statement.');
+    renderCas(data);
+    casForm.reset();
+    casStatus.textContent = 'Saved. The PDF and its password were not kept.';
+  } catch (error) {
+    casStatus.classList.add('is-error');
+    casStatus.textContent = error.message;
+  } finally {
+    password.value = '';
+    submit.disabled = false;
+  }
+});
+
+casAsk.addEventListener('click', () => {
+  runPrompt('Using my latest CAS statement, list my holdings grouped by broker with the value at each.', 'portfolio').catch(showError);
+});
+
 /* ── Load this signed-in user's conversations ───────────────────────── */
 async function loadChats() {
   try {
@@ -331,6 +411,7 @@ async function loadChats() {
     else await startNewChat();
     setStatus('online', statusLabel());
     loadSnapshot();
+    loadCasStatus();
   } catch (err) {
     chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
     setStatus('error', 'Connection failed');
@@ -625,6 +706,7 @@ async function openProfileDialog() {
   profileForm.querySelector('.danger-zone').open = false;
   dataZone.open = false;
   const [response, privacy] = await Promise.all([fetch('/api/profile'), loadPrivacy()]);
+  loadBackupStatus();
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not load your profile.');
   renderDataZone(privacy);
@@ -732,6 +814,38 @@ document.getElementById('new-recovery-code').addEventListener('click', async () 
 });
 document.getElementById('copy-settings-recovery').addEventListener('click', (event) => {
   copyText(document.getElementById('settings-recovery-value').textContent, event.currentTarget);
+});
+
+function renderBackupStatus(status) {
+  const where = status.directory || 'the backup folder';
+  const last = status.latest
+    ? `Last backup ${new Date(status.latest).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+    : 'No backups yet';
+  const schedule = status.enabled ? 'A backup is made every day' : 'Daily backups are off';
+  document.getElementById('backup-status').textContent = `${last}. ${schedule}; the last ${status.keep} are kept in ${where}.`;
+}
+
+async function loadBackupStatus() {
+  try {
+    const response = await fetch('/api/backups');
+    if (response.ok) renderBackupStatus(await response.json());
+  } catch { /* The rest of the dialog still works. */ }
+}
+
+document.getElementById('backup-now').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/backups', { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not back up.');
+    renderBackupStatus(data);
+    dataStatus.textContent = `Backed up to ${data.file}.`;
+  } catch (error) {
+    dataStatus.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.getElementById('clear-history').addEventListener('click', async () => {
