@@ -14,9 +14,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=15" />
+  <link rel="stylesheet" href="/css/app.css?v=16" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=15" defer></script>
+  <script src="/js/app.js?v=16" defer></script>
 </head>
 <body>
   <div id="app">
@@ -377,6 +377,10 @@
         <div id="settings-recovery" class="recovery-code-box" hidden>
           <code id="settings-recovery-value" class="recovery-code"></code>
           <button id="copy-settings-recovery" class="gate-secondary" type="button">Copy</button>
+        </div>
+        <div class="backup-row">
+          <p id="backup-status" class="data-summary"></p>
+          <button id="backup-now" class="gate-secondary" type="button">Back up now</button>
         </div>
         <button id="clear-history" class="gate-secondary" type="button">Clear saved chats and snapshots</button>
         <p id="data-status" class="dialog-status" role="status"></p>

@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import chats, privacy, sealing, snapshots, unlock, users, vault
+from . import backup, chats, privacy, sealing, snapshots, unlock, users, vault
 from .agent import configured_providers, default_provider, run_agent
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -466,6 +466,29 @@ async def new_recovery_code(body: ConfirmPinRequest, request: Request):
     code = await asyncio.to_thread(unlock.replace_recovery_code, user, body.pin)
     logger.info("recovery_code_replaced", extra={"user_id": user["id"]})
     return {"recoveryCode": code}
+
+
+# ── Backups ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/backups")
+async def backup_status(request: Request):
+    if not current_user(request):
+        return profile_required()
+    return backup.status()
+
+
+@app.post("/api/backups", status_code=201)
+async def create_backup(request: Request):
+    """Back up the whole database now (all profiles; history stays sealed with each PIN)."""
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    try:
+        path = await asyncio.to_thread(backup.create_backup)
+    except backup.BackupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    logger.info("manual_backup_created", extra={"user_id": user["id"]})
+    return {"file": path.name, **backup.status()}
 
 
 # ── INDmoney OAuth ─────────────────────────────────────────────────────────────

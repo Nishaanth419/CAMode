@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import privacy, users
+from . import backup, privacy, users
 from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
@@ -414,12 +414,16 @@ async def run_scheduler(
     poll_seconds: float = POLL_SECONDS,
     clock: Callable[[], datetime] = local_now,
 ) -> None:
-    """Poll the wall clock so captures also catch up after startup or laptop sleep."""
+    """Poll the wall clock so captures, and the daily backup, also catch up after startup or laptop sleep."""
     while not stop.is_set():
         try:
             await refresh_due_users(mcp_url=mcp_url, now=clock())
         except Exception:
             logger.exception("snapshot_scheduler_tick_failed")
+        try:
+            await asyncio.to_thread(backup.backup_if_due)
+        except Exception:
+            logger.exception("backup_failed")
         try:
             await asyncio.wait_for(stop.wait(), timeout=poll_seconds)
         except TimeoutError:

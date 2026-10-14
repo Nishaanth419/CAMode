@@ -1248,6 +1248,8 @@ body.gate-open #app { visibility: hidden; }
 .data-zone[open] { display: grid; gap: 12px; }
 .data-zone .gate-secondary { justify-self: start; }
 .data-summary { line-height: 1.5; }
+.backup-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.backup-row .data-summary { flex: 1 1 220px; }
 .notice-details summary { color: var(--accent); cursor: pointer; font-weight: 600; }
 .notice-details[open] summary { margin-bottom: 8px; }
 .data-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }

@@ -10,6 +10,8 @@ services:
       APP_DATA_DIR: /app/.data
       # Same key file the app uses when run with Python, so both can read stored tokens.
       APP_MASTER_KEY_FILE: /run/ca-mode/master.key
+      BACKUP_DIR: /backups
     volumes:
       - ./.data:/app/.data
       - ${HOME}/.config/ca-mode:/run/ca-mode
+      - ${HOME}/ca-mode-backups:/backups

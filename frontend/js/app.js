@@ -625,6 +625,7 @@ async function openProfileDialog() {
   profileForm.querySelector('.danger-zone').open = false;
   dataZone.open = false;
   const [response, privacy] = await Promise.all([fetch('/api/profile'), loadPrivacy()]);
+  loadBackupStatus();
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not load your profile.');
   renderDataZone(privacy);
@@ -732,6 +733,38 @@ document.getElementById('new-recovery-code').addEventListener('click', async () 
 });
 document.getElementById('copy-settings-recovery').addEventListener('click', (event) => {
   copyText(document.getElementById('settings-recovery-value').textContent, event.currentTarget);
+});
+
+function renderBackupStatus(status) {
+  const where = status.directory || 'the backup folder';
+  const last = status.latest
+    ? `Last backup ${new Date(status.latest).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+    : 'No backups yet';
+  const schedule = status.enabled ? 'A backup is made every day' : 'Daily backups are off';
+  document.getElementById('backup-status').textContent = `${last}. ${schedule}; the last ${status.keep} are kept in ${where}.`;
+}
+
+async function loadBackupStatus() {
+  try {
+    const response = await fetch('/api/backups');
+    if (response.ok) renderBackupStatus(await response.json());
+  } catch { /* The rest of the dialog still works. */ }
+}
+
+document.getElementById('backup-now').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/backups', { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not back up.');
+    renderBackupStatus(data);
+    dataStatus.textContent = `Backed up to ${data.file}.`;
+  } catch (error) {
+    dataStatus.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.getElementById('clear-history').addEventListener('click', async () => {
