@@ -60,11 +60,14 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `extract_networth_inr()` is a best-effort parse (INDmoney's format is undocumented); `networth_inr` is NULL when unclear
 - Snapshots are SQLite rows, deliberately not a vector store (exact values, date ranges, sorting)
 
-**Request filtering** (`agent.py`):
-- `_blocked_request_reason()` refuses code requests (finance identifiers like "IFSC code" are exempt) and off-topic messages before any model call
-- Follow-ups ("why?", "and also…") stay in scope only when the user's own recent messages were about finance
-- `_requires_indmoney_data()` decides whether Portfolio Analyzer gets tools at all
+**Request routing** (`router.py`, `agent.py`):
+- `_route_request()` labels every message `off_topic`, `code_request`, `general_finance` or `account_data` with one classifier call (`router.classify()`: forced `classify_request` tool call, enum validated in code, user text sent as a JSON object of untrusted data, last 3 user turns as context). `off_topic` and `code_request` are refused without calling the answer model
+- The classifier uses `OPENAI_ROUTER_MODEL` / `GROQ_ROUTER_MODEL`, else the provider's chat model. Any failure (HTTP error, 429, timeout, no or unknown category) falls back to the keyword rules (`_keyword_category()` over `_blocked_request_reason()` and `_requires_indmoney_data()`); `REQUEST_ROUTER=keywords` skips the classifier entirely (tests set this in `conftest.py`)
+- The route is the first trace step (`kind: "route"`, `source: "model" | "keywords"`)
+- Portfolio Analyzer always gets its local snapshot tools; live INDmoney tools (and the must-call-a-tool retry) only for `account_data`
+- Changing `ROUTER_PROMPT` means bumping `ROUTER_PROMPT_VERSION` and re-running `python -m scripts.eval_router --provider <p>` on `evals/request_routing.jsonl` (keyword baseline: 65.5%)
 - `_contains_code_output()` replaces code-shaped model output (except `chart` blocks) with the refusal notice
+- If Portfolio Analyzer was not given the live tools and the model writes a tool call as JSON text (`_looks_like_tool_call()`), the request is rerun once with `force_account_data=True` instead of showing the JSON
 
 **Portfolio tools** (`agent.py`, `snapshots.py`):
 - `PortfolioContext` carries the local `LocalTool`s (`get_portfolio_snapshot`, `get_networth_history`), the profile text, cached MCP tools, and an `on_mcp_tools` cache callback
@@ -183,6 +186,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `OPENAI_API_KEY` / `GROQ_API_KEY`: enable providers; `OPENAI_MODEL` / `GROQ_MODEL`, `OPENAI_BASE_URL` / `GROQ_BASE_URL`: overrides
 - `AI_PROVIDER`: default provider (`openai` or `groq`); users can switch in the app
 - `GROQ_INPUT_TOKEN_BUDGET`, `GROQ_COMPLETION_TOKEN_LIMIT`: Groq limits
+- `REQUEST_ROUTER` (`model` default, or `keywords`), `OPENAI_ROUTER_MODEL` / `GROQ_ROUTER_MODEL`: request classifier
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default `https://mcp.indmoney.com/mcp`)
 - `APP_ORIGIN`: public origin for the OAuth callback
 - `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; falls back to a fixed +05:30 offset when tz data is missing)
@@ -201,6 +205,7 @@ Test coverage:
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
 - `test_unlock.py`: sealed storage, restart locking, per-session unlock, recovery and its lockout, new recovery codes, upgrading profiles from before encryption, export while locked
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
+- `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
 
 ## Performance Notes
