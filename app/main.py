@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import chats, privacy, snapshots, users
+from . import chats, privacy, snapshots, users, vault
 from .agent import configured_providers, default_provider, run_agent
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -50,6 +50,8 @@ __all__ = [
 ]
 
 initialize_db()
+vault.check_key()
+users.encrypt_stored_secrets()
 
 
 def _scheduler_enabled() -> bool:

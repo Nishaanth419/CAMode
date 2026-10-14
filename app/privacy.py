@@ -5,7 +5,9 @@ connect INDmoney, or have snapshots captured. Every acceptance, including a late
 change of storage mode or retention, appends a row to ``consents``, so the table
 is a record of what each profile agreed to and when. Bump ``POLICY_VERSION``
 whenever ``NOTICE`` changes what is stored or shared; every profile is then asked
-again, and the scheduler pauses their snapshots until they accept.
+again, and the scheduler pauses their snapshots until they accept. Wording fixes
+that only make the notice more accurate (such as describing added encryption) do
+not need a bump.
 """
 
 from __future__ import annotations
@@ -30,8 +32,9 @@ NOTICE: Final = (
             "Your profile name, a scrypt hash of your PIN, the optional profile details you enter, and your INDmoney "
             "connection tokens. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
-            "period you pick. Everything is in a SQLite file readable only by this computer's user account. It is not "
-            "encrypted, so anyone who can sign in to this computer as you can read it."
+            "period you pick. Everything is in a SQLite file readable only by this computer's user account. INDmoney "
+            "tokens are encrypted with a key kept outside that file. Chats, snapshots and profile details are not "
+            "encrypted, so anyone who can sign in to this computer as you can read them."
         ),
     },
     {
@@ -161,7 +164,7 @@ def export_data(user: dict[str, Any]) -> dict[str, Any]:
         "exportedAt": users.now_ms(),
         "profile": {"displayName": user["displayName"], "fields": user["profile"]},
         "settings": {"storageMode": user["storageMode"], "snapshotRetentionDays": user["snapshotRetentionDays"]},
-        "indmoneyConnected": bool(user["indmoney"].get("accessToken") or user["indmoney"].get("refreshToken")),
+        "indmoneyConnected": users.has_indmoney_tokens(user["indmoney"]),
         "consents": [
             {"policyVersion": row["policy_version"], "storageMode": row["storage_mode"],
              "snapshotRetentionDays": row["snapshot_retention_days"], "acceptedAt": row["accepted_at"]}

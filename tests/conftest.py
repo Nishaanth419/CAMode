@@ -5,8 +5,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 os.environ.setdefault("APP_DATA_DIR", tempfile.mkdtemp(prefix="camode-tests-"))
 os.environ["SNAPSHOT_SCHEDULER_ENABLED"] = "false"
+# Never read or create the developer's real master key file.
+os.environ["APP_MASTER_KEY"] = Fernet.generate_key().decode()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:

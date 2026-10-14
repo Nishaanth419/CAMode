@@ -20,6 +20,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
 - **`app/snapshots.py`**: Daily capture of net worth/allocation/holdings, history queries, the polling scheduler, profile prompt text, and the agent's local snapshot tools.
 - **`app/agent.py`**: Provider selection (OpenAI/Groq), request filtering, and the tool-calling loop (`stream_agent` yields `(event, data)` tuples; `run_agent` collects them into an answer plus trace).
+- **`app/vault.py`**: Master key resolution (`APP_MASTER_KEY`, `APP_MASTER_KEY_FILE`, default `~/.config/ca-mode/master.key`) and Fernet `encrypt()` / `decrypt()` for secrets stored in SQLite.
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
 
 ### Key Design Patterns
@@ -29,7 +30,12 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - Routes other than `/healthz`, `/api/providers`, `/api/session` and the sign-up/sign-in/sign-out routes return `401 {"profileRequired": true}` without a profile
 - `check_pin()` reads the lock state from the DB and records the outcome in a `BEGIN IMMEDIATE` transaction, so concurrent wrong PINs cannot bypass the 5-attempt / 5-minute lock
 - PIN hashing (scrypt N=2^17) runs via `asyncio.to_thread`; tests lower `users.SCRYPT_N`
-- The PIN is a local lock, not network-grade auth; data is not encrypted at rest
+- The PIN is a local lock, not network-grade auth; chats, snapshots and profile fields are not encrypted at rest
+
+**Encrypted secrets** (`vault.py`, `users.py`):
+- `users.indmoney` and `oauth_sessions.data` are stored as `enc:v1:<Fernet token>` via `_encode_secret()` / `_decode_secret()`; an empty dict stays a plain `{}`, so SQL can test "connected" with `indmoney <> '{}'` (never `json_extract` on these columns)
+- `main.py` runs `vault.check_key()` and `users.encrypt_stored_secrets()` at startup: plaintext rows are encrypted, rows under another key are counted, logged as `stored_secrets_unreadable` and left untouched (they read as `{}`, so the profile shows as disconnected)
+- The key lives outside `.data/`; Docker mounts `~/.config/ca-mode` so both run modes share it. Tests set a generated `APP_MASTER_KEY` in `conftest.py` and must never touch the real key file
 
 **Consent and storage modes** (`privacy.py`, `chats.py`):
 - A profile must accept the current `POLICY_VERSION` before `POST /api/chats`, `POST /api/chat`, `GET /api/tools`, `POST /api/snapshots/refresh` or `/auth/indmoney/connect`; otherwise `403 {"consentRequired": true}` (connect redirects home). Reading, deleting and exporting existing data stays allowed
@@ -134,7 +140,8 @@ python -m compileall -q app tests && python -m pytest -q
 - `hash_pin()` / `verify_pin()` / `check_pin()`: scrypt hashes and the atomic lockout
 - `create_user()`, `get_user()`, `list_profiles()`, `update_profile()`, `delete_user()`
 - `get_session()`, `save_session()`, `touch_session()`, `session_user_id()`, `sign_in()` (rotates the id and adopts legacy data), `sign_out()`
-- `get_indmoney()`, `save_indmoney()`, `clear_indmoney()`, `user_access_token()`, `cache_mcp_tools()`
+- `get_indmoney()`, `save_indmoney()`, `clear_indmoney()`, `user_access_token()`, `cache_mcp_tools()`, `users_with_indmoney()`, `has_indmoney_tokens()`
+- `encrypt_stored_secrets()`: startup migration of plaintext tokens and session data
 
 ### `app/privacy.py`
 - `POLICY_VERSION`, `NOTICE`, `ConsentRequest`, `StaleNoticeError`
@@ -155,6 +162,9 @@ python -m compileall -q app tests && python -m pytest -q
 - `stream_agent()` / `run_agent()`: OpenAI/Groq loop; retries once if the portfolio model skips tools; marks answers cut off by `finish_reason == "length"`
 - `_fit_groq_context()`: trims history and tool results to `GROQ_INPUT_TOKEN_BUDGET`, always keeping the current question
 
+### `app/vault.py`
+- `check_key()`, `encrypt()`, `decrypt()`, `is_encrypted()`, `VaultError`
+
 ### `app/mcp_client.py`
 - `fetch_mcp_session()`, `call_mcp_tool()`, `filter_portfolio_tools()`
 
@@ -165,6 +175,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default `https://mcp.indmoney.com/mcp`)
 - `APP_ORIGIN`: public origin for the OAuth callback
 - `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; falls back to a fixed +05:30 offset when tz data is missing)
+- `APP_MASTER_KEY_FILE` / `APP_MASTER_KEY`: token encryption key (default file `~/.config/ca-mode/master.key`, created on first start)
 - `APP_DATA_DIR`: SQLite directory (default `.data/`); `LOG_LEVEL` (default `INFO`); `PORT` (Docker, default `8080`)
 
 ## Testing Strategy
@@ -177,6 +188,7 @@ Test coverage:
 - `test_users.py`: PIN hashing, sign-in, lockout (including concurrent guesses), session rotation, legacy adoption, profile isolation
 - `test_snapshots.py`: net-worth parsing, IST schedule, capture, due-profile selection and backoff, scheduler, local tools, retention
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
+- `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
 
 ## Performance Notes
