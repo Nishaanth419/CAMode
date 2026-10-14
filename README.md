@@ -79,6 +79,8 @@ cp .env.example .env
 | `SNAPSHOT_RETENTION_DAYS` | `365` | How long snapshots are kept |
 | `SNAPSHOT_SCHEDULER_ENABLED` | `true` | Set to `false` to stop the background snapshot job |
 | `APP_DATA_DIR` | `.data/` | Folder for the SQLite database |
+| `APP_MASTER_KEY_FILE` | `~/.config/ca-mode/master.key` | File holding the key that encrypts stored INDmoney tokens (created on first start) |
+| `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `PORT` | `8080` | Port inside the Docker container |
 
@@ -92,7 +94,7 @@ After configuring `.env`, build and start the app:
 docker compose up --build -d
 ```
 
-Open [http://localhost:8003](http://localhost:8003) and keep using this address for INDmoney sign-in (the OAuth callback is `http://localhost:8003/auth/indmoney/callback`). The database lives in `./.data` on your computer, and the snapshot job runs inside the container, so keep the container running for the daily 09:00 capture.
+Open [http://localhost:8003](http://localhost:8003) and keep using this address for INDmoney sign-in (the OAuth callback is `http://localhost:8003/auth/indmoney/callback`). The database lives in `./.data` on your computer, and the snapshot job runs inside the container, so keep the container running for the daily 09:00 capture. The container also mounts `~/.config/ca-mode`, so it uses the same token encryption key as running with Python.
 
 ```bash
 docker compose logs -f   # view logs
@@ -163,6 +165,7 @@ For net worth, allocation, holdings, and trends it reads the saved snapshot firs
 The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney OAuth tokens, and portfolio snapshots. Each profile sees only its own data.
 
 - PINs are stored as salted scrypt hashes. Five wrong PINs lock the profile for five minutes.
+- INDmoney tokens, and the OAuth data held while you sign in to INDmoney, are encrypted (Fernet: AES-128 with HMAC-SHA256) with a master key stored outside the database, at `~/.config/ca-mode/master.key` by default. A copy of `.data/` alone does not reveal them. Existing plaintext tokens are encrypted the first time the app starts. If the key is lost or replaced, stored tokens can't be read: those profiles show as disconnected and need to reconnect INDmoney, and the log shows `stored_secrets_unreadable`.
 - **Disconnect** revokes the INDmoney access token and deletes the profile's snapshots; its chats are kept.
 - **Delete this profile** (in the profile dialog, confirmed with the PIN) removes the profile with its chats, snapshots, and INDmoney connection.
 - Chats expire 30 days after their last message; each profile keeps at most 50 chats.
@@ -176,7 +179,7 @@ Under **Your data and privacy** in the profile dialog you can change these choic
 
 In both modes, your messages, recent chat history, profile details, and any INDmoney data Portfolio Analyzer reads are sent to the AI provider you select.
 
-The PIN is a local lock for people sharing one computer, not internet-grade authentication. Tokens and snapshots are protected only by the database file's `0600` permissions, not encrypted. Add real authentication and encryption at rest before exposing CA Mode to a network.
+The PIN is a local lock for people sharing one computer, not internet-grade authentication. Chats, snapshots, and profile details are protected only by the database file's `0600` permissions, not encrypted. Add real authentication and full encryption at rest before exposing CA Mode to a network.
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
@@ -222,6 +225,7 @@ Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up,
 - **"Connect your INDmoney account"** in Portfolio Analyzer: the profile is not connected, or INDmoney expired the session. Select **Connect** again.
 - **No net worth in the portfolio card**: no snapshot yet (select **Refresh snapshot now**), or the total could not be read from INDmoney's response. Check the server log for `snapshot_refresh_failed`.
 - **"Too many incorrect PINs"**: wait five minutes and try again.
+- **Everyone shows "Not connected" after moving the app or switching between Docker and Python**: the app is using a different master key from the one that encrypted the tokens (look for `stored_secrets_unreadable` in the log). Point `APP_MASTER_KEY_FILE` at the original key, or reconnect INDmoney.
 
 ## Development checks
 
@@ -246,6 +250,7 @@ app/
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
+  vault.py         Master key and encryption for stored INDmoney tokens
 frontend/
   index.html       App shell, profile picker, and profile dialog
   js/app.js        Chat UI, profiles, snapshot card, Markdown and Plotly charts
@@ -258,6 +263,7 @@ tests/
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
   test_mcp_client.py MCP protocol handling and tool filtering
+  test_vault.py      Master key handling, token encryption, startup migration
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup
 ```
