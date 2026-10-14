@@ -116,7 +116,7 @@ Open [http://localhost:8003](http://localhost:8003) and keep using this address 
 
 ## First run
 
-1. **Create a profile.** The first screen asks "Who's using CA Mode?". Enter your name and a PIN of at least four characters. Other people on the same computer add their own profiles with **+ Add a profile**.
+1. **Create a profile.** The first screen asks "Who's using CA Mode?". Enter your name and a PIN of at least four characters. Other people on the same computer add their own profiles with **+ Add a profile**. You then see a **recovery code** once: write it down. It is the only way back into your saved history if you forget your PIN.
 2. **Review the privacy notice.** It explains what is saved on this computer and what is sent to the AI provider. Choose **Save on this computer** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
 3. **Fill in your profile (optional).** Click your name at the bottom of the sidebar to set risk appetite, horizon, goal, monthly investment, and age band. Portfolio Analyzer uses these to relate its analysis to your goals; it is not personalised investment advice.
 4. **Connect INDmoney.** Select **Connect**, sign in to INDmoney, and approve read-only access. The first snapshot is saved straight away, and the portfolio card shows your net worth.
@@ -164,7 +164,11 @@ For net worth, allocation, holdings, and trends it reads the saved snapshot firs
 
 The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney OAuth tokens, and portfolio snapshots. Each profile sees only its own data.
 
-- PINs are stored as salted scrypt hashes. Five wrong PINs lock the profile for five minutes.
+- PINs are stored as salted scrypt hashes. Five wrong PINs or recovery codes lock the profile for five minutes.
+- **Saved chats, snapshots, and profile details are locked with your PIN.** Each profile has its own keypair (X25519, via PyNaCl). Its private key is stored only encrypted with a key derived from your PIN, and a second copy with one derived from your recovery code (scrypt N=2^17). The daily snapshot job seals new snapshots with the public key, so it needs no PIN. Reading anything back needs the PIN: nobody else on the computer, and nobody with the database and the master key, can read it.
+- After the app restarts, each browser asks for the PIN again ("Welcome back"), because unlocked keys are kept only in memory.
+- **Forgot your PIN?** on the unlock screen sets a new PIN with your recovery code and gives you a new code (the old one stops working). **New recovery code** under **Your data and privacy** replaces a lost code. If both the PIN and the recovery code are lost, the profile's saved history cannot be recovered.
+- Profiles from before this version get their keys and a recovery code the next time they enter their PIN; their existing chats, snapshots, and profile details are encrypted at that point. Until then, new snapshots for them are saved unencrypted.
 - INDmoney tokens, and the OAuth data held while you sign in to INDmoney, are encrypted (Fernet: AES-128 with HMAC-SHA256) with a master key stored outside the database, at `~/.config/ca-mode/master.key` by default. A copy of `.data/` alone does not reveal them. Existing plaintext tokens are encrypted the first time the app starts. If the key is lost or replaced, stored tokens can't be read: those profiles show as disconnected and need to reconnect INDmoney, and the log shows `stored_secrets_unreadable`.
 - **Disconnect** revokes the INDmoney access token and deletes the profile's snapshots; its chats are kept.
 - **Delete this profile** (in the profile dialog, confirmed with the PIN) removes the profile with its chats, snapshots, and INDmoney connection.
@@ -179,7 +183,7 @@ Under **Your data and privacy** in the profile dialog you can change these choic
 
 In both modes, your messages, recent chat history, profile details, and any INDmoney data Portfolio Analyzer reads are sent to the AI provider you select.
 
-The PIN is a local lock for people sharing one computer, not internet-grade authentication. Chats, snapshots, and profile details are protected only by the database file's `0600` permissions, not encrypted. Add real authentication and full encryption at rest before exposing CA Mode to a network.
+The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Add real authentication before exposing CA Mode to a network.
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
@@ -200,6 +204,9 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/session` | Current profile, INDmoney status, and the list of profiles |
 | `POST /api/users` | Create a profile and sign in |
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN; sign out |
+| `POST /api/session/unlock` | Unlock the signed-in profile's history after a restart (body: `{"pin": ...}`) |
+| `POST /api/session/recover` | Set a new PIN with the recovery code and sign in (body: `{"userId", "recoveryCode", "newPin"}`); returns a new recovery code |
+| `POST /api/users/me/recovery-code` | Replace the recovery code (body: `{"pin": ...}`) |
 | `GET /api/profile`, `PUT /api/profile` | Read or update the profile details |
 | `DELETE /api/users/me` | Delete the signed-in profile (body: `{"pin": ...}`) |
 | `GET /api/privacy` | Privacy notice, its version, whether it needs accepting, and the profile's storage settings |
@@ -216,7 +223,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect` | INDmoney OAuth |
 | `GET /healthz` | Health check |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up, sign-in, and sign-out routes requires a signed-in profile. Creating chats, sending messages, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`.
+Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up, sign-in, and sign-out routes requires a signed-in profile. Creating chats, sending messages, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
 
 ## Troubleshooting
 
@@ -224,7 +231,8 @@ Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up,
 - **`ModuleNotFoundError: No module named 'httpx'`** when starting: you ran a global `uvicorn`. Activate `.venv` or run `.venv/bin/uvicorn`.
 - **"Connect your INDmoney account"** in Portfolio Analyzer: the profile is not connected, or INDmoney expired the session. Select **Connect** again.
 - **No net worth in the portfolio card**: no snapshot yet (select **Refresh snapshot now**), or the total could not be read from INDmoney's response. Check the server log for `snapshot_refresh_failed`.
-- **"Too many incorrect PINs"**: wait five minutes and try again.
+- **"Too many incorrect attempts"**: wait five minutes and try again. Wrong PINs and wrong recovery codes count together.
+- **Asked for your PIN after restarting**: expected. Your history is encrypted and the key is kept only in memory.
 - **Everyone shows "Not connected" after moving the app or switching between Docker and Python**: the app is using a different master key from the one that encrypted the tokens (look for `stored_secrets_unreadable` in the log). Point `APP_MASTER_KEY_FILE` at the original key, or reconnect INDmoney.
 
 ## Development checks
@@ -251,6 +259,8 @@ app/
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
   vault.py         Master key and encryption for stored INDmoney tokens
+  sealing.py       Per-profile keypairs, PIN and recovery-code key wrapping, sealing
+  unlock.py        Key setup, unlocking, recovery, and the in-memory unlocked sessions
 frontend/
   index.html       App shell, profile picker, and profile dialog
   js/app.js        Chat UI, profiles, snapshot card, Markdown and Plotly charts
@@ -264,6 +274,7 @@ tests/
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
   test_mcp_client.py MCP protocol handling and tool filtering
   test_vault.py      Master key handling, token encryption, startup migration
+  test_unlock.py     PIN-locked history, restart locking, recovery codes, upgrading old profiles
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup
 ```
