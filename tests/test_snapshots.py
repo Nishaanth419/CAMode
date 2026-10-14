@@ -6,13 +6,19 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import db, snapshots, users
+from app import db, privacy, snapshots, users
 
 IST = snapshots.SNAPSHOT_TIMEZONE
 
 
-def make_user(name: str = "Asha", *, connected: bool = True) -> str:
-    user_id = users.create_user(name, users.hash_pin("2468"))["id"]
+def make_user(name: str = "Asha", *, connected: bool = True, storage_mode: str | None = "device") -> str:
+    """Create a profile, optionally connected to INDmoney and consenting with ``storage_mode``."""
+    user = users.create_user(name, users.hash_pin("2468"))
+    user_id = user["id"]
+    if storage_mode is not None:
+        privacy.record_consent(user, privacy.ConsentRequest(
+            policyVersion=privacy.POLICY_VERSION, storageMode=storage_mode,
+        ))
     if connected:
         users.save_indmoney(user_id, {"accessToken": "token", "refreshToken": "refresh",
                                       "expiresAt": users.now_ms() + 3_600_000,

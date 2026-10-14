@@ -24,6 +24,8 @@ _SCHEMA = """
         mcp_tools TEXT,
         mcp_tools_fetched_at INTEGER,
         snapshot_attempted_at INTEGER NOT NULL DEFAULT 0,
+        storage_mode TEXT NOT NULL DEFAULT 'device',
+        snapshot_retention_days INTEGER NOT NULL DEFAULT 365,
         failed_logins INTEGER NOT NULL DEFAULT 0,
         locked_until INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
@@ -54,7 +56,23 @@ _SCHEMA = """
         data TEXT NOT NULL,
         PRIMARY KEY (user_id, as_of_date)
     );
+    CREATE TABLE IF NOT EXISTS consents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        policy_version TEXT NOT NULL,
+        storage_mode TEXT NOT NULL,
+        snapshot_retention_days INTEGER NOT NULL,
+        accepted_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS consents_by_user ON consents(user_id, id DESC);
 """
+
+# Columns added to ``users`` after its first release; CREATE TABLE IF NOT EXISTS
+# leaves existing tables alone, so these are added in place.
+_ADDED_USER_COLUMNS = {
+    "storage_mode": "TEXT NOT NULL DEFAULT 'device'",
+    "snapshot_retention_days": "INTEGER NOT NULL DEFAULT 365",
+}
 
 
 @contextmanager
@@ -92,12 +110,20 @@ def _migrate_legacy_tables(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE oauth_sessions ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
 
 
+def _add_user_columns(connection: sqlite3.Connection) -> None:
+    existing = _columns(connection, "users")
+    for name, definition in _ADDED_USER_COLUMNS.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+
+
 def initialize_db() -> None:
     with connect_db() as connection:
         # WAL is persistent in the database file, so it only needs setting once.
         connection.execute("PRAGMA journal_mode = WAL")
         _migrate_legacy_tables(connection)
         connection.executescript(_SCHEMA)
+        _add_user_columns(connection)
     try:
         os.chmod(DATABASE_PATH, 0o600)
     except OSError:

@@ -15,7 +15,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, users
+from app import db, main, privacy, users
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +33,21 @@ def client():
         yield test_client
 
 
-def sign_up(test_client: TestClient, name: str = "Asha", pin: str = "2468") -> dict:
-    """Create a profile through the API and leave the client signed in as it."""
+def sign_up(
+    test_client: TestClient, name: str = "Asha", pin: str = "2468", *, storage_mode: str | None = "device",
+) -> dict:
+    """Create a profile through the API and leave the client signed in as it.
+
+    Unless ``storage_mode`` is None, the profile also accepts the privacy notice with that mode.
+    """
     test_client.get("/api/session")
     response = test_client.post("/api/users", json={"displayName": name, "pin": pin})
     assert response.status_code == 201, response.text
+    if storage_mode is not None:
+        accepted = test_client.post("/api/privacy/consent", json={
+            "policyVersion": privacy.POLICY_VERSION, "storageMode": storage_mode,
+        })
+        assert accepted.status_code == 200, accepted.text
     return response.json()["user"]
 
 

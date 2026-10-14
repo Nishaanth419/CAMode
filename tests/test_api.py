@@ -80,7 +80,9 @@ def test_provider_endpoint_exposes_only_openai_and_groq(client, monkeypatch):
 def test_session_initialization_sets_http_only_cookie(client):
     response = client.get("/api/session")
 
-    assert response.json() == {"connected": False, "user": None, "profiles": []}
+    assert response.json() == {
+        "connected": False, "user": None, "consentRequired": False, "storageMode": None, "profiles": [],
+    }
     cookie = response.headers["set-cookie"].lower()
     assert "indmoney_session=" in cookie
     assert "httponly" in cookie

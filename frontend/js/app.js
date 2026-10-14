@@ -56,9 +56,21 @@ const gateError = document.getElementById('gate-error');
 const profileDialog = document.getElementById('profile-dialog');
 const profileForm = document.getElementById('profile-form');
 const profileFormStatus = document.getElementById('profile-form-status');
+const consentForm = document.getElementById('consent-form');
+const consentNotice = document.getElementById('consent-notice');
+const gateCard = profileGate.querySelector('.gate-card');
+const gateTitle = document.getElementById('gate-title');
+const gateSub = document.getElementById('gate-sub');
+const gateNote = document.getElementById('gate-note');
+const dataZone = document.getElementById('data-zone');
+const dataSummary = document.getElementById('data-summary');
+const dataStatus = document.getElementById('data-status');
+const settingsNotice = document.getElementById('settings-notice');
 const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal'];
 let isConnected = false;
 let currentUser = null;
+let storageMode = 'device';
+let privacyPolicyVersion = null;
 let unlockTarget = null;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
@@ -203,8 +215,12 @@ function renderAccount() {
     ? 'Your INDmoney account is linked. Ask the Portfolio Analyzer for a live snapshot of your net worth and holdings.'
     : 'Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.';
   portfolioCta.textContent = isConnected ? 'Ask about my net worth' : 'Connect INDmoney';
-  snapshotRefresh.hidden = !isConnected;
+  snapshotRefresh.hidden = !isConnected || storageMode === 'private';
   if (!isConnected) renderSnapshot(null, []);
+  else if (storageMode === 'private') {
+    renderSnapshot(null, []);
+    portfolioCopy.textContent = 'Private mode: no daily snapshots are saved. Portfolio Analyzer reads INDmoney live.';
+  }
 }
 
 /* ── Daily portfolio snapshot card ──────────────────────────────────── */
@@ -230,14 +246,14 @@ function renderSnapshot(latest, history, schedule = '09:00') {
     sparkLine.setAttribute('d', `M${points.join(' L')}`);
     sparkArea.setAttribute('d', `M${points.join(' L')} V70 H0 Z`);
   }
-  if (!isConnected) return;
+  if (!isConnected || storageMode === 'private') return;
   portfolioCopy.textContent = latest
     ? `Snapshot captured ${formatCaptured(latest.capturedAt)}. It refreshes every day at ${schedule.split(' ')[0]}.`
     : `Your first snapshot is being saved. After that it refreshes every day at ${schedule.split(' ')[0]}.`;
 }
 
 async function loadSnapshot() {
-  if (!isConnected) return;
+  if (!isConnected || storageMode === 'private') return;
   try {
     const response = await fetch('/api/snapshots?days=30');
     if (!response.ok) return;
@@ -270,6 +286,7 @@ async function loadChats() {
     const session = await sessionResponse.json();
     currentUser = session.user;
     isConnected = Boolean(session.connected);
+    storageMode = session.storageMode || 'device';
     renderAccount();
     if (!currentUser) {
       chats = [];
@@ -280,6 +297,15 @@ async function loadChats() {
       setStatus('online', 'Choose a profile');
       return;
     }
+    if (session.consentRequired) {
+      chats = [];
+      activeChatId = null;
+      resetConversationView();
+      renderChats();
+      await showConsentGate();
+      setStatus('online', 'Review privacy notice');
+      return;
+    }
     hideProfileGate();
     const response = await fetch('/api/chats');
     const data = await response.json().catch(() => ({}));
@@ -288,7 +314,7 @@ async function loadChats() {
     renderChats();
     if (chats.length) await selectChat(chats[0].id);
     else await startNewChat();
-    setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
+    setStatus('online', statusLabel());
     loadSnapshot();
   } catch (err) {
     chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
@@ -303,12 +329,20 @@ function showGateError(message) {
 }
 
 function showGateView(view) {
+  const isConsent = view === 'consent';
   profileList.hidden = view !== 'list';
   showCreateProfile.hidden = view !== 'list';
   unlockForm.hidden = view !== 'unlock';
   createForm.hidden = view !== 'create';
+  consentForm.hidden = !isConsent;
+  gateNote.hidden = isConsent;
+  gateCard.classList.toggle('is-consent', isConsent);
+  gateTitle.textContent = isConsent ? `Before you start, ${currentUser?.displayName || ''}`.trim() : "Who's using CA Mode?";
+  gateSub.textContent = isConsent
+    ? 'Here is what CA Mode keeps on this computer and what it sends elsewhere. Choose how much history to keep.'
+    : 'Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.';
   showGateError('');
-  const focusTarget = view === 'unlock' ? unlockPin : view === 'create' ? document.getElementById('create-name') : profileList.querySelector('button');
+  const focusTarget = isConsent ? consentNotice : view === 'unlock' ? unlockPin : view === 'create' ? document.getElementById('create-name') : profileList.querySelector('button');
   focusTarget?.focus();
 }
 
@@ -387,15 +421,108 @@ createForm.addEventListener('submit', (event) => {
   submitGate('/api/users', { displayName: document.getElementById('create-name').value, pin }, createForm);
 });
 
+/* ── Privacy notice and storage choices ─────────────────────────────── */
+function renderNotice(container, notice) {
+  container.innerHTML = '';
+  for (const item of notice || []) {
+    const section = document.createElement('section');
+    const title = document.createElement('h3');
+    title.textContent = item.title;
+    const body = document.createElement('p');
+    body.textContent = item.body;
+    section.append(title, body);
+    container.appendChild(section);
+  }
+}
+
+function setStorageChoice(form, name, mode, retentionDays) {
+  const selected = form.querySelector(`input[name="${name}"][value="${mode === 'private' ? 'private' : 'device'}"]`);
+  if (selected) selected.checked = true;
+  const retention = form.querySelector('[data-retention-field] select');
+  if (retention && retentionDays) retention.value = String(retentionDays);
+  syncRetentionField(form, name);
+}
+
+function readStorageChoice(form, name) {
+  return {
+    storageMode: form.querySelector(`input[name="${name}"]:checked`)?.value || 'device',
+    snapshotRetentionDays: Number(form.querySelector('[data-retention-field] select').value),
+  };
+}
+
+function syncRetentionField(form, name) {
+  form.querySelector('[data-retention-field]').hidden = readStorageChoice(form, name).storageMode === 'private';
+}
+
+async function loadPrivacy() {
+  const response = await fetch('/api/privacy');
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not load the privacy notice.');
+  privacyPolicyVersion = data.policyVersion;
+  return data;
+}
+
+async function savePrivacyChoice(choice) {
+  const response = await fetch('/api/privacy/consent', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ policyVersion: privacyPolicyVersion, ...choice }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 409) {
+    throw new Error('The privacy notice changed while this page was open. Read the updated notice and try again.');
+  }
+  if (!response.ok) throw new Error(data.error || 'Could not save your data settings.');
+  return data;
+}
+
+async function showConsentGate() {
+  profileGate.hidden = false;
+  document.body.classList.add('gate-open');
+  showGateView('consent');
+  consentForm.reset();
+  try {
+    const privacy = await loadPrivacy();
+    renderNotice(consentNotice, privacy.notice);
+    setStorageChoice(consentForm, 'consent-storage', privacy.storageMode, privacy.snapshotRetentionDays);
+  } catch (error) {
+    showGateError(error.message);
+  }
+}
+
+consentForm.querySelectorAll('input[name="consent-storage"]').forEach(input => input.addEventListener('change', () => syncRetentionField(consentForm, 'consent-storage')));
+consentForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const submit = consentForm.querySelector('[type="submit"]');
+  submit.disabled = true;
+  showGateError('');
+  try {
+    await savePrivacyChoice(readStorageChoice(consentForm, 'consent-storage'));
+    await loadChats();
+  } catch (error) {
+    showGateError(error.message);
+    if (error.message.startsWith('The privacy notice changed')) await showConsentGate();
+  } finally {
+    submit.disabled = false;
+  }
+});
+document.getElementById('consent-sign-out').addEventListener('click', async () => {
+  await fetch('/api/session/logout', { method: 'POST' });
+  await loadChats();
+});
+
 /* ── Profile settings dialog ────────────────────────────────────────── */
 async function openProfileDialog() {
   if (!currentUser || isStreaming) return;
   profileFormStatus.textContent = '';
   document.getElementById('delete-pin').value = '';
+  document.getElementById('export-pin').value = '';
+  dataStatus.textContent = '';
   profileForm.querySelector('.danger-zone').open = false;
-  const response = await fetch('/api/profile');
+  dataZone.open = false;
+  const [response, privacy] = await Promise.all([fetch('/api/profile'), loadPrivacy()]);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not load your profile.');
+  renderDataZone(privacy);
   document.getElementById('profile-dialog-title').textContent = data.displayName;
   for (const field of PROFILE_FIELDS) {
     document.getElementById(`field-${field}`).value = data.profile?.[field] ?? '';
@@ -428,6 +555,65 @@ profileForm.addEventListener('submit', async (event) => {
     const data = await response.json().catch(() => ({}));
     profileFormStatus.textContent = Array.isArray(data.detail) ? 'Check the highlighted values and try again.' : (data.error || 'Could not save your profile.');
   }
+});
+
+function renderDataZone(privacy) {
+  const accepted = privacy.acceptedAt ? ` You agreed to the current notice on ${new Date(privacy.acceptedAt).toLocaleDateString()}.` : '';
+  dataSummary.textContent = (privacy.storageMode === 'private'
+    ? 'Private mode: chats stay in memory until you sign out, and no portfolio snapshots are saved.'
+    : `Saving on this computer: chats for 30 days and portfolio snapshots for ${privacy.snapshotRetentionDays} days.`) + accepted;
+  renderNotice(settingsNotice, privacy.notice);
+  setStorageChoice(profileForm, 'settings-storage', privacy.storageMode, privacy.snapshotRetentionDays);
+}
+
+profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => input.addEventListener('change', () => syncRetentionField(profileForm, 'settings-storage')));
+
+document.getElementById('save-data-settings').addEventListener('click', async () => {
+  const choice = readStorageChoice(profileForm, 'settings-storage');
+  if (choice.storageMode === 'private' && storageMode !== 'private'
+    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile on this computer. Continue?')) return;
+  try {
+    renderDataZone(await savePrivacyChoice(choice));
+    dataStatus.textContent = 'Data settings saved.';
+    await loadChats();
+  } catch (error) {
+    dataStatus.textContent = error.message;
+  }
+});
+
+document.getElementById('export-data').addEventListener('click', async () => {
+  const pin = document.getElementById('export-pin').value;
+  if (!pin) {
+    dataStatus.textContent = 'Enter your PIN to export your data.';
+    return;
+  }
+  const response = await fetch('/api/users/me/export', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    dataStatus.textContent = data.error || 'Could not export your data.';
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  link.download = `ca-mode-export-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  // Revoking straight away can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  document.getElementById('export-pin').value = '';
+  dataStatus.textContent = 'Export downloaded. It contains your chats and portfolio data, so keep it somewhere safe.';
+});
+
+document.getElementById('clear-history').addEventListener('click', async () => {
+  if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and INDmoney connection are kept.')) return;
+  const response = await fetch('/api/users/me/history', { method: 'DELETE' });
+  if (!response.ok) {
+    dataStatus.textContent = 'Could not clear your history.';
+    return;
+  }
+  profileDialog.close();
+  await loadChats();
 });
 
 document.getElementById('switch-profile').addEventListener('click', async () => {
@@ -540,7 +726,12 @@ async function refreshChats() {
   if (!response.ok) throw new Error('Could not refresh the chat list.');
   chats = (await response.json()).chats || [];
   renderChats();
-  setStatus('online', isConnected ? 'INDmoney connected' : 'Finance mode');
+  setStatus('online', statusLabel());
+}
+
+function statusLabel() {
+  const label = isConnected ? 'INDmoney connected' : 'Finance mode';
+  return storageMode === 'private' ? `${label} · Private` : label;
 }
 
 function resetConversationView() {

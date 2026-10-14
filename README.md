@@ -10,6 +10,7 @@ It supports OpenAI and Groq. Several people can share one computer: each person 
 ## Features
 
 - A profile per person (name + PIN), with a profile picker and a quick **Switch profile**.
+- A privacy notice each profile accepts before use, a choice between saving history on this computer and a private mode that saves no chats or snapshots, plus data export and history clearing.
 - Optional profile details (risk appetite, investment horizon, primary goal, monthly investment, age band) that Portfolio Analyzer uses as context.
 - A daily INDmoney portfolio snapshot at 09:00 IST, with net worth and a 30-day trend in the portfolio card.
 - Chats you can return to, each tied to Finance Agent or Portfolio Analyzer.
@@ -114,8 +115,9 @@ Open [http://localhost:8003](http://localhost:8003) and keep using this address 
 ## First run
 
 1. **Create a profile.** The first screen asks "Who's using CA Mode?". Enter your name and a PIN of at least four characters. Other people on the same computer add their own profiles with **+ Add a profile**.
-2. **Fill in your profile (optional).** Click your name at the bottom of the sidebar to set risk appetite, horizon, goal, monthly investment, and age band. Portfolio Analyzer uses these to relate its analysis to your goals; it is not personalised investment advice.
-3. **Connect INDmoney.** Select **Connect**, sign in to INDmoney, and approve read-only access. The first snapshot is saved straight away, and the portfolio card shows your net worth.
+2. **Review the privacy notice.** It explains what is saved on this computer and what is sent to the AI provider. Choose **Save on this computer** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
+3. **Fill in your profile (optional).** Click your name at the bottom of the sidebar to set risk appetite, horizon, goal, monthly investment, and age band. Portfolio Analyzer uses these to relate its analysis to your goals; it is not personalised investment advice.
+4. **Connect INDmoney.** Select **Connect**, sign in to INDmoney, and approve read-only access. The first snapshot is saved straight away, and the portfolio card shows your net worth.
 
 ## Use the agents
 
@@ -152,7 +154,8 @@ For net worth, allocation, holdings, and trends it reads the saved snapshot firs
 - Captured right after you connect INDmoney, then every day at 09:00 IST (before the 09:15 market open, so values reflect the previous close).
 - The app must be running to capture. If it was closed or the computer was asleep at 09:00, it captures within five minutes of starting or waking.
 - **Refresh snapshot now** in the portfolio card captures one on demand.
-- Kept for 365 days. **Disconnect** deletes the profile's snapshots.
+- Kept for the retention the profile chose (30, 90, 180, or 365 days; never longer than `SNAPSHOT_RETENTION_DAYS`). **Disconnect** deletes the profile's snapshots.
+- Not captured for profiles in private mode or profiles that haven't accepted the current privacy notice.
 - The net-worth total is read from INDmoney's `networth_snapshot` result. If it cannot be read, the trend line is hidden and the agent works from the raw snapshot text.
 
 ## Local data and privacy
@@ -163,6 +166,15 @@ The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney 
 - **Disconnect** revokes the INDmoney access token and deletes the profile's snapshots; its chats are kept.
 - **Delete this profile** (in the profile dialog, confirmed with the PIN) removes the profile with its chats, snapshots, and INDmoney connection.
 - Chats expire 30 days after their last message; each profile keeps at most 50 chats.
+
+**Consent and storage modes.** Each profile must accept the privacy notice before it can chat, connect INDmoney, or have snapshots captured. Every acceptance, including a later change of storage settings, is recorded in the `consents` table with the notice version and a timestamp. When the notice changes (`POLICY_VERSION` in `app/privacy.py`), every profile is asked again, and its snapshots pause until it accepts.
+
+- **Save on this computer**: chats and daily snapshots are stored in SQLite as described above.
+- **Private mode**: chats are kept only in server memory and disappear when you sign out or the app restarts. No snapshots are captured. Switching to private mode deletes the chats and snapshots already saved for the profile. INDmoney tokens are still saved so the connection survives; **Disconnect** removes them.
+
+Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, consent history, chats, and snapshots, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
+
+In both modes, your messages, recent chat history, profile details, and any INDmoney data Portfolio Analyzer reads are sent to the AI provider you select.
 
 The PIN is a local lock for people sharing one computer, not internet-grade authentication. Tokens and snapshots are protected only by the database file's `0600` permissions, not encrypted. Add real authentication and encryption at rest before exposing CA Mode to a network.
 
@@ -187,6 +199,10 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN; sign out |
 | `GET /api/profile`, `PUT /api/profile` | Read or update the profile details |
 | `DELETE /api/users/me` | Delete the signed-in profile (body: `{"pin": ...}`) |
+| `GET /api/privacy` | Privacy notice, its version, whether it needs accepting, and the profile's storage settings |
+| `POST /api/privacy/consent` | Accept the notice and set storage settings (body: `{"policyVersion", "storageMode": "device" \| "private", "snapshotRetentionDays": 30 \| 90 \| 180 \| 365}`) |
+| `POST /api/users/me/export` | Download the profile's data as JSON (body: `{"pin": ...}`) |
+| `DELETE /api/users/me/history` | Delete the profile's chats and snapshots |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
 | `GET /api/chats/{id}`, `DELETE /api/chats/{id}` | Read or delete a chat |
 | `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace` |
@@ -197,7 +213,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect` | INDmoney OAuth |
 | `GET /healthz` | Health check |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up, sign-in, and sign-out routes requires a signed-in profile.
+Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up, sign-in, and sign-out routes requires a signed-in profile. Creating chats, sending messages, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`.
 
 ## Troubleshooting
 
@@ -225,6 +241,8 @@ app/
   main.py          FastAPI app: routes, INDmoney OAuth, and the snapshot scheduler lifespan
   db.py            SQLite connection, schema, and migrations
   users.py         Profiles, PIN sign-in, sessions, and per-profile INDmoney tokens
+  privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
+  chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
@@ -238,6 +256,7 @@ tests/
   test_agent.py      Request filtering, agent loop, snapshot tools, lazy MCP
   test_users.py      PINs, lockout, sessions, migration, profile isolation
   test_snapshots.py  Capture, schedule, history, retention
+  test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
   test_mcp_client.py MCP protocol handling and tool filtering
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup

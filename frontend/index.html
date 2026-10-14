@@ -14,9 +14,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=12" />
+  <link rel="stylesheet" href="/css/app.css?v=13" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=12" defer></script>
+  <script src="/js/app.js?v=13" defer></script>
 </head>
 <body>
   <div id="app">
@@ -252,7 +252,7 @@
         </svg>
       </span>
       <h1 id="gate-title" class="gate-title">Who's using CA Mode?</h1>
-      <p class="gate-sub">Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.</p>
+      <p id="gate-sub" class="gate-sub">Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.</p>
 
       <div id="profile-list" class="profile-list"></div>
       <button id="show-create-profile" class="gate-link" type="button">+ Add a profile</button>
@@ -277,8 +277,28 @@
         </div>
       </form>
 
+      <form id="consent-form" class="gate-form" hidden>
+        <div id="consent-notice" class="privacy-notice" tabindex="0" aria-label="Privacy notice"></div>
+        <fieldset class="storage-choice">
+          <legend>Chat and portfolio history</legend>
+          <label class="choice"><input type="radio" name="consent-storage" value="device" checked />
+            <span><strong>Save on this computer</strong><small>Chats for 30 days and a daily portfolio snapshot</small></span></label>
+          <label class="choice"><input type="radio" name="consent-storage" value="private" />
+            <span><strong>Private mode</strong><small>No chats or snapshots saved; chats end when you sign out</small></span></label>
+        </fieldset>
+        <label class="field" data-retention-field><span>Keep portfolio snapshots for</span>
+          <select id="consent-retention"><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365" selected>1 year</option></select>
+        </label>
+        <label class="consent-check"><input id="consent-ack" type="checkbox" required />
+          <span>I have read how CA Mode stores and shares my data, and I agree.</span></label>
+        <div class="gate-actions">
+          <button id="consent-sign-out" class="gate-secondary" type="button">Sign out</button>
+          <button class="rail-button" type="submit">Accept and continue</button>
+        </div>
+      </form>
+
       <p id="gate-error" class="gate-error" role="alert" hidden></p>
-      <p class="gate-note">The PIN keeps people on this computer out of each other's data. It is not a substitute for a device password.</p>
+      <p id="gate-note" class="gate-note">The PIN keeps people on this computer out of each other's data. It is not a substitute for a device password.</p>
     </section>
   </div>
 
@@ -308,6 +328,31 @@
         <button id="switch-profile" class="gate-secondary" type="button">Switch profile</button>
         <button class="rail-button dialog-save" type="submit">Save</button>
       </div>
+      <details id="data-zone" class="data-zone">
+        <summary>Your data and privacy</summary>
+        <p id="data-summary" class="data-summary"></p>
+        <fieldset class="storage-choice">
+          <legend>Chat and portfolio history</legend>
+          <label class="choice"><input type="radio" name="settings-storage" value="device" checked />
+            <span><strong>Save on this computer</strong><small>Chats for 30 days and a daily portfolio snapshot</small></span></label>
+          <label class="choice"><input type="radio" name="settings-storage" value="private" />
+            <span><strong>Private mode</strong><small>No chats or snapshots saved; chats end when you sign out</small></span></label>
+        </fieldset>
+        <label class="field" data-retention-field><span>Keep portfolio snapshots for</span>
+          <select id="settings-retention"><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365" selected>1 year</option></select>
+        </label>
+        <button id="save-data-settings" class="gate-secondary" type="button">Update data settings</button>
+        <details class="notice-details">
+          <summary>Read the privacy notice</summary>
+          <div id="settings-notice" class="privacy-notice" tabindex="0" aria-label="Privacy notice"></div>
+        </details>
+        <div class="data-actions">
+          <label class="field"><span>PIN to export</span><input id="export-pin" type="password" autocomplete="current-password" /></label>
+          <button id="export-data" class="gate-secondary" type="button">Export my data</button>
+        </div>
+        <button id="clear-history" class="gate-secondary" type="button">Clear saved chats and snapshots</button>
+        <p id="data-status" class="dialog-status" role="status"></p>
+      </details>
       <details class="danger-zone">
         <summary>Delete this profile</summary>
         <p>Deletes this profile's chats, snapshots, and INDmoney connection from this computer.</p>

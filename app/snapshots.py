@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import users
+from . import privacy, users
 from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
@@ -139,22 +139,41 @@ def extract_networth_inr(text: str | None) -> float | None:
 
 # ── Storage ────────────────────────────────────────────────────────────────────
 
+def _prune(connection: Any, user_id: str, today: date) -> None:
+    """Delete snapshots older than the profile's retention choice, capped by ``SNAPSHOT_RETENTION_DAYS``."""
+    row = connection.execute("SELECT snapshot_retention_days FROM users WHERE id = ?", (user_id,)).fetchone()
+    days = min(row["snapshot_retention_days"], SNAPSHOT_RETENTION_DAYS) if row else SNAPSHOT_RETENTION_DAYS
+    cutoff = (today - timedelta(days=days)).isoformat()
+    connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ? AND as_of_date < ?", (user_id, cutoff))
+
+
+def prune_snapshots(user_id: str, *, today: date | None = None) -> None:
+    with connect_db() as connection:
+        _prune(connection, user_id, today or local_now().date())
+
+
 def store_snapshot(user_id: str, captured: datetime, results: dict[str, str], errors: dict[str, str]) -> dict[str, Any]:
-    """Upsert today's snapshot for ``user_id`` and prune rows past the retention window."""
+    """Upsert today's snapshot for ``user_id`` and prune rows past the retention window.
+
+    Raises ``SnapshotError`` if the profile is gone or no longer saves history.
+    """
     local = captured.astimezone(SNAPSHOT_TIMEZONE)
     as_of = local.date().isoformat()
     captured_ms = int(captured.timestamp() * 1000)
     networth = extract_networth_inr(results.get("networth_snapshot"))
     data = json.dumps({"results": results, "errors": errors}, ensure_ascii=False)
-    cutoff = (local.date() - timedelta(days=SNAPSHOT_RETENTION_DAYS)).isoformat()
     with connect_db() as connection:
+        # Re-checked here because the profile may switch to private mode while a capture is in flight.
+        row = connection.execute("SELECT storage_mode FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None or row["storage_mode"] != "device":
+            raise SnapshotError("Snapshots are off for this profile.")
         connection.execute(
             "INSERT INTO portfolio_snapshots(user_id, as_of_date, captured_at, networth_inr, data) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(user_id, as_of_date) DO UPDATE SET captured_at=excluded.captured_at, "
             "networth_inr=excluded.networth_inr, data=excluded.data",
             (user_id, as_of, captured_ms, networth, data),
         )
-        connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ? AND as_of_date < ?", (user_id, cutoff))
+        _prune(connection, user_id, local.date())
     return {"asOfDate": as_of, "capturedAt": captured_ms, "networthInr": networth, "errors": errors}
 
 
@@ -250,8 +269,13 @@ async def capture_snapshot(user_id: str, *, mcp_url: str, now: datetime | None =
     return store_snapshot(user_id, now or local_now(), results, errors)
 
 
+def snapshots_allowed(user: dict[str, Any]) -> bool:
+    """Whether the profile accepted the current notice and chose to save history on this device."""
+    return user["storageMode"] == "device" and privacy.has_current_consent(user["id"])
+
+
 def due_user_ids(now: datetime) -> list[str]:
-    """Users with INDmoney connected whose last capture predates the latest scheduled time."""
+    """Consenting, saving profiles with INDmoney connected whose last capture predates the latest scheduled time."""
     scheduled_ms = int(latest_scheduled_time(now).timestamp() * 1000)
     retry_before_ms = int(now.timestamp() * 1000) - RETRY_AFTER_FAILURE_MS
     with connect_db() as connection:
@@ -261,17 +285,26 @@ def due_user_ids(now: datetime) -> list[str]:
             ") s ON s.user_id = u.id "
             "WHERE (json_extract(u.indmoney, '$.refreshToken') IS NOT NULL "
             "       OR json_extract(u.indmoney, '$.accessToken') IS NOT NULL) "
+            "AND u.storage_mode = 'device' "
+            "AND (SELECT c.policy_version FROM consents c WHERE c.user_id = u.id ORDER BY c.id DESC LIMIT 1) = ? "
             "AND COALESCE(s.last, 0) < ? "
             "AND (u.snapshot_attempted_at < ? OR u.snapshot_attempted_at < ?)",
-            (scheduled_ms, scheduled_ms, retry_before_ms),
+            (privacy.POLICY_VERSION, scheduled_ms, scheduled_ms, retry_before_ms),
         ).fetchall()
     return [row["id"] for row in rows]
 
 
 async def refresh_user(user_id: str, *, mcp_url: str, now: datetime | None = None) -> dict[str, Any]:
-    """Capture a snapshot for one user, serialised per user. Raises on failure."""
+    """Capture a snapshot for one user, serialised per user. Raises on failure.
+
+    Raises ``SnapshotError`` without contacting INDmoney when the profile has not
+    accepted the current notice or keeps no history (private mode).
+    """
     lock = _user_locks.setdefault(user_id, asyncio.Lock())
     async with lock:
+        user = users.get_user(user_id)
+        if user is None or not snapshots_allowed(user):
+            raise SnapshotError("Snapshots are off for this profile. Choose to save history on this device to turn them on.")
         with connect_db() as connection:
             connection.execute("UPDATE users SET snapshot_attempted_at = ? WHERE id = ?", (users.now_ms(), user_id))
         return await capture_snapshot(user_id, mcp_url=mcp_url, now=now)
