@@ -20,8 +20,9 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import snapshots, users
+from . import chats, privacy, snapshots, users
 from .agent import configured_providers, default_provider, run_agent
+from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
 from .mcp_client import fetch_mcp_session, filter_portfolio_tools
 from .users import (
@@ -41,12 +42,12 @@ logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"
 SESSION_COOKIE = "indmoney_session"
-MAX_HISTORY_MESSAGES = 20
-MAX_HISTORY_MESSAGE_CHARS = 12_000
-MAX_CHATS_PER_USER = 50
 PUBLIC_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-__all__ = ["app", "connect_db", "initialize_db", "get_session", "save_session", "touch_session"]
+__all__ = [
+    "app", "connect_db", "initialize_db", "get_session", "save_session", "touch_session",
+    "MAX_CHATS_PER_USER", "MAX_HISTORY_MESSAGES",
+]
 
 initialize_db()
 
@@ -149,6 +150,19 @@ def profile_required() -> JSONResponse:
     return JSONResponse({"error": "Choose your profile to continue.", "profileRequired": True}, status_code=401)
 
 
+def consent_required() -> JSONResponse:
+    return JSONResponse(
+        {"error": "Review and accept how CA Mode stores your data to continue.", "consentRequired": True},
+        status_code=403,
+    )
+
+
+def pin_error(exc: users.ProfileLockedError | None = None) -> JSONResponse:
+    if exc is not None:
+        return JSONResponse({"error": str(exc)}, status_code=429, headers={"Retry-After": str(exc.retry_after_seconds)})
+    return JSONResponse({"error": "Incorrect PIN."}, status_code=401)
+
+
 def is_indmoney_auth_error(error: Exception) -> bool:
     details = str(error).lower()
     return "401" in details and any(term in details for term in ("invalid_token", "authentication required", "unauthorized"))
@@ -186,12 +200,13 @@ async def local_session(request: Request):
     user = users.get_user(user_id) if user_id else None
     connected = False
     if user:
-        with connect_db() as connection:
-            connection.execute("DELETE FROM chats WHERE user_id = ? AND expires_at <= ?", (user["id"], users.now_ms()))
+        chats.purge_expired(user["id"])
         connected = bool(await users.user_access_token(user["id"]))
     response = JSONResponse({
         "connected": connected,
         "user": public_user(user) if user else None,
+        "consentRequired": bool(user) and not privacy.has_current_consent(user["id"]),
+        "storageMode": user["storageMode"] if user else None,
         "profiles": users.list_profiles(),
     })
     response.set_cookie(value=sid, **cookie_options(request))
@@ -241,8 +256,11 @@ async def sign_in(body: SignInRequest, request: Request):
 @app.post("/api/session/logout")
 async def sign_out(request: Request):
     sid = session_id(request)
+    user_id = users.session_user_id(sid)
     if sid:
         users.sign_out(sid)
+    if user_id:
+        chats.forget_private_chats(user_id)
     return {"user": None}
 
 
@@ -284,13 +302,68 @@ async def delete_profile(body: ConfirmPinRequest, request: Request):
     try:
         valid = await asyncio.to_thread(users.check_pin, user, body.pin)
     except users.ProfileLockedError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=429, headers={"Retry-After": str(exc.retry_after_seconds)})
+        return pin_error(exc)
     if not valid:
-        return JSONResponse({"error": "Incorrect PIN."}, status_code=401)
+        return pin_error()
     await revoke_indmoney(user)
     users.delete_user(user["id"])
+    chats.forget_private_chats(user["id"])
     logger.info("profile_deleted", extra={"user_id": user["id"]})
     return {"deleted": True}
+
+
+# ── Privacy: consent, storage mode, export ────────────────────────────────────
+
+@app.get("/api/privacy")
+async def get_privacy(request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    return privacy.privacy_state(user)
+
+
+@app.post("/api/privacy/consent")
+async def accept_privacy(body: privacy.ConsentRequest, request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    try:
+        privacy.record_consent(user, body)
+    except privacy.StaleNoticeError as exc:
+        return JSONResponse({"error": str(exc), "policyVersion": privacy.POLICY_VERSION}, status_code=409)
+    snapshots.prune_snapshots(user["id"])
+    logger.info("privacy_consent_recorded", extra={"user_id": user["id"], "storage_mode": body.storageMode})
+    updated = users.get_user(user["id"])
+    assert updated is not None  # current_user() just read this profile.
+    return privacy.privacy_state(updated)
+
+
+@app.post("/api/users/me/export")
+async def export_profile_data(body: ConfirmPinRequest, request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    try:
+        valid = await asyncio.to_thread(users.check_pin, user, body.pin)
+    except users.ProfileLockedError as exc:
+        return pin_error(exc)
+    if not valid:
+        return pin_error()
+    logger.info("profile_data_exported", extra={"user_id": user["id"]})
+    return JSONResponse(
+        privacy.export_data(user),
+        headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
+    )
+
+
+@app.delete("/api/users/me/history")
+async def clear_profile_history(request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    privacy.clear_history(user["id"])
+    logger.info("profile_history_cleared", extra={"user_id": user["id"]})
+    return {"cleared": True}
 
 
 # ── INDmoney OAuth ─────────────────────────────────────────────────────────────
@@ -322,8 +395,10 @@ async def register_oauth_client(redirect_uri: str) -> tuple[dict[str, Any], dict
 @app.get("/auth/indmoney/connect")
 async def connect_indmoney(request: Request):
     sid = session_id(request)
-    if not sid or not users.session_user_id(sid):
-        # The INDmoney connection belongs to a profile; the app shows the profile picker.
+    user_id = users.session_user_id(sid)
+    if not user_id or not privacy.has_current_consent(user_id):
+        # The connection belongs to a profile that has accepted the privacy notice;
+        # the app shows the profile picker or the notice.
         return RedirectResponse(request_origin(request) + "/", status_code=302, headers={"Cache-Control": "no-store"})
     redirect_uri = f"{request_origin(request)}/auth/indmoney/callback"
     state, verifier = random_token(), random_token()
@@ -387,7 +462,9 @@ async def finish_indmoney_login(request: Request, background_tasks: BackgroundTa
         "expiresAt": users.now_ms() + int(token.get("expires_in", 3600)) * 1000,
     })
     save_session(sid, {})
-    background_tasks.add_task(refresh_snapshot_in_background, user_id)
+    user = users.get_user(user_id)
+    if user and snapshots.snapshots_allowed(user):
+        background_tasks.add_task(refresh_snapshot_in_background, user_id)
     return RedirectResponse(request_origin(request) + "/", status_code=302, headers={"Cache-Control": "no-store"})
 
 
@@ -430,6 +507,10 @@ async def refresh_snapshot(request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
+    if not privacy.has_current_consent(user["id"]):
+        return consent_required()
+    if user["storageMode"] != "device":
+        return JSONResponse({"error": "Private mode keeps no snapshots. Choose to save history to turn them on."}, status_code=409)
     if not await users.user_access_token(user["id"]):
         return auth_error("Connect your INDmoney account to save portfolio snapshots.")
     try:
@@ -449,13 +530,7 @@ async def list_chats(request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
-    with connect_db() as connection:
-        rows = connection.execute(
-            "SELECT id, title, updated_at, agent_type FROM chats WHERE user_id = ? AND expires_at > ? "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (user["id"], users.now_ms(), MAX_CHATS_PER_USER),
-        ).fetchall()
-    return {"chats": [{"id": row["id"], "title": row["title"], "agentType": row["agent_type"], "updatedAt": row["updated_at"]} for row in rows]}
+    return {"chats": chats.list_chats(user)}
 
 
 @app.post("/api/chats", status_code=201)
@@ -463,33 +538,9 @@ async def create_chat(request: Request, body: CreateChatRequest):
     user = current_user(request)
     if not user:
         return profile_required()
-    now = users.now_ms()
-    identifier = random_token()
-    expires_at = now + SESSION_MAX_AGE_SECONDS * 1000
-    with connect_db() as connection:
-        existing = connection.execute("SELECT COUNT(*) AS n FROM chats WHERE user_id = ?", (user["id"],)).fetchone()["n"]
-        if existing >= MAX_CHATS_PER_USER:
-            connection.execute(
-                "DELETE FROM chats WHERE user_id = ? AND id = "
-                "(SELECT id FROM chats WHERE user_id = ? ORDER BY updated_at ASC LIMIT 1)", (user["id"], user["id"]),
-            )
-        connection.execute(
-            "INSERT INTO chats(id, user_id, title, messages, updated_at, expires_at, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (identifier, user["id"], "New chat", "[]", now, expires_at, body.agentType),
-        )
-    return {"id": identifier, "title": "New chat", "messages": [], "agentType": body.agentType, "updatedAt": now, "sessionExpiresAt": expires_at}
-
-
-def read_chat(user_id: str, chat_id: str) -> dict[str, Any] | None:
-    with connect_db() as connection:
-        row = connection.execute(
-            "SELECT id, title, messages, updated_at, expires_at, agent_type FROM chats "
-            "WHERE user_id = ? AND id = ? AND expires_at > ?",
-            (user_id, chat_id, users.now_ms()),
-        ).fetchone()
-    if row is None:
-        return None
-    return {"id": row["id"], "title": row["title"], "messages": json.loads(row["messages"]), "agentType": row["agent_type"], "updatedAt": row["updated_at"], "sessionExpiresAt": row["expires_at"]}
+    if not privacy.has_current_consent(user["id"]):
+        return consent_required()
+    return chats.create_chat(user, body.agentType)
 
 
 @app.get("/api/chats/{chat_id}")
@@ -497,7 +548,7 @@ async def get_chat(chat_id: str, request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
-    chat = read_chat(user["id"], chat_id)
+    chat = chats.read_chat(user, chat_id)
     if chat is None:
         return JSONResponse({"error": "Chat not found."}, status_code=404)
     return chat
@@ -508,9 +559,7 @@ async def delete_chat(chat_id: str, request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
-    with connect_db() as connection:
-        result = connection.execute("DELETE FROM chats WHERE user_id = ? AND id = ?", (user["id"], chat_id))
-    if result.rowcount == 0:
+    if not chats.delete_chat(user, chat_id):
         return JSONResponse({"error": "Chat not found."}, status_code=404)
     return {"deleted": True}
 
@@ -520,6 +569,8 @@ async def list_tools(request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
+    if not privacy.has_current_consent(user["id"]):
+        return consent_required()
     token = await users.user_access_token(user["id"])
     if not token:
         return {"mcpServer": MCP_RESOURCE, "connected": False, "toolCount": 0, "tools": [], "loginUrl": "/auth/indmoney/connect"}
@@ -539,7 +590,9 @@ async def chat(body: ChatRequest, request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
-    data = read_chat(user["id"], body.chatId)
+    if not privacy.has_current_consent(user["id"]):
+        return consent_required()
+    data = chats.read_chat(user, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
     if body.agentType != data["agentType"]:
@@ -580,21 +633,7 @@ async def chat(body: ChatRequest, request: Request):
     answer_text = str(answer)
     trace = getattr(answer, "trace", [])[:12]
     if answer_text.strip():
-        now = users.now_ms()
-        messages = list(history)
-        assistant_message = {"role": "assistant", "content": answer_text[:MAX_HISTORY_MESSAGE_CHARS]}
-        if trace:
-            assistant_message["trace"] = trace
-        messages += [{"role": "user", "content": message[:MAX_HISTORY_MESSAGE_CHARS]}, assistant_message]
-        messages = messages[-MAX_HISTORY_MESSAGES:]
-        title = data.get("title", "New chat")
-        if title == "New chat":
-            title = message[:60]
-        with connect_db() as connection:
-            connection.execute(
-                "UPDATE chats SET messages = ?, title = ?, updated_at = ?, expires_at = ? WHERE user_id = ? AND id = ?",
-                (json.dumps(messages), title, now, now + SESSION_MAX_AGE_SECONDS * 1000, user["id"], body.chatId),
-            )
+        chats.append_turn(user, data, message, answer_text, trace)
     return PlainTextResponse(answer_text, headers={
         "X-Agent-Trace": trace_header(trace),
     })

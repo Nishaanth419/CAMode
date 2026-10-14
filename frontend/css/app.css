@@ -1207,7 +1207,54 @@ body.gate-open #app { visibility: hidden; }
   font-weight: 600;
 }
 
+.gate-card.is-consent { width: min(560px, 100%); }
+.privacy-notice {
+  display: grid;
+  gap: 12px;
+  max-height: min(38vh, 320px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: left;
+}
+.privacy-notice h3 { margin-bottom: 3px; color: var(--text); font-size: 13.5px; }
+.privacy-notice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.storage-choice { display: grid; gap: 8px; padding: 0; border: 0; }
+.storage-choice legend { margin-bottom: 6px; color: var(--text-soft); font-size: 12px; font-weight: 600; }
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-wash); }
+.choice input { margin-top: 3px; accent-color: var(--accent); }
+.choice span { display: grid; gap: 2px; }
+.choice strong { color: var(--text); font-size: 13.5px; }
+.choice small { color: var(--text-soft); font-size: 12px; }
+.consent-check { display: flex; align-items: flex-start; gap: 10px; color: var(--text); font-size: 13px; line-height: 1.45; text-align: left; }
+.consent-check input { margin-top: 2px; accent-color: var(--accent); }
+.data-zone { padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-soft); font-size: 13px; }
+.data-zone > summary { color: var(--text); cursor: pointer; font-weight: 600; }
+.data-zone[open] { display: grid; gap: 12px; }
+.data-zone .gate-secondary { justify-self: start; }
+.data-summary { line-height: 1.5; }
+.notice-details summary { color: var(--accent); cursor: pointer; font-weight: 600; }
+.notice-details[open] summary { margin-bottom: 8px; }
+.data-actions { display: flex; align-items: flex-end; gap: 10px; }
+.data-actions .field { flex: 1; }
+
 @media (max-width: 560px) {
   .gate-card { padding: 26px 18px; }
+  .data-actions { flex-direction: column; align-items: stretch; }
   .field-grid { grid-template-columns: 1fr; }
 }
