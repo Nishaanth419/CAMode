@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app import chats, db, main, privacy, snapshots, users
+from app import chats, db, main, privacy, snapshots, unlock, users
 from conftest import sign_up
 
 
@@ -54,7 +54,8 @@ def test_new_profile_must_accept_notice_before_chatting(client, unconsented):
     state = client.get("/api/privacy").json()
     assert state["consentRequired"] is True
     assert state["policyVersion"] == privacy.POLICY_VERSION
-    assert [item["title"] for item in state["notice"]][:2] == ["What is saved on this computer", "What leaves this computer"]
+    titles = [item["title"] for item in state["notice"]]
+    assert titles[0] == "What is saved on this computer" and "What leaves this computer" in titles
 
     blocked = client.post("/api/chats", json={"agentType": "finance"})
     assert blocked.status_code == 403
@@ -178,10 +179,11 @@ def test_shorter_retention_prunes_existing_snapshots(client, signed_in):
 
     accept(client, snapshotRetentionDays=30)
 
-    dates = [point["date"] for point in snapshots.networth_history(signed_in["id"], 365)]
+    keys = unlock.keys_from_pin(users.get_user(signed_in["id"]), "2468")
+    dates = [point["date"] for point in snapshots.networth_history(signed_in["id"], 365, keys=keys)]
     assert len(dates) == 2
     store_days_ago(signed_in["id"], 45, 0)  # Pruning runs relative to each capture's date.
-    assert len(snapshots.networth_history(signed_in["id"], 365)) == 2
+    assert len(snapshots.networth_history(signed_in["id"], 365, keys=keys)) == 2
 
 
 def test_export_requires_pin_and_omits_secrets(client, signed_in, monkeypatch):
@@ -293,10 +295,10 @@ def test_deleting_profile_removes_consents(client, signed_in):
     assert privacy.latest_consent(signed_in["id"]) is None
 
 
-def test_notice_mentions_ai_providers_and_unencrypted_storage():
+def test_notice_mentions_ai_providers_and_permanent_loss():
     text = json.dumps(privacy.NOTICE)
     assert "OpenAI or Groq" in text
-    assert "not encrypted" in text
+    assert "recovery code" in text and "cannot be recovered" in text
 
 
 def test_capture_finishing_after_switch_to_private_is_not_stored(client, signed_in):

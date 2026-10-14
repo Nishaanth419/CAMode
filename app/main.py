@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import chats, privacy, snapshots, users, vault
+from . import chats, privacy, sealing, snapshots, unlock, users, vault
 from .agent import configured_providers, default_provider, run_agent
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -104,13 +104,36 @@ class ConfirmPinRequest(BaseModel):
     pin: str
 
 
+class RecoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    userId: str
+    recoveryCode: str
+    newPin: str
+
+
 def session_id(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
 
 
 def current_user(request: Request) -> dict[str, Any] | None:
-    user_id = users.session_user_id(session_id(request))
-    return users.get_user(user_id) if user_id else None
+    """Return the signed-in profile with ``keys`` (unlocked if this session entered the PIN)."""
+    sid = session_id(request)
+    user_id = users.session_user_id(sid)
+    user = users.get_user(user_id) if user_id else None
+    if user:
+        user["keys"] = unlock.keys_for_session(user, sid)
+    return user
+
+
+def history_gate(user: dict[str, Any] | None, *, needs_consent: bool = False) -> JSONResponse | None:
+    """Return the error response for a route that reads the profile's history, or None if it may proceed."""
+    if not user:
+        return profile_required()
+    if not user["keys"].is_unlocked:
+        return unlock_required()
+    if needs_consent and not privacy.has_current_consent(user["id"]):
+        return consent_required()
+    return None
 
 
 def public_user(user: dict[str, Any]) -> dict[str, str]:
@@ -150,6 +173,10 @@ def auth_error(message: str) -> JSONResponse:
 
 def profile_required() -> JSONResponse:
     return JSONResponse({"error": "Choose your profile to continue.", "profileRequired": True}, status_code=401)
+
+
+def unlock_required() -> JSONResponse:
+    return JSONResponse({"error": "Enter your PIN to unlock your history.", "unlockRequired": True}, status_code=403)
 
 
 def consent_required() -> JSONResponse:
@@ -200,6 +227,7 @@ async def local_session(request: Request):
         save_session(sid, {})
     user_id = users.session_user_id(sid)
     user = users.get_user(user_id) if user_id else None
+    locked = bool(user) and not unlock.keys_for_session(user, sid).is_unlocked
     connected = False
     if user:
         chats.purge_expired(user["id"])
@@ -207,6 +235,7 @@ async def local_session(request: Request):
     response = JSONResponse({
         "connected": connected,
         "user": public_user(user) if user else None,
+        "locked": locked,
         "consentRequired": bool(user) and not privacy.has_current_consent(user["id"]),
         "storageMode": user["storageMode"] if user else None,
         "profiles": users.list_profiles(),
@@ -215,9 +244,22 @@ async def local_session(request: Request):
     return response
 
 
-def _signed_in_response(request: Request, user: dict[str, Any], status_code: int = 200) -> JSONResponse:
-    sid = users.sign_in(session_id(request), user["id"])
-    response = JSONResponse({"user": public_user(user)}, status_code=status_code)
+def _unlocked_body(user: dict[str, Any], unlocked: unlock.Unlocked) -> dict[str, Any]:
+    body: dict[str, Any] = {"user": public_user(user)}
+    if unlocked.recovery_code:
+        body["recoveryCode"] = unlocked.recovery_code
+    return body
+
+
+def _signed_in_response(
+    request: Request, user: dict[str, Any], unlocked: unlock.Unlocked, status_code: int = 200,
+) -> JSONResponse:
+    old_sid = session_id(request)
+    sid = users.sign_in(old_sid, user["id"])
+    if old_sid:
+        unlock.forget_session(old_sid)
+    unlock.activate(sid, user["id"], unlocked.private_key)
+    response = JSONResponse(_unlocked_body(user, unlocked), status_code=status_code)
     response.set_cookie(value=sid, **cookie_options(request))
     return response
 
@@ -229,12 +271,13 @@ async def create_profile(body: CreateProfileRequest, request: Request):
         users.validate_new_pin(body.pin)
         pin_hash = await asyncio.to_thread(users.hash_pin, body.pin)
         user = users.create_user(display_name, pin_hash)
+        unlocked = await asyncio.to_thread(unlock.create_keys, user["id"], body.pin)
     except users.DuplicateProfileError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
     except users.ProfileError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     logger.info("profile_created", extra={"user_id": user["id"]})
-    return _signed_in_response(request, user, status_code=201)
+    return _signed_in_response(request, user, unlocked, status_code=201)
 
 
 @app.post("/api/session/login")
@@ -252,7 +295,43 @@ async def sign_in(body: SignInRequest, request: Request):
     if not valid:
         return JSONResponse({"error": "Incorrect profile or PIN."}, status_code=401)
     logger.info("profile_signed_in", extra={"user_id": user["id"]})
-    return _signed_in_response(request, user)
+    unlocked = await asyncio.to_thread(unlock.unlock_with_pin, user, body.pin)
+    return _signed_in_response(request, user, unlocked)
+
+
+@app.post("/api/session/unlock")
+async def unlock_session(body: ConfirmPinRequest, request: Request):
+    """Unlock the signed-in profile's history after a restart."""
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    try:
+        valid = await asyncio.to_thread(users.check_pin, user, body.pin)
+    except users.ProfileLockedError as exc:
+        return pin_error(exc)
+    if not valid:
+        return pin_error()
+    unlocked = await asyncio.to_thread(unlock.unlock_with_pin, user, body.pin)
+    unlock.activate(session_id(request), user["id"], unlocked.private_key)
+    return _unlocked_body(user, unlocked)
+
+
+@app.post("/api/session/recover")
+async def recover_profile(body: RecoverRequest, request: Request):
+    """Set a new PIN with the recovery code, sign in, and return a replacement recovery code."""
+    user = users.get_user(body.userId)
+    if user is None:
+        return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
+    try:
+        unlocked = await asyncio.to_thread(unlock.recover, user["id"], body.recoveryCode, body.newPin)
+    except users.ProfileLockedError as exc:
+        return pin_error(exc)
+    except sealing.WrongSecretError:
+        return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
+    except users.ProfileError as exc:  # Includes NoRecoveryCodeError and an unacceptable new PIN.
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    logger.info("profile_recovered", extra={"user_id": user["id"]})
+    return _signed_in_response(request, user, unlocked)
 
 
 @app.post("/api/session/logout")
@@ -261,6 +340,7 @@ async def sign_out(request: Request):
     user_id = users.session_user_id(sid)
     if sid:
         users.sign_out(sid)
+        unlock.forget_session(sid)
     if user_id:
         chats.forget_private_chats(user_id)
     return {"user": None}
@@ -269,17 +349,17 @@ async def sign_out(request: Request):
 @app.get("/api/profile")
 async def get_profile(request: Request):
     user = current_user(request)
-    if not user:
-        return profile_required()
-    return {"displayName": user["displayName"], "profile": user["profile"]}
+    if blocked := history_gate(user):
+        return blocked
+    return {"displayName": user["displayName"], "profile": users.profile_fields(user, user["keys"])}
 
 
 @app.put("/api/profile")
 async def put_profile(body: ProfileFields, request: Request):
     user = current_user(request)
-    if not user:
-        return profile_required()
-    return {"displayName": user["displayName"], "profile": users.update_profile(user["id"], body)}
+    if blocked := history_gate(user):
+        return blocked
+    return {"displayName": user["displayName"], "profile": users.update_profile(user["id"], body, user["keys"])}
 
 
 async def revoke_indmoney(user: dict[str, Any]) -> None:
@@ -310,6 +390,7 @@ async def delete_profile(body: ConfirmPinRequest, request: Request):
     await revoke_indmoney(user)
     users.delete_user(user["id"])
     chats.forget_private_chats(user["id"])
+    unlock.forget_user(user["id"])
     logger.info("profile_deleted", extra={"user_id": user["id"]})
     return {"deleted": True}
 
@@ -351,9 +432,11 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
         return pin_error(exc)
     if not valid:
         return pin_error()
+    keys = await asyncio.to_thread(unlock.keys_from_pin, user, body.pin)
+    user["keys"] = keys
     logger.info("profile_data_exported", extra={"user_id": user["id"]})
     return JSONResponse(
-        privacy.export_data(user),
+        privacy.export_data(user, snapshots.all_snapshots(user["id"], keys)),
         headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
     )
 
@@ -366,6 +449,23 @@ async def clear_profile_history(request: Request):
     privacy.clear_history(user["id"])
     logger.info("profile_history_cleared", extra={"user_id": user["id"]})
     return {"cleared": True}
+
+
+@app.post("/api/users/me/recovery-code")
+async def new_recovery_code(body: ConfirmPinRequest, request: Request):
+    """Replace the recovery code; the old one stops working."""
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    try:
+        valid = await asyncio.to_thread(users.check_pin, user, body.pin)
+    except users.ProfileLockedError as exc:
+        return pin_error(exc)
+    if not valid:
+        return pin_error()
+    code = await asyncio.to_thread(unlock.replace_recovery_code, user, body.pin)
+    logger.info("recovery_code_replaced", extra={"user_id": user["id"]})
+    return {"recoveryCode": code}
 
 
 # ── INDmoney OAuth ─────────────────────────────────────────────────────────────
@@ -494,11 +594,11 @@ def _snapshot_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
 @app.get("/api/snapshots")
 async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, le=365)):
     user = current_user(request)
-    if not user:
-        return profile_required()
-    history = snapshots.networth_history(user["id"], days)
+    if blocked := history_gate(user):
+        return blocked
+    history = snapshots.networth_history(user["id"], days, keys=user["keys"])
     return {
-        "latest": _snapshot_summary(snapshots.latest_snapshot(user["id"])),
+        "latest": _snapshot_summary(snapshots.latest_snapshot(user["id"], keys=user["keys"])),
         "history": [{"date": point["date"], "networthInr": point["networthInr"]} for point in history],
         "schedule": f"{snapshots.SNAPSHOT_TIME:%H:%M} {snapshots.SNAPSHOT_TIMEZONE_NAME}",
     }
@@ -530,26 +630,24 @@ async def refresh_snapshot(request: Request):
 @app.get("/api/chats")
 async def list_chats(request: Request):
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     return {"chats": chats.list_chats(user)}
 
 
 @app.post("/api/chats", status_code=201)
 async def create_chat(request: Request, body: CreateChatRequest):
     user = current_user(request)
-    if not user:
-        return profile_required()
-    if not privacy.has_current_consent(user["id"]):
-        return consent_required()
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
     return chats.create_chat(user, body.agentType)
 
 
 @app.get("/api/chats/{chat_id}")
 async def get_chat(chat_id: str, request: Request):
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     chat = chats.read_chat(user, chat_id)
     if chat is None:
         return JSONResponse({"error": "Chat not found."}, status_code=404)
@@ -559,8 +657,8 @@ async def get_chat(chat_id: str, request: Request):
 @app.delete("/api/chats/{chat_id}")
 async def delete_chat(chat_id: str, request: Request):
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     if not chats.delete_chat(user, chat_id):
         return JSONResponse({"error": "Chat not found."}, status_code=404)
     return {"deleted": True}
@@ -590,10 +688,8 @@ async def chat(body: ChatRequest, request: Request):
     if not message.strip() or len(message) > 8000:
         return JSONResponse({"error": "Provide a message with no more than 8,000 characters."}, status_code=400)
     user = current_user(request)
-    if not user:
-        return profile_required()
-    if not privacy.has_current_consent(user["id"]):
-        return consent_required()
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
     data = chats.read_chat(user, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)

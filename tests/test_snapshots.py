@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app import db, privacy, snapshots, users
+from app.sealing import ProfileKeys
 
 IST = snapshots.SNAPSHOT_TIMEZONE
 
@@ -158,7 +159,7 @@ def test_snapshot_local_tools_return_latest_and_history():
             user_id, today - timedelta(days=days_ago),
             {"networth_snapshot": json.dumps({"net_worth": value}), "networth_holdings": f"holdings {value}"}, {},
         )
-    tools = {tool.name: tool for tool in snapshots.snapshot_tools(user_id)}
+    tools = {tool.name: tool for tool in snapshots.snapshot_tools(user_id, ProfileKeys())}
 
     latest = json.loads(asyncio.run(tools["get_portfolio_snapshot"].handler({})))
     earlier = json.loads(asyncio.run(tools["get_portfolio_snapshot"].handler({"date": (today - timedelta(days=2)).date().isoformat()})))
@@ -178,7 +179,7 @@ def test_networth_history_falls_back_to_raw_text_and_samples():
     today = datetime.now(IST).replace(hour=9, minute=0, second=0, microsecond=0)
     for days_ago in range(60):
         snapshots.store_snapshot(user_id, today - timedelta(days=days_ago), {"networth_snapshot": "Total assets look healthy"}, {})
-    tool = next(tool for tool in snapshots.snapshot_tools(user_id) if tool.name == "get_networth_history")
+    tool = next(tool for tool in snapshots.snapshot_tools(user_id, ProfileKeys()) if tool.name == "get_networth_history")
 
     history = json.loads(asyncio.run(tool.handler({"days": 90})))
 
@@ -201,16 +202,16 @@ def test_snapshot_retention_prunes_old_rows(monkeypatch):
 
 def test_profile_context_lists_fields_and_snapshot_time():
     user_id = make_user()
-    users.update_profile(user_id, users.ProfileFields(riskAppetite="low", monthlyInvestmentInr=5000))
+    users.update_profile(user_id, users.ProfileFields(riskAppetite="low", monthlyInvestmentInr=5000), ProfileKeys())
     snapshots.store_snapshot(user_id, at(13, 9), {"networth_snapshot": "{}"}, {})
-    user = users.get_user(user_id)
+    fields = users.profile_fields(users.get_user(user_id), ProfileKeys())
 
-    text = snapshots.profile_context(user, snapshots.latest_snapshot(user_id))
+    text = snapshots.profile_context(fields, snapshots.latest_snapshot(user_id))
 
     assert "Risk appetite: low" in text
     assert "Monthly investment budget (INR): 5000" in text
     assert "captured 2026-10-13T09:00+05:30" in text
-    assert "No saved portfolio snapshot" in snapshots.profile_context(user, None)
+    assert "No saved portfolio snapshot" in snapshots.profile_context(fields, None)
 
 
 def test_timezone_falls_back_to_fixed_ist_without_tz_data(monkeypatch):

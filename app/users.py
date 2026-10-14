@@ -16,12 +16,14 @@ import os
 import secrets
 import sqlite3
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import vault
+from .sealing import ProfileKeys
 from .db import connect_db
 
 logger = logging.getLogger("ca_mode.users")
@@ -174,7 +176,11 @@ def _user_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "id": row["id"],
         "displayName": row["display_name"],
         "pinHash": row["pin_hash"],
-        "profile": json.loads(row["profile"] or "{}"),
+        # Sealed once the profile has keys; read it with ``profile_fields``.
+        "profileStored": row["profile"],
+        "publicKey": ProfileKeys.from_stored_public_key(row["history_public_key"]).public_key,
+        "keyWrappedWithPin": row["history_key_pin"],
+        "keyWrappedWithRecovery": row["history_key_recovery"],
         "indmoney": _decode_secret(row["indmoney"]),
         "mcpTools": json.loads(row["mcp_tools"]) if row["mcp_tools"] else None,
         "mcpToolsFetchedAt": row["mcp_tools_fetched_at"],
@@ -218,50 +224,62 @@ def _raise_if_locked(locked_until: int, now: int) -> None:
         raise ProfileLockedError(max(1, (locked_until - now) // 1000))
 
 
-def check_pin(user: dict[str, Any], pin: str) -> bool:
-    """Verify a PIN with an account-bound lockout. Raises ``ProfileLockedError`` while locked.
+def check_with_lockout(user_id: str, verify: Callable[[sqlite3.Row], bool]) -> bool:
+    """Run a slow secret check under the account-bound lockout. Raises ``ProfileLockedError`` while locked.
 
-    The lockout state is always read from the database, never from ``user`` (which may be
-    stale), and the outcome is recorded in a ``BEGIN IMMEDIATE`` transaction that re-checks
-    the lock and increments the counter atomically. Concurrent wrong guesses therefore each
-    count, and a guess whose (slow) hash finishes after the account locked is refused even
-    if it is correct.
+    ``verify`` receives the user's row and returns whether the secret (PIN or recovery
+    code) is correct. The lockout state is always read from the database, and the
+    outcome is recorded in a ``BEGIN IMMEDIATE`` transaction that re-checks the lock
+    and increments the counter atomically. Concurrent wrong guesses therefore each
+    count, and a guess whose (slow) check finishes after the account locked is refused
+    even if it is correct. PINs and recovery codes share one counter.
     """
     with connect_db() as connection:
-        row = connection.execute("SELECT pin_hash, locked_until FROM users WHERE id = ?", (user["id"],)).fetchone()
+        row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
         return False
     _raise_if_locked(row["locked_until"], now_ms())
-    valid = verify_pin(pin, row["pin_hash"])
+    valid = verify(row)
     with connect_db() as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            "SELECT failed_logins, locked_until FROM users WHERE id = ?", (user["id"],),
+            "SELECT failed_logins, locked_until FROM users WHERE id = ?", (user_id,),
         ).fetchone()
         if row is None:
             return False
         now = now_ms()
         _raise_if_locked(row["locked_until"], now)
         if valid:
-            connection.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?", (user["id"],))
+            connection.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?", (user_id,))
             return True
         failures = row["failed_logins"] + 1
         locked_until = now + LOCKOUT_SECONDS * 1000 if failures >= MAX_FAILED_LOGINS else 0
         connection.execute(
             "UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?",
-            (0 if locked_until else failures, locked_until, user["id"]),
+            (0 if locked_until else failures, locked_until, user_id),
         )
-    logger.warning("profile_sign_in_failed", extra={"user_id": user["id"], "locked": bool(locked_until)})
+    logger.warning("profile_sign_in_failed", extra={"user_id": user_id, "locked": bool(locked_until)})
     if locked_until:
         raise ProfileLockedError(LOCKOUT_SECONDS)
     return False
 
 
-def update_profile(user_id: str, fields: ProfileFields) -> dict[str, Any]:
+def check_pin(user: dict[str, Any], pin: str) -> bool:
+    """Verify a PIN under the lockout described in ``check_with_lockout``."""
+    return check_with_lockout(user["id"], lambda row: verify_pin(pin, row["pin_hash"]))
+
+
+def profile_fields(user: dict[str, Any], keys: ProfileKeys) -> dict[str, Any]:
+    """Return the profile's fields. Raises ``sealing.LockedError`` if they are sealed and ``keys`` is locked."""
+    return json.loads(keys.open(user["profileStored"] or "{}"))
+
+
+def update_profile(user_id: str, fields: ProfileFields, keys: ProfileKeys) -> dict[str, Any]:
     profile = fields.model_dump(exclude_none=True)
     with connect_db() as connection:
         connection.execute(
-            "UPDATE users SET profile = ?, updated_at = ? WHERE id = ?", (json.dumps(profile), now_ms(), user_id),
+            "UPDATE users SET profile = ?, updated_at = ? WHERE id = ?",
+            (keys.seal(json.dumps(profile)), now_ms(), user_id),
         )
     return profile
 

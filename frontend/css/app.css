@@ -1250,8 +1250,28 @@ body.gate-open #app { visibility: hidden; }
 .data-summary { line-height: 1.5; }
 .notice-details summary { color: var(--accent); cursor: pointer; font-weight: 600; }
 .notice-details[open] summary { margin-bottom: 8px; }
-.data-actions { display: flex; align-items: flex-end; gap: 10px; }
-.data-actions .field { flex: 1; }
+.data-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.recovery-code-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-wash);
+}
+.recovery-code {
+  flex: 1;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.recovery-note { color: var(--text-soft); font-size: 13px; line-height: 1.5; text-align: left; }
+.data-actions .field { flex: 1 1 100%; }
 
 @media (max-width: 560px) {
   .gate-card { padding: 26px 18px; }
