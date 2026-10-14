@@ -12,7 +12,6 @@ not need a bump.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -20,7 +19,8 @@ from pydantic import BaseModel, ConfigDict
 from . import chats, users
 from .db import connect_db
 
-POLICY_VERSION: Final = "2026-10-14"
+# Bumped for PIN-locked history: users must know a lost PIN and recovery code loses their history.
+POLICY_VERSION: Final = "2026-10-14.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -33,8 +33,16 @@ NOTICE: Final = (
             "connection tokens. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick. Everything is in a SQLite file readable only by this computer's user account. INDmoney "
-            "tokens are encrypted with a key kept outside that file. Chats, snapshots and profile details are not "
-            "encrypted, so anyone who can sign in to this computer as you can read them."
+            "tokens are encrypted with a key kept outside that file."
+        ),
+    },
+    {
+        "title": "Locked with your PIN",
+        "body": (
+            "Your saved chats, portfolio snapshots and profile details are encrypted with a key that only your PIN or "
+            "your recovery code can unlock. Nobody else using this computer, and nobody with a copy of the database, "
+            "can read them. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
+            "code lets you set a new one. If you lose both, your saved history cannot be recovered by anyone."
         ),
     },
     {
@@ -149,20 +157,19 @@ def clear_history(user_id: str) -> None:
     chats.forget_private_chats(user_id)
 
 
-def export_data(user: dict[str, Any]) -> dict[str, Any]:
-    """Return everything stored for the profile except its PIN hash and INDmoney tokens."""
+def export_data(user: dict[str, Any], snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return everything stored for the profile except its PIN hash, keys and INDmoney tokens.
+
+    ``user["keys"]`` must be unlocked; ``snapshots`` are the profile's decrypted snapshots.
+    """
     with connect_db() as connection:
         consent_rows = connection.execute(
             "SELECT policy_version, storage_mode, snapshot_retention_days, accepted_at FROM consents "
             "WHERE user_id = ? ORDER BY id", (user["id"],),
         ).fetchall()
-        snapshot_rows = connection.execute(
-            "SELECT as_of_date, captured_at, networth_inr, data FROM portfolio_snapshots "
-            "WHERE user_id = ? ORDER BY as_of_date", (user["id"],),
-        ).fetchall()
     return {
         "exportedAt": users.now_ms(),
-        "profile": {"displayName": user["displayName"], "fields": user["profile"]},
+        "profile": {"displayName": user["displayName"], "fields": users.profile_fields(user, user["keys"])},
         "settings": {"storageMode": user["storageMode"], "snapshotRetentionDays": user["snapshotRetentionDays"]},
         "indmoneyConnected": users.has_indmoney_tokens(user["indmoney"]),
         "consents": [
@@ -171,9 +178,5 @@ def export_data(user: dict[str, Any]) -> dict[str, Any]:
             for row in consent_rows
         ],
         "chats": chats.export_chats(user),
-        "snapshots": [
-            {"asOfDate": row["as_of_date"], "capturedAt": row["captured_at"], "networthInr": row["networth_inr"],
-             **json.loads(row["data"])}
-            for row in snapshot_rows
-        ],
+        "snapshots": snapshots,
     }

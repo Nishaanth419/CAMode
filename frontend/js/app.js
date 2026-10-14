@@ -57,6 +57,10 @@ const profileDialog = document.getElementById('profile-dialog');
 const profileForm = document.getElementById('profile-form');
 const profileFormStatus = document.getElementById('profile-form-status');
 const consentForm = document.getElementById('consent-form');
+const recoverForm = document.getElementById('profile-recover-form');
+const recoveryCodeView = document.getElementById('recovery-code-view');
+const recoverySaved = document.getElementById('recovery-saved');
+const recoveryContinue = document.getElementById('recovery-continue');
 const consentNotice = document.getElementById('consent-notice');
 const gateCard = profileGate.querySelector('.gate-card');
 const gateTitle = document.getElementById('gate-title');
@@ -72,6 +76,8 @@ let currentUser = null;
 let storageMode = 'device';
 let privacyPolicyVersion = null;
 let unlockTarget = null;
+// True when the signed-in profile is locked after a restart (unlock with /api/session/unlock).
+let isLockedSession = false;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
 let providerReady = false;
@@ -297,6 +303,15 @@ async function loadChats() {
       setStatus('online', 'Choose a profile');
       return;
     }
+    if (session.locked) {
+      chats = [];
+      activeChatId = null;
+      resetConversationView();
+      renderChats();
+      showLockedGate();
+      setStatus('online', 'Locked');
+      return;
+    }
     if (session.consentRequired) {
       chats = [];
       activeChatId = null;
@@ -328,22 +343,69 @@ function showGateError(message) {
   gateError.hidden = !message;
 }
 
+const GATE_TEXT = {
+  default: ["Who's using CA Mode?", 'Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.'],
+  locked: ['Welcome back', 'Enter your PIN to unlock your saved chats and portfolio history.'],
+  recover: ['Reset your PIN', 'Use the recovery code you saved when you created this profile.'],
+  'recovery-code': ['Save your recovery code', "If you forget your PIN, this code is the only way back into your saved history. Nobody can reset it for you."],
+  consent: ['Before you start', 'Here is what CA Mode keeps on this computer and what it sends elsewhere. Choose how much history to keep.'],
+};
+
 function showGateView(view) {
   const isConsent = view === 'consent';
   profileList.hidden = view !== 'list';
   showCreateProfile.hidden = view !== 'list';
   unlockForm.hidden = view !== 'unlock';
   createForm.hidden = view !== 'create';
+  recoverForm.hidden = view !== 'recover';
+  recoveryCodeView.hidden = view !== 'recovery-code';
   consentForm.hidden = !isConsent;
-  gateNote.hidden = isConsent;
+  gateNote.hidden = !['list', 'unlock', 'create'].includes(view);
   gateCard.classList.toggle('is-consent', isConsent);
-  gateTitle.textContent = isConsent ? `Before you start, ${currentUser?.displayName || ''}`.trim() : "Who's using CA Mode?";
-  gateSub.textContent = isConsent
-    ? 'Here is what CA Mode keeps on this computer and what it sends elsewhere. Choose how much history to keep.'
-    : 'Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.';
+  const textKey = view === 'unlock' && isLockedSession ? 'locked' : (GATE_TEXT[view] ? view : 'default');
+  const [title, sub] = GATE_TEXT[textKey];
+  const name = currentUser?.displayName;
+  gateTitle.textContent = name && ['locked', 'consent'].includes(textKey) ? `${title}, ${name}` : title;
+  gateSub.textContent = sub;
   showGateError('');
-  const focusTarget = isConsent ? consentNotice : view === 'unlock' ? unlockPin : view === 'create' ? document.getElementById('create-name') : profileList.querySelector('button');
-  focusTarget?.focus();
+  const focusTargets = {
+    consent: consentNotice, unlock: unlockPin, create: document.getElementById('create-name'),
+    recover: document.getElementById('recover-code'), 'recovery-code': recoverySaved,
+  };
+  (focusTargets[view] || profileList.querySelector('button'))?.focus();
+}
+
+function openGate() {
+  profileGate.hidden = false;
+  document.body.classList.add('gate-open');
+}
+
+function showLockedGate() {
+  isLockedSession = true;
+  unlockTarget = currentUser;
+  unlockName.textContent = currentUser.displayName;
+  unlockForm.reset();
+  unlockForm.querySelector('[data-gate-back]').textContent = 'Switch profile';
+  openGate();
+  showGateView('unlock');
+}
+
+function showRecoveryCode(code) {
+  document.getElementById('recovery-code-value').textContent = code;
+  recoverySaved.checked = false;
+  recoveryContinue.disabled = true;
+  openGate();
+  showGateView('recovery-code');
+}
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = 'Copied';
+  } catch {
+    button.textContent = 'Select and copy';
+  }
+  setTimeout(() => { button.textContent = 'Copy'; }, 1600);
 }
 
 function showProfileGate(profiles) {
@@ -367,8 +429,9 @@ function showProfileGate(profiles) {
     });
     profileList.appendChild(button);
   }
-  profileGate.hidden = false;
-  document.body.classList.add('gate-open');
+  isLockedSession = false;
+  unlockForm.querySelector('[data-gate-back]').textContent = 'Back';
+  openGate();
   showGateView(profiles.length ? 'list' : 'create');
   createForm.querySelector('[data-gate-back]').hidden = !profiles.length;
 }
@@ -378,6 +441,7 @@ function hideProfileGate() {
   document.body.classList.remove('gate-open');
   unlockForm.reset();
   createForm.reset();
+  recoverForm.reset();
 }
 
 async function submitGate(url, body, form) {
@@ -391,11 +455,16 @@ async function submitGate(url, body, form) {
     const data = await response.json().catch(() => ({}));
     if (response.status === 429) {
       const minutes = Math.ceil(Number(data.retryAfterSeconds || response.headers.get('Retry-After') || 300) / 60);
-      throw new Error(`Too many incorrect PINs. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+      throw new Error(`Too many incorrect attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
     }
     if (!response.ok) {
       // 404/405 here usually means the server is older than this page: restart it.
       throw new Error(data.error || `Could not sign in (HTTP ${response.status}). If you just updated CA Mode, restart the server.`);
+    }
+    if (data.recoveryCode) {
+      currentUser = data.user || currentUser;
+      showRecoveryCode(data.recoveryCode);
+      return;
     }
     await loadChats();
   } catch (error) {
@@ -406,10 +475,44 @@ async function submitGate(url, body, form) {
 }
 
 showCreateProfile.addEventListener('click', () => showGateView('create'));
-profileGate.querySelectorAll('[data-gate-back]').forEach(button => button.addEventListener('click', () => showGateView('list')));
+profileGate.querySelectorAll('[data-gate-back]').forEach(button => button.addEventListener('click', async () => {
+  if (!isLockedSession) {
+    showGateView('list');
+    return;
+  }
+  await fetch('/api/session/logout', { method: 'POST' });
+  await loadChats();
+}));
 unlockForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  if (unlockTarget) submitGate('/api/session/login', { userId: unlockTarget.id, pin: unlockPin.value }, unlockForm);
+  if (isLockedSession) submitGate('/api/session/unlock', { pin: unlockPin.value }, unlockForm);
+  else if (unlockTarget) submitGate('/api/session/login', { userId: unlockTarget.id, pin: unlockPin.value }, unlockForm);
+});
+document.getElementById('show-recover').addEventListener('click', () => {
+  if (!unlockTarget) return;
+  recoverForm.reset();
+  document.getElementById('recover-name').textContent = unlockTarget.displayName;
+  showGateView('recover');
+});
+recoverForm.querySelector('[data-recover-back]').addEventListener('click', () => showGateView('unlock'));
+recoverForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const newPin = document.getElementById('recover-pin').value;
+  if (newPin !== document.getElementById('recover-pin-confirm').value) {
+    showGateError('The two PINs do not match.');
+    return;
+  }
+  submitGate('/api/session/recover', {
+    userId: unlockTarget.id, recoveryCode: document.getElementById('recover-code').value, newPin,
+  }, recoverForm);
+});
+recoverySaved.addEventListener('change', () => { recoveryContinue.disabled = !recoverySaved.checked; });
+document.getElementById('copy-recovery-code').addEventListener('click', (event) => {
+  copyText(document.getElementById('recovery-code-value').textContent, event.currentTarget);
+});
+recoveryContinue.addEventListener('click', async () => {
+  document.getElementById('recovery-code-value').textContent = '';
+  await loadChats();
 });
 createForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -517,6 +620,8 @@ async function openProfileDialog() {
   document.getElementById('delete-pin').value = '';
   document.getElementById('export-pin').value = '';
   dataStatus.textContent = '';
+  document.getElementById('settings-recovery-value').textContent = '';
+  document.getElementById('settings-recovery').hidden = true;
   profileForm.querySelector('.danger-zone').open = false;
   dataZone.open = false;
   const [response, privacy] = await Promise.all([fetch('/api/profile'), loadPrivacy()]);
@@ -603,6 +708,30 @@ document.getElementById('export-data').addEventListener('click', async () => {
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   document.getElementById('export-pin').value = '';
   dataStatus.textContent = 'Export downloaded. It contains your chats and portfolio data, so keep it somewhere safe.';
+});
+
+document.getElementById('new-recovery-code').addEventListener('click', async () => {
+  const pin = document.getElementById('export-pin').value;
+  if (!pin) {
+    dataStatus.textContent = 'Enter your PIN to create a new recovery code.';
+    return;
+  }
+  if (!window.confirm('Create a new recovery code? Your current recovery code will stop working.')) return;
+  const response = await fetch('/api/users/me/recovery-code', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    dataStatus.textContent = data.error || 'Could not create a new recovery code.';
+    return;
+  }
+  document.getElementById('export-pin').value = '';
+  document.getElementById('settings-recovery-value').textContent = data.recoveryCode;
+  document.getElementById('settings-recovery').hidden = false;
+  dataStatus.textContent = 'Save this code somewhere safe now. It will not be shown again, and your old code no longer works.';
+});
+document.getElementById('copy-settings-recovery').addEventListener('click', (event) => {
+  copyText(document.getElementById('settings-recovery-value').textContent, event.currentTarget);
 });
 
 document.getElementById('clear-history').addEventListener('click', async () => {
@@ -920,7 +1049,7 @@ async function sendMessage(text) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
       const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
-      if (err.profileRequired) {
+      if (err.profileRequired || err.unlockRequired || err.consentRequired) {
         removeTypingIndicator();
         await loadChats();
         return;

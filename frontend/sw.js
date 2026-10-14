@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ca-mode-shell-v7';
+const CACHE_NAME = 'ca-mode-shell-v8';
 const APP_SHELL = ['/', '/css/app.css', '/js/app.js', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {

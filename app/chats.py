@@ -1,7 +1,10 @@
 """Chat history per profile: SQLite rows when saving on this device, process memory in private mode.
 
 Private-mode chats never touch the database. They live in this process until the
-profile signs out, switches storage mode, or the server restarts.
+profile signs out, switches storage mode, or the server restarts. Saved chats have
+their title and messages sealed with the profile's keys (``user["keys"]``, a
+``sealing.ProfileKeys`` attached per request), so reading them needs the profile
+unlocked with its PIN.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from typing import Any
 
 from . import users
 from .db import connect_db
+from .sealing import ProfileKeys
 
 MAX_HISTORY_MESSAGES = 20
 MAX_HISTORY_MESSAGE_CHARS = 12_000
@@ -23,6 +27,10 @@ _private_chats: dict[str, dict[str, dict[str, Any]]] = {}
 
 def is_private(user: dict[str, Any]) -> bool:
     return user["storageMode"] == "private"
+
+
+def _keys(user: dict[str, Any]) -> ProfileKeys:
+    return user.get("keys") or ProfileKeys()
 
 
 def _copy(chat: dict[str, Any]) -> dict[str, Any]:
@@ -62,7 +70,11 @@ def list_chats(user: dict[str, Any]) -> list[dict[str, Any]]:
             "ORDER BY updated_at DESC LIMIT ?",
             (user["id"], users.now_ms(), MAX_CHATS_PER_USER),
         ).fetchall()
-    return [{"id": row["id"], "title": row["title"], "agentType": row["agent_type"], "updatedAt": row["updated_at"]} for row in rows]
+    keys = _keys(user)
+    return [
+        {"id": row["id"], "title": keys.open(row["title"]), "agentType": row["agent_type"], "updatedAt": row["updated_at"]}
+        for row in rows
+    ]
 
 
 def create_chat(user: dict[str, Any], agent_type: str) -> dict[str, Any]:
@@ -88,7 +100,8 @@ def create_chat(user: dict[str, Any], agent_type: str) -> dict[str, Any]:
             )
         connection.execute(
             "INSERT INTO chats(id, user_id, title, messages, updated_at, expires_at, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat["id"], user["id"], chat["title"], "[]", now, chat["sessionExpiresAt"], agent_type),
+            (chat["id"], user["id"], _keys(user).seal(chat["title"]), _keys(user).seal("[]"), now,
+             chat["sessionExpiresAt"], agent_type),
         )
     return chat
 
@@ -105,8 +118,10 @@ def read_chat(user: dict[str, Any], chat_id: str) -> dict[str, Any] | None:
         ).fetchone()
     if row is None:
         return None
+    keys = _keys(user)
     return {
-        "id": row["id"], "title": row["title"], "messages": json.loads(row["messages"]), "agentType": row["agent_type"],
+        "id": row["id"], "title": keys.open(row["title"]), "messages": json.loads(keys.open(row["messages"])),
+        "agentType": row["agent_type"],
         "updatedAt": row["updated_at"], "sessionExpiresAt": row["expires_at"],
     }
 
@@ -128,7 +143,7 @@ def append_turn(user: dict[str, Any], chat: dict[str, Any], message: str, answer
     with connect_db() as connection:
         connection.execute(
             "UPDATE chats SET messages = ?, title = ?, updated_at = ?, expires_at = ? WHERE user_id = ? AND id = ?",
-            (json.dumps(messages), title, now, now + CHAT_TTL_MS, user["id"], chat["id"]),
+            (_keys(user).seal(json.dumps(messages)), _keys(user).seal(title), now, now + CHAT_TTL_MS, user["id"], chat["id"]),
         )
 
 
@@ -144,3 +159,17 @@ def delete_chat(user: dict[str, Any], chat_id: str) -> bool:
 def export_chats(user: dict[str, Any]) -> list[dict[str, Any]]:
     """Return every unexpired chat with its messages, newest first."""
     return [chat for summary in list_chats(user) if (chat := read_chat(user, summary["id"])) is not None]
+
+
+def seal_plaintext_chats(user_id: str, keys: ProfileKeys) -> int:
+    """Seal saved chats written before the profile had keys; return how many were sealed."""
+    with connect_db() as connection:
+        rows = connection.execute(
+            "SELECT id, title, messages FROM chats WHERE user_id = ? AND messages NOT LIKE 'sealed:%'", (user_id,),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE chats SET title = ?, messages = ? WHERE user_id = ? AND id = ?",
+                (keys.seal(row["title"]), keys.seal(row["messages"]), user_id, row["id"]),
+            )
+    return len(rows)

@@ -20,6 +20,8 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
 - **`app/snapshots.py`**: Daily capture of net worth/allocation/holdings, history queries, the polling scheduler, profile prompt text, and the agent's local snapshot tools.
 - **`app/agent.py`**: Provider selection (OpenAI/Groq), request filtering, and the tool-calling loop (`stream_agent` yields `(event, data)` tuples; `run_agent` collects them into an answer plus trace).
+- **`app/sealing.py`**: Per-profile X25519 keypairs, wrapping the private key with a PIN or recovery code (scrypt + SecretBox), recovery codes, and `ProfileKeys` (`seal()` / `open()`).
+- **`app/unlock.py`**: Key creation, `unlock_with_pin()`, `recover()`, `replace_recovery_code()`, and the in-memory map of unlocked browser sessions (`activate()`, `keys_for_session()`).
 - **`app/vault.py`**: Master key resolution (`APP_MASTER_KEY`, `APP_MASTER_KEY_FILE`, default `~/.config/ca-mode/master.key`) and Fernet `encrypt()` / `decrypt()` for secrets stored in SQLite.
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
 
@@ -31,6 +33,13 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `check_pin()` reads the lock state from the DB and records the outcome in a `BEGIN IMMEDIATE` transaction, so concurrent wrong PINs cannot bypass the 5-attempt / 5-minute lock
 - PIN hashing (scrypt N=2^17) runs via `asyncio.to_thread`; tests lower `users.SCRYPT_N`
 - The PIN is a local lock, not network-grade auth; chats, snapshots and profile fields are not encrypted at rest
+
+**PIN-locked history** (`sealing.py`, `unlock.py`):
+- Saved chat titles and messages, snapshot `data` (with the net worth inside; `networth_inr` is NULL) and `users.profile` are `sealed:v1:<sealed box>` under the profile's public key; plaintext rows (profiles that never unlocked since this feature) pass through `ProfileKeys.open()` and are sealed by `unlock.activate()` at the next PIN entry
+- `users.history_key_pin` / `history_key_recovery` hold the private key wrapped as `scrypt$N$r$p$salt$box`; `history_public_key` is plain so the scheduler can seal without a PIN
+- `main.current_user()` attaches `user["keys"]`; `history_gate()` returns `403 {"unlockRequired": true}` when this session has not entered the PIN (unlocked keys are per session id, memory only, so a restart locks everyone)
+- Sign-up, sign-in and `/api/session/unlock` call `unlock.activate()`; responses carry `recoveryCode` only when one was just created. Recovery codes and PINs share the lockout via `users.check_with_lockout()`
+- Export unwraps keys from the PIN, so it works while locked. Losing both the PIN and the recovery code loses the history; there is no admin reset
 
 **Encrypted secrets** (`vault.py`, `users.py`):
 - `users.indmoney` and `oauth_sessions.data` are stored as `enc:v1:<Fernet token>` via `_encode_secret()` / `_decode_secret()`; an empty dict stays a plain `{}`, so SQL can test "connected" with `indmoney <> '{}'` (never `json_extract` on these columns)
@@ -127,6 +136,7 @@ python -m compileall -q app tests && python -m pytest -q
 
 ### `app/main.py`
 - OAuth routes: `GET /auth/indmoney/connect` (requires a profile), `GET /auth/indmoney/callback` (saves tokens on the profile and queues a first snapshot), `POST /auth/indmoney/disconnect`
+- Unlock routes: `POST /api/session/unlock`, `POST /api/session/recover`, `POST /api/users/me/recovery-code`; helper `history_gate()`
 - Privacy routes: `GET /api/privacy`, `POST /api/privacy/consent`, `POST /api/users/me/export`, `DELETE /api/users/me/history`
 - Helpers `consent_required()` and `pin_error()` build the 403 and PIN-failure responses
 - Profile routes: `GET /api/session` (current user, `consentRequired`, `storageMode`, profile list), `POST /api/users` (create + sign in), `POST /api/session/login`, `POST /api/session/logout`, `GET`/`PUT /api/profile`, `DELETE /api/users/me`
@@ -137,7 +147,8 @@ python -m compileall -q app tests && python -m pytest -q
 - Re-exports `connect_db`, `initialize_db`, `get_session`, `save_session`, `touch_session` for tests
 
 ### `app/users.py`
-- `hash_pin()` / `verify_pin()` / `check_pin()`: scrypt hashes and the atomic lockout
+- `hash_pin()` / `verify_pin()` / `check_pin()` / `check_with_lockout()`: scrypt hashes and the atomic lockout shared by PINs and recovery codes
+- `profile_fields(user, keys)`, `update_profile(user_id, fields, keys)`: profile fields are sealed
 - `create_user()`, `get_user()`, `list_profiles()`, `update_profile()`, `delete_user()`
 - `get_session()`, `save_session()`, `touch_session()`, `session_user_id()`, `sign_in()` (rotates the id and adopts legacy data), `sign_out()`
 - `get_indmoney()`, `save_indmoney()`, `clear_indmoney()`, `user_access_token()`, `cache_mcp_tools()`, `users_with_indmoney()`, `has_indmoney_tokens()`
@@ -180,7 +191,7 @@ python -m compileall -q app tests && python -m pytest -q
 
 ## Testing Strategy
 
-Tests use mocked AI, MCP and OAuth responses (no live API calls). `conftest.py` points `app.db` at a temporary database per test, lowers the scrypt cost, disables the scheduler, and provides `client`, `signed_in` (a signed-in profile that accepted the notice in `device` mode) and `sign_up()` (pass `storage_mode=None` to skip consent, or `"private"`).
+Tests use mocked AI, MCP and OAuth responses (no live API calls). `conftest.py` points `app.db` at a temporary database per test, lowers the scrypt cost, disables the scheduler, and provides `client`, `signed_in` (a signed-in, unlocked profile that accepted the notice in `device` mode) and `sign_up()` (pass `storage_mode=None` to skip consent, or `"private"`).
 
 Test coverage:
 - `test_api.py`: routes, OAuth flow, chats, profile-scoped access, snapshot endpoints
@@ -188,6 +199,7 @@ Test coverage:
 - `test_users.py`: PIN hashing, sign-in, lockout (including concurrent guesses), session rotation, legacy adoption, profile isolation
 - `test_snapshots.py`: net-worth parsing, IST schedule, capture, due-profile selection and backoff, scheduler, local tools, retention
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
+- `test_unlock.py`: sealed storage, restart locking, per-session unlock, recovery and its lockout, new recovery codes, upgrading profiles from before encryption, export while locked
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
 

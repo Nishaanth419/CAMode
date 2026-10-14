@@ -3,6 +3,11 @@
 Snapshots are plain SQLite rows rather than vector-store chunks: net worth and
 holdings are exact numbers that need latest-row, date-range and ordering queries,
 which similarity search cannot answer reliably.
+
+Once a profile has keys, each row's ``data`` is sealed with its public key and
+holds ``{"results", "errors", "networthInr"}``; ``networth_inr`` is then NULL so the
+total is not readable without the PIN. Older plaintext rows keep the total in
+``networth_inr`` until ``seal_plaintext_snapshots`` converts them.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import httpx
 from . import privacy, users
 from .agent import LocalTool, PortfolioContext
 from .db import connect_db
+from .sealing import ProfileKeys
 from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.snapshots")
@@ -161,44 +167,76 @@ def store_snapshot(user_id: str, captured: datetime, results: dict[str, str], er
     as_of = local.date().isoformat()
     captured_ms = int(captured.timestamp() * 1000)
     networth = extract_networth_inr(results.get("networth_snapshot"))
-    data = json.dumps({"results": results, "errors": errors}, ensure_ascii=False)
     with connect_db() as connection:
         # Re-checked here because the profile may switch to private mode while a capture is in flight.
-        row = connection.execute("SELECT storage_mode FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = connection.execute(
+            "SELECT storage_mode, history_public_key FROM users WHERE id = ?", (user_id,),
+        ).fetchone()
         if row is None or row["storage_mode"] != "device":
             raise SnapshotError("Snapshots are off for this profile.")
+        keys = ProfileKeys.from_stored_public_key(row["history_public_key"])
+        data, stored_networth = _encode(keys, results, errors, networth)
         connection.execute(
             "INSERT INTO portfolio_snapshots(user_id, as_of_date, captured_at, networth_inr, data) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(user_id, as_of_date) DO UPDATE SET captured_at=excluded.captured_at, "
             "networth_inr=excluded.networth_inr, data=excluded.data",
-            (user_id, as_of, captured_ms, networth, data),
+            (user_id, as_of, captured_ms, stored_networth, data),
         )
         _prune(connection, user_id, local.date())
     return {"asOfDate": as_of, "capturedAt": captured_ms, "networthInr": networth, "errors": errors}
 
 
-def _snapshot_from_row(row: Any) -> dict[str, Any]:
-    data = json.loads(row["data"])
+def _encode(
+    keys: ProfileKeys, results: dict[str, str], errors: dict[str, str], networth: float | None,
+) -> tuple[str, float | None]:
+    """Return the stored ``data`` and ``networth_inr`` values: sealed (total inside) when the profile has keys."""
+    if keys.public_key is None:
+        return json.dumps({"results": results, "errors": errors}, ensure_ascii=False), networth
+    payload = json.dumps({"results": results, "errors": errors, "networthInr": networth}, ensure_ascii=False)
+    return keys.seal(payload), None
+
+
+def _decode(row: Any, keys: ProfileKeys) -> tuple[dict[str, Any], float | None]:
+    """Return a row's payload and net worth. Raises ``sealing.LockedError`` for a sealed row without the private key."""
+    payload = json.loads(keys.open(row["data"]))
+    return payload, payload["networthInr"] if "networthInr" in payload else row["networth_inr"]
+
+
+def _snapshot_from_row(row: Any, keys: ProfileKeys) -> dict[str, Any]:
+    payload, networth = _decode(row, keys)
     return {
         "asOfDate": row["as_of_date"],
         "capturedAt": row["captured_at"],
-        "networthInr": row["networth_inr"],
-        "results": data.get("results", {}),
-        "errors": data.get("errors", {}),
+        "networthInr": networth,
+        "results": payload.get("results", {}),
+        "errors": payload.get("errors", {}),
     }
 
 
-def latest_snapshot(user_id: str, on_or_before: str | None = None) -> dict[str, Any] | None:
+def latest_snapshot(
+    user_id: str, on_or_before: str | None = None, *, keys: ProfileKeys | None = None,
+) -> dict[str, Any] | None:
     with connect_db() as connection:
         row = connection.execute(
             "SELECT * FROM portfolio_snapshots WHERE user_id = ? AND as_of_date <= ? "
             "ORDER BY as_of_date DESC LIMIT 1",
             (user_id, on_or_before or "9999-12-31"),
         ).fetchone()
-    return _snapshot_from_row(row) if row else None
+    return _snapshot_from_row(row, keys or ProfileKeys()) if row else None
 
 
-def networth_history(user_id: str, days: int, *, today: date | None = None) -> list[dict[str, Any]]:
+def all_snapshots(user_id: str, keys: ProfileKeys) -> list[dict[str, Any]]:
+    """Every stored snapshot, oldest first (for export)."""
+    with connect_db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM portfolio_snapshots WHERE user_id = ? ORDER BY as_of_date", (user_id,),
+        ).fetchall()
+    return [_snapshot_from_row(row, keys) for row in rows]
+
+
+def networth_history(
+    user_id: str, days: int, *, keys: ProfileKeys | None = None, today: date | None = None,
+) -> list[dict[str, Any]]:
     """Return one point per stored day within ``days``, oldest first."""
     start = ((today or local_now().date()) - timedelta(days=days)).isoformat()
     with connect_db() as connection:
@@ -207,15 +245,33 @@ def networth_history(user_id: str, days: int, *, today: date | None = None) -> l
             "WHERE user_id = ? AND as_of_date >= ? ORDER BY as_of_date",
             (user_id, start),
         ).fetchall()
-    return [
-        {
+    points = []
+    for row in rows:
+        payload, networth = _decode(row, keys or ProfileKeys())
+        points.append({
             "date": row["as_of_date"],
             "capturedAt": row["captured_at"],
-            "networthInr": row["networth_inr"],
-            "_snapshot": json.loads(row["data"]).get("results", {}).get("networth_snapshot"),
-        }
-        for row in rows
-    ]
+            "networthInr": networth,
+            "_snapshot": payload.get("results", {}).get("networth_snapshot"),
+        })
+    return points
+
+
+def seal_plaintext_snapshots(user_id: str, keys: ProfileKeys) -> int:
+    """Seal snapshots stored before the profile had keys; return how many were sealed."""
+    with connect_db() as connection:
+        rows = connection.execute(
+            "SELECT as_of_date, networth_inr, data FROM portfolio_snapshots "
+            "WHERE user_id = ? AND data NOT LIKE 'sealed:%'", (user_id,),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["data"])
+            data, _ = _encode(keys, payload.get("results", {}), payload.get("errors", {}), row["networth_inr"])
+            connection.execute(
+                "UPDATE portfolio_snapshots SET data = ?, networth_inr = NULL WHERE user_id = ? AND as_of_date = ?",
+                (data, user_id, row["as_of_date"]),
+            )
+    return len(rows)
 
 
 def _sample(points: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -360,8 +416,8 @@ def _snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def snapshot_tools(user_id: str) -> list[LocalTool]:
-    """Read-only tools over this user's stored snapshots."""
+def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
+    """Read-only tools over this user's stored snapshots (``keys`` must be unlocked to read sealed rows)."""
 
     async def get_portfolio_snapshot(arguments: dict[str, Any]) -> str:
         requested = arguments.get("date")
@@ -370,7 +426,7 @@ def snapshot_tools(user_id: str) -> list[LocalTool]:
                 requested = date.fromisoformat(str(requested)).isoformat()
             except ValueError:
                 return json.dumps({"error": "date must be YYYY-MM-DD"})
-        snapshot = latest_snapshot(user_id, requested)
+        snapshot = latest_snapshot(user_id, requested, keys=keys)
         if snapshot is None:
             return json.dumps({"available": False, "message": "No saved snapshot for that date. Use the live INDmoney tools instead."})
         return json.dumps(_snapshot_payload(snapshot), ensure_ascii=False)
@@ -380,7 +436,7 @@ def snapshot_tools(user_id: str) -> list[LocalTool]:
             days = min(365, max(1, int(arguments.get("days", 30))))
         except (TypeError, ValueError):
             return json.dumps({"error": "days must be a whole number from 1 to 365"})
-        points = _sample(networth_history(user_id, days), MAX_HISTORY_POINTS)
+        points = _sample(networth_history(user_id, days, keys=keys), MAX_HISTORY_POINTS)
         parsed = any(point["networthInr"] is not None for point in points)
         history = []
         for point in points:
@@ -432,9 +488,9 @@ _PROFILE_LABELS = {
 }
 
 
-def profile_context(user: dict[str, Any], snapshot: dict[str, Any] | None) -> str | None:
+def profile_context(fields: dict[str, Any], snapshot: dict[str, Any] | None) -> str | None:
     """Render user-entered profile fields and snapshot availability for the system prompt."""
-    lines = [f"- {label}: {user['profile'][key]}" for key, label in _PROFILE_LABELS.items() if user["profile"].get(key) not in (None, "")]
+    lines = [f"- {label}: {fields[key]}" for key, label in _PROFILE_LABELS.items() if fields.get(key) not in (None, "")]
     if snapshot:
         lines.append(f"- Latest saved portfolio snapshot: captured {_iso(snapshot['capturedAt'])} (use get_portfolio_snapshot)")
     else:
@@ -450,10 +506,14 @@ def fresh_cached_mcp_tools(user: dict[str, Any]) -> list[dict[str, Any]] | None:
 
 
 def portfolio_context(user: dict[str, Any]) -> PortfolioContext:
-    """Assemble the snapshot tools, profile text and cached MCP tool list for one chat request."""
+    """Assemble the snapshot tools, profile text and cached MCP tool list for one chat request.
+
+    ``user["keys"]`` must be unlocked when the profile's data is sealed.
+    """
+    keys = user.get("keys") or ProfileKeys()
     return PortfolioContext(
-        local_tools=tuple(snapshot_tools(user["id"])),
-        profile_context=profile_context(user, latest_snapshot(user["id"])),
+        local_tools=tuple(snapshot_tools(user["id"], keys)),
+        profile_context=profile_context(users.profile_fields(user, keys), latest_snapshot(user["id"], keys=keys)),
         cached_mcp_tools=fresh_cached_mcp_tools(user),
         on_mcp_tools=lambda tools: users.cache_mcp_tools(user["id"], filter_portfolio_tools(tools)),
     )

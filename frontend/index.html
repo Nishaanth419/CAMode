@@ -14,9 +14,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=13" />
+  <link rel="stylesheet" href="/css/app.css?v=14" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=13" defer></script>
+  <script src="/js/app.js?v=14" defer></script>
 </head>
 <body>
   <div id="app">
@@ -264,7 +264,30 @@
           <button class="gate-secondary" type="button" data-gate-back>Back</button>
           <button class="rail-button" type="submit">Unlock</button>
         </div>
+        <button id="show-recover" class="gate-link" type="button">Forgot your PIN?</button>
       </form>
+
+      <form id="profile-recover-form" class="gate-form" hidden>
+        <p class="gate-form-title">Set a new PIN for <strong id="recover-name"></strong></p>
+        <label class="field"><span>Recovery code</span><input id="recover-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" required /></label>
+        <label class="field"><span>New PIN (at least 4 characters)</span><input id="recover-pin" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="64" required /></label>
+        <label class="field"><span>Confirm new PIN</span><input id="recover-pin-confirm" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="64" required /></label>
+        <div class="gate-actions">
+          <button class="gate-secondary" type="button" data-recover-back>Back</button>
+          <button class="rail-button" type="submit">Set new PIN</button>
+        </div>
+      </form>
+
+      <div id="recovery-code-view" class="gate-form" hidden>
+        <div class="recovery-code-box">
+          <code id="recovery-code-value" class="recovery-code"></code>
+          <button id="copy-recovery-code" class="gate-secondary" type="button">Copy</button>
+        </div>
+        <p class="recovery-note">Write it down or keep it in a password manager, not on this computer. It is shown only once. You can create a new one later from your profile.</p>
+        <label class="consent-check"><input id="recovery-saved" type="checkbox" />
+          <span>I have saved my recovery code somewhere safe.</span></label>
+        <button id="recovery-continue" class="rail-button" type="button" disabled>Continue</button>
+      </div>
 
       <form id="profile-create-form" class="gate-form" hidden>
         <p class="gate-form-title">Create a profile</p>
@@ -298,7 +321,7 @@
       </form>
 
       <p id="gate-error" class="gate-error" role="alert" hidden></p>
-      <p id="gate-note" class="gate-note">The PIN keeps people on this computer out of each other's data. It is not a substitute for a device password.</p>
+      <p id="gate-note" class="gate-note">Your PIN encrypts your saved history, so choose one other people on this computer can't guess. It is not a substitute for a device password.</p>
     </section>
   </div>
 
@@ -347,8 +370,13 @@
           <div id="settings-notice" class="privacy-notice" tabindex="0" aria-label="Privacy notice"></div>
         </details>
         <div class="data-actions">
-          <label class="field"><span>PIN to export</span><input id="export-pin" type="password" autocomplete="current-password" /></label>
+          <label class="field"><span>Your PIN (to export or get a new recovery code)</span><input id="export-pin" type="password" autocomplete="current-password" /></label>
           <button id="export-data" class="gate-secondary" type="button">Export my data</button>
+          <button id="new-recovery-code" class="gate-secondary" type="button">New recovery code</button>
+        </div>
+        <div id="settings-recovery" class="recovery-code-box" hidden>
+          <code id="settings-recovery-value" class="recovery-code"></code>
+          <button id="copy-settings-recovery" class="gate-secondary" type="button">Copy</button>
         </div>
         <button id="clear-history" class="gate-secondary" type="button">Clear saved chats and snapshots</button>
         <p id="data-status" class="dialog-status" role="status"></p>

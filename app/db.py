@@ -26,6 +26,9 @@ _SCHEMA = """
         snapshot_attempted_at INTEGER NOT NULL DEFAULT 0,
         storage_mode TEXT NOT NULL DEFAULT 'device',
         snapshot_retention_days INTEGER NOT NULL DEFAULT 365,
+        history_public_key TEXT,
+        history_key_pin TEXT,
+        history_key_recovery TEXT,
         failed_logins INTEGER NOT NULL DEFAULT 0,
         locked_until INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
@@ -72,6 +75,9 @@ _SCHEMA = """
 _ADDED_USER_COLUMNS = {
     "storage_mode": "TEXT NOT NULL DEFAULT 'device'",
     "snapshot_retention_days": "INTEGER NOT NULL DEFAULT 365",
+    "history_public_key": "TEXT",
+    "history_key_pin": "TEXT",
+    "history_key_recovery": "TEXT",
 }
 
 
