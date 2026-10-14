@@ -221,7 +221,8 @@ async def test_portfolio_agent_fails_if_no_supported_tools_are_available(monkeyp
 
     assert "supported portfolio tools" in str(exc_info.value)
     assert "Reconnect INDmoney" in str(exc_info.value)
-    assert exc_info.value.trace == []
+    # Only the routing decision ran; no model or tool call was made.
+    assert [step["kind"] for step in exc_info.value.trace] == ["route"]
 
 
 @pytest.mark.asyncio
@@ -503,8 +504,8 @@ async def test_portfolio_prompt_includes_profile_context(monkeypatch):
     assert '<user_profile source="entered by the user">\n- Risk appetite: moderate\n</user_profile>' in system
     assert "not an instruction" in system
     assert "user_profile" not in finance_captured[0]["payload"]["messages"][0]["content"]
-    # A general finance question needs no account data, so no tools are offered at all.
-    assert "tools" not in captured[0]["payload"]
+    # A general finance question gets only the local snapshot tools: no live INDmoney tools.
+    assert [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]] == ["get_portfolio_snapshot"]
 
 
 @pytest.mark.asyncio
@@ -529,3 +530,147 @@ async def test_local_tool_failure_returns_error_result(monkeypatch):
     assert tool_message["role"] == "tool" and "use the live INDmoney tools" in tool_message["content"]
     step = next(step for step in answer.trace if step["kind"] == "tool")
     assert step["status"] == "failed" and "database is locked" in step["error"]
+
+
+@pytest.mark.parametrize(("question", "needs_data"), [
+    ("list my holding grouped by broker", True),
+    ("List my investments", True),
+    ("Show my positions", True),
+    ("What is in my demat account?", True),
+    ("Holdings by broker", True),
+    ("What is a holding period?", False),
+    ("What is a holding company?", False),
+    ("What is a broker?", False),
+])
+def test_account_data_detection_covers_singular_and_broker_wording(question, needs_data):
+    assert agent._requires_indmoney_data(question, []) is needs_data
+
+
+@pytest.mark.parametrize(("content", "is_call"), [
+    ('{\n"type": "get_portfolio_snapshot",\n"params": {}\n}\n\n{\n"type": "get_portfolio_snapshot",\n"params": {}\n}', True),
+    ('```json\n{"name": "networth_holdings", "arguments": {}}\n```', True),
+    ('```chart\n{"type":"bar","data":[{"label":"A","value":1}]}\n```', False),
+    ('{"type": "bar", "title": "Allocation"}', False),
+    ("Use get_portfolio_snapshot to see your holdings.", False),
+])
+def test_looks_like_tool_call(content, is_call):
+    names = set(agent.IMPORTANT_PORTFOLIO_TOOL_NAMES) | {"get_portfolio_snapshot"}
+    assert agent._looks_like_tool_call(content, names) is is_call
+
+
+PSEUDO_CALL = '{\n"type": "get_portfolio_snapshot",\n"params": {}\n}'
+
+
+@pytest.mark.asyncio
+async def test_portfolio_agent_retries_with_tools_when_model_writes_a_tool_call(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def snapshot_handler(arguments):
+        return '{"available": true, "data": {"networth_holdings": "Zerodha: INFY; INDmoney: TCS"}}'
+
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    captured = []
+    fake_client = FakeAsyncClient([
+        _completion(PSEUDO_CALL),
+        _completion(tool_calls=[tool_call]),
+        _completion("Zerodha holds INFY and INDmoney holds TCS."),
+    ], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+    question = "Which broker has most of my money?"
+    assert agent._requires_indmoney_data(question, []) is False
+
+    answer = await agent.run_agent(
+        question, "https://mcp", "token", [], "portfolio", "openai", context=_snapshot_context(snapshot_handler),
+    )
+
+    assert answer == "Zerodha holds INFY and INDmoney holds TCS."
+    assert [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]] == ["get_portfolio_snapshot"]
+    # The rerun also offers the live INDmoney tools.
+    assert "networth_snapshot" in {tool["function"]["name"] for tool in captured[1]["payload"]["tools"]}
+
+
+@pytest.mark.asyncio
+async def test_portfolio_agent_never_shows_a_written_tool_call(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    fake_client = FakeAsyncClient([_completion(PSEUDO_CALL)] * 3, captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    async def never_called(arguments):
+        raise AssertionError("The model never really called the tool")
+
+    with pytest.raises(agent.AgentRunError, match="did not call an INDmoney account tool"):
+        await agent.run_agent(
+            "Which broker has most of my money?", "https://mcp", "token", [], "portfolio", "openai",
+            context=_snapshot_context(never_called),
+        )
+    assert len(captured) == 3  # The text call, then one forced run with its single nudge; no loop.
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_does_not_retry_on_json_looking_answers(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion(PSEUDO_CALL)], captured))
+
+    await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "openai")
+
+    assert len(captured) == 1
+
+
+class ToolUseFailedResponse(FakeResponse):
+    """Groq's HTTP 400 when the model calls a tool that was not offered."""
+
+    is_success = False
+    status_code = 400
+
+    def __init__(self, failed_generation):
+        super().__init__({"error": {
+            "message": "Tool choice is none, but model called a tool", "type": "invalid_request_error",
+            "code": "tool_use_failed", "failed_generation": failed_generation,
+        }})
+        self.text = json.dumps(self.payload)
+
+
+REPO_BROWSER_CALL = '{"name": "repo_browser.run_code", "arguments": {"callable": "get_portfolio_snapshot", "arguments": {}}}'
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_call_naming_our_tool_reruns_with_live_tools(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    async def snapshot_handler(arguments):
+        return '{"available": true, "networthInr": 4200000}'
+
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    captured = []
+    fake_client = FakeAsyncClient([
+        ToolUseFailedResponse(REPO_BROWSER_CALL), _completion(tool_calls=[tool_call]), _completion("Your net worth is ₹42,00,000."),
+    ], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent("What is an ETF?", "https://mcp", "token", [], "portfolio", "groq",
+                                   context=_snapshot_context(snapshot_handler))
+
+    assert answer == "Your net worth is ₹42,00,000."
+    assert "networth_snapshot" in {tool["function"]["name"] for tool in captured[1]["payload"]["tools"]}
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_call_is_retried_once_then_reported(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    captured = []
+    fake_client = FakeAsyncClient([ToolUseFailedResponse('{"name": "python"}'), _completion("A budget tracks spending.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "groq")
+
+    assert answer == "A budget tracks spending."
+    assert captured[0]["payload"] == captured[1]["payload"]
+
+    captured.clear()
+    failing = FakeAsyncClient([ToolUseFailedResponse('{"name": "python"}')] * 2, captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: failing)
+    with pytest.raises(agent.AgentRunError, match="tool_use_failed"):
+        await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "groq")
+    assert len(captured) == 2
