@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import backup, privacy, users
+from . import backup, cas, privacy, users
 from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
@@ -523,6 +523,42 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
     ]
 
 
+def cas_tool(user_id: str, keys: ProfileKeys) -> LocalTool:
+    """Read-only tool over the user's latest uploaded CAS (holdings at every broker, as of the statement date)."""
+
+    async def get_cas_holdings(arguments: dict[str, Any]) -> str:
+        statement = cas.latest_statement(user_id, keys)
+        if statement is None:
+            return json.dumps({"available": False, "message": "No CAS statement has been uploaded."})
+        payload = {
+            "available": True,
+            "source": statement["source"],
+            "statementPeriod": {"from": statement["period_from"], "to": statement["period_to"]},
+            "uploadedAt": _iso(statement["uploaded_at"]),
+            "figures": cas.statement_metrics(statement, include_all_holdings=arguments.get("include_all_holdings") is True),
+            "parseWarnings": statement["warnings"],
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    return LocalTool(
+        name="get_cas_holdings",
+        description=(
+            "Read figures computed from the user's latest uploaded CAS (Consolidated Account Statement from NSDL, "
+            "CDSL, CAMS or KFintech): holdings at every broker and depository, mutual fund folios and NPS, with value, "
+            "split by broker and asset type, P&L where the statement gives a cost, and concentration. Values are as of "
+            "the statement's end date, not live; always say that date. Use it for holdings outside INDmoney, all-broker "
+            "totals, or which broker holds what. Pass include_all_holdings=true to list every holding. Its figures "
+            "overlap INDmoney's (the same shares can appear in both), so never add CAS amounts to INDmoney amounts."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"include_all_holdings": {"type": "boolean", "description": "List every holding, not just the 10 largest."}},
+            "additionalProperties": False,
+        },
+        handler=get_cas_holdings,
+    )
+
+
 _PROFILE_LABELS = {
     "riskAppetite": "Risk appetite",
     "investmentHorizonYears": "Investment horizon (years)",
@@ -555,8 +591,11 @@ def portfolio_context(user: dict[str, Any]) -> PortfolioContext:
     ``user["keys"]`` must be unlocked when the profile's data is sealed.
     """
     keys = user.get("keys") or ProfileKeys()
+    local_tools = snapshot_tools(user["id"], keys)
+    if cas.has_statement(user["id"]):
+        local_tools.append(cas_tool(user["id"], keys))
     return PortfolioContext(
-        local_tools=tuple(snapshot_tools(user["id"], keys)),
+        local_tools=tuple(local_tools),
         profile_context=profile_context(users.profile_fields(user, keys), latest_snapshot(user["id"], keys=keys)),
         cached_mcp_tools=fresh_cached_mcp_tools(user),
         on_mcp_tools=lambda tools: users.cache_mcp_tools(user["id"], filter_portfolio_tools(tools)),

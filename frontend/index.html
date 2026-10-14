@@ -14,9 +14,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=16" />
+  <link rel="stylesheet" href="/css/app.css?v=17" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=16" defer></script>
+  <script src="/js/app.js?v=17" defer></script>
 </head>
 <body>
   <div id="app">
@@ -193,6 +193,21 @@
         <p id="portfolio-copy" class="rail-copy">Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.</p>
         <button id="portfolio-cta" class="rail-button" type="button">Connect INDmoney</button>
         <button id="snapshot-refresh" class="rail-link" type="button" hidden>Refresh snapshot now</button>
+      </section>
+
+      <section class="rail-card" id="cas-card" hidden>
+        <div class="rail-head">
+          <h2>Other brokers</h2>
+          <span id="cas-pill" class="pill">No statement</span>
+        </div>
+        <p id="cas-copy" class="rail-copy">Upload the monthly CAS emailed by NSDL or CDSL to include holdings at every broker. Only the holdings are kept, locked with your PIN.</p>
+        <form id="cas-form" class="cas-form">
+          <label class="field"><span>CAS PDF</span><input id="cas-file" type="file" accept="application/pdf,.pdf" required /></label>
+          <label class="field"><span>PDF password (usually your PAN in capitals)</span><input id="cas-password" type="password" autocomplete="off" required /></label>
+          <button class="rail-button" type="submit">Upload statement</button>
+          <p id="cas-status" class="dialog-status" role="status"></p>
+        </form>
+        <button id="cas-ask" class="rail-link" type="button" hidden>Ask about all my brokers</button>
       </section>
 
       <section class="rail-card">

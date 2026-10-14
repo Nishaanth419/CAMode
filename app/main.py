@@ -18,9 +18,9 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from . import backup, chats, privacy, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, privacy, sealing, snapshots, unlock, users, vault
 from .agent import configured_providers, default_provider, run_agent
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -102,6 +102,13 @@ class SignInRequest(BaseModel):
 class ConfirmPinRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     pin: str
+
+
+class CasUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field(max_length=100)
+    # Base64 of a PDF up to cas.MAX_PDF_BYTES (4 characters per 3 bytes).
+    pdfBase64: str = Field(min_length=1, max_length=cas.MAX_PDF_BYTES * 4 // 3 + 4)
 
 
 class RecoverRequest(BaseModel):
@@ -436,7 +443,7 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
     user["keys"] = keys
     logger.info("profile_data_exported", extra={"user_id": user["id"]})
     return JSONResponse(
-        privacy.export_data(user, snapshots.all_snapshots(user["id"], keys)),
+        privacy.export_data(user, snapshots.all_snapshots(user["id"], keys), cas.all_statements(user["id"], keys)),
         headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
     )
 
@@ -466,6 +473,47 @@ async def new_recovery_code(body: ConfirmPinRequest, request: Request):
     code = await asyncio.to_thread(unlock.replace_recovery_code, user, body.pin)
     logger.info("recovery_code_replaced", extra={"user_id": user["id"]})
     return {"recoveryCode": code}
+
+
+# ── CAS statements ─────────────────────────────────────────────────────────────
+
+@app.post("/api/cas", status_code=201)
+async def upload_cas(body: CasUploadRequest, request: Request):
+    """Parse a CAS PDF in memory and save only its holdings, sealed with the profile's keys."""
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    if user["storageMode"] != "device":
+        return JSONResponse({"error": "Private mode saves no history. Choose to save history to upload a CAS."}, status_code=409)
+    try:
+        pdf = base64.b64decode(body.pdfBase64, validate=True)
+    except ValueError:
+        return JSONResponse({"error": "The file could not be read. Try uploading it again."}, status_code=400)
+    try:
+        statement = await asyncio.to_thread(cas.parse_statement, pdf, body.password)
+    except cas.CASError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    summary = cas.store_statement(user["id"], statement, user["keys"])
+    logger.info("cas_uploaded", extra={"user_id": user["id"], "source": statement["source"]})
+    return summary
+
+
+@app.get("/api/cas")
+async def list_cas(request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"statements": cas.list_statements(user["id"], user["keys"])}
+
+
+@app.delete("/api/cas/{statement_id}")
+async def delete_cas(statement_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    if not cas.delete_statement(user["id"], statement_id):
+        return JSONResponse({"error": "Statement not found."}, status_code=404)
+    return {"deleted": True}
 
 
 # ── Backups ────────────────────────────────────────────────────────────────────

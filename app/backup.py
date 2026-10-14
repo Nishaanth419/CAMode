@@ -25,6 +25,7 @@ logger = logging.getLogger("ca_mode.backup")
 
 BACKUP_INTERVAL: Final = timedelta(hours=24)
 _NAME_RE: Final = re.compile(r"^codemode-(\d{8}-\d{6})\.sqlite3$")
+# cas_statements is optional: backups made before CAS uploads existed lack it.
 _REQUIRED_TABLES: Final = {"users", "chats", "portfolio_snapshots", "consents"}
 
 
