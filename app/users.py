@@ -21,6 +21,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import vault
 from .db import connect_db
 
 logger = logging.getLogger("ca_mode.users")
@@ -115,6 +116,57 @@ def clean_display_name(name: str) -> str:
     return cleaned
 
 
+# ── Encrypted secrets ──────────────────────────────────────────────────────────
+
+def _encode_secret(values: dict[str, Any]) -> str:
+    """Serialise ``values`` for storage, encrypted; an empty dict stays a plain ``{}``."""
+    return vault.encrypt(json.dumps(values)) if values else "{}"
+
+
+def _decode_secret(stored: str | None) -> dict[str, Any]:
+    """Read a stored secret dict; unreadable (wrong key) values read as empty.
+
+    Plaintext JSON is still accepted for rows written before encryption, until
+    ``encrypt_stored_secrets`` rewrites them at startup.
+    """
+    if not vault.is_encrypted(stored):
+        return json.loads(stored or "{}")
+    try:
+        return json.loads(vault.decrypt(stored))
+    except vault.VaultError:
+        return {}
+
+
+def encrypt_stored_secrets() -> dict[str, int]:
+    """Encrypt plaintext INDmoney tokens and session data, and count rows the key cannot read.
+
+    Unreadable rows are left alone rather than cleared, so pointing the app at the
+    wrong key by mistake does not destroy tokens; those profiles show as disconnected.
+    """
+    counts = {"encrypted": 0, "unreadable": 0}
+    with connect_db() as connection:
+        for table, column in (("users", "indmoney"), ("oauth_sessions", "data")):
+            rows = connection.execute(f"SELECT id, {column} AS value FROM {table} WHERE {column} <> '{{}}'").fetchall()
+            for row in rows:
+                if not vault.is_encrypted(row["value"]):
+                    connection.execute(
+                        f"UPDATE {table} SET {column} = ? WHERE id = ?", (vault.encrypt(row["value"]), row["id"]),
+                    )
+                    counts["encrypted"] += 1
+                    continue
+                try:
+                    vault.decrypt(row["value"])
+                except vault.VaultError:
+                    counts["unreadable"] += 1
+    if counts["unreadable"]:
+        logger.warning(
+            "stored_secrets_unreadable: %s row(s) were encrypted with a different master key; "
+            "affected profiles must reconnect INDmoney. Check APP_MASTER_KEY / APP_MASTER_KEY_FILE.",
+            counts["unreadable"],
+        )
+    return counts
+
+
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 def _user_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -123,7 +175,7 @@ def _user_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "displayName": row["display_name"],
         "pinHash": row["pin_hash"],
         "profile": json.loads(row["profile"] or "{}"),
-        "indmoney": json.loads(row["indmoney"] or "{}"),
+        "indmoney": _decode_secret(row["indmoney"]),
         "mcpTools": json.loads(row["mcp_tools"]) if row["mcp_tools"] else None,
         "mcpToolsFetchedAt": row["mcp_tools_fetched_at"],
         "snapshotAttemptedAt": row["snapshot_attempted_at"],
@@ -230,7 +282,7 @@ def get_session(sid: str) -> dict[str, Any]:
         if now_ms() - row["updated_at"] > SESSION_MAX_AGE_SECONDS * 1000:
             connection.execute("DELETE FROM oauth_sessions WHERE id = ?", (sid,))
             return {}
-        return json.loads(row["data"])
+        return _decode_secret(row["data"])
 
 
 def save_session(sid: str, values: dict[str, Any]) -> None:
@@ -240,7 +292,7 @@ def save_session(sid: str, values: dict[str, Any]) -> None:
         connection.execute(
             "INSERT INTO oauth_sessions(id, data, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
-            (sid, json.dumps(stored), now),
+            (sid, _encode_secret(stored), now),
         )
 
 
@@ -313,7 +365,7 @@ def get_indmoney(user_id: str) -> dict[str, Any]:
 def save_indmoney(user_id: str, values: dict[str, Any]) -> None:
     with connect_db() as connection:
         connection.execute(
-            "UPDATE users SET indmoney = ?, updated_at = ? WHERE id = ?", (json.dumps(values), now_ms(), user_id),
+            "UPDATE users SET indmoney = ?, updated_at = ? WHERE id = ?", (_encode_secret(values), now_ms(), user_id),
         )
 
 
@@ -328,11 +380,15 @@ def clear_indmoney(user_id: str) -> None:
         connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ?", (user_id,))
 
 
+def has_indmoney_tokens(values: dict[str, Any]) -> bool:
+    return bool(values.get("accessToken") or values.get("refreshToken"))
+
+
 def users_with_indmoney() -> list[str]:
+    """Profiles whose stored INDmoney tokens are present and readable with the current key."""
     with connect_db() as connection:
-        rows = connection.execute("SELECT id FROM users WHERE json_extract(indmoney, '$.refreshToken') IS NOT NULL "
-                                  "OR json_extract(indmoney, '$.accessToken') IS NOT NULL").fetchall()
-    return [row["id"] for row in rows]
+        rows = connection.execute("SELECT id, indmoney FROM users WHERE indmoney <> '{}'").fetchall()
+    return [row["id"] for row in rows if has_indmoney_tokens(_decode_secret(row["indmoney"]))]
 
 
 async def user_access_token(user_id: str, *, force_refresh: bool = False) -> str | None:

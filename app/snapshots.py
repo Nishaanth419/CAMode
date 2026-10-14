@@ -283,15 +283,16 @@ def due_user_ids(now: datetime) -> list[str]:
             "SELECT u.id FROM users u LEFT JOIN ("
             "  SELECT user_id, MAX(captured_at) AS last FROM portfolio_snapshots GROUP BY user_id"
             ") s ON s.user_id = u.id "
-            "WHERE (json_extract(u.indmoney, '$.refreshToken') IS NOT NULL "
-            "       OR json_extract(u.indmoney, '$.accessToken') IS NOT NULL) "
+            "WHERE u.indmoney <> '{}' "
             "AND u.storage_mode = 'device' "
             "AND (SELECT c.policy_version FROM consents c WHERE c.user_id = u.id ORDER BY c.id DESC LIMIT 1) = ? "
             "AND COALESCE(s.last, 0) < ? "
             "AND (u.snapshot_attempted_at < ? OR u.snapshot_attempted_at < ?)",
             (privacy.POLICY_VERSION, scheduled_ms, scheduled_ms, retry_before_ms),
         ).fetchall()
-    return [row["id"] for row in rows]
+    # Tokens are encrypted, so whether they are present and readable is checked in Python.
+    connected = set(users.users_with_indmoney())
+    return [row["id"] for row in rows if row["id"] in connected]
 
 
 async def refresh_user(user_id: str, *, mcp_url: str, now: datetime | None = None) -> dict[str, Any]:
