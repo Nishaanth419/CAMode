@@ -46,7 +46,8 @@ This directory contains reusable, composable Claude Code skills from [ai-enginee
 | File Change | Load This Skill |
 |---|---|
 | `app/**/*.py`, `tests/**/*.py` | `/python-best-practices` |
-| `app/agent.py` (prompts, tools, logic) | `/llm-application-best-practices` |
+| `app/agent.py` (prompts, tools, logic), `app/snapshots.py` (agent snapshot tools, profile prompt text) | `/llm-application-best-practices` |
+| `app/users.py` (PINs, sessions, tokens), `app/db.py` (schema, migrations) | `/python-best-practices` (Security and Database sections) |
 | `app/main.py` (routes, schemas, errors) | `/api-contract-design-best-practices` |
 | `Dockerfile`, `docker-compose.yml` | `/docker-deployment-best-practices` |
 | Before commit/push/PR | `/git-commit-pr-workflow` |
