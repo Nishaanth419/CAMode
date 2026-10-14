@@ -29,10 +29,16 @@ from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
 from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
+from .portfolio_math import HOLDINGS_PREFIX, asset_types_held, compute_metrics
 
 logger = logging.getLogger("ca_mode.snapshots")
 
-SNAPSHOT_TOOL_NAMES = ("networth_snapshot", "networth_allocation_breakdown", "networth_holdings")
+SNAPSHOT_TOOL_NAMES = ("networth_snapshot", "networth_holdings")
+# networth_holdings needs an asset_type; INSURANCE and RD are not served by INDmoney's backend.
+HOLDINGS_ASSET_TYPES = (
+    "IND_STOCK", "MF", "US_STOCK", "BOND", "EPF", "NPS", "SA", "FD", "CRYPTO", "VEHICLE", "RE", "AIF", "PMS", "PPF",
+)
+MAX_PARALLEL_HOLDINGS_CALLS = 4
 
 
 def _load_timezone(name: str) -> tzinfo:
@@ -299,8 +305,17 @@ async def _open_mcp_session(user_id: str, mcp_url: str) -> tuple[str, dict[str, 
     return token, await fetch_mcp_session(mcp_url, token)
 
 
+def holdings_types_to_fetch(snapshot_text: str | None) -> list[str]:
+    """Asset types to fetch holdings for: those the snapshot shows as held, else every served type."""
+    held = [asset_type for asset_type in asset_types_held(snapshot_text) if asset_type in HOLDINGS_ASSET_TYPES]
+    return held or list(HOLDINGS_ASSET_TYPES)
+
+
 async def capture_snapshot(user_id: str, *, mcp_url: str, now: datetime | None = None) -> dict[str, Any]:
-    """Fetch net worth, allocation and holdings from INDmoney and store them as today's snapshot."""
+    """Fetch the net-worth summary and per-asset-type holdings from INDmoney and store them as today's snapshot.
+
+    Results are keyed ``networth_snapshot`` and ``networth_holdings:<ASSET_TYPE>``.
+    """
     token, session = await _open_mcp_session(user_id, mcp_url)
     tools = filter_portfolio_tools(session["tools"])
     users.cache_mcp_tools(user_id, tools)
@@ -308,18 +323,30 @@ async def capture_snapshot(user_id: str, *, mcp_url: str, now: datetime | None =
     results: dict[str, str] = {}
     errors: dict[str, str] = {}
     async with httpx.AsyncClient(timeout=90) as client:
-        for name in SNAPSHOT_TOOL_NAMES:
+
+        async def fetch(key: str, name: str, arguments: dict[str, Any]) -> None:
             if name not in available:
-                errors[name] = "INDmoney did not offer this tool."
-                continue
+                errors[key] = "INDmoney did not offer this tool."
+                return
             try:
                 result = await call_mcp_tool(
-                    mcp_url, token, session["protocolVersion"], session["sessionId"], name, {}, client=client,
+                    mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments, client=client,
                 )
-            except Exception as exc:  # One failing tool should not discard the others.
-                errors[name] = str(exc)[:300]
-                continue
-            results[name] = str(result)
+            except Exception as exc:  # One failing call should not discard the others.
+                errors[key] = str(exc)[:300]
+                return
+            results[key] = str(result)
+
+        await fetch("networth_snapshot", "networth_snapshot", {})
+        limit = asyncio.Semaphore(MAX_PARALLEL_HOLDINGS_CALLS)
+
+        async def fetch_holdings(asset_type: str) -> None:
+            async with limit:
+                await fetch(HOLDINGS_PREFIX + asset_type, "networth_holdings", {"asset_type": asset_type})
+
+        async with asyncio.TaskGroup() as group:
+            for asset_type in holdings_types_to_fetch(results.get("networth_snapshot")):
+                group.create_task(fetch_holdings(asset_type))
     if not results:
         raise SnapshotError("INDmoney returned no portfolio data: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
     return store_snapshot(user_id, now or local_now(), results, errors)
@@ -405,15 +432,20 @@ def _iso(captured_ms: int) -> str:
     return datetime.fromtimestamp(captured_ms / 1000, SNAPSHOT_TIMEZONE).isoformat(timespec="minutes")
 
 
-def _snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _snapshot_payload(snapshot: dict[str, Any], *, include_all_holdings: bool = False) -> dict[str, Any]:
+    """Computed figures for the model; raw INDmoney text is only included when nothing could be computed."""
+    figures = compute_metrics(snapshot["results"], include_all_holdings=include_all_holdings)
+    payload: dict[str, Any] = {
         "available": True,
         "asOfDate": snapshot["asOfDate"],
         "capturedAt": _iso(snapshot["capturedAt"]),
-        "networthInr": snapshot["networthInr"],
-        "data": {name: text[:MAX_TOOL_TEXT_CHARS] for name, text in snapshot["results"].items()},
-        "unavailable": snapshot["errors"],
+        "figures": figures,
+        "unavailable": {name: error[:200] for name, error in snapshot["errors"].items()},
     }
+    if figures["totals"]["net_worth_inr"] is None and not figures.get("top_holdings", figures.get("all_holdings")):
+        # An older or unparseable snapshot: fall back to the stored text.
+        payload["raw"] = {name: text[:MAX_TOOL_TEXT_CHARS] for name, text in snapshot["results"].items()}
+    return payload
 
 
 def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
@@ -429,7 +461,8 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
         snapshot = latest_snapshot(user_id, requested, keys=keys)
         if snapshot is None:
             return json.dumps({"available": False, "message": "No saved snapshot for that date. Use the live INDmoney tools instead."})
-        return json.dumps(_snapshot_payload(snapshot), ensure_ascii=False)
+        payload = _snapshot_payload(snapshot, include_all_holdings=arguments.get("include_all_holdings") is True)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     async def get_networth_history(arguments: dict[str, Any]) -> str:
         try:
@@ -450,14 +483,21 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
         LocalTool(
             name="get_portfolio_snapshot",
             description=(
-                "Read the user's saved daily INDmoney snapshot (net worth, allocation breakdown, holdings), captured each "
-                "morning at 09:00 IST. Call this first for net worth, allocation, holdings or concentration questions, "
-                "and say when it was captured. Pass `date` (YYYY-MM-DD) for the snapshot on or before that day. Do not use "
-                "it for live prices, intraday moves, SIPs, watchlists or options; use the live INDmoney tools for those."
+                "Read figures computed exactly from the user's saved daily INDmoney snapshot, captured each morning at "
+                "09:00 IST: totals (net worth, current value, invested, liabilities), P&L, split by asset type, asset "
+                "class, market cap and broker, concentration, top holdings, USD amounts, and data_notes. Call this first "
+                "for net worth, P&L, allocation, holdings, broker or concentration questions, and say when it was "
+                "captured. Pass include_all_holdings=true to list every holding (e.g. grouped by broker); otherwise "
+                "only the 10 largest are listed. Pass `date` (YYYY-MM-DD) for the snapshot on or before that day. "
+                "Do not use it for live prices, intraday moves, SIPs, watchlists or options; use the live INDmoney "
+                "tools for those."
             ),
             input_schema={
                 "type": "object",
-                "properties": {"date": {"type": "string", "description": "Optional YYYY-MM-DD; defaults to the latest snapshot."}},
+                "properties": {
+                    "date": {"type": "string", "description": "Optional YYYY-MM-DD; defaults to the latest snapshot."},
+                    "include_all_holdings": {"type": "boolean", "description": "List every holding, not just the 10 largest."},
+                },
                 "additionalProperties": False,
             },
             handler=get_portfolio_snapshot,
