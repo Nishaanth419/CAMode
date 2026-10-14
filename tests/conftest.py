@@ -9,6 +9,8 @@ from cryptography.fernet import Fernet
 
 os.environ.setdefault("APP_DATA_DIR", tempfile.mkdtemp(prefix="camode-tests-"))
 os.environ["SNAPSHOT_SCHEDULER_ENABLED"] = "false"
+# Deterministic routing by default; tests/test_router.py exercises the model classifier.
+os.environ["REQUEST_ROUTER"] = "keywords"
 # Never read or create the developer's real master key file.
 os.environ["APP_MASTER_KEY"] = Fernet.generate_key().decode()
 

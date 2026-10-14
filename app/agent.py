@@ -14,11 +14,13 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
+from . import router
+from .mcp_client import IMPORTANT_PORTFOLIO_TOOL_NAMES, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.agent")
 
 FINANCE_ONLY_NOTICE = "I can help with finance questions and portfolio analysis. Ask me about budgeting, saving, banking, investing concepts, financial products, or your connected portfolio."
+CODE_REFUSAL_NOTICE = "I can answer finance questions, but I can’t write or debug code. " + FINANCE_ONLY_NOTICE
 
 _CODE_REQUEST_RE = re.compile(
     r"\b(?:code|coding|programming|script|snippet|source\s+file|"
@@ -67,7 +69,8 @@ _CODE_OUTPUT_RE = re.compile(
 )
 TRUNCATION_NOTICE = "\n\n_(This response was cut off at the model's length limit. Ask a narrower question for the rest.)_"
 _INDMONEY_DATA_REQUEST_RE = re.compile(
-    r"\b(?:my\s+(?:portfolio|net\s+worth|holdings|stocks?|funds?|sips?|watchlist|account)|"
+    r"\b(?:my\s+(?:portfolio|net\s+worth|holdings?|stocks?|funds?|sips?|watchlist|accounts?|investments?|"
+    r"shares|positions?|demat|mutual\s+funds?|brokers?|brokerage\s+accounts?)|(?:grouped\s+)?by\s+broker|"
     r"portfolio|holdings|net\s+worth|allocation|watchlist|sips?|option\s+chain|options?|"
     r"derivatives?|f\s*&\s*o|iron\s+condor|put\s+spread|call\s+spread|strangle|straddle|"
     r"greeks?|ohlc|candles?|chart|price|quotes?|analyst|target\s+price|sentiment|news|"
@@ -80,10 +83,34 @@ _INDMONEY_DATA_REQUEST_RE = re.compile(
 )
 
 
+# A model without the tool it wants sometimes writes the call as text, e.g.
+# {"type": "get_portfolio_snapshot", "params": {}}. Such output is never shown.
+_PSEUDO_TOOL_CALL_RE = re.compile(r'"(?:type|name|tool|tool_name|function)"\s*:\s*"([A-Za-z0-9_]+)"')
+
+
+def _looks_like_tool_call(content: str, tool_names: set[str]) -> bool:
+    """Whether ``content`` is a tool call written as JSON text instead of a real tool call."""
+    text = content.strip().strip("`").removeprefix("json").strip()
+    return text.startswith(("{", "[")) and any(name in tool_names for name in _PSEUDO_TOOL_CALL_RE.findall(text))
+
+
+def _failed_tool_generation(response: httpx.Response) -> str | None:
+    """Return the rejected generation when the provider refused a malformed tool call (Groq ``tool_use_failed``)."""
+    if response.status_code != 400:
+        return None
+    try:
+        error = response.json().get("error") or {}
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(error, dict) or error.get("code") != "tool_use_failed":
+        return None
+    return str(error.get("failed_generation") or "")
+
+
 def _blocked_request_reason(message: str, history: list[dict[str, str]]) -> str | None:
     """Apply request boundaries before any user text reaches the model."""
     if _CODE_REQUEST_RE.search(_FINANCE_CODE_TERM_RE.sub(" ", message)):
-        return "I can answer finance questions, but I can’t write or debug code. " + FINANCE_ONLY_NOTICE
+        return CODE_REFUSAL_NOTICE
 
     if not _GREETING_RE.fullmatch(message.strip()):
         # Only the user's own recent turns establish finance context; assistant
@@ -142,6 +169,7 @@ PROVIDERS = {
         "default_base_url": "https://api.openai.com/v1",
         "model_env": "OPENAI_MODEL",
         "default_model": "gpt-4o",
+        "router_model_env": "OPENAI_ROUTER_MODEL",
     },
     "groq": {
         "label": "Groq",
@@ -150,6 +178,7 @@ PROVIDERS = {
         "default_base_url": "https://api.groq.com/openai/v1",
         "model_env": "GROQ_MODEL",
         "default_model": "openai/gpt-oss-120b",
+        "router_model_env": "GROQ_ROUTER_MODEL",
     },
 }
 
@@ -238,11 +267,14 @@ def provider_config(provider: str) -> dict[str, str]:
     api_key = os.getenv(definition["key_env"], "")
     if not api_key or api_key == "sk-your-key-here":
         raise RuntimeError(f"{definition['label']} API key is not configured. Add {definition['key_env']} to .env and restart the app.")
+    model = os.getenv(definition["model_env"], definition["default_model"])
     return {
         "label": definition["label"],
         "api_key": api_key,
         "base_url": os.getenv(definition["base_url_env"], definition["default_base_url"]).rstrip("/"),
-        "model": os.getenv(definition["model_env"], definition["default_model"]),
+        "model": model,
+        # The request classifier; a smaller model of the same provider is cheaper and faster.
+        "router_model": os.getenv(definition["router_model_env"], "").strip() or model,
     }
 
 
@@ -266,6 +298,43 @@ def default_provider() -> str:
     if any(item["id"] == requested for item in configured):
         return requested
     return configured[0]["id"] if configured else "openai"
+
+
+# ── Request routing ────────────────────────────────────────────────────────────
+
+def _keyword_category(message: str, history: list[dict[str, str]]) -> router.Category:
+    """The keyword rules as a category: the fallback when the classifier is off or fails."""
+    reason = _blocked_request_reason(message, history)
+    if reason == CODE_REFUSAL_NOTICE:
+        return "code_request"
+    if reason:
+        return "off_topic"
+    return "account_data" if _requires_indmoney_data(message, history) else "general_finance"
+
+
+def _router_mode() -> str:
+    """``model`` (default) classifies each message with the AI provider; ``keywords`` uses the regex rules only."""
+    return "keywords" if os.getenv("REQUEST_ROUTER", "model").strip().lower() == "keywords" else "model"
+
+
+async def _route_request(
+    message: str, history: list[dict[str, str]], provider: str,
+) -> tuple[router.Category, dict[str, Any]]:
+    """Return the request's category and a trace payload describing how it was decided."""
+    started = time.perf_counter()
+    if _router_mode() == "model":
+        try:
+            config = provider_config(provider)
+            category = await router.classify(message, history, config, provider=provider)
+        except (RuntimeError, router.RouterError) as exc:
+            logger.warning("request_router_fallback: %s", exc)
+        else:
+            return category, {
+                "category": category, "source": "model", "model": config["router_model"],
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+            }
+    category = _keyword_category(message, history)
+    return category, {"category": category, "source": "keywords", "duration_ms": round((time.perf_counter() - started) * 1000)}
 
 
 # ── Agent event stream ─────────────────────────────────────────────────────────
@@ -345,11 +414,17 @@ async def stream_agent(
     provider: str = "openai",
     *,
     context: PortfolioContext | None = None,
+    force_account_data: bool = False,
 ) -> AsyncIterator[AgentEvent]:
     """
     Async generator that yields ``(event, data)`` tuples.
 
+    ``force_account_data`` skips routing and offers Portfolio Analyzer's live INDmoney
+    tools; it is set internally when the model, offered only the snapshot tools,
+    answers with a tool call written as text.
+
     Event types:
+      • route       – { category, source, model?, duration_ms }  how the request was classified
       • model_call  – { provider, model, attempt }  model endpoint called
       • tool_call   – { name, arguments }          tool is about to be called
       • tool_result – { name, result, error? }      tool returned
@@ -357,9 +432,13 @@ async def stream_agent(
       • error       – { message }                   fatal error
       • done        – {}                            stream finished
     """
-    blocked_reason = _blocked_request_reason(message, history)
-    if blocked_reason:
-        yield "content", {"text": blocked_reason}
+    if force_account_data:
+        category: router.Category = "account_data"
+    else:
+        category, route_info = await _route_request(message, history, provider)
+        yield "route", route_info
+    if category in ("code_request", "off_topic"):
+        yield "content", {"text": CODE_REFUSAL_NOTICE if category == "code_request" else FINANCE_ONLY_NOTICE}
         yield "done", {}
         return
 
@@ -369,7 +448,8 @@ async def stream_agent(
     tools: list[dict[str, Any]] = []
     local_tools = {tool.name: tool for tool in context.local_tools} if context else {}
 
-    requires_indmoney_data = agent_type == "portfolio" and _requires_indmoney_data(message, history)
+    # Portfolio Analyzer always gets its local snapshot tools; live INDmoney tools are added for account questions.
+    requires_indmoney_data = agent_type == "portfolio" and category == "account_data"
     if requires_indmoney_data:
         if not token:
             yield "error", {"message": "Connect your INDmoney account to use Portfolio Analyzer."}
@@ -391,8 +471,6 @@ async def stream_agent(
             yield "error", {"message": "INDmoney did not provide any of CA Mode's supported portfolio tools. Reconnect INDmoney or check the MCP server."}
             yield "done", {}
             return
-    else:
-        local_tools = {}
 
     tool_names = {tool["name"] for tool in tools}
     model_tools = _model_tools(
@@ -411,7 +489,9 @@ async def stream_agent(
     current_user_index = len(messages) - 1
 
     retried_portfolio_tool_selection = False
+    retried_failed_tool_use = False
     portfolio_tool_called = False
+    known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
     try:
         async with httpx.AsyncClient(timeout=120) as client, httpx.AsyncClient(timeout=90) as mcp_client:
@@ -445,6 +525,23 @@ async def stream_agent(
                     yield "done", {}
                     return
 
+                failed_generation = _failed_tool_generation(response)
+                if failed_generation is not None and not retried_failed_tool_use:
+                    # gpt-oss on Groq sometimes calls a tool that does not exist (e.g. its built-in
+                    # "repo_browser.run_code"); Groq rejects the whole response with HTTP 400.
+                    retried_failed_tool_use = True
+                    logger.warning("Model produced an invalid tool call; retrying")
+                    if agent_type == "portfolio" and not requires_indmoney_data and any(
+                        name in failed_generation for name in known_tools
+                    ):
+                        async for event in stream_agent(
+                            message, mcp_url, token, history, agent_type, provider,
+                            context=context, force_account_data=True,
+                        ):
+                            yield event
+                        return
+                    continue
+
                 if not response.is_success:
                     yield "error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"}
                     yield "done", {}
@@ -475,6 +572,16 @@ async def stream_agent(
                             continue
                         yield "error", {"message": f"{config['label']} did not call an INDmoney account tool. No portfolio summary was generated; try a stronger tool-capable model or another provider."}
                         yield "done", {}
+                        return
+
+                    if (agent_type == "portfolio" and not requires_indmoney_data and content
+                            and _looks_like_tool_call(content, known_tools)):
+                        logger.warning("Portfolio model wrote a tool call as text; retrying with live INDmoney tools")
+                        async for event in stream_agent(
+                            message, mcp_url, token, history, agent_type, provider,
+                            context=context, force_account_data=True,
+                        ):
+                            yield event
                         return
 
                     if content and content.strip():
@@ -601,7 +708,9 @@ async def run_agent(
             active_model_step["duration_ms"] = round((time.perf_counter() - active_model_step.pop("_started")) * 1000)
 
     async for event_type, payload in stream_agent(message, mcp_url, token, history, agent_type, provider, context=context):
-        if event_type == "content":
+        if event_type == "route":
+            trace.append({"kind": "route", "status": "completed", **payload})
+        elif event_type == "content":
             finish_model_step("completed")
             answer_parts.append(payload.get("text", ""))
         elif event_type == "model_call":

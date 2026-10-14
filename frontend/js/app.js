@@ -966,13 +966,27 @@ function addMessage(role, content, trace = []) {
   return div;
 }
 
+const ROUTE_LABELS = {
+  account_data: 'needs your account data',
+  general_finance: 'general finance',
+  code_request: 'code request, declined',
+  off_topic: 'not about finance, declined',
+};
+
+function traceTitle(step) {
+  if (step.kind === 'tool') return `INDmoney · ${escHtml(step.name || 'tool')}`;
+  if (step.kind === 'route') {
+    const how = step.source === 'model' ? `AI check (${escHtml(step.model || 'model')})` : 'keyword rules';
+    return `Request type · ${escHtml(ROUTE_LABELS[step.category] || step.category || 'unknown')} · ${how}`;
+  }
+  return `${escHtml(step.provider || 'AI')} · ${escHtml(step.model || 'model request')}`;
+}
+
 function renderTraceDropdown(trace) {
   if (!Array.isArray(trace) || !trace.length) return '';
   const steps = trace.map((step, index) => {
     const isTool = step.kind === 'tool';
-    const title = isTool
-      ? `INDmoney · ${escHtml(step.name || 'tool')}`
-      : `${escHtml(step.provider || 'AI')} · ${escHtml(step.model || 'model request')}`;
+    const title = traceTitle(step);
     const status = escHtml(step.status || 'sent');
     let details = '';
     if (isTool && step.arguments) {
@@ -987,7 +1001,7 @@ function renderTraceDropdown(trace) {
     }
     if (step.error) details += `<div class="trace-error">${escHtml(step.error)}</div>`;
     const duration = Number.isFinite(Number(step.duration_ms)) ? ` · ${Number(step.duration_ms)} ms` : '';
-    const attempt = !isTool && Number(step.attempt) > 1 ? ` · attempt ${Number(step.attempt)}` : '';
+    const attempt = step.kind === 'model' && Number(step.attempt) > 1 ? ` · attempt ${Number(step.attempt)}` : '';
     return `<li class="trace-step"><div class="trace-step-heading"><span class="trace-step-number">${index + 1}</span><strong>${title}</strong><span class="trace-status ${status === 'failed' ? 'is-error' : ''}">${status}${duration}${attempt}</span></div>${details}</li>`;
   }).join('');
   return `<details class="chat-trace"><summary>Trace · ${trace.length} step${trace.length === 1 ? '' : 's'}</summary><ol class="trace-list">${steps}</ol></details>`;

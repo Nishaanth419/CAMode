@@ -37,9 +37,9 @@ flowchart LR
 **A chat request** (`POST /api/chat`):
 
 1. The session cookie identifies the signed-in profile. Without one, the API returns `401` with `profileRequired`, and the app shows the profile picker.
-2. The agent checks the message is a finance question (code requests and off-topic messages are refused before any model call).
+2. A short AI call classifies the message as off-topic, a code request, a general finance question, or one that needs your account data. Off-topic and code requests are refused without calling the answer model. If that call fails or is rate-limited, offline keyword rules decide instead. The decision is the first step of the trace.
 3. **Finance Agent** sends the conversation to the selected provider with no tools.
-4. **Portfolio Analyzer** adds your profile details to the system prompt and offers two kinds of tools:
+4. **Portfolio Analyzer** adds your profile details to the system prompt and always offers the snapshot tools; the live INDmoney tools are added when the question needs your account data:
    - **Snapshot tools** (`get_portfolio_snapshot`, `get_networth_history`) read today's saved snapshot and your net-worth history from SQLite.
    - **INDmoney tools** (the allowlisted read-only MCP tools below) fetch live data. When INDmoney's tool list was cached in the last 24 hours, the MCP session is opened only if the model actually calls one, so answers from the snapshot need no INDmoney MCP calls.
 5. The answer is saved to the chat (the last 20 messages are kept) and returned as text, with the call trace in the `X-Agent-Trace` header.
@@ -70,6 +70,8 @@ cp .env.example .env
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model |
 | `OPENAI_BASE_URL`, `GROQ_BASE_URL` | provider default | OpenAI-compatible endpoint override |
 | `AI_PROVIDER` | `openai` | Provider selected when the app opens (`openai` or `groq`) |
+| `REQUEST_ROUTER` | `model` | How each message is classified before answering: `model` (an AI call) or `keywords` (offline rules) |
+| `OPENAI_ROUTER_MODEL`, `GROQ_ROUTER_MODEL` | the chat model | Model for that classification; a smaller one is cheaper and faster |
 | `GROQ_INPUT_TOKEN_BUDGET` | `5600` | Groq input budget; older chat history is dropped to fit |
 | `GROQ_COMPLETION_TOKEN_LIMIT` | `1200` | Groq answer length limit |
 | `MCP_SERVER_URL` | `https://mcp.indmoney.com/mcp` | INDmoney MCP endpoint |
@@ -244,7 +246,14 @@ node --check frontend/js/app.js
 python -m pytest -q
 ```
 
-The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls. GitHub Actions runs the compile and pytest checks on pushes and pull requests.
+The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls.
+
+To measure request routing on the labelled questions in `evals/request_routing.jsonl` (this calls your AI provider once per question):
+
+```bash
+set -a; source .env; set +a
+python -m scripts.eval_router --provider openai   # or groq; omit --provider to score only the keyword rules
+``` GitHub Actions runs the compile and pytest checks on pushes and pull requests.
 
 ## Project structure
 
