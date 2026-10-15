@@ -14,11 +14,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=26" />
+  <link rel="stylesheet" href="/css/app.css?v=29" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
   <script src="/js/finance.js?v=2" defer></script>
-  <script src="/js/app.js?v=23" defer></script>
-  <script src="/js/pages.js?v=10" defer></script>
+  <script src="/js/trace.js?v=2" defer></script>
+  <script src="/js/app.js?v=24" defer></script>
+  <script src="/js/pages.js?v=11" defer></script>
   <script src="/js/rail.js?v=4" defer></script>
 </head>
 <body>
@@ -76,6 +77,10 @@
         <a class="nav-item" href="#/reports" data-route="reports">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7Z"/><path d="M13.5 3.5v4.5H18M10 12h5M10 16h5"/></svg>
           <span>Reports</span>
+        </a>
+        <a class="nav-item" href="#/activity" data-route="activity">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h3.5l2.5-6 4 12 2.5-6H20"/></svg>
+          <span>Activity</span>
         </a>
       </nav>
 
@@ -381,6 +386,21 @@
             </div>
           </header>
           <div id="reports-body"></div>
+        </section>
+
+        <section class="page" data-page="activity" aria-labelledby="activity-title">
+          <header class="page-head">
+            <div>
+              <h1 id="activity-title" class="page-title">Activity</h1>
+              <p class="page-sub">Portfolio change investigations, from your chats or run here. The newest 50 are kept.</p>
+            </div>
+            <div class="page-actions">
+              <button id="activity-refresh" class="gate-secondary" type="button">Refresh</button>
+              <button id="activity-run" class="rail-button page-cta" type="button">Investigate latest change</button>
+            </div>
+          </header>
+          <p id="activity-live" class="sr-only" aria-live="polite"></p>
+          <div id="activity-body"></div>
         </section>
 
         <section class="page" data-page="chats" aria-labelledby="chats-title">

@@ -1,9 +1,9 @@
 /* ── Pages behind the sidebar ───────────────────────────────────────────
    Home, Portfolio Overview, Investments, Planning Tools, Market Insights,
-   Goals, Reports and All chats. Loaded after app.js and uses its state
+   Goals, Reports, Activity and All chats. Loaded after app.js and uses its state
    (currentUser, isConnected, storageMode, chats) and helpers. */
 
-const ROUTES = ['home', 'chat', 'portfolio', 'investments', 'planning', 'markets', 'goals', 'reports', 'chats'];
+const ROUTES = ['home', 'chat', 'portfolio', 'investments', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
 const pageView = document.getElementById('page-view');
 const inputArea = document.getElementById('input-area');
 let currentRoute = 'home';
@@ -227,7 +227,7 @@ async function renderPage(route) {
   if (!sessionReady()) return;
   const renderers = {
     home: renderHome, portfolio: renderPortfolio, investments: renderInvestments, planning: renderPlanning,
-    markets: renderMarkets, goals: renderGoals, reports: renderReports, chats: renderAllChats,
+    markets: renderMarkets, goals: renderGoals, reports: renderReports, activity: renderActivity, chats: renderAllChats,
   };
   await renderers[route]?.();
 }
@@ -242,7 +242,8 @@ document.addEventListener('ca:session-ended', () => {
   pageCache.clear();
   latestHoldings = [];
   reportPoints = [];
-  for (const id of ['home-stats', 'home-chats', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'reports-body', 'all-chats']) {
+  resetActivity();
+  for (const id of ['home-stats', 'home-chats', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
   for (const id of ['portfolio-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
@@ -1149,6 +1150,210 @@ document.addEventListener('click', async (event) => {
 });
 
 document.getElementById('print-report').addEventListener('click', () => window.print());
+
+/* ── Activity ───────────────────────────────────────────────────────── */
+// Saved portfolio investigations. The server is the source of truth: the list is fetched on every
+// visit, when the tab comes back into view or the network returns, and polled only while a run is
+// in progress. Responses that arrive out of order are dropped, and a finished run is never replaced
+// by an older copy (see reconcileInvestigations in trace.js).
+const ACTIVITY_LIMIT = 50;
+const activityBody = document.getElementById('activity-body');
+const activityLive = document.getElementById('activity-live');
+const activityState = {
+  items: [], filter: 'all', loaded: false, record: null,
+  listRequests: createSequencer(), detailRequests: createSequencer(), pollTimer: null, pollAttempt: 0,
+};
+
+function resetActivity() {
+  stopActivityPolling();
+  Object.assign(activityState, { items: [], filter: 'all', loaded: false, record: null, pollAttempt: 0 });
+  activityLive.textContent = '';
+}
+
+function stopActivityPolling() {
+  clearTimeout(activityState.pollTimer);
+  activityState.pollTimer = null;
+}
+
+function scheduleActivityPoll(load) {
+  stopActivityPolling();
+  activityState.pollTimer = setTimeout(() => {
+    activityState.pollTimer = null;
+    // A hidden tab or another page stops polling; coming back reloads from the server.
+    if (currentRoute === 'activity' && !document.hidden && sessionReady()) load();
+  }, pollDelay(activityState.pollAttempt++));
+}
+
+function onActivityList() {
+  return currentRoute === 'activity' && !currentSub;
+}
+
+async function renderActivity() {
+  stopActivityPolling();
+  activityState.pollAttempt = 0;
+  if (currentSub) await loadActivityDetail(currentSub);
+  else await loadActivityList();
+}
+
+async function loadActivityList({ quiet = false } = {}) {
+  const ticket = activityState.listRequests.next();
+  // Show what is already known straight away (e.g. coming back from a run), then refresh it.
+  if (!quiet) {
+    if (activityState.loaded) drawActivityList();
+    else setHtml(activityBody, activitySkeleton());
+  }
+  let data;
+  try {
+    data = await fetchJson(`/api/investigations?limit=${ACTIVITY_LIMIT}`);
+  } catch (error) {
+    if (!activityState.listRequests.accept(ticket) || !onActivityList()) return;
+    if (activityState.loaded) {
+      // Keep the list on screen and say it may be out of date.
+      activityLive.textContent = `Could not refresh: ${error.message}`;
+      drawActivityList(error);
+    } else {
+      setHtml(activityBody, errorBlock(error) + '<button class="gate-secondary inline-button" type="button" data-activity-reload>Try again</button>');
+    }
+    return;
+  }
+  if (!activityState.listRequests.accept(ticket) || !onActivityList()) return;
+  const before = new Map(activityState.items.map((item) => [item.id, item.status]));
+  activityState.items = reconcileInvestigations(activityState.items, data.investigations || []);
+  activityState.loaded = true;
+  const finished = activityState.items.filter((item) => isActive({ status: before.get(item.id) }) && !isActive(item));
+  if (finished.length) activityLive.textContent = finished.map((item) => `${investigationTitle(item)}: ${statusInfo(item.status).label}.`).join(' ');
+  drawActivityList();
+  if (activityState.items.some(isActive)) scheduleActivityPoll(() => loadActivityList({ quiet: true }));
+}
+
+// What had focus inside the list, so a redraw (filter change, poll) does not drop keyboard users.
+function activityFocus() {
+  const active = document.activeElement;
+  if (!active || !activityBody.contains(active)) return null;
+  return {
+    filter: active.dataset?.activityFilter,
+    item: active.closest('[data-investigation-id]')?.dataset.investigationId,
+    text: active.textContent.trim(),
+  };
+}
+
+function restoreActivityFocus(focus) {
+  if (!focus) return;
+  let target = null;
+  if (focus.filter) target = activityBody.querySelector(`[data-activity-filter="${focus.filter}"]`);
+  else if (focus.item) {
+    const row = [...activityBody.querySelectorAll('[data-investigation-id]')].find((element) => element.dataset.investigationId === focus.item);
+    target = row && [...row.querySelectorAll('a, button')].find((element) => element.textContent.trim() === focus.text);
+  }
+  target?.focus();
+}
+
+function drawActivityList(refreshError = null) {
+  const focus = activityFocus();
+  const items = activityState.items;
+  const stale = refreshError ? `<div class="page-error" role="alert">Could not refresh: ${escHtml(refreshError.message)} The list below may be out of date.</div>` : '';
+  if (!items.length) {
+    setHtml(activityBody, stale + (storageMode === 'private'
+      ? notice('Private mode', 'Private mode keeps no snapshots or investigation history. Turn on saving from your profile to keep investigations here.')
+      : notice('No investigations yet', 'An investigation compares two saved daily snapshots, checks the data and saves the evidence. Ask Portfolio Analyzer why your portfolio changed, or investigate the latest change now.')));
+    return;
+  }
+  const chatIds = new Set(chats.map((chat) => chat.id));
+  setHtml(activityBody, `${stale}<section class="panel activity-panel">${renderActivityList(items, { filter: activityState.filter, chatIds })}</section>`);
+  restoreActivityFocus(focus);
+}
+
+async function loadActivityDetail(id) {
+  const ticket = activityState.detailRequests.next();
+  const back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>';
+  const shown = activityState.record?.id === id ? activityState.record : null;
+  if (!shown) setHtml(activityBody, back + loadingBlock());
+  let record;
+  try {
+    record = await fetchJson('/api/investigations/' + encodeURIComponent(id));
+  } catch (error) {
+    if (!activityState.detailRequests.accept(ticket) || currentSub !== id) return;
+    setHtml(activityBody, back + errorBlock(error) + (shown ? renderInvestigationCard(shown, { chart: renderDataChart, linkToActivity: false, openSteps: true }) : ''));
+    return;
+  }
+  if (!activityState.detailRequests.accept(ticket) || currentRoute !== 'activity' || currentSub !== id) return;
+  record = newerRun(shown, record);
+  if (isActive(shown) && !isActive(record)) activityLive.textContent = `Investigation ${statusInfo(record.status).label.toLowerCase()}.`;
+  activityState.record = record;
+  drawActivityDetail(record, back);
+  if (isActive(record)) scheduleActivityPoll(() => loadActivityDetail(id));
+}
+
+function drawActivityDetail(record, back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>') {
+  const chatId = record.request?.chatId;
+  const actions = [
+    chatId && chats.some((chat) => chat.id === chatId)
+      ? `<button class="gate-secondary small-button" type="button" data-open-chat="${escHtml(chatId)}">Open chat</button>` : '',
+    canRetry(record) ? `<button class="gate-secondary small-button" type="button" data-retry-investigation="${escHtml(record.id)}">Run again</button>` : '',
+  ].join('');
+  const started = Number.isFinite(record.createdAt) ? new Date(record.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  const took = Number.isFinite(record.completedAt) && !isActive(record) ? formatDuration(record.completedAt - record.createdAt) : '';
+  const meta = [started && `Started ${started}`, took && `took ${took}`, record.request?.trigger === 'agent' ? 'from a chat' : ''].filter(Boolean).join(' · ');
+  setHtml(activityBody, `<div class="activity-detail-head">${back}${meta ? `<span class="page-muted">${escHtml(meta)}</span>` : ''}${actions ? `<div class="activity-actions">${actions}</div>` : ''}</div>
+    ${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
+}
+
+// Starts a run only when the user asks. Runs read saved snapshots and never write to INDmoney.
+async function startInvestigation(button, baselineDate = null) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Investigating…';
+  try {
+    const record = await fetchJson('/api/investigations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(baselineDate ? { baselineDate } : {}),
+    });
+    if (record.saved) {
+      activityState.record = record;
+      navigate('activity', record.id);
+    } else {
+      // Private mode, or the result could not be saved: show it once, here.
+      setHtml(activityBody, `<a class="panel-link activity-back" href="#/activity">← All activity</a>${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
+    }
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+document.getElementById('activity-run').addEventListener('click', (event) => startInvestigation(event.currentTarget));
+document.getElementById('activity-refresh').addEventListener('click', () => {
+  if (sessionReady()) renderActivity();
+});
+
+document.addEventListener('click', (event) => {
+  const target = event.target.closest('[data-activity-filter], [data-activity-reload], [data-open-chat], [data-retry-investigation]');
+  if (!target || target.disabled) return;
+  if (target.matches('[data-activity-filter]')) {
+    activityState.filter = target.dataset.activityFilter;
+    drawActivityList();
+  } else if (target.matches('[data-activity-reload]')) {
+    renderActivity();
+  } else if (target.matches('[data-open-chat]')) {
+    navigate('chat');
+    selectChat(target.dataset.openChat).catch((error) => toast(error.message));
+  } else {
+    const id = target.dataset.retryInvestigation;
+    const run = activityState.record?.id === id ? activityState.record : activityState.items.find((item) => item.id === id);
+    if (!run || !canRetry(run)) return;
+    startInvestigation(target, run.request?.baselineDate ?? run.baselineDate ?? null);
+  }
+});
+
+// Coming back to the tab or the network: reconcile with what the server saved meanwhile.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && currentRoute === 'activity' && sessionReady()) renderActivity();
+});
+window.addEventListener('online', () => {
+  if (currentRoute === 'activity' && sessionReady()) renderActivity();
+});
 
 /* ── All chats ──────────────────────────────────────────────────────── */
 function renderAllChats() {
