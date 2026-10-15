@@ -5,7 +5,7 @@ CA Mode is a local finance assistant with two agents:
 - **Finance Agent** answers general finance questions. It never sees your INDmoney account.
 - **Portfolio Analyzer** answers questions about your INDmoney account. It reads a saved daily snapshot of your portfolio and calls INDmoney's read-only MCP tools for live data.
 
-It supports OpenAI and Groq. Several people can share one computer: each person has a PIN-protected profile with their own chats, INDmoney connection, and daily portfolio snapshots. Everything is stored in a local SQLite database.
+It runs its AI model on your computer through [Ollama](https://ollama.com), so your questions and portfolio data never leave it; OpenAI and Groq are optional. Several people can share one computer: each person has a PIN-protected profile with their own chats, INDmoney connection, and daily portfolio snapshots. Everything is stored in a local SQLite database.
 
 ## Features
 
@@ -28,7 +28,7 @@ flowchart LR
     API --> Snap["Snapshots and scheduler<br/>app/snapshots.py"]
     Users --> DB[("SQLite<br/>app/db.py<br/>.data/codemode.sqlite3")]
     Snap --> DB
-    Agent -->|"chat completions"| LLM["OpenAI or Groq"]
+    Agent -->|"chat completions"| LLM["Ollama on this computer<br/>(or OpenAI / Groq)"]
     Agent -->|"snapshot tools"| Snap
     Agent -->|"live read-only tools"| MCP["INDmoney MCP<br/>app/mcp_client.py"]
     Snap -->|"09:00 IST daily"| MCP
@@ -51,12 +51,12 @@ Snapshots are SQLite rows, not vector-database chunks: net worth and holdings ar
 ## Requirements
 
 - Docker Desktop, or Python 3.12 or newer
-- An OpenAI or Groq API key
+- [Ollama](https://ollama.com/download) and about 13 GB of disk and 16 GB of memory for the local model, or an OpenAI or Groq API key
 - An INDmoney account to use Portfolio Analyzer
 
 ## Configure
 
-Copy the example environment file and add at least one provider key:
+Copy the example environment file. It uses the local model (see [Use the local model](#use-the-local-model)); add an OpenAI or Groq key only if you want a cloud model too:
 
 ```bash
 cp .env.example .env
@@ -64,14 +64,17 @@ cp .env.example .env
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `OLLAMA_MODEL` | – | Enables the local model; `ca-mode` once built from `ollama/Modelfile` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama's address (Docker Compose sets `host.docker.internal`) |
+| `OLLAMA_TIMEOUT_SECONDS` | `300` | How long to wait for a local answer |
 | `OPENAI_API_KEY` | – | Enables OpenAI |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model |
 | `GROQ_API_KEY` | – | Enables Groq |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model |
 | `OPENAI_BASE_URL`, `GROQ_BASE_URL` | provider default | OpenAI-compatible endpoint override |
-| `AI_PROVIDER` | `openai` | Provider selected when the app opens (`openai` or `groq`) |
+| `AI_PROVIDER` | `ollama` | Provider selected when the app opens (`ollama`, `openai` or `groq`) |
 | `REQUEST_ROUTER` | `model` | How each message is classified before answering: `model` (an AI call) or `keywords` (offline rules) |
-| `OPENAI_ROUTER_MODEL`, `GROQ_ROUTER_MODEL` | the chat model | Model for that classification; a smaller one is cheaper and faster |
+| `OLLAMA_ROUTER_MODEL`, `OPENAI_ROUTER_MODEL`, `GROQ_ROUTER_MODEL` | the chat model | Model for that classification; a smaller one is cheaper and faster |
 | `GROQ_INPUT_TOKEN_BUDGET` | `5600` | Groq input budget; older chat history is dropped to fit |
 | `GROQ_COMPLETION_TOKEN_LIMIT` | `1200` | Groq answer length limit |
 | `MCP_SERVER_URL` | `https://mcp.indmoney.com/mcp` | INDmoney MCP endpoint |
@@ -89,7 +92,30 @@ cp .env.example .env
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `PORT` | `8080` | Port inside the Docker container |
 
-You can add both provider keys and switch providers in the app. Provider keys stay in the server environment and are never sent to the browser.
+You can configure several providers and switch in the app. Provider keys stay in the server environment and are never sent to the browser. Leave `OPENAI_API_KEY` and `GROQ_API_KEY` empty to make sending data to an AI company impossible.
+
+## Use the local model
+
+CA Mode's local model is [gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b) (Apache 2.0), the smaller sibling of the `gpt-oss-120b` model used on Groq. Install [Ollama](https://ollama.com/download), then build the `ca-mode` model once:
+
+```bash
+ollama pull gpt-oss:20b                      # about 13 GB
+ollama create ca-mode -f ollama/Modelfile    # same weights, with a 32k-token context window
+```
+
+Keep `OLLAMA_MODEL=ca-mode` in `.env`. The Modelfile matters: Ollama's default context window is 4,096 tokens on Macs with less GPU memory, and its OpenAI-compatible API silently drops the start of a longer prompt, including the instructions and your portfolio data. CA Mode checks the window of the loaded model and refuses to answer below 16,384 tokens.
+
+The model loads on the first question (a few seconds) and stays in memory for five minutes. With Docker, Compose points the app at `host.docker.internal`; if the container cannot reach Ollama, start Ollama with `OLLAMA_HOST=0.0.0.0:11434`, which also makes it reachable from your network.
+
+**How it was chosen.** Candidates had to run fully on the GPU of a 24 GB Mac (roughly 16–18 GB usable), which rules out the 27–35B models (Qwen3.8-27B, Qwen3.6-35B-A3B, GLM-4.7-Flash). Each remaining model was scored on this repo's two evals on an M5 Pro:
+
+| Model (Ollama tag) | Memory at 32k context | Portfolio numbers (3 runs × 8) | Request routing (3 runs × 58) | Time per portfolio answer |
+| --- | --- | --- | --- | --- |
+| **`gpt-oss:20b`** | 12 GB | **23/24** | 88–93% | **~9 s** |
+| `qwen3.5:9b` | 6.6 GB | 20/24 | **98.3%** | ~12 s |
+| `qwen3:8b` | 9.8 GB | 21/24 | 96.6% (1 run) | ~30 s |
+
+gpt-oss-20b gets the numbers right most often and answers fastest, which matters most for a finance assistant. Its routing misses are mostly prompt-injection test cases sent to Finance Agent, which then declines anything that isn't finance, and a routing call that fails falls back to the keyword rules. On a Mac with 8–16 GB of memory, use `FROM qwen3.5:9b` in the Modelfile instead. `gemma4:26b` was shortlisted but not scored.
 
 ## Run with Docker
 
@@ -154,7 +180,7 @@ Choose **Portfolio Analyzer** for questions about your account and the market. I
 
 For net worth, allocation, holdings, and trends it reads the saved snapshot first and says when it was captured. For live prices, SIPs, watchlists, options, or anything the snapshot lacks, it calls INDmoney live. All INDmoney tools are read-only: CA Mode cannot place trades, change SIPs, move money, or change account settings.
 
-**What is sent to the AI provider:** your messages and recent chat history; for Portfolio Analyzer, also your profile details and the snapshot or INDmoney data needed to answer.
+**What the AI model sees:** your messages and recent chat history; for Portfolio Analyzer, also your profile details and the snapshot or INDmoney data needed to answer. With the local model this stays on your computer; with OpenAI or Groq it is sent to that company.
 
 ## Daily portfolio snapshots
 
@@ -187,10 +213,11 @@ Portfolio figures are calculated in code (`app/portfolio_math.py`, exact decimal
 
 After each Portfolio Analyzer answer, every amount and percentage in it is checked against the numbers the tools returned, allowing for rounding and lakh/crore. Figures that match nothing get a warning under the answer ("I couldn't match these figures to your INDmoney data"). The check is a safety net, not proof: a wrong figure that happens to equal another number in the data is not caught.
 
-To measure this against your AI provider with made-up portfolio data (about two model calls per question):
+To measure this against your model with made-up portfolio data (about two model calls per question):
 
 ```bash
 set -a; source .env; set +a
+python -m scripts.eval_numbers --provider ollama --delay 0
 python -m scripts.eval_numbers --provider groq --delay 70   # the delay keeps within Groq's free-tier limits
 ```
 
@@ -215,7 +242,7 @@ The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney 
 
 Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, consent history, chats, and snapshots, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
 
-In both modes, your messages, recent chat history, profile details, and any INDmoney data Portfolio Analyzer reads are sent to the AI provider you select.
+In both modes, your messages, recent chat history, profile details, and any INDmoney data Portfolio Analyzer reads go to the AI model you select: they stay on this computer with the local model and are sent to OpenAI or Groq if you pick one of those.
 
 The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Add real authentication before exposing CA Mode to a network.
 
@@ -299,7 +326,7 @@ To measure request routing on the labelled questions in `evals/request_routing.j
 
 ```bash
 set -a; source .env; set +a
-python -m scripts.eval_router --provider openai   # or groq; omit --provider to score only the keyword rules
+python -m scripts.eval_router --provider ollama   # or openai, groq; omit --provider to score only the keyword rules
 ``` GitHub Actions runs the compile and pytest checks on pushes and pull requests.
 
 ## Project structure

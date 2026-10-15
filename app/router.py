@@ -80,7 +80,7 @@ def _category_from(completion: Any) -> Category:
 
 
 async def classify(
-    message: str, history: list[dict[str, str]], config: dict[str, str], *, provider: str,
+    message: str, history: list[dict[str, str]], config: dict[str, Any], *, provider: str,
 ) -> Category:
     """Label ``message`` with one model call to ``config["router_model"]``. Raises ``RouterError`` on any failure."""
     payload: dict[str, Any] = {
@@ -96,7 +96,7 @@ async def classify(
         # Groq's gpt-oss reasons before calling the tool; 100 tokens cut it off (HTTP 400, no tool call).
         payload["max_tokens"] = 512
     try:
-        async with httpx.AsyncClient(timeout=ROUTER_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=config.get("router_timeout", ROUTER_TIMEOUT_SECONDS)) as client:
             response = await client.post(
                 f"{config['base_url']}/chat/completions",
                 headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},

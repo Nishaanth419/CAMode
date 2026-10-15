@@ -1,0 +1,8 @@
+# CA Mode's local model. Build it once, then set OLLAMA_MODEL=ca-mode in .env:
+#   ollama pull gpt-oss:20b
+#   ollama create ca-mode -f ollama/Modelfile
+FROM gpt-oss:20b
+
+# Ollama's default window (4,096 tokens on smaller Macs) silently cuts CA Mode's
+# prompts; the app refuses to answer below 16,384.
+PARAMETER num_ctx 32768

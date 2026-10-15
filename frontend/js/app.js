@@ -94,14 +94,14 @@ async function loadProviders() {
     option.disabled = !provider.configured;
     option.textContent = provider.configured
       ? `${provider.label} · ${provider.model}`
-      : `${provider.label} · add API key in .env`;
+      : `${provider.label} · ${provider.setup || 'add API key in .env'}`;
     providerPicker.appendChild(option);
   }
   const configured = providers.filter((provider) => provider.configured);
   const savedProvider = configured.find((provider) => provider.id === selectedProvider);
   selectedProvider = savedProvider?.id || data.defaultProvider || 'openai';
   if (!configured.length) {
-    providerPicker.innerHTML = '<option value="">Add an AI API key in .env</option>';
+    providerPicker.innerHTML = '<option value="">Set OLLAMA_MODEL or an AI API key in .env</option>';
     providerPicker.disabled = true;
   } else {
     providerPicker.value = selectedProvider;
