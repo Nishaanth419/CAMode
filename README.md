@@ -83,6 +83,9 @@ cp .env.example .env
 | `SNAPSHOT_TIMEZONE` | `Asia/Kolkata` | Time zone for `SNAPSHOT_TIME` |
 | `SNAPSHOT_RETENTION_DAYS` | `365` | How long snapshots are kept |
 | `SNAPSHOT_SCHEDULER_ENABLED` | `true` | Set to `false` to stop the background snapshot job |
+| `INVESTIGATION_TOLERANCE_PCT` | `0.5` | Investigations: percentage part of the tolerance for two amounts to agree |
+| `INVESTIGATION_TOLERANCE_INR` | `1` | Investigations: rupee floor of that tolerance |
+| `INVESTIGATION_STALE_HOURS` | `36` | Investigations: age after which the latest snapshot is flagged as stale |
 | `APP_DATA_DIR` | `.data/` | Folder for the SQLite database |
 | `BACKUP_DIR` | `~/ca-mode-backups` | Where daily database backups are written |
 | `BACKUP_KEEP` | `14` | How many backups to keep |
@@ -191,6 +194,18 @@ For net worth, allocation, holdings, and trends it reads the saved snapshot firs
 - Not captured for profiles in private mode or profiles that haven't accepted the current privacy notice.
 - The net-worth total is read from INDmoney's `networth_snapshot` result. If it cannot be read, the trend line is hidden and the agent works from the raw snapshot text.
 
+## Portfolio change investigations
+
+Ask Portfolio Analyzer "Why did my portfolio change?" (or "What changed since 2026-09-01?"), or call `POST /api/investigations`. A fixed, read-only workflow in code, not the model, then:
+
+1. Loads the latest saved snapshot and the comparable earlier one (the previous saved day, or the snapshot on or before the date you name). With no earlier snapshot it says there is not enough history; it never reports that as "no change".
+2. Normalises both (`app/investigation_math.py`): totals, holdings identified by asset type, INDmoney code and broker, duplicates merged, changed codes matched by name, and missing values kept distinct from zero.
+3. Calculates the changes in net worth, current value, invested amount and liabilities, each asset type, and each holding (split into the effect of price and of units held), plus asset-type shares of the latest total. Everything uses exact decimals.
+4. Runs the consistency checks (`app/investigation_checks.py`): same account scope and currency, freshness, totals that add up, holdings that match INDmoney's per-type totals, holdings missing from one snapshot, which total each percentage is measured against, valid percentages, change arithmetic, and USD kept apart from INR. Each check reports `passed`, `warning`, `failed` or `not_checked` with its evidence. A finding is marked verified only when every check it depends on passed.
+5. Saves the run (status, steps with timings, checks and result, sealed with your PIN; the last 50) and returns the findings with their snapshot ids, warnings, limitations and suggested follow-ups.
+
+The answer shows an evidence card with the findings, the largest movers, the data checks, the calculations and the steps. Runs have a 10-second step timeout and a 30-second deadline; a saved-snapshot read is retried once if the database is briefly locked. Investigations report what changed, not why: they never claim a cause such as market news.
+
 ## Holdings at other brokers (CAS)
 
 INDmoney may not see every broker you use. A **Consolidated Account Statement (CAS)** does: NSDL and CDSL email one each month listing every demat account at every broker, plus mutual fund folios and NPS. CAMS and KFintech statements (mutual funds only) are also accepted.
@@ -287,7 +302,9 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/privacy` | Privacy notice, its version, whether it needs accepting, and the profile's storage settings |
 | `POST /api/privacy/consent` | Accept the notice and set storage settings (body: `{"policyVersion", "storageMode": "device" \| "private", "snapshotRetentionDays": 30 \| 90 \| 180 \| 365}`) |
 | `POST /api/users/me/export` | Download the profile's data as JSON (body: `{"pin": ...}`) |
-| `DELETE /api/users/me/history` | Delete the profile's chats, snapshots, and CAS holdings |
+| `DELETE /api/users/me/history` | Delete the profile's chats, snapshots, investigations, and CAS holdings |
+| `POST /api/investigations` | Investigate the change between the latest snapshot and an earlier one (body: `{"baselineDate": "YYYY-MM-DD"}`, optional); `201` with `Location` when the run was saved, `200` when it was not (private mode) |
+| `GET /api/investigations?limit=20`, `GET /api/investigations/{id}`, `DELETE /api/investigations/{id}` | List, read, or delete saved investigations |
 | `GET /api/cas`, `POST /api/cas`, `DELETE /api/cas/{id}` | List, upload (body: `{"password", "pdfBase64"}`), or delete CAS statements |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
 | `GET /api/chats/{id}`, `DELETE /api/chats/{id}` | Read or delete a chat |
@@ -348,6 +365,9 @@ app/
   backup.py        Daily database backups, verification, pruning, and restore
   cas.py           CAS statement parsing (holdings only) and sealed storage
   portfolio_math.py  Portfolio figures computed in code
+  investigation_math.py    Normalised snapshots, change and allocation calculations
+  investigation_checks.py  Consistency checks for comparing two snapshots
+  investigations.py        The investigation workflow, its storage, and its agent tool
   number_check.py  Checks that answer figures match tool data
   sealing.py       Per-profile keypairs, PIN and recovery-code key wrapping, sealing
   unlock.py        Key setup, unlocking, recovery, and the in-memory unlocked sessions
@@ -365,6 +385,8 @@ tests/
   test_mcp_client.py MCP protocol handling and tool filtering
   test_vault.py      Master key handling, token encryption, startup migration
   test_unlock.py     PIN-locked history, restart locking, recovery codes, upgrading old profiles
+  test_investigation_math.py, test_investigation_checks.py, test_investigations.py
+                     Change maths, consistency checks, and the investigation API, storage and agent tool
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup
 ```
