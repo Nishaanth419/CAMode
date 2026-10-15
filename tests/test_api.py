@@ -209,7 +209,9 @@ def test_portfolio_chat_passes_profile_and_snapshot_context(client, signed_in, m
     client.post("/api/chat", json={"message": "What is my net worth?", "chatId": chat["id"], "agentType": "portfolio"})
 
     context = seen["context"]
-    assert {tool.name for tool in context.local_tools} == {"get_portfolio_snapshot", "get_networth_history"}
+    assert {tool.name for tool in context.local_tools} == {
+        "get_portfolio_snapshot", "get_networth_history", "investigate_portfolio_change",
+    }
     assert "Risk appetite: moderate" in context.profile_context
     assert "Buy a home" in context.profile_context
     assert "2026-10-13T09:00" in context.profile_context

@@ -26,6 +26,41 @@ def test_traceable_numbers_pass(answer):
     assert number_check.unverified_numbers(answer, SOURCES) == []
 
 
+@pytest.mark.parametrize("answer", [
+    "Infosys gained +₹79 000 this month.",
+    "Infosys gained ₹79\u00a0000 and TCS ₹8\u00a089\u00a0000.",
+    "Infosys gained ₹79\u202f000; your total is ₹8\u202f89\u202f000.",
+    "Your total is ₹8 89 000.",
+    "Net P&L is ₹\u202f79\u202f000 on ₹ 8,89,000.",  # gpt-oss puts a space after the sign.
+])
+def test_space_grouped_amounts_match(answer):
+    sources = [json.dumps({"gain": 79000, "total": 889000})]
+    assert number_check.unverified_numbers(answer, sources) == []
+
+
+@pytest.mark.parametrize(("text", "numbers"), [
+    ("in 2026 1,000 units", ["2026", "1,000"]),
+    ("₹10 in 2026 100 units", ["10", "2026", "100"]),  # Plain spaces group digits only after a currency sign.
+    ("as of\u202f2026-10-14 at 15\u202f14", ["2026", "10", "14", "15", "14"]),
+    ("top 10 100%", ["10", "100"]),
+    ("₹79 00", ["79", "00"]),  # The last group must have three digits.
+])
+def test_separate_numbers_are_not_merged(text, numbers):
+    assert [m.group("number") for m in number_check._NUMBER_RE.finditer(text)] == numbers
+
+
+def test_no_break_space_groups_parse_without_a_currency_sign():
+    # gpt-oss tables put "₹" in the header and write cells as "470\u202f000".
+    text = "| Broker | Value (₹) |\n| INDmoney | **470\u202f000** |"
+    assert [m.group("number") for m in number_check._NUMBER_RE.finditer(text)][-1] == "470\u202f000"
+
+
+def test_invented_space_grouped_amounts_are_reported_whole():
+    answer = "You gained ₹97 000, or ₹\u202f98\u202f000."
+    assert number_check.unverified_numbers(answer, [json.dumps({"gain": 79000})]) == [
+        "₹97 000", "₹\u202f98\u202f000"]
+
+
 def test_invented_numbers_are_reported_once():
     answer = "Your net worth is ₹13,50,000 and you gained 22.4%. Again: ₹13,50,000."
     assert number_check.unverified_numbers(answer, SOURCES) == ["₹13,50,000", "22.4%"]

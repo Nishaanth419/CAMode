@@ -14,7 +14,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 ### Backend modules
 - **`app/main.py`**: FastAPI routes, INDmoney OAuth, and the lifespan task that runs the snapshot scheduler. `POST /api/chat` returns the full answer as plain text with the call trace in an `X-Agent-Trace` header (no streaming to the browser).
-- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
+- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
 - **`app/users.py`**: Profiles (scrypt PIN hashes, account-bound lockout), browser sessions bound to profiles, profile fields (`ProfileFields`), and per-profile INDmoney tokens (`user_access_token` refreshes them).
 - **`app/privacy.py`**: The privacy notice (`NOTICE`, `POLICY_VERSION`), consent records, per-profile storage mode and snapshot retention, data export, and history clearing.
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
@@ -26,6 +26,9 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/backup.py`**: Daily database backups (`backup_if_due()` from the scheduler loop, `create_backup()` via SQLite's online backup API with `journal_mode = DELETE` so each backup is one file, verified before it is kept), pruning to `BACKUP_KEEP`, `verify_backup()`, and `restore_backup()` (moves the current database aside). Never copies the master key. CLI: `python -m scripts.backup now|list|verify|restore`
 - **`app/vault.py`**: Master key resolution (`APP_MASTER_KEY`, `APP_MASTER_KEY_FILE`, default `~/.config/ca-mode/master.key`) and Fernet `encrypt()` / `decrypt()` for secrets stored in SQLite.
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
+- **`app/investigation_math.py`**: Pure `Decimal` layer: `normalize_snapshot()` (`PortfolioSnapshot` / `HoldingSnapshot` with scope, capture time, currency, holdings coverage), `calculate_change()`, `calculate_portfolio_change()` (price and unit effects per holding), `calculate_allocation()`.
+- **`app/investigation_checks.py`**: `run_checks()` returns `CheckResult`s (`passed`/`warning`/`failed`/`not_checked`, evidence, next step); tolerance from `INVESTIGATION_TOLERANCE_PCT` / `_INR`, staleness from `INVESTIGATION_STALE_HOURS`.
+- **`app/investigations.py`**: The bounded portfolio-change workflow (`investigate_portfolio_change()`), sealed `investigations` rows (newest 50), `agent_payload()` and the `investigate_portfolio_change` `LocalTool`.
 
 ### Key Design Patterns
 
@@ -89,6 +92,17 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - With cached MCP tools (< 24h), the MCP session opens lazily on the first MCP tool call; snapshot-only answers make no MCP calls
 - A failing local tool returns an error tool result so the model can fall back to live tools; MCP failures abort the request
 - Profile fields go into a labelled `<user_profile>` block in the portfolio system prompt as context, not instructions
+
+**Portfolio change investigations** (`investigations.py`, `investigation_math.py`, `investigation_checks.py`):
+- A coded workflow, not a model loop: latest snapshot → `snapshots.previous_snapshot()` (before it, on or before `baseline_date`) → normalise → changes → allocation → checks → `build_result()`. The model only narrates `agent_payload()`
+- Missing is never zero: no earlier snapshot is `insufficient_data` (a failed `history_available` check), an asset type fetched in only one snapshot is `not_comparable`, a new holding has previous value 0 only because its type was fetched
+- Holding identity is `asset_type|code|broker`; same-identity rows merge (reported as duplicates); a changed code is matched on asset type, normalised name and broker (`identifier_changed`)
+- A finding is `verified` only when every check in its `dependsOn` passed; estimates (market effect) are `kind: "estimate"`. Shares of the change (`shareOfChangePct`) are computed so the model never derives them
+- Bounded by `STEP_TIMEOUT_SECONDS` and `DEADLINE_SECONDS`; only snapshot reads retry, once, on `database is locked`; errors become safe messages (`_safe_error`), never raw exception text
+- Status/times are plain columns, the record is sealed; runs still `running` after `INTERRUPTED_AFTER_MS` read as interrupted. Private mode does not persist; a save failure before start is `InvestigationStorageError` (503), after the run the result is returned with `saved: false` (200). The tool memoises results per request and keeps its payload under `MAX_AGENT_PAYLOAD_CHARS` (Groq)
+- `main.chat` passes `investigation_tool(user, provider=...)` via `portfolio_context(extra_tools=...)` (investigations imports snapshots, so not the reverse). The tool result's `investigationId` becomes the trace step's `investigation_id`; `app.js` `attachInvestigationCard()` fetches the run by id to render the evidence card
+- Before changing the portfolio prompt or `agent_payload()`, re-run `python -m scripts.eval_investigations --provider ollama --runs 3` (`evals/portfolio_change.jsonl`, graded in code; baseline in the README). It runs on a temp `APP_DATA_DIR`, injects scope/timeout faults, and stubs live INDmoney tools; `--regrade` re-scores an `--out` file without the model
+- Deleted with history clearing, private mode, INDmoney disconnect and profile deletion; included in export
 
 **Tool allowlist** (`mcp_client.py`):
 - `IMPORTANT_PORTFOLIO_TOOL_NAMES`: 15 documented read-only INDmoney tools
@@ -165,6 +179,7 @@ python -m compileall -q app tests && python -m pytest -q
 - Profile routes: `GET /api/session` (current user, `consentRequired`, `storageMode`, profile list), `POST /api/users` (create + sign in), `POST /api/session/login`, `POST /api/session/logout`, `GET`/`PUT /api/profile`, `DELETE /api/users/me`
 - Chat routes: `POST /api/chats`, `GET /api/chats`, `GET`/`DELETE /api/chats/{id}`, `POST /api/chat`
 - Snapshot routes: `GET /api/snapshots?days=`, `POST /api/snapshots/refresh`
+- Investigation routes: `POST /api/investigations` (consent + unlocked; `201` + `Location` when saved, `200` when not), `GET /api/investigations?limit=`, `GET`/`DELETE /api/investigations/{id}`
 - Backup routes: `GET /api/backups` (status), `POST /api/backups` (back up now)
 - CAS routes: `GET /api/cas`, `POST /api/cas` (JSON `{password, pdfBase64}`; needs an unlocked session, consent, and `device` mode), `DELETE /api/cas/{id}`
 - Page routes: `GET /api/portfolio` (latest snapshot's `figures` plus every holding via `portfolio_math.all_holdings()`, or `{available: false}`), `GET`/`PUT /api/goals` (replaces the goals list, max 10; each goal has an optional `kind` for its icon, inferred from the name when missing). Goals are added, edited and deleted in one `#goal-dialog` opened from the Goals page, the rail and the goal planner (`openGoalDialog()` in `pages.js`)
@@ -213,6 +228,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `REQUEST_ROUTER` (`model` default, or `keywords`), `OPENAI_ROUTER_MODEL` / `GROQ_ROUTER_MODEL`: request classifier
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default `https://mcp.indmoney.com/mcp`)
 - `APP_ORIGIN`: public origin for the OAuth callback
+- `INVESTIGATION_TOLERANCE_PCT` (0.5), `INVESTIGATION_TOLERANCE_INR` (1), `INVESTIGATION_STALE_HOURS` (36): investigation checks
 - `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; falls back to a fixed +05:30 offset when tz data is missing)
 - `APP_MASTER_KEY_FILE` / `APP_MASTER_KEY`: token encryption key (default file `~/.config/ca-mode/master.key`, created on first start)
 - `BACKUP_DIR` (default `~/ca-mode-backups`), `BACKUP_KEEP` (14), `BACKUP_ENABLED` (true): daily backups; `conftest.py` points `BACKUP_DIR` at a temp folder
@@ -230,6 +246,9 @@ Test coverage:
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
 - `test_unlock.py`: sealed storage, restart locking, per-session unlock, recovery and its lockout, new recovery codes, upgrading profiles from before encryption, export while locked
 - `test_cas.py`: parsing NSDL/CDSL and CAMS statements built from `casparser`'s own models (personal details dropped), error messages, upload/list/delete API and gates, retention, the agent tool, clearing and export
+- `test_investigation_math.py`, `test_investigation_checks.py`: change maths (zero/missing bases, duplicates, changed codes, coverage, allocation bases) and every check, including the asset-type `holding_percent` denominator trap; `tests/fixtures/snapshot_pairs.py` builds self-consistent snapshot pairs
+- `test_investigations.py`: API, sealed persistence, gates, profile isolation, private mode, privacy deletion paths, deadline, lock retry, safe errors, storage failures, interruption, cancellation, the agent tool and its trace link
+- `test_eval_investigations.py`: every eval fixture yields its expected investigation status and flagged checks; the grader's arithmetic, unsupported-claim, honesty and refusal rules on canned answers
 - `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API, CLI
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch
