@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Finance Agent**: Answers general finance questions (budgeting, saving, concepts) — no account access
 - **Portfolio Analyzer**: Answers questions about the user's INDmoney portfolio from a saved daily snapshot plus read-only MCP tools for live data
 
-Several people can share one machine: each has a PIN-protected local profile that owns its chats, INDmoney connection, profile fields and portfolio snapshots. The app supports OpenAI and Groq, stores everything in local SQLite, and renders Plotly charts from portfolio data. It runs as a FastAPI backend with a vanilla JS PWA frontend.
+Several people can share one machine: each has a PIN-protected local profile that owns its chats, INDmoney connection, profile fields and portfolio snapshots. The app runs its model locally through Ollama by default (OpenAI and Groq are optional), stores everything in local SQLite, and renders Plotly charts from portfolio data. It runs as a FastAPI backend with a vanilla JS PWA frontend.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/privacy.py`**: The privacy notice (`NOTICE`, `POLICY_VERSION`), consent records, per-profile storage mode and snapshot retention, data export, and history clearing.
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
 - **`app/snapshots.py`**: Daily capture of net worth/allocation/holdings, history queries, the polling scheduler, profile prompt text, and the agent's local snapshot tools.
-- **`app/agent.py`**: Provider selection (OpenAI/Groq), request filtering, and the tool-calling loop (`stream_agent` yields `(event, data)` tuples; `run_agent` collects them into an answer plus trace).
+- **`app/agent.py`**: Provider selection (Ollama/OpenAI/Groq), request filtering, and the tool-calling loop (`stream_agent` yields `(event, data)` tuples; `run_agent` collects them into an answer plus trace).
 - **`app/sealing.py`**: Per-profile X25519 keypairs, wrapping the private key with a PIN or recovery code (scrypt + SecretBox), recovery codes, and `ProfileKeys` (`seal()` / `open()`).
 - **`app/unlock.py`**: Key creation, `unlock_with_pin()`, `recover()`, `replace_recovery_code()`, and the in-memory map of unlocked browser sessions (`activate()`, `keys_for_session()`).
 - **`app/cas.py`**: CAS uploads. `parse_statement()` runs `casparser.read_cas_pdf` in memory (offline) on NSDL/CDSL (demat accounts by broker, MF folios, NPS) or CAMS/KFintech (MF folios) statements and keeps only holdings rows in INDmoney's `networth_holdings` layout, so `statement_metrics()` reuses `portfolio_math.compute_metrics()`. Never stored: the PDF, password, investor name, PAN, address, contact details, DP/client IDs. Statements are sealed in `cas_statements` (newest 12 kept)
@@ -28,6 +28,12 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
 
 ### Key Design Patterns
+
+**Local model** (`agent.py`, `ollama/Modelfile`):
+- `PROVIDERS["ollama"]` has no `key_env`: it is configured when `OLLAMA_MODEL` is set, is listed first and is the default `AI_PROVIDER`; the request goes to Ollama's OpenAI-compatible `/v1` API with a dummy key
+- `provider_config()` returns `timeout` / `router_timeout` (`OLLAMA_TIMEOUT_SECONDS`, default 300, for Ollama; 120 s and `router.ROUTER_TIMEOUT_SECONDS` for cloud)
+- Ollama's `/v1` API ignores per-request context options and silently truncates long prompts (4,096-token default on smaller Macs). `ollama/Modelfile` builds `ca-mode` (gpt-oss:20b, `num_ctx 32768`); after the first successful response of each answer, `_ollama_context_problem()` reads `/api/ps` and errors below `OLLAMA_MIN_CONTEXT` (16,384)
+- Model choice and scores are in the README ("Use the local model"); re-run both evals with `--provider ollama` before changing it
 
 **Profiles and sessions** (`users.py`):
 - The `indmoney_session` HttpOnly cookie maps to an `oauth_sessions` row whose `user_id` names the signed-in profile; the id rotates on sign-in
@@ -194,8 +200,9 @@ python -m compileall -q app tests && python -m pytest -q
 - `fetch_mcp_session()`, `call_mcp_tool()`, `filter_portfolio_tools()`
 
 ### Environment Variables
+- `OLLAMA_MODEL` (enables the local provider; `ca-mode`), `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`; Compose sets `host.docker.internal`), `OLLAMA_TIMEOUT_SECONDS`, `OLLAMA_ROUTER_MODEL`
 - `OPENAI_API_KEY` / `GROQ_API_KEY`: enable providers; `OPENAI_MODEL` / `GROQ_MODEL`, `OPENAI_BASE_URL` / `GROQ_BASE_URL`: overrides
-- `AI_PROVIDER`: default provider (`openai` or `groq`); users can switch in the app
+- `AI_PROVIDER`: default provider (`ollama` by default, `openai` or `groq`); users can switch in the app
 - `GROQ_INPUT_TOKEN_BUDGET`, `GROQ_COMPLETION_TOKEN_LIMIT`: Groq limits
 - `REQUEST_ROUTER` (`model` default, or `keywords`), `OPENAI_ROUTER_MODEL` / `GROQ_ROUTER_MODEL`: request classifier
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default `https://mcp.indmoney.com/mcp`)
