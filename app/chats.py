@@ -18,6 +18,9 @@ from .sealing import ProfileKeys
 
 MAX_HISTORY_MESSAGES = 20
 MAX_HISTORY_MESSAGE_CHARS = 12_000
+# Answers may carry a year of daily candles (about 12,000 characters) besides the text; the model
+# never sees that chart data again (agent strips chart blocks from history).
+MAX_ANSWER_CHARS = 24_000
 MAX_CHATS_PER_USER = 50
 CHAT_TTL_MS = users.SESSION_MAX_AGE_SECONDS * 1000
 
@@ -129,7 +132,7 @@ def read_chat(user: dict[str, Any], chat_id: str) -> dict[str, Any] | None:
 def append_turn(user: dict[str, Any], chat: dict[str, Any], message: str, answer: str, trace: list[dict[str, Any]]) -> None:
     """Store a question and its answer, keeping the newest ``MAX_HISTORY_MESSAGES`` messages."""
     now = users.now_ms()
-    assistant_message: dict[str, Any] = {"role": "assistant", "content": answer[:MAX_HISTORY_MESSAGE_CHARS]}
+    assistant_message: dict[str, Any] = {"role": "assistant", "content": answer[:MAX_ANSWER_CHARS]}
     if trace:
         assistant_message["trace"] = trace
     messages = [*chat["messages"], {"role": "user", "content": message[:MAX_HISTORY_MESSAGE_CHARS]}, assistant_message]

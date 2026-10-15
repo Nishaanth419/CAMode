@@ -1309,7 +1309,9 @@ function renderMarkdown(text) {
   text = text.replace(/@@CA_TABLE_(\d+)@@/g, (_, idx) => tableBlocks[idx]);
   text = text.replace(/@@CA_HEADING_(\d+)@@/g, (_, idx) => headingBlocks[idx]);
 
-  text = text.replace(/\x00CHART(\d+)\x00/g, (_, idx) => renderDataChart(chartBlocks[idx]));
+  // A chart block that cannot be drawn says so instead of leaving a blank space.
+  text = text.replace(/\x00CHART(\d+)\x00/g, (_, idx) => renderDataChart(chartBlocks[idx])
+    || '<p class="chart-missing" role="note">This chart could not be drawn because its data was incomplete.</p>');
 
   // Detect result JSON blocks (wrapped in triple backtick or plain)
   // The agent may send result sections prefixed with "Result:" or "Output:"
@@ -1330,7 +1332,7 @@ function parseChartSpec(json) {
     return spec && (
       (['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data)) ||
       (spec.type === 'line' && Array.isArray(spec.series)) ||
-      (spec.type === 'candlestick' && Array.isArray(spec.candles))
+      (spec.type === 'candlestick' && (Array.isArray(spec.candles) || Array.isArray(spec.ohlc)))
     ) ? spec : null;
   } catch {
     return null;
@@ -1358,8 +1360,13 @@ function chartSeries(spec) {
   })).filter(item => item.name && item.points.length > 1);
 }
 
+// Candles as objects, or as the compact [label, open, high, low, close] rows the server writes.
 function chartCandles(spec) {
-  return (Array.isArray(spec?.candles) ? spec.candles : []).slice(0, 300).map(item => ({
+  const rows = Array.isArray(spec?.candles) ? spec.candles
+    : Array.isArray(spec?.ohlc) ? spec.ohlc.map(row => (Array.isArray(row)
+      ? { label: row[0], open: row[1], high: row[2], low: row[3], close: row[4] } : null))
+    : [];
+  return rows.slice(-300).map(item => ({
     label: cleanChartText(item?.label, 50),
     open: Number(item?.open), high: Number(item?.high),
     low: Number(item?.low), close: Number(item?.close),

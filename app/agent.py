@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from . import number_check, router
+from . import charts, number_check, router
 from .mcp_client import IMPORTANT_PORTFOLIO_TOOL_NAMES, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.agent")
@@ -597,7 +597,9 @@ async def stream_agent(
     else:
         prompt = FINANCE_SYSTEM_PROMPT
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
-    messages.extend({"role": item["role"], "content": item["content"]} for item in history)
+    messages.extend({"role": item["role"],
+                     "content": charts.strip_chart_blocks(item["content"]) if item["role"] == "assistant" else item["content"]}
+                    for item in history)
     messages.append({"role": "user", "content": message})
     current_user_index = len(messages) - 1
 
@@ -605,6 +607,7 @@ async def stream_agent(
     retried_failed_tool_use = False
     context_checked = provider != "ollama"
     portfolio_tool_called = False
+    ohlc_results: list[str] = []
     known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
     try:
@@ -712,6 +715,7 @@ async def stream_agent(
                             logger.warning("Blocked code-shaped model output for %s agent", agent_type)
                             content = FINANCE_ONLY_NOTICE
                         else:
+                            content = charts.ground_candlestick_charts(content, ohlc_results)
                             content += _number_warning(content, messages, agent_type, message)
                             if choice_data.get("finish_reason") == "length":
                                 content += TRUNCATION_NOTICE
@@ -782,6 +786,8 @@ async def stream_agent(
                         return
                     portfolio_tool_called = True
                     result_str = str(result)
+                    if name == charts.OHLC_TOOL_NAME:
+                        ohlc_results.append(result_str)
                     yield "tool_result", {
                         "name": name,
                         "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
