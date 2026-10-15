@@ -8,10 +8,8 @@ import pytest
 from app import agent
 
 
-def test_only_openai_and_groq_are_supported():
-    assert list(agent.PROVIDERS) == ["openai", "groq"]
-    with pytest.raises(RuntimeError, match="Unknown AI provider"):
-        agent.provider_config("ollama")
+def test_only_ollama_openai_and_groq_are_supported():
+    assert list(agent.PROVIDERS) == ["ollama", "openai", "groq"]
     with pytest.raises(RuntimeError, match="Unknown AI provider"):
         agent.provider_config("kimi")
 
@@ -48,13 +46,83 @@ def test_default_provider_falls_back_to_configured_provider(monkeypatch):
     assert agent.default_provider() == "groq"
 
 
-def test_configured_providers_only_lists_cloud_choices(monkeypatch):
+def test_configured_providers_lists_every_choice_with_its_setup_hint(monkeypatch):
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     providers = agent.configured_providers()
-    assert [item["id"] for item in providers] == ["openai", "groq"]
-    assert providers[0]["configured"] is True
-    assert providers[1]["configured"] is False
+    assert [item["id"] for item in providers] == ["ollama", "openai", "groq"]
+    assert [item["configured"] for item in providers] == [False, True, False]
+    assert providers[0]["setup"] == "set OLLAMA_MODEL in .env"
+    assert providers[2]["setup"] == "add API key in .env"
+
+
+def test_ollama_is_opted_into_by_model_and_needs_no_key(monkeypatch):
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    with pytest.raises(RuntimeError, match="Set OLLAMA_MODEL in .env"):
+        agent.provider_config("ollama")
+
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+    config = agent.provider_config("ollama")
+
+    assert config["model"] == "ca-mode"
+    assert config["base_url"] == "http://localhost:11434/v1"
+    assert config["timeout"] == agent.LOCAL_TIMEOUT_SECONDS
+    assert config["router_timeout"] == agent.LOCAL_TIMEOUT_SECONDS
+
+
+def test_default_provider_prefers_ollama_when_configured(monkeypatch):
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test")
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    assert agent.default_provider() == "openai"
+
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+    assert agent.default_provider() == "ollama"
+
+
+class FakeOllamaClient:
+    """Answers chat completions and Ollama's /api/ps with the loaded model's context window."""
+
+    def __init__(self, context_length, captured):
+        self.context_length = context_length
+        self.captured = captured
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def post(self, url, headers, json):
+        self.captured.append(url)
+        return _completion("A budget tracks income and spending.")
+
+    async def get(self, url):
+        self.captured.append(url)
+        return FakeResponse({"models": [{"name": "ca-mode:latest", "model": "ca-mode:latest", "context_length": self.context_length}]})
+
+
+@pytest.mark.asyncio
+async def test_ollama_refuses_to_answer_from_a_truncated_prompt(monkeypatch):
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode:latest")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeOllamaClient(4096, captured))
+
+    with pytest.raises(agent.AgentRunError, match="4,096-token context window"):
+        await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "ollama")
+
+    assert captured == ["http://localhost:11434/v1/chat/completions", "http://localhost:11434/api/ps"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_answers_when_its_context_window_fits(monkeypatch):
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode:latest")
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeOllamaClient(32768, []))
+
+    answer = await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "ollama")
+
+    assert answer == "A budget tracks income and spending."
 
 
 def test_groq_context_keeps_latest_user_question():

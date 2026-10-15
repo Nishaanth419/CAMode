@@ -64,7 +64,7 @@ def test_health_and_frontend_routes(client):
     assert client.get("/js/app.js").status_code == 200
 
 
-def test_provider_endpoint_exposes_only_openai_and_groq(client, monkeypatch):
+def test_provider_endpoint_exposes_ollama_openai_and_groq(client, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test")
     monkeypatch.setenv("GROQ_API_KEY", "groq-test")
     monkeypatch.setenv("AI_PROVIDER", "groq")
@@ -72,7 +72,7 @@ def test_provider_endpoint_exposes_only_openai_and_groq(client, monkeypatch):
     response = client.get("/api/providers")
 
     assert response.status_code == 200
-    assert [provider["id"] for provider in response.json()["providers"]] == ["openai", "groq"]
+    assert [provider["id"] for provider in response.json()["providers"]] == ["ollama", "openai", "groq"]
     assert response.json()["defaultProvider"] == "groq"
     assert response.headers["cache-control"] == "no-store"
 
@@ -267,6 +267,27 @@ def test_portfolio_chat_requires_indmoney_connection(client, signed_in):
     })
     assert response.status_code == 401
     assert "Connect your INDmoney account" in response.json()["error"]
+
+
+@pytest.mark.parametrize(("sent", "expected"), [("ollama", "ollama"), (None, "ollama")])
+def test_chat_uses_the_local_provider(client, signed_in, monkeypatch, sent, expected):
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    chat = client.post("/api/chats", json={"agentType": "finance"}).json()
+    used = []
+
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+        used.append(provider)
+        return "A budget tracks income and spending."
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    body = {"message": "What is a budget?", "chatId": chat["id"], "agentType": "finance"}
+    if sent:
+        body["aiProvider"] = sent
+    response = client.post("/api/chat", json=body)
+
+    assert response.status_code == 200
+    assert used == [expected]
 
 
 def test_chat_rejects_removed_provider(client, signed_in):

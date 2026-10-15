@@ -298,6 +298,7 @@ def test_deleting_profile_removes_consents(client, signed_in):
 def test_notice_mentions_ai_providers_and_permanent_loss():
     text = json.dumps(privacy.NOTICE)
     assert "OpenAI or Groq" in text
+    assert "Ollama (on this device)" in text and "none of it leaves" in text
     assert "recovery code" in text and "cannot be recovered" in text
 
 

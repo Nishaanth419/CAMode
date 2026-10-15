@@ -80,7 +80,8 @@ class ChatRequest(BaseModel):
     message: str
     chatId: str
     agentType: Literal["finance", "portfolio"] = "finance"
-    aiProvider: Literal["openai", "groq"] = "openai"
+    # Omitted: the server default (AI_PROVIDER), so a bare request never picks a cloud provider by itself.
+    aiProvider: Literal["ollama", "openai", "groq"] | None = None
 
 
 class CreateChatRequest(BaseModel):
@@ -756,6 +757,7 @@ async def list_tools(request: Request):
 @app.post("/api/chat")
 async def chat(body: ChatRequest, request: Request):
     message = body.message
+    provider = body.aiProvider or default_provider()
     if not message.strip() or len(message) > 8000:
         return JSONResponse({"error": "Provide a message with no more than 8,000 characters."}, status_code=400)
     user = current_user(request)
@@ -775,14 +777,14 @@ async def chat(body: ChatRequest, request: Request):
         context = snapshots.portfolio_context(user)
     history = data.get("messages", [])
     try:
-        answer = await run_agent(message, MCP_RESOURCE, token, history, body.agentType, body.aiProvider, context=context)
+        answer = await run_agent(message, MCP_RESOURCE, token, history, body.agentType, provider, context=context)
     except Exception as exc:
         if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
             refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
             if not refreshed_token:
                 return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
             try:
-                answer = await run_agent(message, MCP_RESOURCE, refreshed_token, history, body.agentType, body.aiProvider, context=context)
+                answer = await run_agent(message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider, context=context)
             except Exception as retry_exc:
                 if is_indmoney_auth_error(retry_exc):
                     return auth_error("INDmoney rejected the renewed session. Reconnect your account and try again.")

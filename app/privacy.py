@@ -20,7 +20,7 @@ from . import chats, users
 from .db import connect_db
 
 # .2: PIN-locked history (a lost PIN and recovery code loses it). .3: uploaded CAS holdings are saved.
-POLICY_VERSION: Final = "2026-10-14.3"
+POLICY_VERSION: Final = "2026-10-15.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -49,10 +49,11 @@ NOTICE: Final = (
     {
         "title": "What leaves this computer",
         "body": (
-            "To answer you, your message, recent chat history and profile details are sent to the AI provider you "
-            "select (OpenAI or Groq), along with any INDmoney or snapshot data Portfolio Analyzer reads for that "
-            "answer. That data is handled under the provider's own data policy. Portfolio Analyzer reads from INDmoney "
-            "with read-only access and cannot trade or move money."
+            "To answer you, your message, recent chat history and profile details go to the AI model you select, "
+            "along with any INDmoney or snapshot data Portfolio Analyzer reads for that answer. With Ollama (on this "
+            "device) the model runs on this computer and none of it leaves. With OpenAI or Groq it is sent to that "
+            "company and handled under its own data policy. Portfolio Analyzer reads from INDmoney with read-only "
+            "access and cannot trade or move money."
         ),
     },
     {

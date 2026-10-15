@@ -11,6 +11,8 @@ services:
       # Same key file the app uses when run with Python, so both can read stored tokens.
       APP_MASTER_KEY_FILE: /run/ca-mode/master.key
       BACKUP_DIR: /backups
+      # Ollama runs on the Mac, outside the container.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
     volumes:
       - ./.data:/app/.data
       - ${HOME}/.config/ca-mode:/run/ca-mode

@@ -164,6 +164,16 @@ If explicitly asked what to invest in next, offer cautious, educational ideas to
 FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer only finance questions, in clear and plain language; keep the answer proportional and do not add unsolicited next steps or investment suggestions. If asked for anything outside finance, briefly decline and invite a finance question. Never write, explain, or debug programming code, even if asked. Explain concepts, common terms, budgeting, saving, investing basics, and how financial products work. Do not claim to know the user's personal finances or INDmoney portfolio. Do not provide personalized investment, tax, or legal advice, and do not promise returns. Offer possible investments only if the user explicitly asks for ideas; then frame them as educational topics to research, discuss their risks and costs, and say: “This is not investment advice. Research each investment, its risks, costs, and fit for your circumstances before investing; consider consulting a qualified financial adviser.” When a question depends on the user's account, explain that they can switch to Portfolio Analyzer and connect INDmoney. Use earlier messages as context for finance follow-up questions."""
 
 PROVIDERS = {
+    "ollama": {
+        "label": "Ollama (on this device)",
+        # No key: the model runs locally, so messages and portfolio data never leave this computer.
+        "key_env": "",
+        "base_url_env": "OLLAMA_BASE_URL",
+        "default_base_url": "http://localhost:11434/v1",
+        "model_env": "OLLAMA_MODEL",
+        "default_model": "gpt-oss:20b",
+        "router_model_env": "OLLAMA_ROUTER_MODEL",
+    },
     "openai": {
         "label": "OpenAI",
         "key_env": "OPENAI_API_KEY",
@@ -192,6 +202,8 @@ def _positive_env_int(name: str, default: int) -> int:
 
 
 GROQ_INPUT_TOKEN_BUDGET = _positive_env_int("GROQ_INPUT_TOKEN_BUDGET", 5600)
+CLOUD_TIMEOUT_SECONDS = 120
+LOCAL_TIMEOUT_SECONDS = _positive_env_int("OLLAMA_TIMEOUT_SECONDS", 300)
 GROQ_COMPLETION_TOKEN_LIMIT = _positive_env_int("GROQ_COMPLETION_TOKEN_LIMIT", 1200)
 
 
@@ -262,41 +274,54 @@ def _fit_groq_context(
     return [system, *selected_history, current_user, *suffix]
 
 
-def provider_config(provider: str) -> dict[str, str]:
+def _is_configured(definition: dict[str, str]) -> bool:
+    """Cloud providers need an API key; Ollama is opted into by naming a model in ``OLLAMA_MODEL``."""
+    if not definition["key_env"]:
+        return bool(os.getenv(definition["model_env"], "").strip())
+    key = os.getenv(definition["key_env"], "")
+    return bool(key and key != "sk-your-key-here")
+
+
+def provider_config(provider: str) -> dict[str, Any]:
     definition = PROVIDERS.get(provider)
     if not definition:
         raise RuntimeError(f"Unknown AI provider: {provider}")
-    api_key = os.getenv(definition["key_env"], "")
-    if not api_key or api_key == "sk-your-key-here":
-        raise RuntimeError(f"{definition['label']} API key is not configured. Add {definition['key_env']} to .env and restart the app.")
-    model = os.getenv(definition["model_env"], definition["default_model"])
+    if not _is_configured(definition):
+        if definition["key_env"]:
+            raise RuntimeError(f"{definition['label']} API key is not configured. Add {definition['key_env']} to .env and restart the app.")
+        raise RuntimeError(f"{definition['label']} is not configured. Set {definition['model_env']} in .env and restart the app.")
+    local = not definition["key_env"]
+    model = os.getenv(definition["model_env"], definition["default_model"]).strip() or definition["default_model"]
     return {
         "label": definition["label"],
-        "api_key": api_key,
+        # Ollama ignores the key but its OpenAI-compatible API expects the header.
+        "api_key": "ollama" if local else os.getenv(definition["key_env"], ""),
         "base_url": os.getenv(definition["base_url_env"], definition["default_base_url"]).rstrip("/"),
         "model": model,
         # The request classifier; a smaller model of the same provider is cheaper and faster.
         "router_model": os.getenv(definition["router_model_env"], "").strip() or model,
+        # A local model loads into memory on first use and generates slower than a hosted one.
+        "timeout": LOCAL_TIMEOUT_SECONDS if local else CLOUD_TIMEOUT_SECONDS,
+        "router_timeout": LOCAL_TIMEOUT_SECONDS if local else router.ROUTER_TIMEOUT_SECONDS,
     }
 
 
-def configured_providers() -> list[dict[str, str]]:
-    available = []
-    for provider, definition in PROVIDERS.items():
-        key = os.getenv(definition["key_env"], "")
-        configured = bool(key and key != "sk-your-key-here")
-        available.append({
+def configured_providers() -> list[dict[str, Any]]:
+    return [
+        {
             "id": provider,
             "label": definition["label"],
-            "model": os.getenv(definition["model_env"], definition["default_model"]),
-            "configured": configured,
-        })
-    return available
+            "model": os.getenv(definition["model_env"], "").strip() or definition["default_model"],
+            "configured": _is_configured(definition),
+            "setup": f"set {definition['model_env']} in .env" if not definition["key_env"] else "add API key in .env",
+        }
+        for provider, definition in PROVIDERS.items()
+    ]
 
 
 def default_provider() -> str:
     configured = [item for item in configured_providers() if item["configured"]]
-    requested = os.getenv("AI_PROVIDER", "openai").strip().lower()
+    requested = os.getenv("AI_PROVIDER", "ollama").strip().lower()
     if any(item["id"] == requested for item in configured):
         return requested
     return configured[0]["id"] if configured else "openai"
@@ -409,6 +434,35 @@ def _model_tools(tools: list[dict[str, Any]], provider: str) -> list[dict[str, A
     return model_tools
 
 
+OLLAMA_MIN_CONTEXT = 16384
+
+
+async def _ollama_context_problem(client: httpx.AsyncClient, config: dict[str, Any]) -> str | None:
+    """Why the loaded Ollama model cannot be used, or None.
+
+    Ollama's OpenAI-compatible API ignores per-request context settings and silently drops
+    the start of a prompt longer than the model's window (4,096 tokens by default on machines
+    with less GPU memory), which would lose the system prompt and the tool data.
+    """
+    root = config["base_url"].removesuffix("/v1")
+    try:
+        response = await client.get(f"{root}/api/ps")
+        loaded = response.json().get("models", []) if response.is_success else []
+    except (httpx.HTTPError, ValueError):
+        return None
+    for item in loaded:
+        if config["model"] in (item.get("name"), item.get("model")):
+            context = item.get("context_length")
+            if isinstance(context, int) and context < OLLAMA_MIN_CONTEXT:
+                return (
+                    f"Ollama is running {config['model']} with a {context:,}-token context window, too small for "
+                    f"CA Mode's prompts (it needs {OLLAMA_MIN_CONTEXT:,}), so part of your question would be dropped. "
+                    "Create the ca-mode model with `ollama create ca-mode -f ollama/Modelfile` and set OLLAMA_MODEL=ca-mode, "
+                    "or raise Ollama's context length, then try again."
+                )
+    return None
+
+
 def _message_text(content: Any) -> str | None:
     """Flatten a chat-completions message content (string or text parts)."""
     if isinstance(content, list):
@@ -504,11 +558,12 @@ async def stream_agent(
 
     retried_portfolio_tool_selection = False
     retried_failed_tool_use = False
+    context_checked = provider != "ollama"
     portfolio_tool_called = False
     known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client, httpx.AsyncClient(timeout=90) as mcp_client:
+        async with httpx.AsyncClient(timeout=config["timeout"]) as client, httpx.AsyncClient(timeout=90) as mcp_client:
             for attempt in range(1, 13):
                 try:
                     request_messages = (
@@ -555,6 +610,15 @@ async def stream_agent(
                             yield event
                         return
                     continue
+
+                if response.is_success and not context_checked:
+                    # The model is loaded now, so its window is known; checked once per answer.
+                    context_checked = True
+                    problem = await _ollama_context_problem(client, config)
+                    if problem:
+                        yield "error", {"message": problem}
+                        yield "done", {}
+                        return
 
                 if not response.is_success:
                     yield "error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"}
