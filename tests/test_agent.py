@@ -743,3 +743,43 @@ async def test_invalid_tool_call_is_retried_once_then_reported(monkeypatch):
     with pytest.raises(agent.AgentRunError, match="tool_use_failed"):
         await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "groq")
     assert len(captured) == 2
+
+
+# ── Trace redaction ────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(("text", "hidden", "kept"), [
+    ('{"accessToken":"abc123","asset_type":"MF"}', "abc123", '"asset_type":"MF"'),
+    ('{"client_secret": "s3cr3t", "max_tokens": 50}', "s3cr3t", '"max_tokens": 50'),
+    ('{"pin":2468,"pan":"ABCDE1234F","name":"Asha"}', "2468", '"name":"Asha"'),
+    ('{"holdings":[{"pan":"ABCDE1234F"}]', "ABCDE1234F", '"holdings"'),
+    ('{"refresh_token":"cut-off-in-the-midd', "cut-off", '"refresh_token"'),
+    ("401 Unauthorized: Bearer eyJhbGciOi.eyJzdWIi.c2lnbmF0dXJl", "eyJhbGciOi", "401 Unauthorized"),
+    ("Holder PAN ABCDE1234F on file", "ABCDE1234F", "Holder PAN"),
+])
+def test_trace_text_masks_credentials_and_identifiers(text, hidden, kept):
+    redacted = agent.redact_trace_text(text)
+
+    assert hidden not in redacted
+    assert kept in redacted
+
+
+@pytest.mark.asyncio
+async def test_trace_never_carries_secrets_from_tool_arguments_or_results(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def leaky_handler(arguments):
+        return '{"available": true, "networthInr": 4200000, "sessionToken": "tok-999", "pan": "ABCDE1234F"}'
+
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot",
+                                              "arguments": '{"apiKey": "sk-live-1"}'}}
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(
+        [_completion(tool_calls=[tool_call]), _completion("₹42 lakh.")], []))
+
+    answer = await agent.run_agent("What is my net worth?", "https://mcp", "token", [], "portfolio", "openai",
+                                   context=_snapshot_context(leaky_handler))
+
+    step = next(item for item in answer.trace if item["kind"] == "tool")
+    shown = json.dumps(step)
+    for secret in ("tok-999", "ABCDE1234F", "sk-live-1"):
+        assert secret not in shown
+    assert "4200000" in step["result_preview"]  # the user's own figures stay visible
