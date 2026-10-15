@@ -1449,18 +1449,21 @@ a.tool-tile { text-decoration: none; }
 .rail-more { flex-shrink: 0; color: var(--accent); font-size: 12.5px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .rail-more:hover { text-decoration: underline; }
 .rail-copy.rail-error { color: var(--error); }
-.rail-figure-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; }
-.rail-figure { color: var(--text); font-family: var(--serif); font-size: 28px; font-weight: 700; letter-spacing: -.4px; line-height: 1.15; font-variant-numeric: tabular-nums; }
-.rail-change { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.rail-figure-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 6px; }
+.rail-figure { color: var(--text); font-size: 31px; font-weight: 800; letter-spacing: -.8px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.rail-change { font-size: 13.5px; font-weight: 700; white-space: nowrap; }
 .rail-change small { color: var(--text-muted); font-size: 11.5px; font-weight: 500; }
-.rail-spark { display: block; width: 100%; height: 64px; margin: 8px 0 4px; color: var(--accent-2); }
-.rail-spark .spark-line { stroke: currentColor; }
+.rail-spark { display: block; width: calc(100% + 18px); height: 104px; margin: 10px -18px 0 0; color: var(--accent-2); }
+.rail-spark .spark-line { stroke: currentColor; stroke-width: 2.5; }
+.rail-spark .spark-dots, .rail-spark .spark-dot-end { fill: none; stroke: currentColor; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.rail-spark .spark-dots { stroke-width: 6; }
+.rail-spark .spark-dot-end { stroke-width: 9; }
 .rail-spark.is-down { color: var(--red); }
-.rail-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
-.rail-metrics div { display: grid; gap: 2px; padding: 0 8px; text-align: center; }
+.rail-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; padding-top: 14px; border-top: 1px solid var(--border); }
+.rail-metrics div { display: grid; min-width: 0; gap: 2px; padding: 0 2px; text-align: center; }
 .rail-metrics div + div { border-left: 1px solid var(--border); }
-.rail-metrics dt { color: var(--text-soft); font-size: 11.5px; }
-.rail-metrics dd { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rail-metrics dt { color: var(--text-soft); font-size: 12px; white-space: nowrap; }
+.rail-metrics dd { overflow: hidden; color: var(--text); font-size: 14.5px; font-weight: 700; letter-spacing: -.2px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rail-foot { margin-top: 12px; color: var(--text-muted); font-size: 11.5px; line-height: 1.5; }
 .link-button { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; }
 .link-button:hover { text-decoration: underline; }
@@ -1489,9 +1492,8 @@ a.tool-tile { text-decoration: none; }
 .rail-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .rail-row-head strong { display: -webkit-box; min-width: 0; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .rail-row small { color: var(--text-muted); font-size: 11.5px; line-height: 1.4; }
-.rail-pct { color: var(--text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .rail-when { flex-shrink: 0; color: var(--text-muted); font-size: 11px; }
-.rail-progress { height: 7px; margin-top: 6px; }
+.rail-progress { height: 10px; }
 .rail-progress span { background: var(--tone); }
 
 .rail-skeleton { display: grid; gap: 10px; }
@@ -1502,3 +1504,43 @@ a.tool-tile { text-decoration: none; }
 
 #right-rail .tool-tile { min-height: 84px; padding: 10px 4px; font-size: 11.5px; line-height: 1.3; }
 #right-rail .tool-tile svg { width: 22px; height: 22px; }
+
+/* Financial Goals card: big round icon, name and target, percent, then the bar. */
+.rail-goals { gap: 6px; }
+.rail-goal {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  grid-template-areas: "icon name pct" "icon target pct" "icon bar bar";
+  align-items: center;
+  column-gap: 14px;
+  row-gap: 2px;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  transition: background .15s;
+}
+.rail-goal:hover { background: var(--surface-2); }
+.rail-goal-icon { display: grid; width: 52px; height: 52px; grid-area: icon; place-items: center; border-radius: 50%; background: var(--tone-soft); color: var(--tone); }
+.rail-goal-icon svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.rail-goal-name { grid-area: name; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.rail-goal-target { grid-area: target; color: var(--text-soft); font-size: 12.5px; }
+.rail-goal-pct { grid-area: pct; color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rail-goal .rail-progress { grid-area: bar; margin-top: 8px; }
+.rail-add { width: 100%; margin-top: 8px; padding: 9px; border: 1px dashed var(--border-hover); border-radius: 12px; background: transparent; color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.rail-add:hover { border-color: var(--accent); background: var(--accent-wash2); }
+
+/* Goal editor dialog and Goals page icons. */
+.goal-preview { min-height: 20px; color: var(--text-soft); font-size: 13px; line-height: 1.5; }
+.goal-preview.is-behind { color: var(--amber); }
+.danger-text { margin-right: auto; color: var(--error); }
+.danger-text:hover { border-color: var(--error); background: var(--red-soft); }
+.goal-dialog .dialog-actions .rail-button { flex: 0 1 160px; }
+.goal-card header { align-items: center; }
+.goal-card header h3 { flex: 1; }
+.goal-card-icon { width: 40px; height: 40px; border-radius: 50%; }
+.goal-card-icon svg { width: 20px; height: 20px; }

@@ -62,15 +62,21 @@ class ProfileLockedError(ProfileError):
 
 
 MAX_GOALS = 10
+GoalKind = Literal["home", "education", "retirement", "car", "travel", "wedding", "emergency", "other"]
 
 
 class Goal(BaseModel):
-    """A savings goal the user tracks on the Goals page; amounts are whole rupees."""
+    """A savings goal the user tracks on the Goals page; amounts are whole rupees.
+
+    ``kind`` picks the goal's icon; goals saved before it existed have none and
+    the app infers one from the name.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,32}$")
     name: str = Field(min_length=1, max_length=80)
+    kind: GoalKind | None = None
     targetInr: int = Field(ge=1, le=100_000_000_000)
     targetYear: int = Field(ge=2000, le=2100)
     savedInr: int = Field(default=0, ge=0, le=100_000_000_000)

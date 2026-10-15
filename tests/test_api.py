@@ -637,6 +637,14 @@ def test_goals_are_saved_with_the_profile_and_kept_by_profile_edits(client, sign
     assert stored.startswith("sealed:v1:") and "Buy a home" not in stored
 
 
+def test_goals_keep_their_kind_and_reject_unknown_kinds(client, signed_in):
+    saved = client.put("/api/goals", json={"goals": [{**GOAL, "kind": "home"}]})
+
+    assert saved.status_code == 200
+    assert client.get("/api/goals").json()["goals"][0]["kind"] == "home"
+    assert client.put("/api/goals", json={"goals": [{**GOAL, "kind": "yacht"}]}).status_code == 422
+
+
 def test_goals_reject_invalid_values_and_duplicate_ids(client, signed_in):
     assert client.put("/api/goals", json={"goals": [{**GOAL, "targetInr": 0}]}).status_code == 422
     assert client.put("/api/goals", json={"goals": [GOAL, GOAL]}).status_code == 422

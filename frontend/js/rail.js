@@ -8,18 +8,6 @@ const railGoals = document.getElementById('rail-goals');
 const railInsights = document.getElementById('rail-insights');
 const RAIL_GOALS = 3;
 
-const GOAL_ICONS = {
-  home: '<path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1Z"/>',
-  education: '<path d="m3 9 9-4 9 4-9 4Z"/><path d="M7 11v4.5c0 1.4 2.2 2.5 5 2.5s5-1.1 5-2.5V11"/><path d="M21 9v5"/>',
-  retirement: '<path d="M3.5 12a8.5 8.5 0 0 1 17 0Z"/><path d="M12 12v6.5a1.5 1.5 0 0 1-3 0"/><path d="M12 3.5V2"/>',
-  car: '<path d="M5 16v-4l2-5h10l2 5v4Z"/><path d="M5 12h14"/><circle cx="8" cy="16.5" r="1.5"/><circle cx="16" cy="16.5" r="1.5"/>',
-  travel: '<path d="M2.5 13.5 21 6l-4.5 13-4-5.5Z"/><path d="m12.5 13.5 3-3"/>',
-  wedding: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10Z"/>',
-  emergency: '<path d="M12 3.5 19 6v5.5c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6Z"/>',
-  other: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/>',
-};
-const GOAL_TONES = ['green', 'blue', 'violet', 'amber', 'red'];
-
 const INSIGHT_ICONS = {
   day: ['<path d="M5 19v-6M10 19V9M15 19v-5M20 19V6"/>', 'blue'],
   gainer: ['<path d="m4 16 6-6 4 4 6-7"/><path d="M15 7h5v5"/>', 'green'],
@@ -40,21 +28,37 @@ function railError(error) {
   return `<p class="rail-copy rail-error" role="alert">${escHtml(error.message || 'Could not load this.')}</p>`;
 }
 
+// Exact rupees like the mock-up, falling back to lakh/crore when they would not fit a column.
+function railAmount(value) {
+  const exact = money(value);
+  return exact.length > 10 ? moneyShort(value) : exact;
+}
+
 function sparkline(points, tone) {
-  const values = thin(points).map((point) => point.networthInr);
+  const values = thin(points, 60).map((point) => point.networthInr);
   if (values.length < 2) return '';
+  const width = 280;
+  const height = 110;
   const min = Math.min(...values);
   const range = Math.max(...values) - min || 1;
   const coords = values.map((value, index) => [
-    (index / (values.length - 1)) * 240,
-    64 - ((value - min) / range) * 56,
-  ].map((n) => n.toFixed(1)).join(' '));
-  return `<svg class="rail-spark ${tone}" viewBox="0 0 240 70" preserveAspectRatio="none" role="img" aria-label="Net worth trend">
+    (index / (values.length - 1)) * (width - 6),
+    height - 8 - ((value - min) / range) * (height - 22),
+  ]);
+  const line = coords.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(' L');
+  // Round dots that stay round when the chart stretches: zero-length strokes with round caps.
+  const markerEvery = Math.max(1, Math.round(values.length / 7));
+  const markers = coords.filter((_, index) => index > 0 && index < coords.length - 1 && index % markerEvery === 0)
+    .map(([x, y]) => `M${x.toFixed(1)} ${y.toFixed(1)}h0`).join(' ');
+  const [lastX, lastY] = coords[coords.length - 1];
+  return `<svg class="rail-spark ${tone}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Net worth trend">
     <defs><linearGradient id="rail-spark-fill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="currentColor" stop-opacity=".28"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/>
+      <stop offset="0" stop-color="currentColor" stop-opacity=".32"/><stop offset="1" stop-color="currentColor" stop-opacity=".02"/>
     </linearGradient></defs>
-    <path d="M${coords.join(' L')} V70 H0 Z" fill="url(#rail-spark-fill)"/>
-    <path d="M${coords.join(' L')}" class="spark-line"/>
+    <path d="M${line} V${height} H0 Z" fill="url(#rail-spark-fill)"/>
+    <path d="M${line}" class="spark-line"/>
+    ${markers ? `<path d="${markers}" class="spark-dots"/>` : ''}
+    <path d="M${lastX.toFixed(1)} ${lastY.toFixed(1)}h0" class="spark-dot-end"/>
   </svg>`;
 }
 
@@ -93,22 +97,23 @@ async function renderRailPortfolio(isCurrent) {
   const change = historyChange(points);
   const tone = change && change.change < 0 ? 'is-down' : 'is-up';
   const changeHtml = change
-    ? `<span class="rail-change ${tone}" title="Change since ${escHtml(formatDate(change.from))}">${change.change < 0 ? '↓' : '↑'} ${percent(change.pct, { signed: true })} <small>(${change.label})</small></span>`
+    ? `<span class="rail-change ${tone}" title="Change since ${escHtml(formatDate(change.from))}"><span aria-hidden="true">${change.change < 0 ? '↓' : '↑'}</span> ${percent(change.pct, { signed: true })} <small>(${change.label})</small></span>`
     : '';
+  const updated = `Net worth from your snapshot, updated ${timeAgo(portfolio.capturedAt)}`;
   const basis = `Over ${pnl.holdings_counted} holdings with a reported cost${pnl.holdings_excluded ? `; ${pnl.holdings_excluded} without one (usually linked brokers) are left out` : ''}.`;
-  const schedule = history?.schedule ? ` · refreshes daily at ${escHtml(history.schedule.split(' ')[0])}` : '';
+  const returnsTone = pnl.pnl_inr < 0 ? 'is-down' : '';
   railPortfolio.innerHTML = `
     <div class="rail-figure-row">
-      <strong class="rail-figure" title="Net worth">${money(netWorth)}</strong>
+      <strong class="rail-figure" title="${escHtml(updated)}">${money(netWorth)}</strong>
       ${changeHtml}
     </div>
+    <span class="sr-only">${escHtml(updated)}.</span>
     ${sparkline(points, tone)}
     <dl class="rail-metrics" title="${escHtml(basis)}">
-      <div><dt>Invested</dt><dd>${moneyShort(pnl.invested_inr)}</dd></div>
-      <div><dt>Returns</dt><dd class="${toneOf(pnl.pnl_inr)}">${signedShort(pnl.pnl_inr)}</dd></div>
-      <div><dt>Return</dt><dd class="${toneOf(pnl.pnl_pct)}">${percent(pnl.pnl_pct, { signed: true })}</dd></div>
-    </dl>
-    <p class="rail-foot">Updated ${escHtml(timeAgo(portfolio.capturedAt))}${schedule} · <button class="link-button" type="button" data-refresh-snapshot>Refresh</button></p>`;
+      <div><dt>Total Invested</dt><dd>${railAmount(pnl.invested_inr)}</dd></div>
+      <div><dt>Total Returns</dt><dd class="${returnsTone}">${railAmount(pnl.pnl_inr)}</dd></div>
+      <div><dt>Return</dt><dd class="${returnsTone}">${percent(pnl.pnl_pct)}</dd></div>
+    </dl>`;
 }
 
 /* ── Goals card ─────────────────────────────────────────────────────── */
@@ -122,24 +127,31 @@ async function renderRailGoals(isCurrent) {
     return;
   }
   if (!isCurrent()) return;
+  document.querySelector('#right-rail a[href="#/goals"]').textContent = goals.length > RAIL_GOALS ? `See all (${goals.length})` : 'See all';
   if (!goals.length) {
-    railGoals.innerHTML = railMessage('Add what you are saving for, like a home or your child\'s education, to track your progress here.',
-      '<button class="rail-button" type="button" data-add-goal>Add a goal</button>');
+    railGoals.innerHTML = railMessage('Set what you are saving for, like a home or your child\'s education, and track your progress here.',
+      '<button class="rail-button" type="button" data-add-goal>Set a goal</button>');
     return;
   }
-  railGoals.innerHTML = `<ul class="rail-list">${goals.slice(0, RAIL_GOALS).map((goal, index) => {
+  // The nearest targets first; tones follow the user's own order so a goal keeps its colour.
+  const shown = goals.map((goal, index) => ({ goal, index }))
+    .sort((a, b) => a.goal.targetYear - b.goal.targetYear || a.index - b.index)
+    .slice(0, RAIL_GOALS);
+  const rows = shown.map(({ goal, index }) => {
     const projection = goalProjection(goal);
     const tone = GOAL_TONES[index % GOAL_TONES.length];
-    const status = projection.onTrack ? 'On track' : 'Needs more';
-    return `<li><a class="rail-row tone-${tone}" href="#/goals" title="${escHtml(`${goal.name}: ${status}`)}">
-      <span class="insight-icon tone-${tone}" aria-hidden="true"><svg viewBox="0 0 24 24">${GOAL_ICONS[goalKind(goal.name)]}</svg></span>
-      <span class="rail-row-body">
-        <span class="rail-row-head"><strong>${escHtml(goal.name)}</strong><span class="rail-pct">${Math.floor(projection.progress)}%</span></span>
-        <small>Target: ${money(goal.targetInr)} · ${goal.targetYear}</small>
-        <span class="progress rail-progress" role="progressbar" aria-label="${escHtml(goal.name)} saved" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.floor(projection.progress)}"><span style="width:${projection.progress.toFixed(1)}%"></span></span>
-      </span>
-    </a></li>`;
-  }).join('')}</ul>`;
+    const pct = Math.floor(projection.progress);
+    const status = projection.onTrack ? 'on track' : 'needs more';
+    return `<li><button class="rail-goal tone-${tone}" type="button" data-edit-goal="${escHtml(goal.id)}" title="${escHtml(`Edit ${goal.name} (${status}, target year ${goal.targetYear})`)}">
+      ${goalIconHtml(goal, tone, 'rail-goal-icon')}
+      <strong class="rail-goal-name">${escHtml(goal.name)}</strong>
+      <span class="rail-goal-pct">${pct}%</span>
+      <small class="rail-goal-target">Target: ${money(goal.targetInr)}</small>
+      <span class="progress rail-progress" role="progressbar" aria-label="${escHtml(goal.name)} saved" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${projection.progress.toFixed(1)}%"></span></span>
+    </button></li>`;
+  }).join('');
+  const add = goals.length < MAX_GOALS ? '<button class="rail-add" type="button" data-add-goal><span aria-hidden="true">+</span> Add a goal</button>' : '';
+  railGoals.innerHTML = `<ul class="rail-list rail-goals">${rows}</ul>${add}`;
 }
 
 /* ── Insights card ──────────────────────────────────────────────────── */

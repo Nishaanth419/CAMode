@@ -102,6 +102,13 @@
     return match ? match[0] : 'other';
   }
 
+  // The kind the user chose, or one inferred from the name for goals saved without it.
+  function goalIcon(goal) {
+    const chosen = goal && goal.kind;
+    if (chosen === 'other' || GOAL_KINDS.some(([kind]) => kind === chosen)) return chosen;
+    return goalKind(goal && goal.name);
+  }
+
   /* ── Net worth history ────────────────────────────────────────────── */
   function daysBetween(fromIso, toIso) {
     return Math.round((Date.parse(`${toIso}T00:00:00Z`) - Date.parse(`${fromIso}T00:00:00Z`)) / 86400000);
@@ -302,7 +309,7 @@
 
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
-    sipValue, grow, monthlyNeeded, monthsUntil, goalProjection, goalKind,
+    sipValue, grow, monthlyNeeded, monthsUntil, goalProjection, goalKind, goalIcon,
     spanLabel, historyChange, portfolioInsights,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };

@@ -14,12 +14,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=23" />
+  <link rel="stylesheet" href="/css/app.css?v=25" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/finance.js?v=1" defer></script>
+  <script src="/js/finance.js?v=2" defer></script>
   <script src="/js/app.js?v=22" defer></script>
-  <script src="/js/pages.js?v=9" defer></script>
-  <script src="/js/rail.js?v=1" defer></script>
+  <script src="/js/pages.js?v=10" defer></script>
+  <script src="/js/rail.js?v=4" defer></script>
 </head>
 <body>
   <div id="app">
@@ -366,22 +366,6 @@
             </div>
             <button id="add-goal" class="rail-button page-cta" type="button">Add a goal</button>
           </header>
-          <form id="goal-form" class="panel goal-form" hidden>
-            <div class="rail-head"><h2 id="goal-form-title">New goal</h2></div>
-            <div class="field-grid">
-              <label class="field field-wide"><span>Goal</span><input id="goal-name" type="text" maxlength="80" placeholder="e.g. Child's education" required /></label>
-              <label class="field"><span>Target amount (₹)</span><input id="goal-target" type="number" min="1" step="1" required /></label>
-              <label class="field"><span>Target year</span><input id="goal-year" type="number" min="2000" max="2100" step="1" required /></label>
-              <label class="field"><span>Already saved (₹)</span><input id="goal-saved" type="number" min="0" step="1" value="0" /></label>
-              <label class="field"><span>Investing each month (₹)</span><input id="goal-monthly" type="number" min="0" step="1" value="0" /></label>
-              <label class="field"><span>Expected yearly return (%)</span><input id="goal-return" type="number" min="0" max="30" step="0.1" value="10" /></label>
-            </div>
-            <p id="goal-status" class="dialog-status" role="status"></p>
-            <div class="dialog-actions">
-              <button id="goal-cancel" class="gate-secondary" type="button">Cancel</button>
-              <button class="rail-button dialog-save" type="submit">Save goal</button>
-            </div>
-          </form>
           <div id="goals-body"></div>
         </section>
 
@@ -417,7 +401,7 @@
       <section class="rail-card" aria-labelledby="rail-portfolio-title">
         <div class="rail-head">
           <h2 id="rail-portfolio-title">Your Financial Portfolio</h2>
-          <a class="rail-more" href="#/portfolio">View details <span aria-hidden="true">→</span></a>
+          <a class="rail-more" href="#/portfolio">View Details <span aria-hidden="true">→</span></a>
         </div>
         <div id="rail-portfolio" aria-live="polite"></div>
       </section>
@@ -619,6 +603,40 @@
         <label class="field"><span>Confirm with your PIN</span><input id="delete-pin" type="password" autocomplete="current-password" /></label>
         <button id="delete-profile" class="danger-button" type="button">Delete profile</button>
       </details>
+    </form>
+  </dialog>
+  <!-- ── Goal editor (Goals page, right rail, goal planner) ─────────────── -->
+  <dialog id="goal-dialog" class="profile-dialog goal-dialog" aria-labelledby="goal-dialog-title">
+    <form id="goal-form" method="dialog" novalidate>
+      <header class="dialog-head">
+        <h2 id="goal-dialog-title">New goal</h2>
+        <button class="icon-button" type="button" data-close-goal aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <p class="dialog-sub">Goals are locked with your PIN. Portfolio Analyzer can see them so it can relate your holdings to what you are saving for.</p>
+      <div class="field-grid">
+        <label class="field field-wide"><span>Goal</span><input id="goal-name" type="text" maxlength="80" placeholder="e.g. Home purchase" autocomplete="off" required /></label>
+        <label class="field"><span>Type</span>
+          <select id="goal-kind">
+            <option value="home">Home</option><option value="education">Education</option><option value="retirement">Retirement</option>
+            <option value="car">Vehicle</option><option value="travel">Travel</option><option value="wedding">Wedding</option>
+            <option value="emergency">Emergency fund</option><option value="other">Other</option>
+          </select>
+        </label>
+        <label class="field"><span>Target year</span><input id="goal-year" type="number" min="2000" max="2100" step="1" inputmode="numeric" required /></label>
+        <label class="field"><span>Target amount (₹)</span><input id="goal-target" type="number" min="1" max="100000000000" step="1" inputmode="numeric" required /></label>
+        <label class="field"><span>Already saved (₹)</span><input id="goal-saved" type="number" min="0" max="100000000000" step="1" inputmode="numeric" value="0" /></label>
+        <label class="field"><span>Investing each month (₹)</span><input id="goal-monthly" type="number" min="0" max="1000000000" step="1" inputmode="numeric" value="0" /></label>
+        <label class="field"><span>Expected yearly return (%)</span><input id="goal-return" type="number" min="0" max="30" step="0.1" inputmode="decimal" value="10" /></label>
+      </div>
+      <p id="goal-preview" class="goal-preview" aria-live="polite"></p>
+      <p id="goal-status" class="dialog-status is-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="goal-delete" class="gate-secondary danger-text" type="button" hidden>Delete</button>
+        <button class="gate-secondary" type="button" data-close-goal>Cancel</button>
+        <button class="rail-button dialog-save" type="submit">Save goal</button>
+      </div>
     </form>
   </dialog>
 </body>
