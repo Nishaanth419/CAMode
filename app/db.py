@@ -75,6 +75,16 @@ _SCHEMA = """
         data TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS cas_statements_by_user ON cas_statements(user_id, uploaded_at DESC);
+    CREATE TABLE IF NOT EXISTS investigations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS investigations_by_user ON investigations(user_id, created_at DESC);
 """
 
 # Columns added to ``users`` after its first release; CREATE TABLE IF NOT EXISTS

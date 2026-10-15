@@ -145,7 +145,7 @@ PORTFOLIO_SYSTEM_PROMPT = """You are Portfolio Analyzer in CA Mode. Answer perso
 
 Answer only what the user asked. Keep the response proportional to the question. Do not add unsolicited next steps, action plans, recommendations, or suggestions for what to invest in. In particular, when asked to analyze an equity or holding, provide the requested analysis and stop; do not append future-investment ideas or a generic “what to do next” section. Offer next steps or future-investment ideas only when the user explicitly asks for them.
 
-Saved snapshots: for net worth, allocation, holdings, or concentration questions, call `get_portfolio_snapshot` first when it is available and state when the snapshot was captured; use `get_networth_history` for trends or growth over time. Use the live INDmoney tools when the user asks for live or current prices, intraday moves, SIPs, watchlists, options, or anything the snapshot lacks, or when no snapshot exists.
+Saved snapshots: for net worth, allocation, holdings, or concentration questions, call `get_portfolio_snapshot` first when it is available and state when the snapshot was captured; use `get_networth_history` for trends or growth over time. When the user asks why their portfolio or net worth changed, rose or fell, or what drove a change between dates, call `investigate_portfolio_change` (with `baseline_date` when they name a starting date) and build the answer from its result: state both snapshot dates, quote its claims and figures, mark findings with verified=false or kind=estimate as such, mention every warning and limitation, describe contributors as observed changes rather than causes, use `shareOfChangePct` for how much of the change a holding or asset type accounts for (never compute such shares yourself), do not describe a change in the invested amount as new money unless the result says so, and never attribute a move to market news or any cause the result does not contain. If its status is insufficient_data, say there is not enough saved history; never describe that as no change. Use the live INDmoney tools when the user asks for live or current prices, intraday moves, SIPs, watchlists, options, or anything the snapshot lacks, or when no snapshot exists.
 
 Choose tools from their names, descriptions, and input schemas. Resolve a named stock, index, derivative, or fund with `lookup_ind_keys` when another tool requires its INDmoney identifier. For portfolio health and allocation questions, use the net-worth snapshot, relevant allocation breakdowns, and holdings. For listed-stock price, chart, and technical questions, use live details and OHLC tools; use watchlist first for watchlist scans. For options questions, retrieve the option chain and, when relevant, Greeks history before calculating scenario payoffs. For fund discovery, use category search; for a named fund or comparisons, use fund details and request comparable return periods, benchmark, fee, allocation, or holdings data as needed. Use SIP tools for the requested SIP type. Chain multiple read-only calls when the question needs them, and stop once the requested facts are supported.
 
@@ -463,6 +463,18 @@ async def _ollama_context_problem(client: httpx.AsyncClient, config: dict[str, A
     return None
 
 
+def _evidence_reference(result: str) -> dict[str, str]:
+    """The saved investigation a local tool result refers to, so the trace can link to its evidence."""
+    if '"investigationId"' not in result:
+        return {}
+    try:
+        parsed = json.loads(result)
+    except ValueError:
+        return {}
+    reference = parsed.get("investigationId") if isinstance(parsed, dict) else None
+    return {"investigation_id": reference[:64]} if isinstance(reference, str) and reference else {}
+
+
 def _message_text(content: Any) -> str | None:
     """Flatten a chat-completions message content (string or text parts)."""
     if isinstance(content, list):
@@ -494,8 +506,8 @@ async def stream_agent(
     Event types:
       • route       – { category, source, model?, duration_ms }  how the request was classified
       • model_call  – { provider, model, attempt }  model endpoint called
-      • tool_call   – { name, arguments }          tool is about to be called
-      • tool_result – { name, result, error? }      tool returned
+      • tool_call   – { name, arguments, source }  tool is about to be called (source: local | indmoney)
+      • tool_result – { name, result, error?, investigation_id? }  tool returned
       • content     – { text }                      final answer text
       • error       – { message }                   fatal error
       • done        – {}                            stream finished
@@ -695,7 +707,7 @@ async def stream_agent(
                     if not isinstance(arguments, dict):
                         arguments = {}
 
-                    yield "tool_call", {"name": name, "arguments": arguments}
+                    yield "tool_call", {"name": name, "arguments": arguments, "source": "local" if name in local_tools else "indmoney"}
 
                     if name in local_tools:
                         try:
@@ -706,7 +718,10 @@ async def stream_agent(
                             yield "tool_result", {"name": name, "error": str(exc)}
                             result_str = json.dumps({"error": f"{name} failed; use the live INDmoney tools instead."})
                         else:
-                            yield "tool_result", {"name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else "")}
+                            yield "tool_result", {
+                                "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
+                                **_evidence_reference(result_str),
+                            }
                         portfolio_tool_called = True
                         messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
                         continue
@@ -806,6 +821,7 @@ async def run_agent(
             arguments_text = json.dumps(payload.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
             trace.append({
                 "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
+                "source": payload.get("source", "indmoney"),
                 "arguments": arguments_text[:600], "status": "running",
                 "_started": time.perf_counter(),
             })
@@ -819,6 +835,8 @@ async def run_agent(
                     step["result_preview"] = str(payload["result"])[:1000]
                 if payload.get("error"):
                     step["error"] = str(payload["error"])[:300]
+                if payload.get("investigation_id"):
+                    step["investigation_id"] = payload["investigation_id"]
         elif event_type == "error":
             finish_model_step("failed")
             last_error = payload.get("message", "Unknown error")

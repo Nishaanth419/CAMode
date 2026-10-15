@@ -421,7 +421,7 @@ def save_indmoney(user_id: str, values: dict[str, Any]) -> None:
 
 
 def clear_indmoney(user_id: str) -> None:
-    """Forget the INDmoney connection and everything derived from it (cached tools, snapshots)."""
+    """Forget the INDmoney connection and everything derived from it (cached tools, snapshots, investigations)."""
     with connect_db() as connection:
         connection.execute(
             "UPDATE users SET indmoney = '{}', mcp_tools = NULL, mcp_tools_fetched_at = NULL, "
@@ -429,6 +429,7 @@ def clear_indmoney(user_id: str) -> None:
             (now_ms(), user_id),
         )
         connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
 
 
 def has_indmoney_tokens(values: dict[str, Any]) -> bool:

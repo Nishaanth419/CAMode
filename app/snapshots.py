@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import date, datetime, time as dt_time, timedelta, timezone, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -227,6 +227,19 @@ def latest_snapshot(
             "SELECT * FROM portfolio_snapshots WHERE user_id = ? AND as_of_date <= ? "
             "ORDER BY as_of_date DESC LIMIT 1",
             (user_id, on_or_before or "9999-12-31"),
+        ).fetchone()
+    return _snapshot_from_row(row, keys or ProfileKeys()) if row else None
+
+
+def previous_snapshot(
+    user_id: str, before_date: str, on_or_before: str | None = None, *, keys: ProfileKeys | None = None,
+) -> dict[str, Any] | None:
+    """The newest snapshot dated before ``before_date`` (and on or before ``on_or_before`` when given)."""
+    with connect_db() as connection:
+        row = connection.execute(
+            "SELECT * FROM portfolio_snapshots WHERE user_id = ? AND as_of_date < ? AND as_of_date <= ? "
+            "ORDER BY as_of_date DESC LIMIT 1",
+            (user_id, before_date, on_or_before or "9999-12-31"),
         ).fetchone()
     return _snapshot_from_row(row, keys or ProfileKeys()) if row else None
 
@@ -595,15 +608,18 @@ def fresh_cached_mcp_tools(user: dict[str, Any]) -> list[dict[str, Any]] | None:
     return None
 
 
-def portfolio_context(user: dict[str, Any]) -> PortfolioContext:
+def portfolio_context(user: dict[str, Any], *, extra_tools: Sequence[LocalTool] = ()) -> PortfolioContext:
     """Assemble the snapshot tools, profile text and cached MCP tool list for one chat request.
 
-    ``user["keys"]`` must be unlocked when the profile's data is sealed.
+    ``user["keys"]`` must be unlocked when the profile's data is sealed. ``extra_tools``
+    are other local tools for this request (``investigations`` imports this module, so
+    it passes its tool in rather than being imported here).
     """
     keys = user.get("keys") or ProfileKeys()
     local_tools = snapshot_tools(user["id"], keys)
     if cas.has_statement(user["id"]):
         local_tools.append(cas_tool(user["id"], keys))
+    local_tools.extend(extra_tools)
     return PortfolioContext(
         local_tools=tuple(local_tools),
         profile_context=profile_context(users.profile_fields(user, keys), latest_snapshot(user["id"], keys=keys)),

@@ -18,9 +18,9 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from . import backup, cas, chats, privacy, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, investigations, privacy, sealing, snapshots, unlock, users, vault
 from .agent import configured_providers, default_provider, run_agent
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -111,6 +111,20 @@ class CasUploadRequest(BaseModel):
     password: str = Field(max_length=100)
     # Base64 of a PDF up to cas.MAX_PDF_BYTES (4 characters per 3 bytes).
     pdfBase64: str = Field(min_length=1, max_length=cas.MAX_PDF_BYTES * 4 // 3 + 4)
+
+
+class InvestigationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Compare with the snapshot on or before this day; omitted: the previous saved day.
+    baselineDate: str | None = Field(default=None, examples=["2026-09-01"])
+
+    @field_validator("baselineDate")
+    @classmethod
+    def _valid_date(cls, value: str | None) -> str | None:
+        try:
+            return investigations.parse_baseline_date(value)
+        except investigations.InvestigationError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class RecoverRequest(BaseModel):
@@ -472,7 +486,10 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
     user["keys"] = keys
     logger.info("profile_data_exported", extra={"user_id": user["id"]})
     return JSONResponse(
-        privacy.export_data(user, snapshots.all_snapshots(user["id"], keys), cas.all_statements(user["id"], keys)),
+        privacy.export_data(
+            user, snapshots.all_snapshots(user["id"], keys), cas.all_statements(user["id"], keys),
+            investigations.all_investigations(user["id"], keys),
+        ),
         headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
     )
 
@@ -738,6 +755,58 @@ async def refresh_snapshot(request: Request):
     return {"latest": _snapshot_summary(snapshot)}
 
 
+# ── Investigations ─────────────────────────────────────────────────────────────
+
+@app.post("/api/investigations", status_code=201)
+async def create_investigation(body: InvestigationRequest, request: Request):
+    """Compare the latest saved snapshot with an earlier one, check the data, and save the result.
+
+    Reads only saved snapshots (never INDmoney), so repeating the request has no side
+    effect beyond another saved run; no idempotency key is needed.
+    """
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    try:
+        record = await investigations.investigate_portfolio_change(user, baseline_date=body.baselineDate, trigger="api")
+    except investigations.InvestigationStorageError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    logger.info("investigation_run", extra={"user_id": user["id"], "status": record["status"]})
+    if not record["saved"]:
+        # Private mode, or the result could not be saved: nothing was created.
+        return JSONResponse(record, status_code=200)
+    return JSONResponse(record, status_code=201, headers={"Location": f"/api/investigations/{record['id']}"})
+
+
+@app.get("/api/investigations")
+async def list_investigations(request: Request, limit: int = Query(default=20, ge=1, le=investigations.KEEP_INVESTIGATIONS)):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"investigations": investigations.list_investigations(user["id"], user["keys"], limit=limit)}
+
+
+@app.get("/api/investigations/{investigation_id}")
+async def get_investigation(investigation_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    record = investigations.get_investigation(user["id"], investigation_id, user["keys"])
+    if record is None:
+        return JSONResponse({"error": "Investigation not found."}, status_code=404)
+    return record
+
+
+@app.delete("/api/investigations/{investigation_id}")
+async def delete_investigation(investigation_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    if not investigations.delete_investigation(user["id"], investigation_id):
+        return JSONResponse({"error": "Investigation not found."}, status_code=404)
+    return {"deleted": True}
+
+
 # ── Chats ──────────────────────────────────────────────────────────────────────
 
 @app.get("/api/chats")
@@ -815,7 +884,9 @@ async def chat(body: ChatRequest, request: Request):
         token = await users.user_access_token(user["id"])
         if not token:
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
-        context = snapshots.portfolio_context(user)
+        context = snapshots.portfolio_context(
+            user, extra_tools=[investigations.investigation_tool(user, provider=provider)],
+        )
     history = data.get("messages", [])
     try:
         answer = await run_agent(message, MCP_RESOURCE, token, history, body.agentType, provider, context=context)
