@@ -23,10 +23,24 @@ _UNITS: Final = {
     "million": Decimal(1_000_000), "mn": Decimal(1_000_000), "m": Decimal(1_000_000),
     "billion": Decimal(1_000_000_000), "bn": Decimal(1_000_000_000),
 }
+
+
+def _spaced_number(separator: str) -> str:
+    """Digits grouped by ``separator`` in threes or Indian style ("79 000", "8 89 000"), ending in three digits."""
+    return (
+        rf"(?:\d{{1,3}}(?:{separator}\d{{3}})+|\d{{1,2}}(?:{separator}\d{{2}})+{separator}\d{{3}})"
+        r"(?!\d)(?:\.\d+)?"
+    )
+
+
+# Spaces as digit-group separators ("₹79 000"). A plain space counts only right after a
+# currency sign; elsewhere only the no-break spaces models use for grouping (U+00A0, U+202F),
+# so separate numbers such as "in 2026 100 units" or "top 10 100%" never merge.
 _NUMBER_RE: Final = re.compile(
-    r"(?P<currency>₹|rs\.?\s?|inr\s?|\$|usd\s?)?"
+    r"(?P<currency>₹\s?|rs\.?\s?|inr\s?|\$\s?|usd\s?)?"
     r"(?P<sign>[-−+])?"
-    r"(?P<number>\d[\d,]*(?:\.\d+)?)"
+    rf"(?P<number>(?(currency){_spaced_number(r'[ \u00a0\u202f]')}|{_spaced_number(r'[\u00a0\u202f]')})"
+    r"|\d[\d,]*(?:\.\d+)?)"
     r"(?:\s?(?P<unit>crores?|cr|lakhs?|lacs?|l|k|thousand|million|mn|m|billion|bn)\b)?"
     r"\s?(?P<percent>%|percent\b)?",
     re.IGNORECASE,
@@ -38,7 +52,7 @@ _RELATIVE_TOLERANCE: Final = Decimal("0.005")
 
 def _decimal(text: str) -> Decimal | None:
     try:
-        return Decimal(text.replace(",", ""))
+        return Decimal(re.sub(r"[, \u00a0\u202f]", "", text))
     except InvalidOperation:
         return None
 
