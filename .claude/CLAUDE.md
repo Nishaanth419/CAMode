@@ -103,6 +103,13 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `main.chat` passes `investigation_tool(user, provider=...)` via `portfolio_context(extra_tools=...)` (investigations imports snapshots, so not the reverse). The tool result's `investigationId` becomes the trace step's `investigation_id`; `app.js` `attachInvestigationCard()` fetches the run by id to render the evidence card
 - Before changing the portfolio prompt or `agent_payload()`, re-run `python -m scripts.eval_investigations --provider ollama --runs 3` (`evals/portfolio_change.jsonl`, graded in code; baseline in the README). It runs on a temp `APP_DATA_DIR`, injects scope/timeout faults, and stubs live INDmoney tools; `--regrade` re-scores an `--out` file without the model
 - Deleted with history clearing, private mode, INDmoney disconnect and profile deletion; included in export
+- Records carry `updatedAt` (the plain column) so clients can order copies; `list_investigations()` items add `durationMs` (unset while running or interrupted), `trigger`, `baselineDate`, `chatId` (`investigation_tool(user, chat_id=...)`, passed by `main.chat`), `period`, `error`, `findingCount`, `warningCount`
+
+**Answer trace and Activity** (`agent.py`, `frontend/js/trace.js`, `pages.js`):
+- `agent.redact_trace_text()` masks tokens, secrets, PINs, PAN and bearer/JWT strings in trace `arguments`, `result_preview` and `error` before the trace is sent or saved; `trace.js` `redactText()` repeats it for older saved chats
+- `trace.js` (loaded after `finance.js`, exported for Node tests) renders the answer trace (`renderChatTrace()`), the evidence card (`renderInvestigationCard(record, {chart})`) and Activity rows; it formats figures but never computes them. A step still `running` in a finished trace or run shows as *Did not finish*
+- `#/activity` lists `GET /api/investigations?limit=50` with client-side filters (All/Running/Completed/Failed; no approval state exists); `#/activity/<id>` shows one run. Lists are reconciled with `reconcileInvestigations()` (newer `updatedAt` wins, a finished run is never replaced by an older running copy) and out-of-order responses dropped with `createSequencer()`; polling (`pollDelay()`) runs only while a run is active and the page is visible
+- No streaming: the trace arrives with the finished answer. "Run again" (failed/cancelled only) re-POSTs the same `baselineDate` on a click, never automatically
 
 **Tool allowlist** (`mcp_client.py`):
 - `IMPORTANT_PORTFOLIO_TOOL_NAMES`: 15 documented read-only INDmoney tools
@@ -124,10 +131,11 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - Static HTML/CSS/JS in `frontend/` (installable PWA)
 - `index.html`: app shell, profile picker (`#profile-gate`, including the `#consent-form` privacy step), profile dialog (`<dialog id="profile-dialog">`, including the `#data-zone` privacy settings)
 - `app.js`: profile sign-in/creation, privacy notice and storage choices, export and history clearing, profile dialog (including INDmoney connect/disconnect), chat UI, agent switch above the input, sidebar recent chats (newest 6), `refreshSnapshot()`, Markdown rendering (links limited to http(s)/mailto), Plotly charts, theme toggle. Fires `ca:session`, `ca:chats` and `ca:snapshot` document events for the pages
+- `trace.js` (loaded after `finance.js`): answer trace timeline, investigation evidence card and Activity helpers (see "Answer trace and Activity")
 - `finance.js` (loaded first): pure helpers shared by the pages and the rail and exported for Node tests: Indian money formatting, SIP/lumpsum/goal math, `goalProjection()`, `goalKind()`, `historyChange()`, `portfolioInsights()` (observations about the user's own holdings, never market news) and `incomeTax()` with `TAX_RULES` (FY 2026-27 slabs, 87A rebate and marginal relief, surcharge with marginal relief, 4% cess). Update `TAX_RULES`, its label and `tests/js/finance.test.js` after each budget
 - `rail.js` (loaded last): the right rail's Financial Portfolio (net worth, change over the saved history, sparkline, Total Invested / Total Returns / Return % over holdings with a cost), Financial Goals (the 3 nearest target years; a row opens the goal editor, "+ Add a goal" below), Market Insights and Quick Tools cards; renders on `ca:session`, `ca:snapshot` and `ca:goals`, and clears on `ca:session-ended`. Hidden below 1280px like before
 - Session events: `loadChats()` sets `isSessionReady = false` and fires `ca:session-ended` (pages and rail drop the previous profile's figures), then `ca:session` once the profile is signed in, unlocked and consenting. Data loaders in `pages.js` (`getPortfolio()`, `getHistory(days)`, `getGoals()`) share one cached request; a 401/403 from them triggers a single `reloadSession()`
-- `pages.js` (loaded after `app.js`, uses its globals): hash routes `#/` (Home), `#/chat` (Ask AI), `#/portfolio`, `#/investments` (holdings table, CSV, CAS upload), `#/planning/<sip|lumpsum|goal|emi|tax>` (calculators run in the browser), `#/markets` (`#/markets/funds` focuses the fund form), `#/goals`, `#/reports`, `#/chats`; `navigate(route)` switches between the chat view and `#page-view`. Prompt buttons anywhere use `data-prompt` / `data-agent` (one delegated listener in `app.js`)
+- `pages.js` (loaded after `app.js`, uses its globals): hash routes `#/` (Home), `#/chat` (Ask AI), `#/activity` and `#/activity/<id>` (saved investigations), `#/portfolio`, `#/investments` (holdings table, CSV, CAS upload), `#/planning/<sip|lumpsum|goal|emi|tax>` (calculators run in the browser), `#/markets` (`#/markets/funds` focuses the fund form), `#/goals`, `#/reports`, `#/chats`; `navigate(route)` switches between the chat view and `#page-view`. Prompt buttons anywhere use `data-prompt` / `data-agent` (one delegated listener in `app.js`)
 - `sw.js`: service worker that serves the cached app shell offline (API data is always fetched live)
 - Plotly is loaded from the CDN by a `<script>` tag in `index.html`
 - Bump the `?v=` cache-busters in `index.html` and `CACHE_NAME` in `sw.js` when changing frontend assets
@@ -163,7 +171,7 @@ python -m pytest tests/test_agent.py::test_finance_agent_blocks_net_worth_code_r
 
 python -m compileall -q app tests
 for file in frontend/js/*.js; do node --check "$file"; done
-node --test tests/js/finance.test.js
+node --test tests/js/*.test.js
 
 # GitHub Actions runs all of these
 python -m compileall -q app tests && python -m pytest -q
@@ -255,6 +263,7 @@ Test coverage:
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers
 - `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
+- `tests/js/trace.test.js` (`node --test`): status labels and tones, step ordering and investigation links, details disclosure, missing fields and unknown kinds, evidence card sections, Activity filters, retry rules, reconciliation of duplicate/out-of-order/refreshed lists, redaction and escaping
 - `tests/js/finance.test.js` (`node --test`): formatting, growth and goal math, goal icons, history change, snapshot insights, income tax for both regimes including rebates, surcharge and marginal relief
 
 ## Performance Notes
