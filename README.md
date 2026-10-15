@@ -206,6 +206,43 @@ Ask Portfolio Analyzer "Why did my portfolio change?" (or "What changed since 20
 
 The answer shows an evidence card with the findings, the largest movers, the data checks, the calculations and the steps. Runs have a 10-second step timeout and a 30-second deadline; a saved-snapshot read is retried once if the database is briefly locked. Investigations report what changed, not why: they never claim a cause such as market news.
 
+### Measuring the answers
+
+`evals/portfolio_change.jsonl` holds 10 versioned cases (`portfolio_change.v1`): a consistent pair with a clear change, no earlier snapshot, a different account scope, holdings that don't add up to INDmoney's totals, a stale snapshot, a tool timeout, an ambiguous question, a question that needs news, a request to trade, and a date before any saved history. Each case gets its own throwaway profile and database with snapshots from `tests/fixtures/snapshot_pairs.py`; the script first checks that the investigation itself returns the expected status and flagged checks, then asks the real agent. Live INDmoney tools are offered but return an error, so only the AI provider is called.
+
+```bash
+set -a; source .env; set +a
+python -m scripts.eval_investigations --provider ollama --delay 0 --runs 3
+python -m scripts.eval_investigations   # fixtures only, no model calls
+```
+
+Answers are graded in code, not on how convincing they read:
+
+- **Tool selection**: `investigate_portfolio_change` is called when the case needs it; for the ambiguous question, a clarifying question also counts.
+- **Arithmetic**: every amount and percentage matches a number a tool returned (the same matching as the warning under answers). A correct figure the model worked out itself still fails, because the prompt tells it to quote, not compute.
+- **Unsupported claims**: no external cause (news, RBI, rates, sentiment…) given as the reason unless the result contains it, and no "mainly market gains" when the market-effect estimate is under half of the change.
+- **Warning mentioned**: the flagged scope, reconciliation, staleness or timeout problem appears in the answer.
+- **Insufficient-data honesty**: a missing comparison is described as missing, never as "no change".
+- **Case instructions**: the trade request is declined without claiming a trade; the news question says the cause was not checked.
+
+The script also prints latency and tool and model calls per case. The phrase rules are regular expressions, so check a surprising failure with `--verbose`. `--out answers.jsonl` saves each answer with its tool results, and `--regrade answers.jsonl` scores them again without the model. By default the request router uses keywords (`REQUEST_ROUTER=model` includes the classifier), and the second account scope is injected by the script, since the app has one scope today.
+
+**Baseline** (`ca-mode`, gpt-oss-20b, 3 runs × 10 cases, M5 Pro, 2026-10-15):
+
+| Metric | Score |
+| --- | --- |
+| Tool selection | 22/24 |
+| Evidence (net-worth change, top mover) | 3/3 |
+| Arithmetic | 21/30 |
+| Answers with an unsupported claim | 1/30 |
+| Warning mentioned | 10/12 |
+| Insufficient-data honesty | 8/9 |
+| Case instructions | 6/6 |
+| **Cases passed** | **21/30** (6–9 per run) |
+| Latency | p50 21 s, max 71 s; 1.2 tool and 2.2 model calls per case |
+
+Most failures are the model's own arithmetic: lakh amounts written 100 times too large (₹8,10,00,000 for ₹8.1 lakh), a ₹79,000 fall reported as ₹790,000, and its own sums (the ₹25,000 gap behind a reconciliation warning). It also skipped the investigation for "check whether my holdings add up" in 2 of 3 runs, and it attributed a fund's rise to price when buying more units drove most of it. Exit status is 1 when a run passes fewer than `--min-pass` cases (default 6).
+
 ## Holdings at other brokers (CAS)
 
 INDmoney may not see every broker you use. A **Consolidated Account Statement (CAS)** does: NSDL and CDSL email one each month listing every demat account at every broker, plus mutual fund folios and NPS. CAMS and KFintech statements (mutual funds only) are also accepted.

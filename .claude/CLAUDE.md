@@ -101,6 +101,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - Bounded by `STEP_TIMEOUT_SECONDS` and `DEADLINE_SECONDS`; only snapshot reads retry, once, on `database is locked`; errors become safe messages (`_safe_error`), never raw exception text
 - Status/times are plain columns, the record is sealed; runs still `running` after `INTERRUPTED_AFTER_MS` read as interrupted. Private mode does not persist; a save failure before start is `InvestigationStorageError` (503), after the run the result is returned with `saved: false` (200). The tool memoises results per request and keeps its payload under `MAX_AGENT_PAYLOAD_CHARS` (Groq)
 - `main.chat` passes `investigation_tool(user, provider=...)` via `portfolio_context(extra_tools=...)` (investigations imports snapshots, so not the reverse). The tool result's `investigationId` becomes the trace step's `investigation_id`; `app.js` `attachInvestigationCard()` fetches the run by id to render the evidence card
+- Before changing the portfolio prompt or `agent_payload()`, re-run `python -m scripts.eval_investigations --provider ollama --runs 3` (`evals/portfolio_change.jsonl`, graded in code; baseline in the README). It runs on a temp `APP_DATA_DIR`, injects scope/timeout faults, and stubs live INDmoney tools; `--regrade` re-scores an `--out` file without the model
 - Deleted with history clearing, private mode, INDmoney disconnect and profile deletion; included in export
 
 **Tool allowlist** (`mcp_client.py`):
@@ -247,6 +248,7 @@ Test coverage:
 - `test_cas.py`: parsing NSDL/CDSL and CAMS statements built from `casparser`'s own models (personal details dropped), error messages, upload/list/delete API and gates, retention, the agent tool, clearing and export
 - `test_investigation_math.py`, `test_investigation_checks.py`: change maths (zero/missing bases, duplicates, changed codes, coverage, allocation bases) and every check, including the asset-type `holding_percent` denominator trap; `tests/fixtures/snapshot_pairs.py` builds self-consistent snapshot pairs
 - `test_investigations.py`: API, sealed persistence, gates, profile isolation, private mode, privacy deletion paths, deadline, lock retry, safe errors, storage failures, interruption, cancellation, the agent tool and its trace link
+- `test_eval_investigations.py`: every eval fixture yields its expected investigation status and flagged checks; the grader's arithmetic, unsupported-claim, honesty and refusal rules on canned answers
 - `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API, CLI
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch
