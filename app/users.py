@@ -61,6 +61,23 @@ class ProfileLockedError(ProfileError):
         self.retry_after_seconds = retry_after_seconds
 
 
+MAX_GOALS = 10
+
+
+class Goal(BaseModel):
+    """A savings goal the user tracks on the Goals page; amounts are whole rupees."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,32}$")
+    name: str = Field(min_length=1, max_length=80)
+    targetInr: int = Field(ge=1, le=100_000_000_000)
+    targetYear: int = Field(ge=2000, le=2100)
+    savedInr: int = Field(default=0, ge=0, le=100_000_000_000)
+    monthlyInr: int = Field(default=0, ge=0, le=1_000_000_000)
+    expectedReturnPct: float = Field(default=10, ge=0, le=30)
+
+
 class ProfileFields(BaseModel):
     """Optional, user-entered context the Portfolio Analyzer may use to tailor answers."""
 
@@ -71,6 +88,7 @@ class ProfileFields(BaseModel):
     primaryGoal: str | None = Field(default=None, max_length=200)
     monthlyInvestmentInr: int | None = Field(default=None, ge=0, le=1_000_000_000)
     ageBand: Literal["under-25", "25-34", "35-44", "45-54", "55+"] | None = None
+    goals: list[Goal] | None = Field(default=None, max_length=MAX_GOALS)
 
 
 def now_ms() -> int:
@@ -275,7 +293,16 @@ def profile_fields(user: dict[str, Any], keys: ProfileKeys) -> dict[str, Any]:
 
 
 def update_profile(user_id: str, fields: ProfileFields, keys: ProfileKeys) -> dict[str, Any]:
+    """Replace the profile's fields, keeping its saved goals when ``fields`` leaves ``goals`` unset.
+
+    Raises ``sealing.LockedError`` if goals must be carried over and ``keys`` is locked.
+    """
     profile = fields.model_dump(exclude_none=True)
+    if "goals" not in fields.model_fields_set:
+        user = get_user(user_id)
+        saved_goals = profile_fields(user, keys).get("goals") if user else None
+        if saved_goals:
+            profile["goals"] = saved_goals
     with connect_db() as connection:
         connection.execute(
             "UPDATE users SET profile = ?, updated_at = ? WHERE id = ?",
