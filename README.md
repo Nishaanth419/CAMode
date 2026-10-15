@@ -316,8 +316,9 @@ Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up,
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m compileall -q app tests
-node --check frontend/js/app.js
+for file in frontend/js/*.js; do node --check "$file"; done
 python -m pytest -q
+node --test tests/js/finance.test.js   # finance math, tax rules and rail insights (Node 18+)
 ```
 
 The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls.
@@ -327,7 +328,9 @@ To measure request routing on the labelled questions in `evals/request_routing.j
 ```bash
 set -a; source .env; set +a
 python -m scripts.eval_router --provider ollama   # or openai, groq; omit --provider to score only the keyword rules
-``` GitHub Actions runs the compile and pytest checks on pushes and pull requests.
+```
+
+GitHub Actions runs the compile, pytest, script syntax and frontend unit test checks on pushes and pull requests.
 
 ## Project structure
 
