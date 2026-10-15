@@ -13,7 +13,6 @@ if ('serviceWorker' in navigator) {
 const statusDot  = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const chatList   = document.getElementById('chat-list');
-const chatCount  = document.getElementById('chat-count');
 const chatSearch = document.getElementById('chat-search');
 const newChatButton = document.getElementById('new-chat-button');
 const emptyState = document.getElementById('empty-state');
@@ -24,7 +23,7 @@ const sendBtn    = document.getElementById('send-btn');
 const authButton = document.getElementById('auth-button');
 const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
-const agentNavItems = document.querySelectorAll('.nav-item[data-agent]');
+const agentNavItems = document.querySelectorAll('.agent-option[data-agent]');
 const providerPicker = document.getElementById('provider-picker');
 const greeting = document.getElementById('greeting');
 const welcomeAgentName = document.getElementById('welcome-agent-name');
@@ -33,18 +32,9 @@ const followUps = document.getElementById('follow-ups');
 const accountName = document.getElementById('account-name');
 const accountPlan = document.getElementById('account-plan');
 const accountAvatar = document.querySelector('.account-avatar');
-const portfolioPill = document.getElementById('portfolio-pill');
-const portfolioCopy = document.getElementById('portfolio-copy');
-const portfolioCta = document.getElementById('portfolio-cta');
 const menuToggle = document.getElementById('menu-toggle');
 const sidebarScrim = document.getElementById('sidebar-scrim');
-const promptButtons = document.querySelectorAll('[data-prompt]');
 const accountTrigger = document.getElementById('account-trigger');
-const portfolioFigure = document.getElementById('portfolio-figure');
-const portfolioSpark = document.getElementById('portfolio-spark');
-const sparkArea = document.getElementById('spark-area');
-const sparkLine = document.getElementById('spark-line');
-const snapshotRefresh = document.getElementById('snapshot-refresh');
 const profileGate = document.getElementById('profile-gate');
 const profileList = document.getElementById('profile-list');
 const showCreateProfile = document.getElementById('show-create-profile');
@@ -70,8 +60,13 @@ const dataZone = document.getElementById('data-zone');
 const dataSummary = document.getElementById('data-summary');
 const dataStatus = document.getElementById('data-status');
 const settingsNotice = document.getElementById('settings-notice');
+const connectionStatus = document.getElementById('connection-status');
 const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal'];
+// The sidebar lists this many recent chats; "See all" opens the full list.
+const SIDEBAR_CHATS = 6;
 let isConnected = false;
+// True between a successful load of the signed-in, unlocked, consenting profile and the next loadChats().
+let isSessionReady = false;
 let currentUser = null;
 let storageMode = 'device';
 let privacyPolicyVersion = null;
@@ -142,7 +137,9 @@ themeToggle.addEventListener('click', () => {
 
 function updateGreeting() {
   const hour = new Date().getHours();
-  greeting.textContent = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const text = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  greeting.textContent = text;
+  document.querySelectorAll('.js-greeting').forEach((item) => { item.textContent = text; });
 }
 updateGreeting();
 
@@ -204,85 +201,34 @@ function setStatus(state, label) {
 function setBusy(busy) {
   isStreaming = busy;
   sendBtn.disabled = busy;
-  promptButtons.forEach((button) => { button.disabled = busy; });
+  document.querySelectorAll('button[data-prompt]').forEach((button) => { button.disabled = busy; });
   agentNavItems.forEach((item) => { item.disabled = busy; });
 }
 
 function renderAccount() {
   authButton.textContent = isConnected ? 'Disconnect' : 'Connect';
   authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
+  connectionStatus.textContent = isConnected ? 'Connected. Portfolio Analyzer can read your holdings.' : 'Not connected';
   accountName.textContent = currentUser?.displayName || 'Guest';
-  accountPlan.textContent = isConnected ? 'Connected' : 'Not connected';
+  accountAvatar.textContent = (currentUser?.displayName || '?').trim().charAt(0).toUpperCase();
+  accountPlan.textContent = [isConnected ? 'INDmoney connected' : 'INDmoney not connected', storageMode === 'private' ? 'Private' : '']
+    .filter(Boolean).join(' · ');
   accountPlan.title = accountPlan.textContent;
   accountAvatar.classList.toggle('is-connected', isConnected);
-  portfolioPill.textContent = isConnected ? 'Connected' : 'Not connected';
-  portfolioPill.classList.toggle('is-connected', isConnected);
-  portfolioCopy.textContent = isConnected
-    ? 'Your INDmoney account is linked. Ask the Portfolio Analyzer for a live snapshot of your net worth and holdings.'
-    : 'Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.';
-  portfolioCta.textContent = isConnected ? 'Ask about my net worth' : 'Connect INDmoney';
-  snapshotRefresh.hidden = !isConnected || storageMode === 'private';
-  if (!isConnected) renderSnapshot(null, []);
-  else if (storageMode === 'private') {
-    renderSnapshot(null, []);
-    portfolioCopy.textContent = 'Private mode: no daily snapshots are saved. Portfolio Analyzer reads INDmoney live.';
-  }
 }
 
-/* ── Daily portfolio snapshot card ──────────────────────────────────── */
-const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-
+/* ── Daily portfolio snapshots ──────────────────────────────────────── */
 function formatCaptured(timestamp) {
   return new Date(Number(timestamp)).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
-function renderSnapshot(latest, history, schedule = '09:00') {
-  const values = history.map(point => point.networthInr).filter(Number.isFinite);
-  portfolioFigure.hidden = !Number.isFinite(latest?.networthInr);
-  portfolioFigure.textContent = portfolioFigure.hidden ? '' : inr.format(latest.networthInr);
-  // SVG elements have no `hidden` property, so toggle the attribute directly.
-  portfolioSpark.toggleAttribute('hidden', values.length < 2);
-  if (values.length >= 2) {
-    const min = Math.min(...values);
-    const range = Math.max(...values) - min || 1;
-    const points = values.map((value, index) => [
-      (index / (values.length - 1)) * 240,
-      62 - ((value - min) / range) * 54,
-    ].map(n => n.toFixed(1)).join(' '));
-    sparkLine.setAttribute('d', `M${points.join(' L')}`);
-    sparkArea.setAttribute('d', `M${points.join(' L')} V70 H0 Z`);
-  }
-  if (!isConnected || storageMode === 'private') return;
-  portfolioCopy.textContent = latest
-    ? `Snapshot captured ${formatCaptured(latest.capturedAt)}. It refreshes every day at ${schedule.split(' ')[0]}.`
-    : `Your first snapshot is being saved. After that it refreshes every day at ${schedule.split(' ')[0]}.`;
+// Saves a new snapshot from INDmoney, then tells the pages and the rail to reload their figures.
+async function refreshSnapshot() {
+  const response = await fetch('/api/snapshots/refresh', { method: 'POST' });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not refresh the snapshot.');
+  document.dispatchEvent(new CustomEvent('ca:snapshot'));
 }
-
-async function loadSnapshot() {
-  if (!isConnected || storageMode === 'private') return;
-  try {
-    const response = await fetch('/api/snapshots?days=30');
-    if (!response.ok) return;
-    const data = await response.json();
-    renderSnapshot(data.latest, data.history || [], data.schedule);
-  } catch { /* The card keeps its connected copy; chat still works. */ }
-}
-
-snapshotRefresh.addEventListener('click', async () => {
-  snapshotRefresh.disabled = true;
-  snapshotRefresh.textContent = 'Refreshing…';
-  try {
-    const response = await fetch('/api/snapshots/refresh', { method: 'POST' });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'Could not refresh the snapshot.');
-    await loadSnapshot();
-  } catch (error) {
-    portfolioCopy.textContent = error.message;
-  } finally {
-    snapshotRefresh.disabled = false;
-    snapshotRefresh.textContent = 'Refresh snapshot now';
-  }
-});
 
 /* ── CAS statements (holdings at every broker) ──────────────────────── */
 const casCard = document.getElementById('cas-card');
@@ -291,6 +237,34 @@ const casPill = document.getElementById('cas-pill');
 const casCopy = document.getElementById('cas-copy');
 const casStatus = document.getElementById('cas-status');
 const casAsk = document.getElementById('cas-ask');
+const CAS_DEFAULT_COPY = casCopy.textContent;
+
+function renderCasStatements(statements) {
+  const list = document.getElementById('cas-statements');
+  list.innerHTML = '';
+  if (!statements.length) return;
+  const table = document.createElement('table');
+  table.className = 'data-table compact';
+  table.innerHTML = '<thead><tr><th>Statement</th><th>Holdings</th><th>Value</th><th><span class="sr-only">Actions</span></th></tr></thead>';
+  const body = document.createElement('tbody');
+  for (const statement of statements) {
+    const row = document.createElement('tr');
+    row.innerHTML = `<td>${escHtml(statement.source)} · ${escHtml(statement.periodTo)}</td><td>${Number(statement.holdings) || 0}</td><td>${inr.format(statement.valueInr || 0)}</td><td></td>`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'table-action';
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', async () => {
+      if (!window.confirm('Delete this saved statement?')) return;
+      const response = await fetch('/api/cas/' + encodeURIComponent(statement.id), { method: 'DELETE' });
+      if (response.ok) await loadCasStatus();
+    });
+    row.lastElementChild.appendChild(remove);
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  list.appendChild(table);
+}
 
 function renderCas(latest) {
   casPill.textContent = latest ? `As of ${latest.periodTo}` : 'No statement';
@@ -299,6 +273,8 @@ function renderCas(latest) {
   if (latest) {
     const brokers = latest.brokers.length;
     casCopy.textContent = `${inr.format(latest.valueInr)} in ${latest.holdings} holdings across ${brokers} account${brokers === 1 ? '' : 's'} (${latest.source} statement). Upload a newer one each month.`;
+  } else {
+    casCopy.textContent = CAS_DEFAULT_COPY;
   }
 }
 
@@ -314,7 +290,11 @@ async function loadCasStatus() {
   casForm.hidden = false;
   try {
     const response = await fetch('/api/cas');
-    if (response.ok) renderCas((await response.json()).statements?.[0]);
+    if (response.ok) {
+      const statements = (await response.json()).statements || [];
+      renderCas(statements[0]);
+      renderCasStatements(statements);
+    }
   } catch { /* The card keeps its default text. */ }
 }
 
@@ -348,8 +328,8 @@ casForm.addEventListener('submit', async (event) => {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || 'Could not read that statement.');
-    renderCas(data);
     casForm.reset();
+    await loadCasStatus();
     casStatus.textContent = 'Saved. The PDF and its password were not kept.';
   } catch (error) {
     casStatus.classList.add('is-error');
@@ -366,6 +346,9 @@ casAsk.addEventListener('click', () => {
 
 /* ── Load this signed-in user's conversations ───────────────────────── */
 async function loadChats() {
+  // Pages and the rail drop the previous profile's figures until this load finishes.
+  isSessionReady = false;
+  document.dispatchEvent(new CustomEvent('ca:session-ended'));
   try {
     const sessionResponse = await fetch('/api/session');
     if (!sessionResponse.ok) throw new Error('Could not initialize your local session.');
@@ -410,8 +393,9 @@ async function loadChats() {
     if (chats.length) await selectChat(chats[0].id);
     else await startNewChat();
     setStatus('online', statusLabel());
-    loadSnapshot();
     loadCasStatus();
+    isSessionReady = true;
+    document.dispatchEvent(new CustomEvent('ca:session'));
   } catch (err) {
     chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
     setStatus('error', 'Connection failed');
@@ -899,13 +883,6 @@ async function toggleConnection() {
 }
 
 authButton.addEventListener('click', toggleConnection);
-portfolioCta.addEventListener('click', () => {
-  if (!isConnected) {
-    toggleConnection();
-    return;
-  }
-  runPrompt('Give me a snapshot of my current net worth.', 'portfolio').catch(showError);
-});
 
 function relativeDay(timestamp) {
   if (!Number.isFinite(Number(timestamp))) return '';
@@ -917,52 +894,51 @@ function relativeDay(timestamp) {
   return new Date(Number(timestamp)).toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
+function chatRow(chat, { showAgent = false } = {}) {
+  const row = document.createElement('div');
+  row.className = 'chat-row';
+  const select = document.createElement('button');
+  select.type = 'button';
+  select.className = 'chat-select' + (chat.id === activeChatId ? ' active' : '');
+  select.title = chat.title || 'New chat';
+  const title = document.createElement('span');
+  title.className = 'chat-title';
+  title.textContent = chat.title || 'New chat';
+  const meta = document.createElement('span');
+  meta.className = 'chat-meta';
+  meta.textContent = [showAgent ? agentName(chat.agentType) : '', relativeDay(chat.updatedAt)].filter(Boolean).join(' · ');
+  select.append(title, meta);
+  select.addEventListener('click', () => {
+    setSidebarOpen(false);
+    navigate('chat');
+    selectChat(chat.id).catch(showError);
+  });
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'chat-delete';
+  remove.textContent = '×';
+  remove.title = 'Delete chat';
+  remove.setAttribute('aria-label', 'Delete ' + (chat.title || 'chat'));
+  remove.addEventListener('click', (event) => {
+    event.stopPropagation();
+    deleteChat(chat.id).catch(showError);
+  });
+  row.append(select, remove);
+  return row;
+}
+
 function renderChats() {
   chatList.innerHTML = '';
-  const query = chatSearch.value.trim().toLowerCase();
-  const visible = query ? chats.filter((chat) => (chat.title || 'New chat').toLowerCase().includes(query)) : chats;
-  chatCount.textContent = chats.length ? String(chats.length) : '';
-  if (!visible.length) {
+  document.dispatchEvent(new CustomEvent('ca:chats'));
+  if (!chats.length) {
     const empty = document.createElement('div');
     empty.className = 'chat-empty';
-    empty.textContent = query ? 'No chats match your search.' : 'No conversations yet.';
+    empty.textContent = 'No conversations yet.';
     chatList.appendChild(empty);
     return;
   }
-  for (const chat of visible) {
-    const row = document.createElement('div');
-    row.className = 'chat-row';
-    const select = document.createElement('button');
-    select.type = 'button';
-    select.className = 'chat-select' + (chat.id === activeChatId ? ' active' : '');
-    select.title = chat.title || 'New chat';
-    const title = document.createElement('span');
-    title.className = 'chat-title';
-    title.textContent = chat.title || 'New chat';
-    const meta = document.createElement('span');
-    meta.className = 'chat-meta';
-    meta.textContent = [agentName(chat.agentType), relativeDay(chat.updatedAt)].filter(Boolean).join(' · ');
-    select.append(title, meta);
-    select.addEventListener('click', () => {
-      setSidebarOpen(false);
-      selectChat(chat.id).catch(showError);
-    });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'chat-delete';
-    remove.textContent = '×';
-    remove.title = 'Delete chat';
-    remove.setAttribute('aria-label', 'Delete ' + (chat.title || 'chat'));
-    remove.addEventListener('click', (event) => {
-      event.stopPropagation();
-      deleteChat(chat.id).catch(showError);
-    });
-    row.append(select, remove);
-    chatList.appendChild(row);
-  }
+  for (const chat of chats.slice(0, SIDEBAR_CHATS)) chatList.appendChild(chatRow(chat));
 }
-
-chatSearch.addEventListener('input', renderChats);
 
 async function refreshChats() {
   const response = await fetch('/api/chats');
@@ -1032,6 +1008,7 @@ async function deleteChat(chatId) {
 
 newChatButton.addEventListener('click', () => {
   setSidebarOpen(false);
+  navigate('chat');
   startNewChat().catch(showError);
 });
 
@@ -1483,8 +1460,11 @@ function plotlyLayout(spec, view) {
     layout.barmode = 'group';
     layout.yaxis = { ...layout.yaxis, autorange: 'reversed' };
   } else if (spec.type === 'line') {
+    const slider = spec.series[0]?.points.length > 8;
     layout.hovermode = 'x unified';
-    layout.xaxis = { ...layout.xaxis, rangeslider: { visible: spec.series[0]?.points.length > 8 } };
+    layout.xaxis = { ...layout.xaxis, rangeslider: { visible: slider } };
+    // Below the axis the legend would sit on top of the range slider.
+    if (slider) layout.legend = { ...layout.legend, x: 1, xanchor: 'right', y: 1.02, yanchor: 'bottom' };
   } else if (spec.type === 'candlestick') {
     layout.hovermode = 'x unified';
     layout.xaxis = { ...layout.xaxis, rangeslider: { visible: spec.candles.length > 8 } };
@@ -1505,7 +1485,8 @@ function plotlyTraces(spec, view) {
     hoverlabel: { namelength: -1 },
   }];
   if (spec.type === 'line') return spec.series.map(item => ({
-    type: 'scatter', mode: 'lines+markers', name: item.name,
+    // Markers on long daily series turn into a solid band, so draw only the line.
+    type: 'scatter', mode: item.points.length > 40 ? 'lines' : 'lines+markers', name: item.name,
     x: item.points.map(point => point.label), y: item.points.map(point => point.value),
     hovertemplate: '%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>',
     line: { width: 2.5 }, marker: { size: 7 },
@@ -1647,13 +1628,16 @@ async function runPrompt(prompt, agent) {
   if (isStreaming) return;
   // Agents keep separate conversations, so a prompt for the other agent
   // opens a fresh chat with that agent before sending.
-  if (agent && agent !== selectedAgent) await switchAgent(agent);
   setSidebarOpen(false);
+  navigate('chat');
+  if (agent && agent !== selectedAgent) await switchAgent(agent);
   await sendMessage(prompt);
 }
 
-promptButtons.forEach(btn => {
-  btn.addEventListener('click', () => runPrompt(btn.dataset.prompt, btn.dataset.agent).catch(showError));
+// Prompt buttons are also rendered by the pages, so listen once on the document.
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-prompt]');
+  if (button && !button.disabled) runPrompt(button.dataset.prompt, button.dataset.agent).catch(showError);
 });
 
 /* ── Init ────────────────────────────────────────────────────────────── */

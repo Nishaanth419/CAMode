@@ -30,6 +30,7 @@ from .users import (
     INDMONEY_TOKEN_URL,
     MCP_RESOURCE,
     SESSION_MAX_AGE_SECONDS,
+    Goal,
     ProfileFields,
     get_session,
     random_token,
@@ -370,6 +371,33 @@ async def put_profile(body: ProfileFields, request: Request):
     return {"displayName": user["displayName"], "profile": users.update_profile(user["id"], body, user["keys"])}
 
 
+class GoalsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goals: list[Goal] = Field(max_length=users.MAX_GOALS)
+
+
+@app.get("/api/goals")
+async def get_goals(request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"goals": users.profile_fields(user, user["keys"]).get("goals") or []}
+
+
+@app.put("/api/goals")
+async def put_goals(body: GoalsRequest, request: Request):
+    """Replace the profile's goals, keeping its other profile fields."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    if len({goal.id for goal in body.goals}) != len(body.goals):
+        return JSONResponse({"error": "Each goal needs a different id."}, status_code=422)
+    fields = ProfileFields(**{**users.profile_fields(user, user["keys"]), "goals": body.goals})
+    profile = users.update_profile(user["id"], fields, user["keys"])
+    return {"goals": profile.get("goals") or []}
+
+
 async def revoke_indmoney(user: dict[str, Any]) -> None:
     stored = user["indmoney"]
     if not (stored.get("accessToken") and stored.get("clientId") and stored.get("clientSecret")):
@@ -674,6 +702,19 @@ async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, l
         "history": [{"date": point["date"], "networthInr": point["networthInr"]} for point in history],
         "schedule": f"{snapshots.SNAPSHOT_TIME:%H:%M} {snapshots.SNAPSHOT_TIMEZONE_NAME}",
     }
+
+
+@app.get("/api/portfolio")
+async def portfolio_figures(request: Request):
+    """Computed figures and every holding from the latest snapshot, for the overview pages."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    snapshot = snapshots.latest_snapshot(user["id"], keys=user["keys"])
+    if not snapshot:
+        return {"available": False}
+    figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot)
+    return {"available": True, **_snapshot_summary(snapshot), **figures}
 
 
 @app.post("/api/snapshots/refresh")

@@ -593,3 +593,57 @@ def test_oauth_callback_without_access_token_returns_502(client, signed_in, monk
 
     assert response.status_code == 502
     assert "did not return an access token" in response.text
+
+
+def test_portfolio_endpoint_returns_figures_and_every_holding(client, signed_in):
+    from fixtures import indmoney_sample
+
+    assert client.get("/api/portfolio").json() == {"available": False}
+    snapshots.store_snapshot(
+        signed_in["id"], datetime(2026, 10, 13, 9, 0, tzinfo=snapshots.SNAPSHOT_TIMEZONE),
+        indmoney_sample.results(), {},
+    )
+
+    body = client.get("/api/portfolio").json()
+
+    assert body["available"] is True
+    assert body["asOfDate"] == "2026-10-13"
+    assert body["figures"]["totals"]["net_worth_inr"] == 1200000
+    assert [item["name"] for item in body["holdings"]][:2] == ["Parag Parikh Flexi Cap Fund", "Tata Consultancy Services"]
+    assert len(body["holdings"]) == 6
+    hdfc = next(item for item in body["holdings"] if item["name"] == "HDFC Bank")
+    assert hdfc["broker"] == "Zerodha" and hdfc["pnl_inr"] is None
+
+
+def test_portfolio_endpoint_requires_an_unlocked_profile(client):
+    assert client.get("/api/portfolio").status_code == 401
+
+
+GOAL = {"id": "home", "name": "Buy a home", "targetInr": 5_000_000, "targetYear": 2034,
+        "savedInr": 800_000, "monthlyInr": 25_000, "expectedReturnPct": 10}
+
+
+def test_goals_are_saved_with_the_profile_and_kept_by_profile_edits(client, signed_in):
+    assert client.get("/api/goals").json() == {"goals": []}
+    client.put("/api/profile", json={"riskAppetite": "high"})
+
+    saved = client.put("/api/goals", json={"goals": [GOAL]})
+    client.put("/api/profile", json={"riskAppetite": "low"})
+
+    assert saved.status_code == 200
+    assert client.get("/api/goals").json() == {"goals": [GOAL]}
+    assert client.get("/api/profile").json()["profile"]["riskAppetite"] == "low"
+    stored = users.get_user(signed_in["id"])["profileStored"]
+    assert stored.startswith("sealed:v1:") and "Buy a home" not in stored
+
+
+def test_goals_reject_invalid_values_and_duplicate_ids(client, signed_in):
+    assert client.put("/api/goals", json={"goals": [{**GOAL, "targetInr": 0}]}).status_code == 422
+    assert client.put("/api/goals", json={"goals": [GOAL, GOAL]}).status_code == 422
+    assert client.put("/api/goals", json={"goals": [{**GOAL, "id": f"g{i}"} for i in range(11)]}).status_code == 422
+
+
+def test_goals_reach_the_portfolio_profile_context():
+    context = snapshots.profile_context({"goals": [GOAL]}, None)
+
+    assert "Goal: Buy a home, target INR 5000000 by 2034, saved INR 800000, investing INR 25000 a month" in context

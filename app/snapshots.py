@@ -29,7 +29,7 @@ from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
 from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
-from .portfolio_math import HOLDINGS_PREFIX, asset_types_held, compute_metrics
+from .portfolio_math import HOLDINGS_PREFIX, all_holdings, asset_types_held, compute_metrics
 
 logger = logging.getLogger("ca_mode.snapshots")
 
@@ -452,6 +452,11 @@ def _snapshot_payload(snapshot: dict[str, Any], *, include_all_holdings: bool = 
     return payload
 
 
+def portfolio_figures(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The snapshot's computed figures plus every holding in full, for the app's portfolio pages."""
+    return {"figures": compute_metrics(snapshot["results"]), "holdings": all_holdings(snapshot["results"])}
+
+
 def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
     """Read-only tools over this user's stored snapshots (``keys`` must be unlocked to read sealed rows)."""
 
@@ -571,6 +576,11 @@ _PROFILE_LABELS = {
 def profile_context(fields: dict[str, Any], snapshot: dict[str, Any] | None) -> str | None:
     """Render user-entered profile fields and snapshot availability for the system prompt."""
     lines = [f"- {label}: {fields[key]}" for key, label in _PROFILE_LABELS.items() if fields.get(key) not in (None, "")]
+    for goal in fields.get("goals") or []:
+        lines.append(
+            f"- Goal: {goal['name']}, target INR {goal['targetInr']} by {goal['targetYear']}, "
+            f"saved INR {goal.get('savedInr', 0)}, investing INR {goal.get('monthlyInr', 0)} a month"
+        )
     if snapshot:
         lines.append(f"- Latest saved portfolio snapshot: captured {_iso(snapshot['capturedAt'])} (use get_portfolio_snapshot)")
     else:

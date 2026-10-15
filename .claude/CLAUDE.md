@@ -109,7 +109,11 @@ Several people can share one machine: each has a PIN-protected local profile tha
 ### Frontend
 - Static HTML/CSS/JS in `frontend/` (installable PWA)
 - `index.html`: app shell, profile picker (`#profile-gate`, including the `#consent-form` privacy step), profile dialog (`<dialog id="profile-dialog">`, including the `#data-zone` privacy settings)
-- `app.js`: profile sign-in/creation, privacy notice and storage choices, export and history clearing, profile dialog, chat UI, agent selection, INDmoney connect/disconnect, snapshot card with sparkline, Markdown rendering (links limited to http(s)/mailto), Plotly charts, theme toggle
+- `app.js`: profile sign-in/creation, privacy notice and storage choices, export and history clearing, profile dialog (including INDmoney connect/disconnect), chat UI, agent switch above the input, sidebar recent chats (newest 6), `refreshSnapshot()`, Markdown rendering (links limited to http(s)/mailto), Plotly charts, theme toggle. Fires `ca:session`, `ca:chats` and `ca:snapshot` document events for the pages
+- `finance.js` (loaded first): pure helpers shared by the pages and the rail and exported for Node tests: Indian money formatting, SIP/lumpsum/goal math, `goalProjection()`, `goalKind()`, `historyChange()`, `portfolioInsights()` (observations about the user's own holdings, never market news) and `incomeTax()` with `TAX_RULES` (FY 2026-27 slabs, 87A rebate and marginal relief, surcharge with marginal relief, 4% cess). Update `TAX_RULES`, its label and `tests/js/finance.test.js` after each budget
+- `rail.js` (loaded last): the right rail's Financial Portfolio (net worth, change over the saved history, sparkline, invested/returns/return % over holdings with a cost), Financial Goals (first 3), Market Insights and Quick Tools cards; renders on `ca:session`, `ca:snapshot` and `ca:goals`, and clears on `ca:session-ended`. Hidden below 1280px like before
+- Session events: `loadChats()` sets `isSessionReady = false` and fires `ca:session-ended` (pages and rail drop the previous profile's figures), then `ca:session` once the profile is signed in, unlocked and consenting. Data loaders in `pages.js` (`getPortfolio()`, `getHistory(days)`, `getGoals()`) share one cached request; a 401/403 from them triggers a single `reloadSession()`
+- `pages.js` (loaded after `app.js`, uses its globals): hash routes `#/` (Home), `#/chat` (Ask AI), `#/portfolio`, `#/investments` (holdings table, CSV, CAS upload), `#/planning/<sip|lumpsum|goal|emi|tax>` (calculators run in the browser), `#/markets` (`#/markets/funds` focuses the fund form), `#/goals`, `#/reports`, `#/chats`; `navigate(route)` switches between the chat view and `#page-view`. Prompt buttons anywhere use `data-prompt` / `data-agent` (one delegated listener in `app.js`)
 - `sw.js`: service worker that serves the cached app shell offline (API data is always fetched live)
 - Plotly is loaded from the CDN by a `<script>` tag in `index.html`
 - Bump the `?v=` cache-busters in `index.html` and `CACHE_NAME` in `sw.js` when changing frontend assets
@@ -144,9 +148,10 @@ python -m pytest tests/test_users.py -q
 python -m pytest tests/test_agent.py::test_finance_agent_blocks_net_worth_code_requests_before_provider_call -q
 
 python -m compileall -q app tests
-node --check frontend/js/app.js
+for file in frontend/js/*.js; do node --check "$file"; done
+node --test tests/js/finance.test.js
 
-# GitHub Actions runs these two
+# GitHub Actions runs all of these
 python -m compileall -q app tests && python -m pytest -q
 ```
 
@@ -162,13 +167,14 @@ python -m compileall -q app tests && python -m pytest -q
 - Snapshot routes: `GET /api/snapshots?days=`, `POST /api/snapshots/refresh`
 - Backup routes: `GET /api/backups` (status), `POST /api/backups` (back up now)
 - CAS routes: `GET /api/cas`, `POST /api/cas` (JSON `{password, pdfBase64}`; needs an unlocked session, consent, and `device` mode), `DELETE /api/cas/{id}`
+- Page routes: `GET /api/portfolio` (latest snapshot's `figures` plus every holding via `portfolio_math.all_holdings()`, or `{available: false}`), `GET`/`PUT /api/goals` (replaces the goals list, max 10)
 - Other: `GET /api/providers`, `GET /api/tools`, `GET /healthz`
 - Helpers: `current_user(request)`, `profile_required()`, `auth_error()`, `lifespan()` (scheduler)
 - Re-exports `connect_db`, `initialize_db`, `get_session`, `save_session`, `touch_session` for tests
 
 ### `app/users.py`
 - `hash_pin()` / `verify_pin()` / `check_pin()` / `check_with_lockout()`: scrypt hashes and the atomic lockout shared by PINs and recovery codes
-- `profile_fields(user, keys)`, `update_profile(user_id, fields, keys)`: profile fields are sealed
+- `profile_fields(user, keys)`, `update_profile(user_id, fields, keys)`: profile fields are sealed; `ProfileFields.goals` (`Goal` list) is kept when an update leaves it unset, and goals reach the portfolio prompt through `snapshots.profile_context()`
 - `create_user()`, `get_user()`, `list_profiles()`, `update_profile()`, `delete_user()`
 - `get_session()`, `save_session()`, `touch_session()`, `session_user_id()`, `sign_in()` (rotates the id and adopts legacy data), `sign_out()`
 - `get_indmoney()`, `save_indmoney()`, `clear_indmoney()`, `user_access_token()`, `cache_mcp_tools()`, `users_with_indmoney()`, `has_indmoney_tokens()`
@@ -230,6 +236,7 @@ Test coverage:
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers
 - `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
+- `tests/js/finance.test.js` (`node --test`): formatting, growth and goal math, goal icons, history change, snapshot insights, income tax for both regimes including rebates, surcharge and marginal relief
 
 ## Performance Notes
 

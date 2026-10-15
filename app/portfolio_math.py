@@ -134,6 +134,21 @@ def _split(snapshot: dict[str, Any], key: str, label_key: str, total: Decimal) -
     ]
 
 
+def _portfolio_value(investments: list[dict[str, Any]], rows: list[dict[str, Any]]) -> Decimal:
+    """The total that holding shares are measured against: INDmoney's per-type values, else the holdings."""
+    value = sum((_dec(item.get("current_value")) or _ZERO for item in investments), _ZERO)
+    return value or sum((_dec(row.get("market_value")) or _ZERO for row in rows), _ZERO)
+
+
+def all_holdings(results: dict[str, str]) -> list[dict[str, Any]]:
+    """Every holding with its full computed fields, largest first (for the app's Investments page)."""
+    snapshot = _json(results.get("networth_snapshot")) or {}
+    rows, _ = _holding_rows(results)
+    investments = [item for item in snapshot.get("investments") or [] if isinstance(item, dict)]
+    holdings = [_holding_metrics(row, _portfolio_value(investments, rows)) for row in rows]
+    return sorted(holdings, key=lambda item: item["current_value_inr"] or 0, reverse=True)
+
+
 def compute_metrics(results: dict[str, str], *, include_all_holdings: bool = False) -> dict[str, Any]:
     """Compute portfolio figures from a snapshot's stored tool results (keyed by tool and asset type).
 
@@ -146,9 +161,7 @@ def compute_metrics(results: dict[str, str], *, include_all_holdings: bool = Fal
     notes: list[str] = []
 
     investments = [item for item in snapshot.get("investments") or [] if isinstance(item, dict)]
-    portfolio_value = sum((_dec(item.get("current_value")) or _ZERO for item in investments), _ZERO)
-    if not portfolio_value:
-        portfolio_value = sum((_dec(row.get("market_value")) or _ZERO for row in rows), _ZERO)
+    portfolio_value = _portfolio_value(investments, rows)
 
     by_type = []
     for item in sorted(investments, key=lambda entry: _dec(entry.get("current_value")) or _ZERO, reverse=True):

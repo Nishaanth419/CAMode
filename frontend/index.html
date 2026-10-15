@@ -14,9 +14,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=17" />
+  <link rel="stylesheet" href="/css/app.css?v=23" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/app.js?v=18" defer></script>
+  <script src="/js/finance.js?v=1" defer></script>
+  <script src="/js/app.js?v=22" defer></script>
+  <script src="/js/pages.js?v=9" defer></script>
+  <script src="/js/rail.js?v=1" defer></script>
 </head>
 <body>
   <div id="app">
@@ -41,34 +44,58 @@
         <span>New Chat</span>
       </button>
 
-      <nav class="agent-nav" aria-label="Choose an agent">
-        <button class="nav-item" type="button" data-agent="finance" aria-pressed="false">
+      <nav class="main-nav" aria-label="Main">
+        <a class="nav-item" href="#/" data-route="home">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1Z"/></svg>
-          <span class="nav-copy"><span>Finance Agent</span><small>General finance questions</small></span>
-        </button>
-        <button class="nav-item" type="button" data-agent="portfolio" aria-pressed="false">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8 15 3-3 2 2 3-4"/></svg>
-          <span class="nav-copy"><span>Portfolio Analyzer</span><small>Your INDmoney holdings</small></span>
-        </button>
+          <span>Home</span>
+        </a>
+        <a class="nav-item" href="#/portfolio" data-route="portfolio">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 15a4 4 0 0 1 8 0"/><path d="m12 15 2.2-2.6"/></svg>
+          <span>Portfolio Overview</span>
+        </a>
+        <a class="nav-item" href="#/chat" data-route="chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19.5 8v8L12 20.5 4.5 16V8Z"/><path d="m12 8.6.9 2.5 2.5.9-2.5.9-.9 2.5-.9-2.5-2.5-.9 2.5-.9Z"/></svg>
+          <span>Ask AI</span>
+        </a>
+        <a class="nav-item" href="#/investments" data-route="investments">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 15 3-3 2 2 3-4"/><path d="M14 10h2v2"/></svg>
+          <span>Investments</span>
+        </a>
+        <a class="nav-item" href="#/planning" data-route="planning">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="3.5" width="15" height="17" rx="3"/><path d="M8 8h8M8 12h2.5M13.5 12H16M8 16h2.5M13.5 16H16"/></svg>
+          <span>Planning Tools</span>
+        </a>
+        <a class="nav-item" href="#/markets" data-route="markets">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="m8.5 14 2.3-2.4 2 2 2.7-3.3"/></svg>
+          <span>Market Insights</span>
+        </a>
+        <a class="nav-item" href="#/goals" data-route="goals">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19 6v5.5c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6Z"/><path d="m9 12 2 2 4-4"/></svg>
+          <span>Goals</span>
+        </a>
+        <a class="nav-item" href="#/reports" data-route="reports">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7Z"/><path d="M13.5 3.5v4.5H18M10 12h5M10 16h5"/></svg>
+          <span>Reports</span>
+        </a>
       </nav>
 
       <div class="sidebar-section-head">
         <span>Recent Chats</span>
-        <span id="chat-count" class="chat-count"></span>
+        <a class="see-all" href="#/chats" data-route="chats">See all</a>
       </div>
       <div id="chat-list"></div>
 
       <div class="sidebar-account">
-        <button id="account-trigger" class="account-trigger" type="button" title="Edit your profile" aria-haspopup="dialog">
-          <span class="account-avatar" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19.5c1.2-3.3 3.6-5 6.5-5s5.3 1.7 6.5 5"/></svg>
-          </span>
+        <button id="account-trigger" class="account-trigger" type="button" title="Profile and settings" aria-haspopup="dialog">
+          <span class="account-avatar" aria-hidden="true"></span>
           <span class="account-copy">
             <strong id="account-name">Guest</strong>
             <small id="account-plan">Not connected</small>
           </span>
+          <span class="account-gear" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+          </span>
         </button>
-        <button id="auth-button" class="auth-button" type="button">Connect</button>
       </div>
     </aside>
     <div id="sidebar-scrim" hidden></div>
@@ -153,6 +180,10 @@
       </div>
 
       <div id="input-area">
+        <div class="agent-switch" role="group" aria-label="Choose an agent">
+          <button class="agent-option" type="button" data-agent="finance" aria-pressed="false" title="General finance questions">Finance Agent</button>
+          <button class="agent-option" type="button" data-agent="portfolio" aria-pressed="false" title="Questions about your INDmoney holdings">Portfolio Analyzer</button>
+        </div>
         <div id="follow-ups" class="follow-ups" aria-label="Follow-up suggestions" hidden>
           <button class="chip" type="button" data-prompt="Can you explain that in more detail?">Show more detail</button>
           <button class="chip" type="button" data-prompt="Explain that in simple terms.">Explain in simple terms</button>
@@ -170,87 +201,265 @@
         </div>
         <div id="input-hint">Press <kbd>Enter</kbd> to send · <kbd>Shift + Enter</kbd> for a new line</div>
       </div>
+
+      <div id="page-view" hidden>
+        <section class="page" data-page="home" aria-labelledby="home-title">
+          <div class="page-hero">
+            <div>
+              <p class="hero-eyebrow">Home</p>
+              <h1 id="home-title" class="page-title"><span class="js-greeting">Hello</span><span id="home-name"></span></h1>
+              <p class="page-sub">Here is where your money stands today.</p>
+            </div>
+            <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>Start a new chat</button>
+          </div>
+          <div id="home-stats" class="stat-grid"></div>
+          <div class="page-columns">
+            <section class="panel">
+              <div class="rail-head"><h2>Jump to</h2></div>
+              <div class="shortcut-grid">
+                <a class="shortcut tone-green" href="#/portfolio"><strong>Portfolio Overview</strong><small>Net worth, allocation and trend</small></a>
+                <a class="shortcut tone-blue" href="#/investments"><strong>Investments</strong><small>Every holding with its P&amp;L</small></a>
+                <a class="shortcut tone-amber" href="#/planning"><strong>Planning Tools</strong><small>SIP, lumpsum, goal and EMI calculators</small></a>
+                <a class="shortcut tone-violet" href="#/goals"><strong>Goals</strong><small>Track progress towards your targets</small></a>
+                <a class="shortcut tone-red" href="#/markets"><strong>Market Insights</strong><small>Today's movers and live prices</small></a>
+                <a class="shortcut tone-green" href="#/reports"><strong>Reports</strong><small>Net worth changes and downloads</small></a>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="rail-head"><h2>Continue a chat</h2><a class="panel-link" href="#/chats">See all</a></div>
+              <div id="home-chats" class="mini-chat-list"></div>
+            </section>
+          </div>
+          <section class="panel">
+            <div class="rail-head"><h2>Ask CA Mode</h2></div>
+            <div class="feature-cards">
+              <button class="feature-card tone-green" type="button" data-agent="portfolio" data-prompt="Summarize my portfolio allocation by asset class.">
+                <span class="feature-copy"><strong>Portfolio Analysis</strong><small>Review how your investments are allocated</small></span>
+                <span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+              <button class="feature-card tone-blue" type="button" data-agent="portfolio" data-prompt="Show my top holdings by current value and explain the largest concentration.">
+                <span class="feature-copy"><strong>Top Holdings</strong><small>Find your largest positions and exposure</small></span>
+                <span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+              <button class="feature-card tone-amber" type="button" data-agent="finance" data-prompt="How should I plan a long-term financial goal like buying a home? Walk me through the steps.">
+                <span class="feature-copy"><strong>Goal Planning</strong><small>Plan for future goals step by step</small></span>
+                <span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+              <button class="feature-card tone-violet" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
+                <span class="feature-copy"><strong>Tax Optimization</strong><small>Learn about tax-saving opportunities</small></span>
+                <span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
+          </section>
+        </section>
+
+        <section class="page" data-page="portfolio" aria-labelledby="portfolio-title">
+          <header class="page-head">
+            <div>
+              <h1 id="portfolio-title" class="page-title">Portfolio Overview</h1>
+              <p class="page-sub" id="portfolio-asof"></p>
+            </div>
+            <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+          </header>
+          <div id="portfolio-body"></div>
+        </section>
+
+        <section class="page" data-page="investments" aria-labelledby="investments-title">
+          <header class="page-head">
+            <div>
+              <h1 id="investments-title" class="page-title">Investments</h1>
+              <p class="page-sub" id="investments-asof"></p>
+            </div>
+            <button id="holdings-csv" class="gate-secondary" type="button" hidden>Download CSV</button>
+          </header>
+          <div id="investments-body"></div>
+          <section class="panel" id="cas-card" hidden>
+            <div class="rail-head">
+              <h2>Holdings at other brokers</h2>
+              <span id="cas-pill" class="pill">No statement</span>
+            </div>
+            <p id="cas-copy" class="rail-copy">Upload the monthly CAS emailed by NSDL or CDSL to include holdings at every broker. Only the holdings are kept, locked with your PIN.</p>
+            <form id="cas-form" class="cas-form">
+              <label class="field"><span>CAS PDF</span><input id="cas-file" type="file" accept="application/pdf,.pdf" required /></label>
+              <label class="field"><span>PDF password (usually your PAN in capitals)</span><input id="cas-password" type="password" autocomplete="off" required /></label>
+              <button class="rail-button" type="submit">Upload statement</button>
+              <p id="cas-status" class="dialog-status" role="status"></p>
+            </form>
+            <div id="cas-statements"></div>
+            <button id="cas-ask" class="rail-link" type="button" hidden>Ask about all my brokers</button>
+          </section>
+        </section>
+
+        <section class="page" data-page="planning" aria-labelledby="planning-title">
+          <header class="page-head">
+            <div>
+              <h1 id="planning-title" class="page-title">Planning Tools</h1>
+              <p class="page-sub">Quick calculators that run on this computer. They assume a steady return, which real markets never give, so treat the results as estimates, not advice.</p>
+            </div>
+          </header>
+          <div class="seg" role="tablist" aria-label="Calculators" id="calc-tabs">
+            <button type="button" role="tab" data-calc="sip">SIP</button>
+            <button type="button" role="tab" data-calc="lumpsum">Lumpsum</button>
+            <button type="button" role="tab" data-calc="goal">Goal planner</button>
+            <button type="button" role="tab" data-calc="emi">Loan EMI</button>
+            <button type="button" role="tab" data-calc="tax">Income tax</button>
+          </div>
+          <div id="calc-body"></div>
+        </section>
+
+        <section class="page" data-page="markets" aria-labelledby="markets-title">
+          <header class="page-head">
+            <div>
+              <h1 id="markets-title" class="page-title">Market Insights</h1>
+              <p class="page-sub" id="markets-asof">How your holdings moved, plus live prices from INDmoney through Portfolio Analyzer.</p>
+            </div>
+          </header>
+          <div id="markets-body"></div>
+          <div class="page-columns">
+            <section class="panel">
+              <div class="rail-head"><h2>Stock price chart</h2></div>
+              <form id="stock-chart-form" class="inline-form">
+                <label class="field"><span>NSE symbol</span><input id="stock-symbol" type="text" maxlength="20" placeholder="e.g. INFY" autocapitalize="characters" spellcheck="false" required /></label>
+                <label class="field"><span>Period</span>
+                  <select id="stock-days"><option value="30">1 month</option><option value="90">3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
+                </label>
+                <button class="rail-button" type="submit">Show chart</button>
+              </form>
+            </section>
+            <section class="panel">
+              <div class="rail-head"><h2>Mutual fund categories</h2></div>
+              <form id="mf-category-form" class="inline-form">
+                <label class="field"><span>Category</span>
+                  <select id="mf-category">
+                    <option>Flexi Cap</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option>
+                    <option>ELSS</option><option>Index Funds</option><option>Liquid</option><option>Corporate Bond</option>
+                  </select>
+                </label>
+                <button class="rail-button" type="submit">Compare top funds</button>
+              </form>
+            </section>
+          </div>
+          <section class="panel">
+            <div class="rail-head"><h2>Live questions</h2></div>
+            <div class="feature-cards">
+              <button class="feature-card tone-blue" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices and today's change.">
+                <span class="feature-copy"><strong>Watchlist prices</strong><small>Latest prices for stocks you track</small></span><span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+              <button class="feature-card tone-green" type="button" data-agent="portfolio" data-prompt="Which of my holdings moved the most today? Show the top gainers and losers.">
+                <span class="feature-copy"><strong>Today's movers</strong><small>Live gainers and losers you hold</small></span><span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+              <button class="feature-card tone-amber" type="button" data-agent="portfolio" data-prompt="List my active SIPs across stocks and mutual funds with their monthly amounts and next dates.">
+                <span class="feature-copy"><strong>SIP calendar</strong><small>Your active SIPs and amounts</small></span><span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+              <button class="feature-card tone-violet" type="button" data-agent="portfolio" data-prompt="How are my US stocks doing? Show their value in USD and INR.">
+                <span class="feature-copy"><strong>US stocks</strong><small>Your US holdings in USD and INR</small></span><span class="feature-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
+          </section>
+        </section>
+
+        <section class="page" data-page="goals" aria-labelledby="goals-title">
+          <header class="page-head">
+            <div>
+              <h1 id="goals-title" class="page-title">Goals</h1>
+              <p class="page-sub">Track what you are saving for. Goals are locked with your PIN and shared with Portfolio Analyzer so it can relate your portfolio to them.</p>
+            </div>
+            <button id="add-goal" class="rail-button page-cta" type="button">Add a goal</button>
+          </header>
+          <form id="goal-form" class="panel goal-form" hidden>
+            <div class="rail-head"><h2 id="goal-form-title">New goal</h2></div>
+            <div class="field-grid">
+              <label class="field field-wide"><span>Goal</span><input id="goal-name" type="text" maxlength="80" placeholder="e.g. Child's education" required /></label>
+              <label class="field"><span>Target amount (₹)</span><input id="goal-target" type="number" min="1" step="1" required /></label>
+              <label class="field"><span>Target year</span><input id="goal-year" type="number" min="2000" max="2100" step="1" required /></label>
+              <label class="field"><span>Already saved (₹)</span><input id="goal-saved" type="number" min="0" step="1" value="0" /></label>
+              <label class="field"><span>Investing each month (₹)</span><input id="goal-monthly" type="number" min="0" step="1" value="0" /></label>
+              <label class="field"><span>Expected yearly return (%)</span><input id="goal-return" type="number" min="0" max="30" step="0.1" value="10" /></label>
+            </div>
+            <p id="goal-status" class="dialog-status" role="status"></p>
+            <div class="dialog-actions">
+              <button id="goal-cancel" class="gate-secondary" type="button">Cancel</button>
+              <button class="rail-button dialog-save" type="submit">Save goal</button>
+            </div>
+          </form>
+          <div id="goals-body"></div>
+        </section>
+
+        <section class="page" data-page="reports" aria-labelledby="reports-title">
+          <header class="page-head">
+            <div>
+              <h1 id="reports-title" class="page-title">Reports</h1>
+              <p class="page-sub">How your net worth changed, from your daily snapshots.</p>
+            </div>
+            <div class="page-actions">
+              <button id="print-report" class="gate-secondary" type="button">Print</button>
+              <button class="rail-button page-cta" type="button" data-agent="portfolio" data-prompt="Write a portfolio review: net worth and how it changed this month, allocation, concentration risks, P&amp;L by asset type, and progress towards my goals. Use my saved snapshots.">AI portfolio review</button>
+            </div>
+          </header>
+          <div id="reports-body"></div>
+        </section>
+
+        <section class="page" data-page="chats" aria-labelledby="chats-title">
+          <header class="page-head">
+            <div>
+              <h1 id="chats-title" class="page-title">All chats</h1>
+              <p class="page-sub" id="chats-summary"></p>
+            </div>
+            <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>New chat</button>
+          </header>
+          <div id="all-chats" class="panel"></div>
+        </section>
+      </div>
     </section>
 
     <!-- ── Right rail ───────────────────────────────────────────────── -->
-    <aside id="right-rail" aria-label="Portfolio and quick tools">
-      <section class="rail-card portfolio-card">
+    <aside id="right-rail" aria-label="Portfolio summary, goals, insights and tools">
+      <section class="rail-card" aria-labelledby="rail-portfolio-title">
         <div class="rail-head">
-          <h2>Your Portfolio</h2>
-          <span id="portfolio-pill" class="pill">Not connected</span>
+          <h2 id="rail-portfolio-title">Your Financial Portfolio</h2>
+          <a class="rail-more" href="#/portfolio">View details <span aria-hidden="true">→</span></a>
         </div>
-        <p id="portfolio-figure" class="portfolio-figure" hidden></p>
-        <svg id="portfolio-spark" class="portfolio-spark" viewBox="0 0 240 70" preserveAspectRatio="none" role="img" aria-label="Net worth trend" hidden>
-          <defs>
-            <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="currentColor" stop-opacity=".28"/>
-              <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
-            </linearGradient>
-          </defs>
-          <path id="spark-area" fill="url(#spark-fill)"/>
-          <path id="spark-line" class="spark-line"/>
-        </svg>
-        <p id="portfolio-copy" class="rail-copy">Connect INDmoney to ask the Portfolio Analyzer about your net worth, holdings, and SIPs.</p>
-        <button id="portfolio-cta" class="rail-button" type="button">Connect INDmoney</button>
-        <button id="snapshot-refresh" class="rail-link" type="button" hidden>Refresh snapshot now</button>
+        <div id="rail-portfolio" aria-live="polite"></div>
       </section>
 
-      <section class="rail-card" id="cas-card" hidden>
+      <section class="rail-card" aria-labelledby="rail-goals-title">
         <div class="rail-head">
-          <h2>Other brokers</h2>
-          <span id="cas-pill" class="pill">No statement</span>
+          <h2 id="rail-goals-title">Financial Goals</h2>
+          <a class="rail-more" href="#/goals">See all</a>
         </div>
-        <p id="cas-copy" class="rail-copy">Upload the monthly CAS emailed by NSDL or CDSL to include holdings at every broker. Only the holdings are kept, locked with your PIN.</p>
-        <form id="cas-form" class="cas-form">
-          <label class="field"><span>CAS PDF</span><input id="cas-file" type="file" accept="application/pdf,.pdf" required /></label>
-          <label class="field"><span>PDF password (usually your PAN in capitals)</span><input id="cas-password" type="password" autocomplete="off" required /></label>
-          <button class="rail-button" type="submit">Upload statement</button>
-          <p id="cas-status" class="dialog-status" role="status"></p>
-        </form>
-        <button id="cas-ask" class="rail-link" type="button" hidden>Ask about all my brokers</button>
+        <div id="rail-goals"></div>
       </section>
 
-      <section class="rail-card">
-        <div class="rail-head"><h2>Portfolio Questions</h2></div>
-        <ul class="insight-list">
-          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="Give me a snapshot of my current net worth.">
-            <span class="insight-icon tone-green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18h16M6 15l4-4 3 3 5-6"/></svg></span>
-            <span><strong>Net worth snapshot</strong><small>Total value across your accounts</small></span>
-          </button></li>
-          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="List my active SIPs and their monthly amounts.">
-            <span class="insight-icon tone-amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v16M7 9l5-5 5 5"/></svg></span>
-            <span><strong>Active SIPs</strong><small>Your recurring investments</small></span>
-          </button></li>
-          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices.">
-            <span class="insight-icon tone-blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/></svg></span>
-            <span><strong>Watchlist</strong><small>Stocks you are tracking</small></span>
-          </button></li>
-          <li><button class="insight-item" type="button" data-agent="portfolio" data-prompt="Break down my net worth allocation and show it as a donut chart.">
-            <span class="insight-icon tone-violet" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg></span>
-            <span><strong>Allocation chart</strong><small>See your mix as a donut chart</small></span>
-          </button></li>
-        </ul>
+      <section class="rail-card" aria-labelledby="rail-insights-title">
+        <div class="rail-head">
+          <h2 id="rail-insights-title">Market Insights</h2>
+          <a class="rail-more" href="#/markets">See all</a>
+        </div>
+        <div id="rail-insights"></div>
       </section>
 
-      <section class="rail-card">
-        <div class="rail-head"><h2>Quick Tools</h2></div>
+      <section class="rail-card" aria-labelledby="rail-tools-title">
+        <div class="rail-head">
+          <h2 id="rail-tools-title">Quick Tools</h2>
+          <a class="rail-more" href="#/planning">See all</a>
+        </div>
         <div class="tool-grid">
-          <button class="tool-tile tone-green" type="button" data-agent="finance" data-prompt="Help me calculate the future value of a monthly SIP. Ask me for the amount, expected return, and duration.">
+          <a class="tool-tile tone-green" href="#/planning/sip">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M8 18h2M12 18h4"/></svg>
             <span>SIP Calculator</span>
-          </button>
-          <button class="tool-tile tone-red" type="button" data-agent="finance" data-prompt="Help me plan for a financial goal. Ask me for the target amount and timeline, then estimate the monthly saving needed.">
+          </a>
+          <a class="tool-tile tone-red" href="#/planning/goal">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg>
             <span>Goal Planner</span>
-          </button>
-          <button class="tool-tile tone-blue" type="button" data-agent="finance" data-prompt="Explain how income tax is calculated in India under the old and new tax regimes.">
+          </a>
+          <a class="tool-tile tone-blue" href="#/planning/tax">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5 5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/></svg>
-            <span>Tax Basics</span>
-          </button>
-          <button class="tool-tile tone-violet" type="button" data-agent="finance" data-prompt="What should I compare when choosing between two mutual funds?">
+            <span>Tax Calculator</span>
+          </a>
+          <a class="tool-tile tone-violet" href="#/markets/funds">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M20 20H3"/></svg>
             <span>Compare Funds</span>
-          </button>
+          </a>
         </div>
       </section>
     </aside>
@@ -349,6 +558,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
         </button>
       </header>
+      <div class="connection-row">
+        <span><strong>INDmoney</strong><small id="connection-status">Not connected</small></span>
+        <button id="auth-button" class="gate-secondary" type="button">Connect</button>
+      </div>
       <p class="dialog-sub">Optional. Portfolio Analyzer uses this to relate its analysis to your goals. It is not personalised investment advice.</p>
       <div class="field-grid">
         <label class="field"><span>Risk appetite</span>
