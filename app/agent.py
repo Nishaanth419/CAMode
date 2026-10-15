@@ -463,6 +463,39 @@ async def _ollama_context_problem(client: httpx.AsyncClient, config: dict[str, A
     return None
 
 
+# Trace text is shown to the user and saved with the chat, so secrets and identifiers a tool
+# argument or result might carry are masked first. Keys are matched on their last word(s).
+_SENSITIVE_KEY_WORDS: tuple[str, ...] = (
+    "token", "secret", "password", "passwd", "pin", "pan", "otp", "cookie", "authorization",
+    "api_key", "apikey", "private_key", "secret_key", "session_id", "client_secret",
+)
+_JSON_PAIR = re.compile(r'"([A-Za-z0-9_\-]{1,60})"(\s*:\s*)("(?:[^"\\]|\\.)*(?:"|$)|[^,}\]\s]+)')
+_FREE_TEXT_SECRETS = (
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]+", re.IGNORECASE), "Bearer [redacted]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[redacted]"),
+    (re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"), "[redacted PAN]"),
+)
+REDACTED = "[redacted]"
+
+
+def _is_sensitive_key(key: str) -> bool:
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower().replace("-", "_")
+    return any(words == word or words.endswith("_" + word) for word in _SENSITIVE_KEY_WORDS)
+
+
+def redact_trace_text(text: str) -> str:
+    """Mask credentials and identifiers in trace text (JSON or a JSON prefix cut at any point)."""
+    def mask(match: re.Match[str]) -> str:
+        if not _is_sensitive_key(match.group(1)):
+            return match.group(0)
+        return f'"{match.group(1)}"{match.group(2)}"{REDACTED}"'
+
+    text = _JSON_PAIR.sub(mask, text)
+    for pattern, replacement in _FREE_TEXT_SECRETS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def _evidence_reference(result: str) -> dict[str, str]:
     """The saved investigation a local tool result refers to, so the trace can link to its evidence."""
     if '"investigationId"' not in result:
@@ -822,7 +855,7 @@ async def run_agent(
             trace.append({
                 "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
                 "source": payload.get("source", "indmoney"),
-                "arguments": arguments_text[:600], "status": "running",
+                "arguments": redact_trace_text(arguments_text[:600]), "status": "running",
                 "_started": time.perf_counter(),
             })
         elif event_type == "tool_result":
@@ -832,9 +865,9 @@ async def run_agent(
                 step["status"] = "failed" if payload.get("error") else "completed"
                 step["duration_ms"] = round((time.perf_counter() - step.pop("_started")) * 1000)
                 if payload.get("result"):
-                    step["result_preview"] = str(payload["result"])[:1000]
+                    step["result_preview"] = redact_trace_text(str(payload["result"])[:1000])
                 if payload.get("error"):
-                    step["error"] = str(payload["error"])[:300]
+                    step["error"] = redact_trace_text(str(payload["error"])[:300])
                 if payload.get("investigation_id"):
                     step["investigation_id"] = payload["investigation_id"]
         elif event_type == "error":

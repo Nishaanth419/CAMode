@@ -444,3 +444,81 @@ def test_agent_payload_omits_id_of_unsaved_run():
     payload = investigations.agent_payload({"id": "x", "status": "insufficient_data", "saved": False, "result": {}})
 
     assert "investigationId" not in payload
+
+
+# ── Activity list ──────────────────────────────────────────────────────────────
+
+def test_activity_list_reports_period_duration_and_outcome(client, signed_in):
+    _store_pair(signed_in["id"])
+    record = _run(client).json()
+
+    item = client.get("/api/investigations").json()["investigations"][0]
+    saved = client.get(f"/api/investigations/{record['id']}").json()
+
+    assert item["period"] == {"previous": record["result"]["comparison"]["previous"]["asOfDate"],
+                              "current": record["result"]["comparison"]["current"]["asOfDate"]}
+    assert item["durationMs"] == record["completedAt"] - record["createdAt"]
+    assert item["trigger"] == "api"
+    assert item["chatId"] is None
+    assert item["error"] is None
+    assert item["findingCount"] == len(record["result"]["findings"])
+    assert item["warningCount"] == 0
+    assert item["updatedAt"] == saved["updatedAt"] >= record["createdAt"]
+
+
+def test_activity_list_leaves_duration_unset_for_interrupted_runs(client, signed_in):
+    user = _signed_in_user(client)
+    stale = users.now_ms() - investigations.INTERRUPTED_AFTER_MS - 1000
+    record = {"id": "stuck", "kind": investigations.KIND, "status": "running", "createdAt": stale,
+              "request": {"baselineDate": "2026-09-01", "trigger": "api"}, "metadata": {}, "steps": [], "saved": True}
+    investigations._save(user["id"], record, user["keys"], insert=True)
+    with connect_db() as connection:
+        connection.execute("UPDATE investigations SET updated_at = ? WHERE id = 'stuck'", (stale,))
+
+    item = client.get("/api/investigations").json()["investigations"][0]
+
+    assert item["status"] == "failed"
+    assert item["durationMs"] is None
+    assert item["baselineDate"] == "2026-09-01"
+    assert item["period"] == {"previous": None, "current": None}
+    assert "interrupted" in item["error"]
+
+
+@pytest.mark.asyncio
+async def test_tool_saves_the_conversation_it_ran_in(client, signed_in):
+    _store_pair(signed_in["id"])
+    user = _signed_in_user(client)
+    tool = investigations.investigation_tool(user, chat_id="chat-123")
+
+    payload = json.loads(await tool.handler({}))
+
+    record = investigations.get_investigation(user["id"], payload["investigationId"], user["keys"])
+    assert record["request"] == {"baselineDate": None, "trigger": "agent", "chatId": "chat-123"}
+    assert investigations.list_investigations(user["id"], user["keys"])[0]["chatId"] == "chat-123"
+
+
+def test_portfolio_chat_links_investigations_to_its_conversation(client, signed_in, monkeypatch):
+    from tests.test_api import connect_user_to_indmoney
+
+    connect_user_to_indmoney(signed_in["id"])
+    _store_pair(signed_in["id"])
+    chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
+
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+        tool = next(item for item in context.local_tools if item.name == "investigate_portfolio_change")
+        await tool.handler({})
+        return "ok"
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    client.post("/api/chat", json={"message": "Why did my portfolio change?", "chatId": chat["id"], "agentType": "portfolio"})
+
+    assert client.get("/api/investigations").json()["investigations"][0]["chatId"] == chat["id"]
+
+
+def test_activity_list_is_scoped_to_the_profile(client, signed_in):
+    _store_pair(signed_in["id"])
+    _run(client)
+    client.post("/api/session/logout")
+    sign_up(client, "Other")
+
+    assert client.get("/api/investigations").json()["investigations"] == []

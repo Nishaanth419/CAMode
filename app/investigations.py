@@ -431,6 +431,8 @@ def _save_final_or_flag(user_id: str, record: dict[str, Any], keys: ProfileKeys)
 
 def _from_row(row: Any, keys: ProfileKeys) -> dict[str, Any]:
     record = json.loads(keys.open(row["data"]))
+    # The plain column, so a client can tell a newer copy of the run from an older one.
+    record["updatedAt"] = row["updated_at"]
     if row["status"] in ("running", "verifying") and users.now_ms() - row["updated_at"] > INTERRUPTED_AFTER_MS:
         record["status"] = "failed"
         record["error"] = "This investigation was interrupted before it finished. Run it again."
@@ -454,15 +456,27 @@ def list_investigations(user_id: str, keys: ProfileKeys, *, limit: int = 20) -> 
             "SELECT status, updated_at, data FROM investigations WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
             (user_id, limit),
         ).fetchall()
-    summaries = []
-    for row in rows:
-        record = _from_row(row, keys)
-        result = record.get("result") or {}
-        summaries.append({
-            "id": record["id"], "kind": record["kind"], "status": record["status"], "createdAt": record["createdAt"],
-            "completedAt": record.get("completedAt"), "summary": result.get("summary") or record.get("error"),
-        })
-    return summaries
+    return [_list_item(_from_row(row, keys)) for row in rows]
+
+
+def _list_item(record: dict[str, Any]) -> dict[str, Any]:
+    """What the activity list shows for one run; everything else is fetched by id."""
+    result = record.get("result") or {}
+    comparison = result.get("comparison") or {}
+    request = record.get("request") or {}
+    finished = record["status"] not in ("running", "verifying") and record.get("completedAt") is not None
+    return {
+        "id": record["id"], "kind": record["kind"], "status": record["status"], "createdAt": record["createdAt"],
+        "completedAt": record.get("completedAt"), "summary": result.get("summary") or record.get("error"),
+        "updatedAt": record.get("updatedAt"),
+        "durationMs": record["completedAt"] - record["createdAt"] if finished else None,
+        "trigger": request.get("trigger"), "baselineDate": request.get("baselineDate"), "chatId": request.get("chatId"),
+        "period": {"previous": (comparison.get("previous") or {}).get("asOfDate"),
+                   "current": (comparison.get("current") or {}).get("asOfDate")},
+        "error": record.get("error"),
+        "findingCount": len(result.get("findings") or []),
+        "warningCount": len(result.get("warnings") or []),
+    }
 
 
 def all_investigations(user_id: str, keys: ProfileKeys) -> list[dict[str, Any]]:
@@ -546,6 +560,7 @@ async def investigate_portfolio_change(
     baseline_date: str | None = None,
     trigger: Trigger = "api",
     provider: str | None = None,
+    chat_id: str | None = None,
     now: datetime | None = None,
     settings: CheckSettings | None = None,
 ) -> dict[str, Any]:
@@ -559,7 +574,7 @@ async def investigate_portfolio_change(
     persist = user.get("storageMode") == "device"
     record: dict[str, Any] = {
         "id": users.random_token(), "kind": KIND, "status": "running", "createdAt": users.now_ms(),
-        "request": {"baselineDate": baseline_date, "trigger": trigger},
+        "request": {"baselineDate": baseline_date, "trigger": trigger, **({"chatId": chat_id} if chat_id else {})},
         "metadata": {"engineVersion": ENGINE_VERSION, "provider": provider,
                      "checkSettings": (settings or settings_from_env()).describe()},
         "steps": [], "saved": persist,
@@ -645,8 +660,10 @@ def agent_payload(record: dict[str, Any]) -> dict[str, Any]:
     })
 
 
-def investigation_tool(user: dict[str, Any], *, provider: str | None = None) -> LocalTool:
+def investigation_tool(user: dict[str, Any], *, provider: str | None = None, chat_id: str | None = None) -> LocalTool:
     """The ``investigate_portfolio_change`` tool for Portfolio Analyzer, bound to one signed-in profile.
+
+    ``chat_id`` is saved with each run so the activity list can reopen the conversation.
 
     Built per chat request; repeated calls with the same baseline in that request (the
     model calling it twice, or the agent rerunning after a token refresh) reuse the
@@ -665,7 +682,9 @@ def investigation_tool(user: dict[str, Any], *, provider: str | None = None) -> 
         if baseline in results:
             return results[baseline]
         try:
-            record = await investigate_portfolio_change(user, baseline_date=baseline, trigger="agent", provider=provider)
+            record = await investigate_portfolio_change(
+                user, baseline_date=baseline, trigger="agent", provider=provider, chat_id=chat_id,
+            )
         except InvestigationStorageError as exc:
             return json.dumps({"error": str(exc)})
         results[baseline] = json.dumps(agent_payload(record), ensure_ascii=False, separators=(",", ":"))

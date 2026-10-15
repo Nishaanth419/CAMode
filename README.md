@@ -204,7 +204,15 @@ Ask Portfolio Analyzer "Why did my portfolio change?" (or "What changed since 20
 4. Runs the consistency checks (`app/investigation_checks.py`): same account scope and currency, freshness, totals that add up, holdings that match INDmoney's per-type totals, holdings missing from one snapshot, which total each percentage is measured against, valid percentages, change arithmetic, and USD kept apart from INR. Each check reports `passed`, `warning`, `failed` or `not_checked` with its evidence. A finding is marked verified only when every check it depends on passed.
 5. Saves the run (status, steps with timings, checks and result, sealed with your PIN; the last 50) and returns the findings with their snapshot ids, warnings, limitations and suggested follow-ups.
 
-The answer shows an evidence card with the findings, the largest movers, the data checks, the calculations and the steps. Runs have a 10-second step timeout and a 30-second deadline; a saved-snapshot read is retried once if the database is briefly locked. Investigations report what changed, not why: they never claim a cause such as market news.
+The answer shows an evidence card with the findings, the change by asset type, the allocation chart, the largest movers, the data checks, the calculations, the source snapshots and the steps. Runs have a 10-second step timeout and a 30-second deadline; a saved-snapshot read is retried once if the database is briefly locked. Investigations report what changed, not why: they never claim a cause such as market news.
+
+### Activity and the answer trace
+
+**Activity** in the sidebar (`#/activity`) lists the saved investigations (newest 50) with their status, start time, duration, outcome and where they came from, filtered by All, Running, Completed or Failed. Open one to see its evidence card and step timeline, open the chat that ran it, or run a failed or cancelled one again (it only reads saved snapshots, and it never reruns on its own). Nothing in CA Mode waits for approval, so there is no approval filter.
+
+Under each answer, *How this answer was made* is a timeline of the request: how it was classified, each model call, and each tool with its arguments and a preview of its output, with durations and statuses. A step that never reported back shows as *Did not finish*, never as completed. Tokens, secrets, PINs and PAN numbers are masked before the trace is saved or shown.
+
+Answers are not streamed: the trace arrives with the finished answer. Activity reloads from the server on every visit, when the tab regains focus or the network returns, and every few seconds while a run is in progress; an older response never overwrites a newer status. Streaming the agent's own events (`agent.stream_agent()` already yields them) over server-sent events would make the answer trace live.
 
 ### Measuring the answers
 
@@ -341,7 +349,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `POST /api/users/me/export` | Download the profile's data as JSON (body: `{"pin": ...}`) |
 | `DELETE /api/users/me/history` | Delete the profile's chats, snapshots, investigations, and CAS holdings |
 | `POST /api/investigations` | Investigate the change between the latest snapshot and an earlier one (body: `{"baselineDate": "YYYY-MM-DD"}`, optional); `201` with `Location` when the run was saved, `200` when it was not (private mode) |
-| `GET /api/investigations?limit=20`, `GET /api/investigations/{id}`, `DELETE /api/investigations/{id}` | List, read, or delete saved investigations |
+| `GET /api/investigations?limit=20`, `GET /api/investigations/{id}`, `DELETE /api/investigations/{id}` | List, read, or delete saved investigations; list items carry `updatedAt`, `durationMs`, `trigger`, `baselineDate`, `chatId`, `period`, `error`, `findingCount` and `warningCount` |
 | `GET /api/cas`, `POST /api/cas`, `DELETE /api/cas/{id}` | List, upload (body: `{"password", "pdfBase64"}`), or delete CAS statements |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
 | `GET /api/chats/{id}`, `DELETE /api/chats/{id}` | Read or delete a chat |
@@ -372,7 +380,7 @@ python -m pip install -r requirements-dev.txt
 python -m compileall -q app tests
 for file in frontend/js/*.js; do node --check "$file"; done
 python -m pytest -q
-node --test tests/js/finance.test.js   # finance math, tax rules and rail insights (Node 18+)
+node --test tests/js/*.test.js   # finance math, tax rules, rail insights, trace and Activity rendering (Node 18+)
 ```
 
 The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls.
@@ -411,6 +419,7 @@ app/
 frontend/
   index.html       App shell, profile picker, and profile dialog
   js/app.js        Chat UI, profiles, snapshot card, Markdown and Plotly charts
+  js/trace.js      Answer trace timeline, investigation evidence card, Activity list helpers
   css/app.css      Styles and light/dark themes
   sw.js            Service worker (offline app shell)
 tests/

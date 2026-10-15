@@ -740,42 +740,61 @@ kbd {
 .tool-tile:hover { transform: translateY(-1px); border-color: var(--tone); }
 .tool-tile:disabled { cursor: wait; opacity: .6; transform: none; }
 
-.chat-trace { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-soft); font-size: 11px; }
-.chat-trace summary { padding: 9px 12px; cursor: pointer; color: var(--text-soft); font-weight: 600; }
-.chat-trace[open] summary { border-bottom: 1px solid var(--border); color: var(--text); }
-.trace-list { display: grid; gap: 0; margin: 0; padding: 0 12px; list-style: none; }
-.trace-step { padding: 11px 0; border-bottom: 1px solid var(--border); }
-.trace-step:last-child { border-bottom: 0; }
-.trace-step-heading { display: flex; align-items: center; gap: 8px; color: var(--text); }
-.trace-step-heading strong { overflow-wrap: anywhere; }
-.trace-step-number { display: grid; width: 20px; height: 20px; flex: 0 0 20px; place-items: center; border-radius: 50%; background: var(--surface-2); color: var(--text-soft); font-size: 10px; }
-.trace-status { margin-left: auto; color: var(--accent-3); font-size: 10px; text-transform: capitalize; }
-.trace-status.is-error, .trace-error { color: var(--error); }
-.trace-detail-label { margin: 9px 0 4px 28px; color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
-.trace-code { max-height: 180px; margin: 0 0 0 28px; padding: 8px 10px; overflow: auto; border-radius: 7px; background: var(--surface-2); color: var(--text-soft); font: 10px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.trace-result { margin: 8px 0 0 28px; }
-.trace-result summary { padding: 5px 0; color: var(--text-soft); cursor: pointer; font-size: 10px; }
-.trace-result .trace-code { margin-left: 0; }
-.trace-error { margin: 8px 0 0 28px; }
+/* Status pills and markers, shared by the answer trace, investigation evidence and Activity. */
+.status-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-soft); font-size: 10.5px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+.status-pill.is-ok { background: var(--accent-wash); color: var(--accent-3); }
+.status-pill.is-warning { background: var(--amber-soft); color: var(--amber); }
+.status-pill.is-error { background: var(--red-soft); color: var(--red); }
+.status-pill.is-running { background: var(--blue-soft); color: var(--blue); }
+.status-pill.is-pending, .status-pill.is-muted { background: var(--surface-2); color: var(--text-muted); }
+.timeline-marker { display: grid; width: 20px; height: 20px; flex: 0 0 20px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--text-muted); font-size: 10px; font-weight: 700; }
+.is-ok > .timeline-marker { border-color: transparent; background: var(--accent-wash); color: var(--accent-3); }
+.is-warning > .timeline-marker { border-color: transparent; background: var(--amber-soft); color: var(--amber); }
+.is-error > .timeline-marker { border-color: transparent; background: var(--red-soft); color: var(--red); }
+.is-running > .timeline-marker { border-color: var(--blue); color: var(--blue); animation: pulse-dot 1.6s ease-in-out infinite; }
+.is-pending > .timeline-marker { border-style: dashed; }
 
-/* Investigation evidence card: figures from a saved investigation, under the answer. */
+/* The answer's trace: a collapsed timeline of how it was made. */
+.chat-trace { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-soft); font-size: 11.5px; }
+.chat-trace > summary { padding: 9px 12px; cursor: pointer; color: var(--text-soft); font-weight: 600; }
+.chat-trace[open] > summary { border-bottom: 1px solid var(--border); color: var(--text); }
+.chat-trace .timeline { padding: 4px 12px; }
+.timeline { display: grid; margin: 0; padding: 0; list-style: none; }
+.timeline-step { position: relative; display: flex; gap: 10px; padding: 10px 0; }
+.timeline-step:not(:last-child)::before { position: absolute; top: 32px; bottom: -2px; left: 10px; width: 1px; background: var(--border); content: ""; }
+.timeline-body { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.timeline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--text); }
+.timeline-head strong { overflow-wrap: anywhere; font-size: 12px; }
+.timeline-index { color: var(--text-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.timeline-time { margin-left: auto; color: var(--text-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.timeline-meta, .timeline-summary, .timeline-evidence, .timeline-note { margin: 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.timeline-meta code, .timeline-evidence code { font: 10px var(--mono); }
+.timeline-summary { color: var(--text); }
+.timeline-error { margin: 2px 0 0; padding: 6px 9px; border-radius: var(--radius-sm); background: var(--red-soft); color: var(--text); font-size: 11px; line-height: 1.5; }
+.timeline-note { padding: 4px 0 8px 30px; color: var(--text-muted); font-style: italic; }
+.timeline-details { margin-top: 4px; }
+.timeline-details > summary { width: fit-content; padding: 2px 0; color: var(--text-soft); cursor: pointer; font-size: 10.5px; font-weight: 600; }
+.timeline-links { display: flex; gap: 12px; margin-top: 2px; }
+.timeline-link { color: var(--accent); font-size: 11px; font-weight: 600; text-decoration: none; }
+.timeline-link:hover { text-decoration: underline; }
+.trace-detail-label { margin: 8px 0 4px; color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+.trace-code { max-height: 180px; margin: 0; padding: 8px 10px; overflow: auto; border-radius: 7px; background: var(--surface-2); color: var(--text-soft); font: 10px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Investigation evidence card: figures from a saved investigation, under the answer and in Activity. */
 .message .evidence-card { grid-column: 2; }
 .evidence-card { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); font-size: 12.5px; }
-.evidence-head { display: flex; align-items: center; gap: 10px; color: var(--text); }
+.evidence-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; color: var(--text); }
 .evidence-head strong { font-size: 13.5px; }
-.evidence-head .evidence-badge { margin-left: auto; }
+.evidence-head .panel-link { margin-left: auto; }
 .evidence-summary { margin: 8px 0; color: var(--text); line-height: 1.55; }
+.evidence-error { margin: 8px 0; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--red-soft); color: var(--text); line-height: 1.5; }
 .evidence-note { margin: 4px 0 0; color: var(--text-soft); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
-.evidence-note code { font: 10px var(--mono); }
-.evidence-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-soft); font-size: 10.5px; font-weight: 600; white-space: nowrap; }
-.evidence-badge.is-passed, .evidence-badge.is-completed { background: var(--accent-wash); color: var(--accent-3); }
-.evidence-badge.is-warning, .evidence-badge.is-estimate, .evidence-badge.is-insufficient_data { background: var(--amber-soft); color: var(--amber); }
-.evidence-badge.is-failed, .evidence-badge.is-cancelled { background: var(--red-soft); color: var(--red); }
-.trace-step-heading .evidence-badge { margin-left: auto; }
+.evidence-note code, .evidence-card td code { font: 10px var(--mono); }
 .evidence-section { margin-top: 8px; border-top: 1px solid var(--border); }
 .evidence-section > summary { padding: 9px 0 4px; color: var(--text-soft); cursor: pointer; font-size: 11.5px; font-weight: 600; }
-.evidence-section .trace-list { padding: 0; }
-.evidence-section .evidence-note { margin-left: 0; }
+.evidence-section > summary:hover, .evidence-section[open] > summary { color: var(--text); }
+.check-list { display: grid; gap: 8px; margin: 4px 0 6px; padding: 0; list-style: none; }
+.check-row .timeline-head .status-pill { margin-left: auto; }
 .evidence-list { margin: 10px 0 0; color: var(--text-soft); font-size: 11.5px; }
 .evidence-list strong { color: var(--text); font-size: 11.5px; }
 .evidence-list ul, .evidence-calc { margin: 4px 0 0; padding-left: 18px; line-height: 1.55; }
@@ -783,6 +802,10 @@ kbd {
 .evidence-list.is-warning, .evidence-list.is-warning strong { color: var(--text); }
 .evidence-card .markdown-table-wrap { margin: 10px 0 4px; }
 .evidence-card .data-table td { white-space: normal; }
+.evidence-card .data-table td:not(:first-child) { white-space: nowrap; }
+.evidence-card .data-chart { margin: 8px 0 0; padding: 0; border: 0; box-shadow: none; }
+.evidence-card .data-chart-title { display: none; }
+.evidence-card .chart-heading { justify-content: flex-end; }
 .evidence-actions { margin-top: 12px; }
 
 /* ── Tables ─────────────────────────────────────────────────────── */
@@ -1292,7 +1315,7 @@ body.gate-open #app { visibility: hidden; }
 .page-muted { color: var(--text-muted); font-size: 13px; }
 .page-loading { padding: 28px; color: var(--text-muted); font-size: 13px; text-align: center; }
 .page-error { padding: 12px 14px; border-radius: var(--radius-md); background: var(--red-soft); color: var(--error); font-size: 13px; }
-#portfolio-body, #investments-body, #markets-body, #goals-body, #reports-body, #calc-body { display: grid; gap: 18px; }
+#portfolio-body, #investments-body, #markets-body, #goals-body, #reports-body, #activity-body, #calc-body { display: grid; gap: 18px; }
 .page-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
 .page-stack { display: grid; gap: 18px; }
 .page-chips { margin: 0; }
@@ -1338,6 +1361,30 @@ body.gate-open #app { visibility: hidden; }
 .seg button:hover { color: var(--text); }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--accent-3); box-shadow: var(--shadow-sm); }
 .seg-small button { padding: 4px 10px; font-size: 12px; }
+.seg-count { margin-left: 2px; color: var(--text-muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* Activity: saved investigations. */
+.activity-panel { display: grid; gap: 14px; }
+.activity-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.activity-item { display: flex; gap: 12px; padding: 14px 0; border-top: 1px solid var(--border); }
+.activity-item:first-child { border-top: 0; }
+.activity-body { display: grid; flex: 1; min-width: 0; gap: 4px; }
+.activity-title { color: var(--text); font-size: 14px; font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+.activity-title:hover { color: var(--accent); }
+.activity-outcome { margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.5; }
+.activity-item .timeline-meta { font-size: 12px; color: var(--text-muted); }
+.activity-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.small-button { display: inline-block; padding: 6px 12px; font-size: 12px; text-decoration: none; }
+.activity-empty { padding: 8px 0; }
+.activity-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.activity-detail-head .activity-actions { margin: 0 0 0 auto; }
+.activity-detail-head + .evidence-card { margin-top: 0; padding: 18px 20px; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.activity-skeleton { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.skeleton-row { display: grid; gap: 8px; }
+.skeleton-row span { display: block; height: 12px; border-radius: 6px; background: var(--surface-2); animation: skeleton-fade 1.4s ease-in-out infinite; }
+.skeleton-row span:first-child { width: 45%; height: 14px; }
+.skeleton-row span:last-child { width: 80%; }
+@keyframes skeleton-fade { 50% { opacity: .5; } }
 
 .table-scroll { overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }

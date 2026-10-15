@@ -885,7 +885,7 @@ async def chat(body: ChatRequest, request: Request):
         if not token:
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
         context = snapshots.portfolio_context(
-            user, extra_tools=[investigations.investigation_tool(user, provider=provider)],
+            user, extra_tools=[investigations.investigation_tool(user, provider=provider, chat_id=data["id"])],
         )
     history = data.get("messages", [])
     try:

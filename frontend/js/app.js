@@ -1049,56 +1049,13 @@ function addMessage(role, content, trace = []) {
   div.innerHTML = `
     ${messageShell(role, label, timeStr())}
     <div class="message-body">${content}</div>
-    ${role === 'assistant' ? renderTraceDropdown(trace) : ''}
+    ${role === 'assistant' ? renderChatTrace(trace) : ''}
   `;
   messages.appendChild(div);
   renderPlotlyCharts(div);
   if (role === 'assistant') attachInvestigationCard(div, trace).catch(() => { /* The answer and trace still show. */ });
   scrollToBottom();
   return div;
-}
-
-const ROUTE_LABELS = {
-  account_data: 'needs your account data',
-  general_finance: 'general finance',
-  code_request: 'code request, declined',
-  off_topic: 'not about finance, declined',
-};
-
-function traceTitle(step) {
-  if (step.kind === 'tool' && step.investigation_id) return `Investigation · ${escHtml(step.name || 'tool')}`;
-  if (step.kind === 'tool' && step.source === 'local') return `Saved data · ${escHtml(step.name || 'tool')}`;
-  if (step.kind === 'tool') return `INDmoney · ${escHtml(step.name || 'tool')}`;
-  if (step.kind === 'route') {
-    const how = step.source === 'model' ? `AI check (${escHtml(step.model || 'model')})` : 'keyword rules';
-    return `Request type · ${escHtml(ROUTE_LABELS[step.category] || step.category || 'unknown')} · ${how}`;
-  }
-  return `${escHtml(step.provider || 'AI')} · ${escHtml(step.model || 'model request')}`;
-}
-
-function renderTraceDropdown(trace) {
-  if (!Array.isArray(trace) || !trace.length) return '';
-  const steps = trace.map((step, index) => {
-    const isTool = step.kind === 'tool';
-    const title = traceTitle(step);
-    const status = escHtml(step.status || 'sent');
-    let details = '';
-    if (isTool && step.arguments) {
-      let formatted = step.arguments;
-      try { formatted = JSON.stringify(JSON.parse(step.arguments), null, 2); } catch { /* Keep the short raw preview. */ }
-      details += `<div class="trace-detail-label">Arguments</div><pre class="trace-code">${escHtml(formatted)}</pre>`;
-    }
-    if (isTool && step.result_preview) {
-      let result = step.result_preview;
-      try { result = JSON.stringify(JSON.parse(result), null, 2); } catch { /* Keep the text preview. */ }
-      details += `<details class="trace-result"><summary>Returned data preview</summary><pre class="trace-code">${escHtml(result)}</pre></details>`;
-    }
-    if (step.error) details += `<div class="trace-error">${escHtml(step.error)}</div>`;
-    const duration = Number.isFinite(Number(step.duration_ms)) ? ` · ${Number(step.duration_ms)} ms` : '';
-    const attempt = step.kind === 'model' && Number(step.attempt) > 1 ? ` · attempt ${Number(step.attempt)}` : '';
-    return `<li class="trace-step"><div class="trace-step-heading"><span class="trace-step-number">${index + 1}</span><strong>${title}</strong><span class="trace-status ${status === 'failed' ? 'is-error' : ''}">${status}${duration}${attempt}</span></div>${details}</li>`;
-  }).join('');
-  return `<details class="chat-trace"><summary>Trace · ${trace.length} step${trace.length === 1 ? '' : 's'}</summary><ol class="trace-list">${steps}</ol></details>`;
 }
 
 function parseTraceHeader(value) {
@@ -1111,98 +1068,7 @@ function parseTraceHeader(value) {
 }
 
 /* ── Investigation evidence card ─────────────────────────────────────── */
-// Figures come from the saved investigation by id, never from the answer text.
-
-const INVESTIGATION_STATUS = {
-  completed: 'Completed', insufficient_data: 'Not enough history', failed: 'Failed',
-  cancelled: 'Cancelled', running: 'Running', verifying: 'Verifying',
-};
-const CHECK_STATUS = { passed: 'Passed', warning: 'Warning', failed: 'Failed', not_checked: 'Not checked' };
-
-function evidenceDate(snapshot) {
-  if (!snapshot) return '—';
-  const when = new Date(snapshot.capturedAt);
-  return Number.isNaN(when.getTime())
-    ? escHtml(snapshot.asOfDate)
-    : escHtml(when.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }));
-}
-
-function changeCell(value, pct) {
-  const tone = value > 0 ? 'is-up' : value < 0 ? 'is-down' : '';
-  const pctText = Number.isFinite(pct) ? `<small>${percent(pct, { signed: true })}</small>` : '';
-  return `<td class="${tone}">${signedMoney(value)}${pctText}</td>`;
-}
-
-function findingBadge(finding) {
-  if (finding.kind === 'estimate') return '<span class="evidence-badge is-estimate">Estimate</span>';
-  return finding.verified
-    ? '<span class="evidence-badge is-passed">Verified</span>'
-    : '<span class="evidence-badge is-warning">Unverified</span>';
-}
-
-function renderFindings(findings) {
-  if (!findings.length) return '';
-  const rows = findings.map((finding) => `<tr><td>${escHtml(finding.claim)}${finding.percentageDenominator
-    ? `<small>% of ${escHtml(finding.percentageDenominator)}</small>` : ''}</td>${
-    Number.isFinite(finding.changeInr) ? changeCell(finding.changeInr, finding.changePct)
-      : `<td>${Number.isFinite(finding.valueInr) ? signedMoney(finding.valueInr) : '—'}</td>`}<td>${findingBadge(finding)}</td></tr>`).join('');
-  return `<div class="markdown-table-wrap"><table class="data-table compact"><thead><tr><th>Finding</th><th>Change</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-}
-
-function renderMovers(changes) {
-  const movers = [...(changes?.topRising || []), ...(changes?.topFalling || [])];
-  if (!movers.length) return '';
-  const rows = movers.map((item) => `<tr><td>${escHtml(item.name)}<small>${escHtml(item.assetType)}${item.broker ? ` · ${escHtml(item.broker)}` : ''}${item.status !== 'held' ? ` · ${escHtml(item.status)}` : ''}</small></td>${changeCell(item.changeInr, item.changePct)}<td>${Number.isFinite(item.priceEffectInr) ? signedMoney(item.priceEffectInr) : '—'}</td><td>${Number.isFinite(item.quantityEffectInr) ? signedMoney(item.quantityEffectInr) : '—'}</td></tr>`).join('');
-  return `<details class="evidence-section"><summary>Largest movers · ${movers.length}</summary><div class="markdown-table-wrap"><table class="data-table compact"><thead><tr><th>Holding</th><th>Change</th><th>From price</th><th>From units</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
-}
-
-function renderChecks(checks) {
-  if (!checks.length) return '';
-  const passed = checks.filter((check) => check.status === 'passed').length;
-  const items = checks.map((check) => `<li class="trace-step"><div class="trace-step-heading"><strong>${escHtml(check.check.replace(/_/g, ' '))}</strong><span class="evidence-badge is-${escHtml(check.status)}">${escHtml(CHECK_STATUS[check.status] || check.status)}</span></div><div class="evidence-note">${escHtml(check.summary)}${check.nextStep ? ` ${escHtml(check.nextStep)}` : ''}</div></li>`).join('');
-  return `<details class="evidence-section"><summary>Data checks · ${passed} of ${checks.length} passed</summary><ol class="trace-list">${items}</ol></details>`;
-}
-
-function renderInvestigationSteps(steps) {
-  if (!steps.length) return '';
-  const items = steps.map((step) => {
-    const duration = Number.isFinite(Number(step.durationMs)) ? ` · ${Number(step.durationMs)} ms` : '';
-    const evidence = (step.evidence || []).map((id) => `<code>${escHtml(id)}</code>`).join(' ');
-    return `<li class="trace-step"><div class="trace-step-heading"><span class="trace-step-number">${Number(step.step) || ''}</span><strong>${escHtml(step.purpose || step.name)}</strong><span class="trace-status ${step.status === 'failed' ? 'is-error' : ''}">${escHtml(step.status)}${duration}</span></div><div class="evidence-note">${escHtml(step.name)}${step.summary ? ` · ${escHtml(step.summary)}` : ''}${step.error ? ` · <span class="trace-error">${escHtml(step.error)}</span>` : ''}</div>${evidence ? `<div class="evidence-note">Evidence: ${evidence}</div>` : ''}</li>`;
-  }).join('');
-  return `<details class="evidence-section"><summary>Steps · ${steps.length}</summary><ol class="trace-list">${items}</ol></details>`;
-}
-
-function renderList(title, items, className = '') {
-  if (!items?.length) return '';
-  return `<div class="evidence-list ${className}"><strong>${escHtml(title)}</strong><ul>${items.map((item) => `<li>${escHtml(item)}</li>`).join('')}</ul></div>`;
-}
-
-function renderInvestigationCard(record) {
-  const result = record.result || {};
-  const comparison = result.comparison || {};
-  const status = escHtml(INVESTIGATION_STATUS[record.status] || record.status);
-  const meta = comparison.previous
-    ? `Compared ${evidenceDate(comparison.previous)} → ${evidenceDate(comparison.current)} · ${escHtml(comparison.current?.currency || 'INR')} · saved INDmoney snapshots`
-    : comparison.current ? `Latest snapshot ${evidenceDate(comparison.current)}` : 'No saved snapshot';
-  const calculations = result.calculations?.length
-    ? `<details class="evidence-section"><summary>How this was calculated</summary><ul class="evidence-calc">${result.calculations.map((line) => `<li>${escHtml(line)}</li>`).join('')}</ul></details>` : '';
-  const actions = (result.nextActions || []).map((action) =>
-    `<button class="chip" type="button" data-agent="portfolio" data-prompt="${escHtml(action.prompt)}">${escHtml(action.label)}</button>`).join('');
-  return `<section class="evidence-card" aria-label="Investigation evidence">
-    <header class="evidence-head"><strong>${escHtml(result.title || 'Portfolio change investigation')}</strong><span class="evidence-badge is-${escHtml(record.status)}">${status}</span></header>
-    <p class="evidence-note">${meta}</p>
-    ${result.summary || record.error ? `<p class="evidence-summary">${escHtml(result.summary || record.error)}</p>` : ''}
-    ${renderList('Data warnings', result.warnings, 'is-warning')}
-    ${renderFindings(result.findings || [])}
-    ${renderMovers(result.changes)}
-    ${renderChecks(result.checks || [])}
-    ${calculations}
-    ${renderInvestigationSteps(record.steps || [])}
-    ${renderList('Limitations', result.limitations)}
-    ${actions ? `<div class="follow-ups evidence-actions">${actions}</div>` : ''}
-  </section>`;
-}
+// Figures come from the saved investigation by id, never from the answer text (rendering lives in trace.js).
 
 async function attachInvestigationCard(messageDiv, trace) {
   const id = [...(Array.isArray(trace) ? trace : [])].reverse().find((step) => step.investigation_id)?.investigation_id;
@@ -1210,10 +1076,11 @@ async function attachInvestigationCard(messageDiv, trace) {
   const response = await fetch('/api/investigations/' + encodeURIComponent(id));
   if (!response.ok) return;
   const holder = document.createElement('div');
-  holder.innerHTML = renderInvestigationCard(await response.json());
+  holder.innerHTML = renderInvestigationCard(await response.json(), { chart: renderDataChart });
   const card = holder.firstElementChild;
   const traceDetails = messageDiv.querySelector('.chat-trace');
   if (traceDetails) traceDetails.before(card); else messageDiv.appendChild(card);
+  renderPlotlyCharts(card);
 }
 
 function addTypingIndicator() {
@@ -1310,7 +1177,7 @@ async function sendMessage(text) {
         const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
         if (savedAssistant?.trace?.length) {
           const currentTrace = msgDiv.querySelector('.chat-trace');
-          if (currentTrace) currentTrace.outerHTML = renderTraceDropdown(savedAssistant.trace);
+          if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace);
         }
       }
     } catch { /* The compact trace from the response header is still visible. */ }
