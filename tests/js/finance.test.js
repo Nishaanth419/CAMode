@@ -65,6 +65,14 @@ test('goalKind picks an icon from the goal name', () => {
   assert.equal(finance.goalKind(undefined), 'other');
 });
 
+test('goalIcon prefers the chosen kind and falls back to the name', () => {
+  assert.equal(finance.goalIcon({ name: 'Buy a home', kind: 'travel' }), 'travel');
+  assert.equal(finance.goalIcon({ name: 'Buy a home', kind: 'other' }), 'other');
+  assert.equal(finance.goalIcon({ name: 'Buy a home' }), 'home');
+  assert.equal(finance.goalIcon({ name: 'Buy a home', kind: 'yacht' }), 'home');
+  assert.equal(finance.goalIcon(null), 'other');
+});
+
 test('historyChange measures first to last point and labels the span', () => {
   const points = [
     { date: '2026-06-17', networthInr: 1000000 },

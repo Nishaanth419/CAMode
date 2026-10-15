@@ -246,7 +246,7 @@ document.addEventListener('ca:session-ended', () => {
     setHtml(document.getElementById(id), '');
   }
   for (const id of ['portfolio-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
-  goalForm.hidden = true;
+  if (goalDialog.open) goalDialog.close();
 });
 document.addEventListener('ca:snapshot', () => {
   clearPortfolioCache();
@@ -762,8 +762,7 @@ document.addEventListener('input', (event) => {
 document.addEventListener('click', (event) => {
   if (!event.target.closest('[data-save-calc-goal]')) return;
   const result = CALCULATORS.goal.compute(calcValues.goal);
-  navigate('goals');
-  openGoalForm({ name: '', ...result.goal });
+  openGoalDialog({ name: '', ...result.goal });
 });
 
 /* ── Market Insights ────────────────────────────────────────────────── */
@@ -847,8 +846,34 @@ document.getElementById('mf-category-form').addEventListener('submit', (event) =
 
 /* ── Goals ──────────────────────────────────────────────────────────── */
 const MAX_GOALS = 10;
+const goalDialog = document.getElementById('goal-dialog');
 const goalForm = document.getElementById('goal-form');
+const goalFields = {
+  name: document.getElementById('goal-name'), kind: document.getElementById('goal-kind'),
+  year: document.getElementById('goal-year'), target: document.getElementById('goal-target'),
+  saved: document.getElementById('goal-saved'), monthly: document.getElementById('goal-monthly'),
+  rate: document.getElementById('goal-return'),
+};
 let editingGoalId = null;
+// The type follows the goal's name until the user picks one.
+let goalKindChosen = false;
+
+// Shared by the Goals page and the right rail; tones repeat after five goals.
+const GOAL_ICONS = {
+  home: '<path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1Z"/>',
+  education: '<path d="m3 9 9-4 9 4-9 4Z"/><path d="M7 11v4.5c0 1.4 2.2 2.5 5 2.5s5-1.1 5-2.5V11"/><path d="M21 9v5"/>',
+  retirement: '<path d="M3.5 12a8.5 8.5 0 0 1 17 0Z"/><path d="M12 12v6.5a1.5 1.5 0 0 1-3 0"/><path d="M12 3.5V2"/>',
+  car: '<path d="M5 16v-4l2-5h10l2 5v4Z"/><path d="M5 12h14"/><circle cx="8" cy="16.5" r="1.5"/><circle cx="16" cy="16.5" r="1.5"/>',
+  travel: '<path d="M2.5 13.5 21 6l-4.5 13-4-5.5Z"/><path d="m12.5 13.5 3-3"/>',
+  wedding: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10Z"/>',
+  emergency: '<path d="M12 3.5 19 6v5.5c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6Z"/>',
+  other: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/>',
+};
+const GOAL_TONES = ['green', 'blue', 'violet', 'amber', 'red'];
+
+function goalIconHtml(goal, tone, className = 'insight-icon') {
+  return `<span class="${className} tone-${tone}" aria-hidden="true"><svg viewBox="0 0 24 24">${GOAL_ICONS[goalIcon(goal)]}</svg></span>`;
+}
 
 async function renderGoals() {
   const isCurrent = startRender('goals');
@@ -880,11 +905,11 @@ async function renderGoals() {
       ${statTile('Saved so far', moneyShort(totalSaved), percent(totalTarget ? totalSaved / totalTarget * 100 : NaN) + ' of targets')}
       ${statTile('Investing monthly', moneyShort(totalMonthly), 'Across all goals')}
     </div>
-    <div class="goal-grid">${goals.map((goal, index) => goalCard(goal, projections[index])).join('')}</div>
+    <div class="goal-grid">${goals.map((goal, index) => goalCard(goal, projections[index], GOAL_TONES[index % GOAL_TONES.length])).join('')}</div>
     ${promptChips([['Review my goals', 'Review my goals against my current portfolio: which are on track, which need more, and which of my holdings fit each goal\'s timeline.']])}`;
 }
 
-function goalCard(goal, p) {
+function goalCard(goal, p, tone) {
   const status = p.onTrack
     ? '<span class="pill is-connected">On track</span>'
     : `<span class="pill is-behind">${p.months ? 'Needs more' : 'Due now'}</span>`;
@@ -895,7 +920,7 @@ function goalCard(goal, p) {
       : `${moneyShort(goal.targetInr - (goal.savedInr || 0))} is still needed.`;
   const ask = `Review my goal "${goal.name}": ${money(goal.targetInr)} by ${goal.targetYear}, ${money(goal.savedInr || 0)} saved, investing ${money(goal.monthlyInr || 0)} a month at an assumed ${goal.expectedReturnPct}% a year. Is the assumption reasonable, and which of my holdings suit this timeline?`;
   return `<article class="goal-card">
-    <header><h3>${escHtml(goal.name)}</h3>${status}</header>
+    <header>${goalIconHtml(goal, tone, 'insight-icon goal-card-icon')}<h3>${escHtml(goal.name)}</h3>${status}</header>
     <p class="goal-target"><strong>${moneyShort(goal.targetInr)}</strong> by ${goal.targetYear}</p>
     <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.progress.toFixed(0)}" aria-label="Saved so far"><span style="width:${p.progress.toFixed(1)}%"></span></div>
     <p class="goal-meta">${moneyShort(goal.savedInr || 0)} saved (${percent(p.progress)}) · ${money(goal.monthlyInr || 0)} a month · ${goal.expectedReturnPct}% a year</p>
@@ -908,19 +933,56 @@ function goalCard(goal, p) {
   </article>`;
 }
 
-function openGoalForm(goal = null) {
+function readGoalForm() {
+  return {
+    id: editingGoalId || `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    name: goalFields.name.value.trim(),
+    kind: goalFields.kind.value,
+    targetInr: Math.round(Number(goalFields.target.value)),
+    targetYear: Math.round(Number(goalFields.year.value)),
+    savedInr: Math.round(Number(goalFields.saved.value) || 0),
+    monthlyInr: Math.round(Number(goalFields.monthly.value) || 0),
+    expectedReturnPct: Number(goalFields.rate.value) || 0,
+  };
+}
+
+// Shows, as the user types, whether the goal would be met.
+function renderGoalPreview() {
+  const preview = document.getElementById('goal-preview');
+  const goal = readGoalForm();
+  if (!(goal.targetInr > 0) || !(goal.targetYear >= 2000)) {
+    preview.textContent = '';
+    return;
+  }
+  const p = goalProjection(goal);
+  preview.className = `goal-preview ${p.onTrack ? 'is-up' : 'is-behind'}`;
+  preview.textContent = p.onTrack
+    ? `On track: about ${moneyShort(p.projected)} by Dec ${goal.targetYear} at ${goal.expectedReturnPct}% a year.`
+    : p.months
+      ? `Projected ${moneyShort(p.projected)} by Dec ${goal.targetYear}. About ${money(Math.ceil(p.needed / 100) * 100)} a month would reach the target.`
+      : `${moneyShort(goal.targetInr - goal.savedInr)} is still needed.`;
+}
+
+function openGoalDialog(goal = null) {
+  if (!sessionReady()) return;
   editingGoalId = goal?.id || null;
-  document.getElementById('goal-form-title').textContent = editingGoalId ? 'Edit goal' : 'New goal';
-  document.getElementById('goal-name').value = goal?.name || '';
-  document.getElementById('goal-target').value = goal?.targetInr ?? '';
-  document.getElementById('goal-year').value = goal?.targetYear ?? new Date().getFullYear() + 5;
-  document.getElementById('goal-saved').value = goal?.savedInr ?? 0;
-  document.getElementById('goal-monthly').value = goal?.monthlyInr ?? 0;
-  document.getElementById('goal-return').value = goal?.expectedReturnPct ?? 10;
+  const thisYear = new Date().getFullYear();
+  document.getElementById('goal-dialog-title').textContent = editingGoalId ? 'Edit goal' : 'New goal';
+  goalFields.name.value = goal?.name || '';
+  goalFields.kind.value = goalIcon(goal || {});
+  goalKindChosen = Boolean(goal?.kind);
+  // Saved goals may already be past due; new ones start this year at the earliest.
+  goalFields.year.min = String(Math.min(thisYear, goal?.targetYear ?? thisYear));
+  goalFields.year.value = goal?.targetYear ?? thisYear + 5;
+  goalFields.target.value = goal?.targetInr ?? '';
+  goalFields.saved.value = goal?.savedInr ?? 0;
+  goalFields.monthly.value = goal?.monthlyInr ?? 0;
+  goalFields.rate.value = goal?.expectedReturnPct ?? 10;
   document.getElementById('goal-status').textContent = '';
-  goalForm.hidden = false;
-  goalForm.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  document.getElementById('goal-name').focus();
+  document.getElementById('goal-delete').hidden = !editingGoalId;
+  renderGoalPreview();
+  if (!goalDialog.open) goalDialog.showModal();
+  (goal?.name ? goalFields.target : goalFields.name).focus();
 }
 
 async function saveGoals(goals) {
@@ -932,29 +994,40 @@ async function saveGoals(goals) {
   return data.goals;
 }
 
-document.getElementById('add-goal').addEventListener('click', () => openGoalForm());
-document.getElementById('goal-cancel').addEventListener('click', () => { goalForm.hidden = true; });
+async function deleteGoal(goal) {
+  if (!goal || !window.confirm(`Delete the goal "${goal.name}"?`)) return false;
+  const goals = await getGoals();
+  await saveGoals(goals.filter((item) => item.id !== goal.id));
+  return true;
+}
+
+document.addEventListener('ca:goals', () => {
+  if (currentRoute === 'goals' && sessionReady()) renderGoals();
+});
+
+document.getElementById('add-goal').addEventListener('click', () => openGoalDialog());
+goalDialog.querySelectorAll('[data-close-goal]').forEach((button) => button.addEventListener('click', () => goalDialog.close()));
+goalForm.addEventListener('input', (event) => {
+  if (event.target === goalFields.kind) goalKindChosen = true;
+  if (event.target === goalFields.name && !goalKindChosen) goalFields.kind.value = goalKind(goalFields.name.value);
+  document.getElementById('goal-status').textContent = '';
+  renderGoalPreview();
+});
 
 goalForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!goalForm.reportValidity()) return;
   const status = document.getElementById('goal-status');
-  const goals = await getGoals().catch(() => []);
-  const goal = {
-    id: editingGoalId || `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-    name: document.getElementById('goal-name').value.trim(),
-    targetInr: Math.round(Number(document.getElementById('goal-target').value)),
-    targetYear: Math.round(Number(document.getElementById('goal-year').value)),
-    savedInr: Math.round(Number(document.getElementById('goal-saved').value) || 0),
-    monthlyInr: Math.round(Number(document.getElementById('goal-monthly').value) || 0),
-    expectedReturnPct: Number(document.getElementById('goal-return').value) || 0,
-  };
-  const next = editingGoalId ? goals.map((item) => (item.id === editingGoalId ? goal : item)) : [...goals, goal];
   const submit = goalForm.querySelector('[type="submit"]');
   submit.disabled = true;
   try {
+    const goals = await getGoals();
+    const goal = readGoalForm();
+    if (!editingGoalId && goals.length >= MAX_GOALS) throw new Error(`You can keep up to ${MAX_GOALS} goals. Delete one to add another.`);
+    const next = editingGoalId ? goals.map((item) => (item.id === editingGoalId ? goal : item)) : [...goals, goal];
     await saveGoals(next);
-    goalForm.hidden = true;
-    renderGoals();
+    goalDialog.close();
+    toast(editingGoalId ? 'Goal updated.' : 'Goal added.');
   } catch (error) {
     status.textContent = error.message;
   } finally {
@@ -962,26 +1035,27 @@ goalForm.addEventListener('submit', async (event) => {
   }
 });
 
+document.getElementById('goal-delete').addEventListener('click', async () => {
+  try {
+    const goal = (await getGoals()).find((item) => item.id === editingGoalId);
+    if (await deleteGoal(goal)) goalDialog.close();
+  } catch (error) {
+    document.getElementById('goal-status').textContent = error.message;
+  }
+});
+
 document.addEventListener('click', async (event) => {
   const add = event.target.closest('[data-add-goal]');
   const edit = event.target.closest('[data-edit-goal]');
   const remove = event.target.closest('[data-delete-goal]');
-  if (add) {
-    if (currentRoute !== 'goals') navigate('goals');
-    openGoalForm();
-  }
+  if (add) openGoalDialog();
   if (!edit && !remove) return;
-  const goals = await getGoals().catch(() => []);
-  if (edit) openGoalForm(goals.find((goal) => goal.id === edit.dataset.editGoal));
-  if (remove) {
-    const goal = goals.find((item) => item.id === remove.dataset.deleteGoal);
-    if (!goal || !window.confirm(`Delete the goal "${goal.name}"?`)) return;
-    try {
-      await saveGoals(goals.filter((item) => item.id !== goal.id));
-      renderGoals();
-    } catch (error) {
-      toast(error.message);
-    }
+  try {
+    const goals = await getGoals();
+    if (edit) openGoalDialog(goals.find((goal) => goal.id === edit.dataset.editGoal));
+    if (remove) await deleteGoal(goals.find((item) => item.id === remove.dataset.deleteGoal));
+  } catch (error) {
+    toast(error.message);
   }
 });
 
