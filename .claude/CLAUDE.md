@@ -84,14 +84,15 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - The route is the first trace step (`kind: "route"`, `source: "model" | "keywords"`)
 - Portfolio Analyzer gets `get_cas_holdings` (`snapshots.cas_tool()`) only when the profile has uploaded a CAS; the prompt says to state the statement date and never add CAS figures to INDmoney's
 - Portfolio Analyzer always gets its local snapshot tools; live INDmoney tools (and the must-call-a-tool retry) only for `account_data`
-- Changing `ROUTER_PROMPT` means bumping `ROUTER_PROMPT_VERSION` and re-running `python -m scripts.eval_router --provider <p>` on `evals/request_routing.jsonl` (keyword baseline: 65.5%)
+- Changing `ROUTER_PROMPT` means bumping `ROUTER_PROMPT_VERSION` and re-running `python -m scripts.eval_router --provider <p>` on `evals/request_routing.jsonl` (64 cases; keyword baseline 41/64, 64.1%; `ca-mode` 60/64 on every run)
+- The Ollama classifier call sets `temperature: 0`; at the model's default of 1 it occasionally labelled a price-chart request `general_finance`, so Portfolio Analyzer got no live tools. Cloud providers get no temperature because some reasoning models reject one
 - `_contains_code_output()` replaces code-shaped model output (except `chart` blocks) with the refusal notice
 - If Portfolio Analyzer was not given the live tools and the model writes a tool call as JSON text (`_looks_like_tool_call()`), the request is rerun once with `force_account_data=True` instead of showing the JSON
 
 **Portfolio tools** (`agent.py`, `snapshots.py`):
 - `PortfolioContext` carries the local `LocalTool`s (`get_portfolio_snapshot`, `get_networth_history`), the profile text, cached MCP tools, and an `on_mcp_tools` cache callback
 - With cached MCP tools (< 24h), the MCP session opens lazily on the first MCP tool call; snapshot-only answers make no MCP calls
-- A failing local tool returns an error tool result so the model can fall back to live tools; MCP failures abort the request
+- A failing local tool returns an error tool result so the model can fall back to live tools. An MCP result flagged `isError` (e.g. an argument outside the tool's enum) raises `mcp_client.McpToolError` and goes back to the model as an error tool result with a `next_step`, so it can correct the call; it still counts as a tool call. Transport and JSON-RPC errors, and `isError` text that reads as an auth failure (401, `invalid_token`, unauthorized), abort the request so `main.chat` can refresh the token
 - Profile fields go into a labelled `<user_profile>` block in the portfolio system prompt as context, not instructions
 
 **Portfolio change investigations** (`investigations.py`, `investigation_math.py`, `investigation_checks.py`):
@@ -269,7 +270,7 @@ Test coverage:
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers
 - `test_charts.py`: reading OHLC results in any nesting, replacing model-written and elided candles with tool candles, the no-data note, other charts untouched, a year of candles fitting a saved answer, chart data left out of model history
 - `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
-- `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
+- `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering, retryable vs auth tool errors
 - `tests/js/trace.test.js` (`node --test`): status labels and tones, step ordering and investigation links, details disclosure, missing fields and unknown kinds, evidence card sections, Activity filters, retry rules, reconciliation of duplicate/out-of-order/refreshed lists, redaction and escaping
 - `tests/js/finance.test.js` (`node --test`): formatting, growth and goal math, goal icons, history change, snapshot insights, income tax for both regimes including rebates, surcharge and marginal relief
 

@@ -119,6 +119,21 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
         return {"tools": tools, "sessionId": session_id, "protocolVersion": protocol}
 
 
+class McpToolError(RuntimeError):
+    """A tool ran and reported an error (``isError``), such as rejected arguments.
+
+    MCP returns these as results so the model can correct the call; the agent passes
+    them back instead of failing the request. Transport and JSON-RPC errors, and
+    tool errors that read as an authentication failure (so the token is refreshed),
+    stay plain ``RuntimeError``.
+    """
+
+
+def _reads_as_auth_failure(text: str) -> bool:
+    lowered = text.lower()
+    return "401" in lowered or any(term in lowered for term in ("invalid_token", "authentication required", "unauthorized"))
+
+
 async def call_mcp_tool(
     url: str,
     token: str,
@@ -146,7 +161,8 @@ async def call_mcp_tool(
     content = result.get("content")
     if result.get("isError") is True:
         rendered = "\n".join(str(item.get("text", item)) for item in content or [])
-        raise RuntimeError(f'MCP tool "{name}" failed: {rendered or result}')
+        message = f'MCP tool "{name}" failed: {rendered or result}'
+        raise RuntimeError(message) if _reads_as_auth_failure(message) else McpToolError(message)
     if isinstance(content, list):
         return "\n".join(str(item.get("text", json.dumps(item, ensure_ascii=False))) for item in content)
     return result

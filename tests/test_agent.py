@@ -783,3 +783,67 @@ async def test_trace_never_carries_secrets_from_tool_arguments_or_results(monkey
     for secret in ("tok-999", "ABCDE1234F", "sk-live-1"):
         assert secret not in shown
     assert "4200000" in step["result_preview"]  # the user's own figures stay visible
+
+
+@pytest.mark.asyncio
+async def test_rejected_tool_arguments_go_back_to_the_model_to_correct(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    rejection = ("MCP tool \"get_indian_stocks_ohlc\" failed: 1 validation error for get_indian_stocks_ohlcArguments "
+                 "lookback Input should be '1h', '3h', '1d', '7d', '14d' or '1y' [input_value='30d']")
+    calls = []
+
+    async def fake_fetch(url, token):
+        return {"tools": [{"name": "get_indian_stocks_ohlc"}], "protocolVersion": "v", "sessionId": "sid"}
+
+    async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
+        calls.append(arguments["lookback"])
+        if arguments["lookback"] == "30d":
+            raise agent.McpToolError(rejection)
+        return '{"candles": []}'
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    monkeypatch.setattr(agent, "call_mcp_tool", fake_call)
+
+    def ohlc_call(lookback):
+        return {"id": f"call-{lookback}", "function": {"name": "get_indian_stocks_ohlc", "arguments": json.dumps(
+            {"ind_key": "INDS01052", "interval": "1day", "lookback": lookback})}}
+
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([
+        _completion(tool_calls=[ohlc_call("30d")]), _completion(tool_calls=[ohlc_call("1y")]),
+        _completion("INFY rose over the period."),
+    ], captured))
+
+    answer = await agent.run_agent("Show the INFY price for the last 30 days", "https://mcp", "token", [],
+                                   "portfolio", "openai")
+
+    assert str(answer) == "INFY rose over the period."
+    assert calls == ["30d", "1y"]
+    tool_messages = [json.loads(item["content"]) for item in captured[-1]["payload"]["messages"] if item.get("role") == "tool"]
+    fed_back = tool_messages[0]
+    assert "Input should be '1h'" in fed_back["error"] and "call it again" in fed_back["next_step"]
+    steps = [step for step in answer.trace if step["kind"] == "tool"]
+    assert [step["status"] for step in steps] == ["failed", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_call_still_counts_as_using_a_tool(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def fake_fetch(url, token):
+        return {"tools": [{"name": "get_indian_stocks_ohlc"}], "protocolVersion": "v", "sessionId": "sid"}
+
+    async def rejecting_call(*args, **kwargs):
+        raise agent.McpToolError('MCP tool "get_indian_stocks_ohlc" failed: unknown ind_key')
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    monkeypatch.setattr(agent, "call_mcp_tool", rejecting_call)
+    tool_call = {"id": "call-1", "function": {"name": "get_indian_stocks_ohlc", "arguments": "{}"}}
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(
+        [_completion(tool_calls=[tool_call]), _completion("INFY price history is unavailable right now.")], captured))
+
+    answer = await agent.run_agent("Show INFY price history", "https://mcp", "token", [], "portfolio", "openai")
+
+    assert str(answer) == "INFY price history is unavailable right now."
+    assert len(captured) == 2  # no forced extra tool call after an honest "unavailable"
