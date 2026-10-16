@@ -147,3 +147,28 @@ def test_rpc_body_skips_notifications_and_joins_multiline_data():
     )
 
     assert mcp_client._rpc_body(response) == {"jsonrpc": "2.0", "id": 3, "result": {"ok": True}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "error_type"), [
+    ("1 validation error for get_indian_stocks_ohlcArguments lookback Input should be '1h', '3h', '1d', '7d', '14d' or '1y'",
+     mcp_client.McpToolError),
+    ("401 Unauthorized: invalid_token", RuntimeError),
+])
+async def test_tool_errors_are_retryable_unless_they_read_as_auth_failures(monkeypatch, text, error_type):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return _response({"result": {"isError": True, "content": [{"text": text}]}})
+
+    monkeypatch.setattr(mcp_client.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    with pytest.raises(RuntimeError) as raised:
+        await mcp_client.call_mcp_tool("https://mcp.example/mcp", "token", "v", None, "get_indian_stocks_ohlc", {})
+
+    assert type(raised.value) is error_type

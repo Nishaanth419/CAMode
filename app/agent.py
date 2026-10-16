@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from . import charts, number_check, router
-from .mcp_client import IMPORTANT_PORTFOLIO_TOOL_NAMES, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
+from .mcp_client import IMPORTANT_PORTFOLIO_TOOL_NAMES, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
 
 logger = logging.getLogger("ca_mode.agent")
 
@@ -67,6 +67,7 @@ _CODE_OUTPUT_RE = re.compile(
     r"if\s+__name__\s*==",
     re.MULTILINE,
 )
+MAX_TOOL_ERROR_CHARS = 600
 TRUNCATION_NOTICE = "\n\n_(This response was cut off at the model's length limit. Ask a narrower question for the rest.)_"
 _INDMONEY_DATA_REQUEST_RE = re.compile(
     r"\b(?:my\s+(?:portfolio|net\s+worth|holdings?|stocks?|funds?|sips?|watchlist|accounts?|investments?|"
@@ -779,6 +780,16 @@ async def stream_agent(
                             mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
                             client=mcp_client,
                         )
+                    except McpToolError as exc:
+                        # The tool rejected this call (e.g. an argument outside its enum): let the model fix it.
+                        portfolio_tool_called = True
+                        yield "tool_result", {"name": name, "error": str(exc)}
+                        messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": json.dumps({
+                            "error": str(exc)[:MAX_TOOL_ERROR_CHARS],
+                            "next_step": "Correct the arguments using the tool's input schema and call it again, "
+                                         "or tell the user this data is unavailable.",
+                        })})
+                        continue
                     except Exception as exc:
                         yield "tool_result", {"name": name, "error": str(exc)}
                         yield "error", {"message": f"INDmoney data request failed: {exc}"}
