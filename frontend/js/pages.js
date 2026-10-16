@@ -46,6 +46,12 @@ function reloadSession() {
   return sessionReload;
 }
 
+// The first field error FastAPI reported, without Pydantic's "Value error, " prefix.
+function validationMessage(detail) {
+  const message = String(detail[0]?.msg || '').replace(/^Value error, /, '');
+  return message ? `Check the values and try again: ${message}` : 'Check the values and try again.';
+}
+
 async function fetchJson(url, options) {
   let response;
   try {
@@ -56,7 +62,7 @@ async function fetchJson(url, options) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (data.profileRequired || data.unlockRequired || data.consentRequired) reloadSession();
-    throw new Error(data.error || (Array.isArray(data.detail) ? 'Check the values and try again.' : `HTTP ${response.status}`));
+    throw new Error(data.error || (Array.isArray(data.detail) ? validationMessage(data.detail) : `HTTP ${response.status}`));
   }
   return data;
 }
@@ -243,7 +249,7 @@ document.addEventListener('ca:session-ended', () => {
   latestHoldings = [];
   reportPoints = [];
   resetActivity();
-  for (const id of ['home-stats', 'home-chats', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'reports-body', 'activity-body', 'all-chats']) {
+  for (const id of ['home-stats', 'home-chats', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
   for (const id of ['portfolio-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
@@ -316,10 +322,10 @@ async function renderHome() {
     }
   }
   const goals = await goalsPromise;
-  const onTrack = goals.filter((goal) => goalProjection(goal).onTrack).length;
+  const onTrack = goals.filter(goalIsOnTrack).length;
   if (!isCurrent()) return;
   stats.innerHTML = worth + pnl
-    + statTile('Goals on track', goals.length ? `${onTrack} of ${goals.length}` : 'None yet', goals.length ? 'At your expected returns' : 'Add one on the Goals page')
+    + statTile('Goals on track', goals.length ? `${onTrack} of ${goals.length}` : 'None yet', goals.length ? 'Under each goal\'s own assumption' : 'Add one on the Goals page')
     + statTile('Saved chats', String(chats.length), storageMode === 'private' ? 'Private: cleared at sign-out' : 'Kept for 30 days');
 }
 
@@ -622,7 +628,8 @@ const CALCULATORS = {
         results: [['Monthly SIP needed', moneyShort(monthly), `For ${years} years at ${rate}% a year`], ['Goal cost then', moneyShort(future), `${inflation}% inflation for ${years} years`], ['Savings grow to', moneyShort(grow(saved, rate, months)), money(grow(saved, rate, months))]],
         series: yearly(years, () => future, (y) => grow(saved, rate, 12 * y) + sipValue(monthly, rate, 12 * y), ['Goal cost', 'Projected savings']),
         prompt: `I want to reach a goal costing ${money(target)} today in ${years} years. With ${inflation}% inflation it will cost about ${money(future)}. I have ${money(saved)} saved and my calculator says I need a SIP of ${money(monthly)} a month at ${rate}% a year. How should I think about asset allocation for this goal as it gets closer?`,
-        goal: { targetInr: Math.round(future), targetYear: new Date().getFullYear() + years, savedInr: Math.round(saved), monthlyInr: Math.ceil(monthly / 100) * 100, expectedReturnPct: rate },
+        // Saved as the user's own assumption; the Goals page then shows no growth and scenarios around it.
+        goal: { currency: 'INR', targetAmount: Math.round(future), targetDate: yearsFromToday(years), savedAmount: Math.round(saved), monthlyContribution: Math.ceil(monthly / 100) * 100, assumedReturnPct: rate },
       };
     },
   },
@@ -846,18 +853,22 @@ document.getElementById('mf-category-form').addEventListener('submit', (event) =
 });
 
 /* ── Goals ──────────────────────────────────────────────────────────── */
+// Plans (gap, scenarios, status) come from the server with each goal; the page only formats them.
 const MAX_GOALS = 10;
 const goalDialog = document.getElementById('goal-dialog');
 const goalForm = document.getElementById('goal-form');
 const goalFields = {
   name: document.getElementById('goal-name'), kind: document.getElementById('goal-kind'),
-  year: document.getElementById('goal-year'), target: document.getElementById('goal-target'),
-  saved: document.getElementById('goal-saved'), monthly: document.getElementById('goal-monthly'),
-  rate: document.getElementById('goal-return'),
+  currency: document.getElementById('goal-currency'), date: document.getElementById('goal-date'),
+  target: document.getElementById('goal-target'), saved: document.getElementById('goal-saved'),
+  monthly: document.getElementById('goal-monthly'), rate: document.getElementById('goal-return'),
+  notes: document.getElementById('goal-notes'),
 };
 let editingGoalId = null;
 // The type follows the goal's name until the user picks one.
 let goalKindChosen = false;
+let goalPreviewTimer = null;
+let goalPreviewSeq = 0;
 
 // Shared by the Goals page and the right rail; tones repeat after five goals.
 const GOAL_ICONS = {
@@ -876,6 +887,71 @@ function goalIconHtml(goal, tone, className = 'insight-icon') {
   return `<span class="${className} tone-${tone}" aria-hidden="true"><svg viewBox="0 0 24 24">${GOAL_ICONS[goalIcon(goal)]}</svg></span>`;
 }
 
+function isoDay(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function yearsFromToday(years) {
+  const date = new Date();
+  date.setFullYear(date.getFullYear() + years);
+  return isoDay(date);
+}
+
+// One sentence on where the goal stands, from its plan.
+function goalSummary(plan) {
+  if (!plan) return '';
+  const cur = plan.currency;
+  const base = baseScenario(plan);
+  const by = formatDate(plan.targetDate);
+  switch (plan.status) {
+    case 'reached':
+      return `The ${amountShort(plan.savedAmount, cur)} earmarked already covers the target.`;
+    case 'past_due':
+    case 'due_now':
+      return `${amount(plan.remainingGap, cur)} is still needed, and no monthly contributions are left before ${by}.`;
+    case 'insufficient_data':
+      return (plan.warnings || [])[0] || 'Some details this goal needs are missing.';
+    default:
+      if (!base) return '';
+      if (base.onTrack) return `Projected ${amountShort(base.projectedAmount, cur)} by ${by} at ${base.annualReturnPct}% a year, ${amountShort(base.difference, cur)} more than the target.`;
+      return `Projected ${amountShort(base.projectedAmount, cur)} by ${by} at ${base.annualReturnPct}% a year, ${amountShort(-base.difference, cur)} short. `
+        + (base.requiredMonthly != null ? `About ${amount(base.requiredMonthly, cur)} a month would close the gap under the same assumption.` : '');
+  }
+}
+
+function scenarioDetails(plan) {
+  if (!plan || !(plan.scenarios || []).length) return '';
+  const cur = plan.currency;
+  const rows = plan.scenarios.map((item) => `<tr>
+      <td>${escHtml(item.label)}</td>
+      <td>${amountShort(item.projectedAmount, cur)}</td>
+      <td class="${item.difference >= 0 ? 'is-up' : 'is-down'}">${item.difference >= 0 ? '+' : '−'}${amountShort(Math.abs(item.difference), cur)}</td>
+      <td>${item.requiredMonthly == null ? '—' : amount(item.requiredMonthly, cur)}</td>
+    </tr>`).join('');
+  const notes = [...(plan.warnings || []), ...(plan.assumptions || [])];
+  return `<details class="goal-scenarios"><summary>Scenarios and assumptions</summary>
+    <div class="table-scroll"><table class="data-table compact"><thead><tr><th>Yearly return</th><th>Projected</th><th>vs target</th><th>Needed a month</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <ul class="goal-notes">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>
+  </details>`;
+}
+
+// A total tile: the first currency as the value and any others beside it, never added together.
+function totalTile(label, totals, sub) {
+  const [first, ...rest] = totals;
+  if (!first) return statTile(label, '—', sub);
+  return statTile(label, amountShort(first[1], first[0]), rest.length ? `+ ${formatTotals(rest)}, kept separate` : sub);
+}
+
+function goalStats(goals) {
+  const onTrack = goals.filter(goalIsOnTrack).length;
+  return `<div class="stat-grid">
+    ${statTile('On track', `${onTrack} of ${goals.length}`, 'Under each goal\'s own assumption', onTrack === goals.length ? 'is-up' : '')}
+    ${totalTile('Total targets', totalsByCurrency(goals, 'targetAmount'), 'Across all goals')}
+    ${totalTile('Earmarked so far', totalsByCurrency(goals, 'savedAmount'), 'Amounts you entered')}
+    ${totalTile('Contributing monthly', totalsByCurrency(goals, 'monthlyContribution'), 'Planned, across goals')}
+  </div>`;
+}
+
 async function renderGoals() {
   const isCurrent = startRender('goals');
   const body = document.getElementById('goals-body');
@@ -884,48 +960,38 @@ async function renderGoals() {
   try {
     goals = await getGoals();
   } catch (error) {
-    if (isCurrent()) body.innerHTML = errorBlock(error);
+    if (isCurrent()) body.innerHTML = errorBlock(error) + '<button class="gate-secondary inline-button" type="button" data-retry-goals>Try again</button>';
     return;
   }
   if (!isCurrent()) return;
   document.getElementById('add-goal').hidden = goals.length >= MAX_GOALS;
+  renderSavedContext(goals);
   if (!goals.length) {
-    body.innerHTML = notice('No goals yet', 'Add what you are saving for, such as a home, your child\'s education or retirement, to see whether your monthly investment gets you there on time.',
+    body.innerHTML = notice('No goals yet', 'Add what you are saving for, such as a home, your child\'s education or retirement, to see how far your planned contributions get you by the date you choose.',
       '<button class="rail-button inline-button" type="button" data-add-goal>Add your first goal</button>');
     return;
   }
-  const projections = goals.map((goal) => goalProjection(goal));
-  const totalTarget = goals.reduce((sum, goal) => sum + goal.targetInr, 0);
-  const totalSaved = goals.reduce((sum, goal) => sum + (goal.savedInr || 0), 0);
-  const totalMonthly = goals.reduce((sum, goal) => sum + (goal.monthlyInr || 0), 0);
-  const onTrack = projections.filter((p) => p.onTrack).length;
-  body.innerHTML = `
-    <div class="stat-grid">
-      ${statTile('On track', `${onTrack} of ${goals.length}`, 'At your expected returns', onTrack === goals.length ? 'is-up' : '')}
-      ${statTile('Total targets', moneyShort(totalTarget), money(totalTarget))}
-      ${statTile('Saved so far', moneyShort(totalSaved), percent(totalTarget ? totalSaved / totalTarget * 100 : NaN) + ' of targets')}
-      ${statTile('Investing monthly', moneyShort(totalMonthly), 'Across all goals')}
-    </div>
-    <div class="goal-grid">${goals.map((goal, index) => goalCard(goal, projections[index], GOAL_TONES[index % GOAL_TONES.length])).join('')}</div>
+  body.innerHTML = `${goalStats(goals)}
+    <div class="goal-grid">${goals.map((goal, index) => goalCard(goal, GOAL_TONES[index % GOAL_TONES.length])).join('')}</div>
     ${promptChips([['Review my goals', 'Review my goals against my current portfolio: which are on track, which need more, and which of my holdings fit each goal\'s timeline.']])}`;
 }
 
-function goalCard(goal, p, tone) {
-  const status = p.onTrack
-    ? '<span class="pill is-connected">On track</span>'
-    : `<span class="pill is-behind">${p.months ? 'Needs more' : 'Due now'}</span>`;
-  const advice = p.onTrack
-    ? `Projected ${moneyShort(p.projected)} by Dec ${goal.targetYear}, ${moneyShort(p.projected - goal.targetInr)} more than the target.`
-    : p.months
-      ? `Projected ${moneyShort(p.projected)} by Dec ${goal.targetYear}. Investing about ${money(Math.ceil(p.needed / 100) * 100)} a month would close the gap.`
-      : `${moneyShort(goal.targetInr - (goal.savedInr || 0))} is still needed.`;
-  const ask = `Review my goal "${goal.name}": ${money(goal.targetInr)} by ${goal.targetYear}, ${money(goal.savedInr || 0)} saved, investing ${money(goal.monthlyInr || 0)} a month at an assumed ${goal.expectedReturnPct}% a year. Is the assumption reasonable, and which of my holdings suit this timeline?`;
+function goalCard(goal, tone) {
+  const plan = goal.plan || {};
+  const cur = goal.currency;
+  const [label, pill] = goalStatus(plan);
+  const progress = Number.isFinite(plan.progressPct) ? plan.progressPct : 0;
+  const assumption = goal.assumedReturnPct == null ? 'no return assumed' : `${goal.assumedReturnPct}% a year assumed`;
+  const ask = `Review my goal "${goal.name}": is it on track, is my return assumption reasonable, and which of my holdings suit its timeline?`;
   return `<article class="goal-card">
-    <header>${goalIconHtml(goal, tone, 'insight-icon goal-card-icon')}<h3>${escHtml(goal.name)}</h3>${status}</header>
-    <p class="goal-target"><strong>${moneyShort(goal.targetInr)}</strong> by ${goal.targetYear}</p>
-    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.progress.toFixed(0)}" aria-label="Saved so far"><span style="width:${p.progress.toFixed(1)}%"></span></div>
-    <p class="goal-meta">${moneyShort(goal.savedInr || 0)} saved (${percent(p.progress)}) · ${money(goal.monthlyInr || 0)} a month · ${goal.expectedReturnPct}% a year</p>
-    <p class="goal-advice">${escHtml(advice)}</p>
+    <header>${goalIconHtml(goal, tone, 'insight-icon goal-card-icon')}<h3>${escHtml(goal.name)}</h3><span class="pill ${pill}">${escHtml(label)}</span></header>
+    <p class="goal-target"><strong>${amountShort(goal.targetAmount, cur)}</strong> by ${escHtml(formatDate(goal.targetDate))}${cur !== 'INR' ? ` · ${escHtml(cur)}` : ''}</p>
+    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress.toFixed(0)}" aria-label="Earmarked so far"><span style="width:${progress.toFixed(1)}%"></span></div>
+    <p class="goal-meta">${amountShort(goal.savedAmount, cur)} earmarked (${percent(progress)}) · ${amount(goal.monthlyContribution, cur)} a month · ${escHtml(assumption)}</p>
+    <p class="goal-advice">${escHtml(goalSummary(plan))}</p>
+    ${goal.notes ? `<p class="goal-meta goal-note">${escHtml(goal.notes)}</p>` : ''}
+    ${scenarioDetails(plan)}
+    <p class="goal-meta">Saved ${escHtml(timeAgo(goal.updatedAt))} by you${goal.migratedFrom ? ' · moved from your earlier goal list (target date set to 31 Dec)' : ''}</p>
     <div class="goal-actions">
       <button class="table-action" type="button" data-edit-goal="${escHtml(goal.id)}">Edit</button>
       <button class="table-action" type="button" data-delete-goal="${escHtml(goal.id)}">Delete</button>
@@ -934,71 +1000,96 @@ function goalCard(goal, p, tone) {
   </article>`;
 }
 
+/* Goal editor */
+function numberOrNull(input) {
+  return input.value.trim() === '' ? null : Number(input.value);
+}
+
 function readGoalForm() {
   return {
-    id: editingGoalId || `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
     name: goalFields.name.value.trim(),
     kind: goalFields.kind.value,
-    targetInr: Math.round(Number(goalFields.target.value)),
-    targetYear: Math.round(Number(goalFields.year.value)),
-    savedInr: Math.round(Number(goalFields.saved.value) || 0),
-    monthlyInr: Math.round(Number(goalFields.monthly.value) || 0),
-    expectedReturnPct: Number(goalFields.rate.value) || 0,
+    currency: goalFields.currency.value,
+    targetDate: goalFields.date.value,
+    targetAmount: Math.round(Number(goalFields.target.value)),
+    savedAmount: Math.round(Number(goalFields.saved.value) || 0),
+    monthlyContribution: Math.round(Number(goalFields.monthly.value) || 0),
+    assumedReturnPct: numberOrNull(goalFields.rate),
+    notes: goalFields.notes.value.trim() || null,
   };
 }
 
-// Shows, as the user types, whether the goal would be met.
-function renderGoalPreview() {
+function planInputsValid() {
+  return [goalFields.date, goalFields.target, goalFields.saved, goalFields.monthly, goalFields.rate].every((input) => input.checkValidity());
+}
+
+function setGoalPreview(text, tone = '') {
   const preview = document.getElementById('goal-preview');
-  const goal = readGoalForm();
-  if (!(goal.targetInr > 0) || !(goal.targetYear >= 2000)) {
-    preview.textContent = '';
+  preview.className = `goal-preview ${tone}`;
+  preview.textContent = text;
+}
+
+// The preview asks the server, so it shows exactly what the saved goal will show.
+async function renderGoalPreview() {
+  const seq = ++goalPreviewSeq;
+  const draft = readGoalForm();
+  if (!draft.targetDate || !(draft.targetAmount > 0) || !planInputsValid()) {
+    setGoalPreview(draft.targetAmount > 0 || draft.targetDate ? 'Fill in valid amounts and a date to see the projection.' : '');
     return;
   }
-  const p = goalProjection(goal);
-  preview.className = `goal-preview ${p.onTrack ? 'is-up' : 'is-behind'}`;
-  preview.textContent = p.onTrack
-    ? `On track: about ${moneyShort(p.projected)} by Dec ${goal.targetYear} at ${goal.expectedReturnPct}% a year.`
-    : p.months
-      ? `Projected ${moneyShort(p.projected)} by Dec ${goal.targetYear}. About ${money(Math.ceil(p.needed / 100) * 100)} a month would reach the target.`
-      : `${moneyShort(goal.targetInr - goal.savedInr)} is still needed.`;
+  setGoalPreview('Calculating…', 'is-loading');
+  const { name, kind, notes, ...inputs } = draft;
+  try {
+    const plan = await fetchJson('/api/goals/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inputs),
+    });
+    if (seq !== goalPreviewSeq) return;
+    setGoalPreview(goalSummary(plan), goalIsOnTrack({ plan }) ? 'is-up' : 'is-behind');
+  } catch (error) {
+    if (seq === goalPreviewSeq) setGoalPreview(`Could not calculate the projection: ${error.message}`, 'is-behind');
+  }
+}
+
+function scheduleGoalPreview() {
+  clearTimeout(goalPreviewTimer);
+  goalPreviewTimer = setTimeout(renderGoalPreview, 300);
 }
 
 function openGoalDialog(goal = null) {
   if (!sessionReady()) return;
   editingGoalId = goal?.id || null;
-  const thisYear = new Date().getFullYear();
+  const today = isoDay(new Date());
   document.getElementById('goal-dialog-title').textContent = editingGoalId ? 'Edit goal' : 'New goal';
   goalFields.name.value = goal?.name || '';
   goalFields.kind.value = goalIcon(goal || {});
   goalKindChosen = Boolean(goal?.kind);
-  // Saved goals may already be past due; new ones start this year at the earliest.
-  goalFields.year.min = String(Math.min(thisYear, goal?.targetYear ?? thisYear));
-  goalFields.year.value = goal?.targetYear ?? thisYear + 5;
-  goalFields.target.value = goal?.targetInr ?? '';
-  goalFields.saved.value = goal?.savedInr ?? 0;
-  goalFields.monthly.value = goal?.monthlyInr ?? 0;
-  goalFields.rate.value = goal?.expectedReturnPct ?? 10;
+  goalFields.currency.value = goal?.currency || 'INR';
+  // Saved goals may already be past due; new ones start today at the earliest.
+  goalFields.date.min = goal?.targetDate && goal.targetDate < today ? goal.targetDate : today;
+  goalFields.date.value = goal?.targetDate || yearsFromToday(5);
+  goalFields.target.value = goal?.targetAmount ?? '';
+  goalFields.saved.value = goal?.savedAmount ?? 0;
+  goalFields.monthly.value = goal?.monthlyContribution ?? 0;
+  goalFields.rate.value = goal?.assumedReturnPct ?? '';
+  goalFields.notes.value = goal?.notes || '';
   document.getElementById('goal-status').textContent = '';
   document.getElementById('goal-delete').hidden = !editingGoalId;
+  setGoalPreview('');
   renderGoalPreview();
   if (!goalDialog.open) goalDialog.showModal();
   (goal?.name ? goalFields.target : goalFields.name).focus();
 }
 
-async function saveGoals(goals) {
-  const data = await fetchJson('/api/goals', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goals }),
-  });
-  pageCache.set('goals', Promise.resolve(data.goals));
+function goalsChanged() {
+  pageCache.delete('goals');
   document.dispatchEvent(new CustomEvent('ca:goals'));
-  return data.goals;
 }
 
 async function deleteGoal(goal) {
-  if (!goal || !window.confirm(`Delete the goal "${goal.name}"?`)) return false;
-  const goals = await getGoals();
-  await saveGoals(goals.filter((item) => item.id !== goal.id));
+  if (!goal || !window.confirm(`Delete the goal "${goal.name}"? Decisions linked to it are kept.`)) return false;
+  await fetchJson(`/api/goals/${encodeURIComponent(goal.id)}`, { method: 'DELETE' });
+  goalsChanged();
+  toast('Goal deleted.');
   return true;
 }
 
@@ -1008,11 +1099,12 @@ document.addEventListener('ca:goals', () => {
 
 document.getElementById('add-goal').addEventListener('click', () => openGoalDialog());
 goalDialog.querySelectorAll('[data-close-goal]').forEach((button) => button.addEventListener('click', () => goalDialog.close()));
+goalDialog.addEventListener('close', () => { clearTimeout(goalPreviewTimer); goalPreviewSeq += 1; });
 goalForm.addEventListener('input', (event) => {
   if (event.target === goalFields.kind) goalKindChosen = true;
   if (event.target === goalFields.name && !goalKindChosen) goalFields.kind.value = goalKind(goalFields.name.value);
   document.getElementById('goal-status').textContent = '';
-  renderGoalPreview();
+  if (event.target !== goalFields.name && event.target !== goalFields.kind && event.target !== goalFields.notes) scheduleGoalPreview();
 });
 
 goalForm.addEventListener('submit', async (event) => {
@@ -1021,18 +1113,20 @@ goalForm.addEventListener('submit', async (event) => {
   const status = document.getElementById('goal-status');
   const submit = goalForm.querySelector('[type="submit"]');
   submit.disabled = true;
+  submit.textContent = 'Saving…';
   try {
-    const goals = await getGoals();
-    const goal = readGoalForm();
-    if (!editingGoalId && goals.length >= MAX_GOALS) throw new Error(`You can keep up to ${MAX_GOALS} goals. Delete one to add another.`);
-    const next = editingGoalId ? goals.map((item) => (item.id === editingGoalId ? goal : item)) : [...goals, goal];
-    await saveGoals(next);
+    const url = editingGoalId ? `/api/goals/${encodeURIComponent(editingGoalId)}` : '/api/goals';
+    await fetchJson(url, {
+      method: editingGoalId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(readGoalForm()),
+    });
     goalDialog.close();
+    goalsChanged();
     toast(editingGoalId ? 'Goal updated.' : 'Goal added.');
   } catch (error) {
     status.textContent = error.message;
   } finally {
     submit.disabled = false;
+    submit.textContent = 'Save goal';
   }
 });
 
@@ -1049,12 +1143,133 @@ document.addEventListener('click', async (event) => {
   const add = event.target.closest('[data-add-goal]');
   const edit = event.target.closest('[data-edit-goal]');
   const remove = event.target.closest('[data-delete-goal]');
+  if (event.target.closest('[data-retry-goals]')) renderGoals();
   if (add) openGoalDialog();
   if (!edit && !remove) return;
   try {
     const goals = await getGoals();
     if (edit) openGoalDialog(goals.find((goal) => goal.id === edit.dataset.editGoal));
     if (remove) await deleteGoal(goals.find((item) => item.id === remove.dataset.deleteGoal));
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+/* Saved context: what the assistant may use, and the decisions the user recorded */
+const PREFERENCE_LABELS = {
+  riskAppetite: 'Risk appetite', investmentHorizonYears: 'Investment horizon (years)', primaryGoal: 'Primary goal',
+  monthlyInvestmentInr: 'Monthly investment budget (₹)', ageBand: 'Age band',
+};
+
+function decisionRow(decision, goalNames) {
+  const when = decision.decidedOn ? formatDate(decision.decidedOn) : `recorded ${timeAgo(decision.createdAt)}`;
+  const goal = decision.goalId ? ` · ${goalNames[decision.goalId] ? `for “${escHtml(goalNames[decision.goalId])}”` : 'for a deleted goal'}` : '';
+  return `<li class="context-item"><div><p>${escHtml(decision.text)}</p><small>${escHtml(when)}${goal}</small></div>
+    <button class="table-action" type="button" data-delete-decision="${escHtml(decision.id)}">Delete</button></li>`;
+}
+
+function observedLines(observed) {
+  const lines = [];
+  const snapshot = observed?.latestSnapshot;
+  lines.push(snapshot ? `Latest portfolio snapshot from INDmoney: ${formatDate(snapshot.asOfDate)}.` : 'No portfolio snapshot saved yet.');
+  const cas = observed?.casStatements;
+  if (cas?.count) lines.push(`${cas.count} CAS statement${cas.count === 1 ? '' : 's'}; the latest covers up to ${formatDate(cas.latest.periodTo)}.`);
+  return lines;
+}
+
+function savedContextHtml(data, goals) {
+  const confirmed = data.confirmed || {};
+  const fields = confirmed.preferences?.fields || {};
+  const preferences = Object.entries(PREFERENCE_LABELS).filter(([key]) => fields[key] != null && fields[key] !== '')
+    .map(([key, label]) => `<li><span>${escHtml(label)}</span><strong>${escHtml(String(fields[key]))}</strong></li>`).join('');
+  const goalNames = Object.fromEntries(goals.map((goal) => [goal.id, goal.name]));
+  const decisions = (confirmed.decisions || []).slice().reverse();
+  const goalOptions = goals.map((goal) => `<option value="${escHtml(goal.id)}">${escHtml(goal.name)}</option>`).join('');
+  const hasAnything = preferences || decisions.length || goals.length;
+  return panel('What the assistant can use', `
+    <p class="page-muted">Only what you entered is saved, and the assistant sees an item only when your question is about it. CA Mode never saves details the assistant infers from your chats, and goal projections are recalculated each time, never stored.</p>
+    <div class="context-grid">
+      <section aria-labelledby="context-profile-title">
+        <h3 id="context-profile-title" class="context-title">Profile details <small>${confirmed.preferences?.updatedAt ? `saved ${escHtml(timeAgo(confirmed.preferences.updatedAt))}` : 'entered by you'}</small></h3>
+        ${preferences ? `<ul class="context-facts">${preferences}</ul>` : '<p class="page-muted">None saved.</p>'}
+        <button class="table-action" type="button" data-open-profile>Edit profile details</button>
+      </section>
+      <section aria-labelledby="context-decisions-title">
+        <h3 id="context-decisions-title" class="context-title">Decisions you recorded <small>${decisions.length} of ${data.maxDecisions || 50}</small></h3>
+        ${decisions.length ? `<ul class="context-list">${decisions.map((item) => decisionRow(item, goalNames)).join('')}</ul>` : '<p class="page-muted">None yet. Record a decision you have made, such as keeping six months of expenses in a liquid fund, so the assistant can take it into account.</p>'}
+        <form id="decision-form" class="decision-form" novalidate>
+          <label class="field field-wide"><span>Decision</span><textarea id="decision-text" maxlength="500" rows="2" required placeholder="In your own words"></textarea></label>
+          <label class="field"><span>Decided on (optional)</span><input id="decision-date" type="date" min="2000-01-01" max="${isoDay(new Date())}" /></label>
+          ${goalOptions ? `<label class="field"><span>Goal (optional)</span><select id="decision-goal"><option value="">None</option>${goalOptions}</select></label>` : ''}
+          <p id="decision-status" class="dialog-status is-error" role="alert"></p>
+          <button class="rail-button inline-button" type="submit">Record decision</button>
+        </form>
+      </section>
+      <section aria-labelledby="context-observed-title">
+        <h3 id="context-observed-title" class="context-title">Observed data <small>not entered by you</small></h3>
+        <ul class="goal-notes">${observedLines(data.observed).map((line) => `<li>${escHtml(line)}</li>`).join('')}</ul>
+      </section>
+    </div>
+    ${hasAnything ? '<button class="gate-secondary danger-text" type="button" data-clear-context>Remove all goals, decisions and profile details</button>' : ''}`,
+  { className: 'saved-context' });
+}
+
+async function renderSavedContext(goals) {
+  const isCurrent = startRender('saved-context');
+  const body = document.getElementById('saved-context-body');
+  // Keep the current panel while refreshing after a change, so the page does not jump.
+  if (!body.querySelector('.saved-context')) body.innerHTML = loadingBlock();
+  try {
+    const [data, decisions] = await Promise.all([fetchJson('/api/context'), fetchJson('/api/decisions')]);
+    if (isCurrent()) body.innerHTML = savedContextHtml({ ...data, maxDecisions: decisions.maxDecisions }, goals);
+  } catch (error) {
+    if (isCurrent()) body.innerHTML = errorBlock(error);
+  }
+}
+
+document.addEventListener('submit', async (event) => {
+  if (event.target.id !== 'decision-form') return;
+  event.preventDefault();
+  const form = event.target;
+  const status = document.getElementById('decision-status');
+  if (!form.reportValidity()) return;
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  status.textContent = '';
+  try {
+    await fetchJson('/api/decisions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: document.getElementById('decision-text').value.trim(),
+        decidedOn: document.getElementById('decision-date').value || null,
+        goalId: document.getElementById('decision-goal')?.value || null,
+      }),
+    });
+    toast('Decision recorded.');
+    renderSavedContext(await getGoals());
+  } catch (error) {
+    status.textContent = error.message;
+    submit.disabled = false;
+  }
+});
+
+document.addEventListener('click', async (event) => {
+  const removeDecision = event.target.closest('[data-delete-decision]');
+  const clearAll = event.target.closest('[data-clear-context]');
+  if (event.target.closest('[data-open-profile]')) openProfileDialog();
+  if (!removeDecision && !clearAll) return;
+  try {
+    if (removeDecision) {
+      if (!window.confirm('Delete this decision?')) return;
+      await fetchJson(`/api/decisions/${encodeURIComponent(removeDecision.dataset.deleteDecision)}`, { method: 'DELETE' });
+      toast('Decision deleted.');
+      renderSavedContext(await getGoals());
+    } else {
+      if (!window.confirm('Remove every saved goal, recorded decision and profile detail? Chats, snapshots and statements are kept. This cannot be undone.')) return;
+      await fetchJson('/api/context', { method: 'DELETE' });
+      toast('Saved goals, decisions and profile details removed.');
+      goalsChanged();
+    }
   } catch (error) {
     toast(error.message);
   }

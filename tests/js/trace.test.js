@@ -300,3 +300,15 @@ test('text from the model and tools is escaped, never run as HTML', () => {
   const card = trace.renderInvestigationCard(completedRecord({ result: { ...completedRecord().result, nextActions: [{ label: 'x', prompt: '" onclick="alert(1)' }] } }));
   assert.doesNotMatch(card, /" onclick="/);
 });
+
+test('the saved-context step names what was shared, escaped and redacted', () => {
+  const html = trace.renderChatTrace([
+    { kind: 'route', status: 'completed', category: 'general_finance', source: 'keywords' },
+    { kind: 'context', status: 'completed', items: ['Profile preferences', 'Goal: <b>Home</b>', 'Decision: my PAN is ABCDE1234F'] },
+  ]);
+  assert.match(html, /Use your saved goals and details/);
+  assert.match(html, /Profile preferences · Goal: &lt;b&gt;Home&lt;\/b&gt;/);
+  assert.doesNotMatch(html, /<b>Home<\/b>/);
+  assert.doesNotMatch(html, /ABCDE1234F/);
+  assert.match(html, /2 steps/);
+});

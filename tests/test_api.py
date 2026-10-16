@@ -129,7 +129,7 @@ def test_create_chat_rejects_invalid_agent_type(client, signed_in):
 def test_chat_message_is_saved_and_agent_type_is_enforced(client, signed_in, monkeypatch):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
         assert message == "What is diversification?"
         assert history == []
         assert agent_type == "finance"
@@ -166,7 +166,7 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, signed_in, mon
 
     calls = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
         calls.append(token)
         assert context is not None
         if token == "stale-token":
@@ -191,7 +191,7 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, signed_in, mon
     assert calls == ["stale-token", "fresh-token"]
 
 
-def test_portfolio_chat_passes_profile_and_snapshot_context(client, signed_in, monkeypatch):
+def test_portfolio_chat_passes_snapshot_context_and_only_relevant_saved_context(client, signed_in, monkeypatch):
     connect_user_to_indmoney(signed_in["id"])
     client.put("/api/profile", json={"riskAppetite": "moderate", "primaryGoal": "Buy a home"})
     snapshots.store_snapshot(
@@ -199,22 +199,26 @@ def test_portfolio_chat_passes_profile_and_snapshot_context(client, signed_in, m
         {"networth_snapshot": '{"net_worth": 4200000}'}, {},
     )
     chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
-    seen = {}
+    seen = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
-        seen["context"] = context
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+        seen.append((context, saved_context))
         return "ok"
 
     monkeypatch.setattr(main, "run_agent", fake_run_agent)
     client.post("/api/chat", json={"message": "What is my net worth?", "chatId": chat["id"], "agentType": "portfolio"})
+    client.post("/api/chat", json={"message": "Is my allocation right for my risk appetite?", "chatId": chat["id"], "agentType": "portfolio"})
 
-    context = seen["context"]
+    (context, unrelated), (_, relevant) = seen
     assert {tool.name for tool in context.local_tools} == {
         "get_portfolio_snapshot", "get_networth_history", "investigate_portfolio_change",
     }
-    assert "Risk appetite: moderate" in context.profile_context
-    assert "Buy a home" in context.profile_context
     assert "2026-10-13T09:00" in context.profile_context
+    assert "Risk appetite" not in context.profile_context
+    # Preferences reach the prompt only when the request is about them.
+    assert unrelated is None
+    assert "risk appetite: moderate" in relevant.text and "primary goal: Buy a home" in relevant.text
+    assert relevant.items == ("Profile preferences",)
 
 
 def test_chat_rejects_empty_and_overlong_messages(client, signed_in):
@@ -231,7 +235,7 @@ def test_chat_history_is_passed_to_agent_and_trimmed_to_limit(client, signed_in,
     with main.connect_db() as connection:
         connection.execute("UPDATE chats SET messages = ? WHERE id = ?", (json.dumps(history), chat["id"]))
 
-    async def fake_run_agent(message, mcp_url, token, previous, agent_type, provider, *, context=None):
+    async def fake_run_agent(message, mcp_url, token, previous, agent_type, provider, *, context=None, saved_context=None):
         assert previous == history
         return "answer"
 
@@ -278,7 +282,7 @@ def test_chat_uses_the_local_provider(client, signed_in, monkeypatch, sent, expe
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     used = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
         used.append(provider)
         return "A budget tracks income and spending."
 
@@ -619,41 +623,3 @@ def test_portfolio_endpoint_returns_figures_and_every_holding(client, signed_in)
 
 def test_portfolio_endpoint_requires_an_unlocked_profile(client):
     assert client.get("/api/portfolio").status_code == 401
-
-
-GOAL = {"id": "home", "name": "Buy a home", "targetInr": 5_000_000, "targetYear": 2034,
-        "savedInr": 800_000, "monthlyInr": 25_000, "expectedReturnPct": 10}
-
-
-def test_goals_are_saved_with_the_profile_and_kept_by_profile_edits(client, signed_in):
-    assert client.get("/api/goals").json() == {"goals": []}
-    client.put("/api/profile", json={"riskAppetite": "high"})
-
-    saved = client.put("/api/goals", json={"goals": [GOAL]})
-    client.put("/api/profile", json={"riskAppetite": "low"})
-
-    assert saved.status_code == 200
-    assert client.get("/api/goals").json() == {"goals": [GOAL]}
-    assert client.get("/api/profile").json()["profile"]["riskAppetite"] == "low"
-    stored = users.get_user(signed_in["id"])["profileStored"]
-    assert stored.startswith("sealed:v1:") and "Buy a home" not in stored
-
-
-def test_goals_keep_their_kind_and_reject_unknown_kinds(client, signed_in):
-    saved = client.put("/api/goals", json={"goals": [{**GOAL, "kind": "home"}]})
-
-    assert saved.status_code == 200
-    assert client.get("/api/goals").json()["goals"][0]["kind"] == "home"
-    assert client.put("/api/goals", json={"goals": [{**GOAL, "kind": "yacht"}]}).status_code == 422
-
-
-def test_goals_reject_invalid_values_and_duplicate_ids(client, signed_in):
-    assert client.put("/api/goals", json={"goals": [{**GOAL, "targetInr": 0}]}).status_code == 422
-    assert client.put("/api/goals", json={"goals": [GOAL, GOAL]}).status_code == 422
-    assert client.put("/api/goals", json={"goals": [{**GOAL, "id": f"g{i}"} for i in range(11)]}).status_code == 422
-
-
-def test_goals_reach_the_portfolio_profile_context():
-    context = snapshots.profile_context({"goals": [GOAL]}, None)
-
-    assert "Goal: Buy a home, target INR 5000000 by 2034, saved INR 800000, investing INR 25000 a month" in context

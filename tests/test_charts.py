@@ -175,7 +175,7 @@ def test_saved_answers_keep_a_full_chart(client, signed_in, monkeypatch):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     long_answer = "x" * 20_000
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
         return long_answer
 
     monkeypatch.setattr(main, "run_agent", fake_run_agent)

@@ -42,16 +42,36 @@ test('monthlyNeeded closes the gap and is zero when savings already suffice', ()
   assert.equal(finance.monthlyNeeded(50000, 0, 10, 0), 50000);
 });
 
-test('goal projections count months to the end of the target year', () => {
-  const now = new Date(2026, 9, 15);
-  assert.equal(finance.monthsUntil(2026, now), 2);
-  assert.equal(finance.monthsUntil(2020, now), 0);
-  const onTrack = finance.goalProjection({ targetInr: 1000000, targetYear: 2030, savedInr: 200000, monthlyInr: 20000, expectedReturnPct: 10 }, now);
-  assert.equal(onTrack.onTrack, true);
-  assert.equal(onTrack.progress, 20);
-  const behind = finance.goalProjection({ targetInr: 3000000, targetYear: 2038, savedInr: 400000, monthlyInr: 5000, expectedReturnPct: 10 }, now);
-  assert.equal(behind.onTrack, false);
-  assert.ok(behind.needed > 5000);
+test('goal amounts keep their own currency', () => {
+  assert.equal(finance.amount(2500000, 'INR'), '₹25,00,000');
+  assert.equal(finance.amount(80000, 'USD'), '$80,000');
+  assert.equal(finance.amountShort(2500000, 'INR'), '₹25.00 L');
+  assert.equal(finance.amountShort(45200, 'USD'), '$45.2K');
+  assert.equal(finance.amountShort(1500, 'EUR'), '€1.5K');
+  assert.equal(finance.amount(NaN, 'GBP'), '—');
+});
+
+test('goal totals are kept per currency and never added across currencies', () => {
+  const goals = [
+    { currency: 'USD', targetAmount: 50000 }, { currency: 'INR', targetAmount: 2000000 },
+    { currency: 'INR', targetAmount: 500000 }, { currency: 'USD', targetAmount: 30000 }, { targetAmount: 7 },
+  ];
+  assert.deepEqual(finance.totalsByCurrency(goals, 'targetAmount'), [['INR', 2500000], ['USD', 80000]]);
+  assert.equal(finance.formatTotals(finance.totalsByCurrency(goals, 'targetAmount')), '₹25.00 L + $80K');
+  assert.equal(finance.formatTotals([]), '—');
+});
+
+test('goal status comes from the server plan', () => {
+  assert.deepEqual(finance.goalStatus({ status: 'on_track' }), ['On track', 'is-connected']);
+  assert.deepEqual(finance.goalStatus({ status: 'past_due' }), ['Past due', 'is-behind']);
+  assert.deepEqual(finance.goalStatus(undefined), ['Missing details', 'is-behind']);
+  assert.equal(finance.goalIsOnTrack({ plan: { status: 'reached' } }), true);
+  assert.equal(finance.goalIsOnTrack({ plan: { status: 'behind' } }), false);
+  assert.equal(finance.goalIsOnTrack({}), false);
+  const plan = { baseScenario: 'assumed', scenarios: [{ name: 'no_growth' }, { name: 'assumed' }] };
+  assert.equal(finance.baseScenario(plan).name, 'assumed');
+  assert.equal(finance.baseScenario({ scenarios: [{ name: 'no_growth' }] }).name, 'no_growth');
+  assert.equal(finance.baseScenario({ scenarios: [] }), null);
 });
 
 test('goalKind picks an icon from the goal name', () => {

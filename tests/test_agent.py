@@ -847,3 +847,90 @@ async def test_a_rejected_call_still_counts_as_using_a_tool(monkeypatch):
 
     assert str(answer) == "INFY price history is unavailable right now."
     assert len(captured) == 2  # no forced extra tool call after an honest "unavailable"
+
+
+# ── Saved context ──────────────────────────────────────────────────────────────
+
+SAVED = agent.SavedContext(
+    text='Confirmed by the user (entered in CA Mode; not checked against any account):\n'
+         '- Goal "Home": target INR 2500000 by 2032-03-31\n'
+         'Calculated in code on 2026-10-16 from the goals above:\n'
+         '- "Home": status behind; 65 months left; INR 2100000 still to save today (16% saved).\n'
+         '  - No growth (0% a year): projected INR 2350000, short by INR 150000; needs INR 32308 a month.',
+    items=("Goal: Home",),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", ["finance", "portfolio"])
+async def test_saved_context_reaches_either_agent_as_labelled_data(monkeypatch, agent_type):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("You need about ₹32,308 a month.")], captured))
+
+    async def unused_handler(arguments):
+        return "{}"
+
+    answer = await agent.run_agent(
+        "How much should I save each month for my home goal?", "https://mcp", "token", [], agent_type, "openai",
+        context=_snapshot_context(unused_handler) if agent_type == "portfolio" else None, saved_context=SAVED,
+    )
+
+    system = captured[0]["payload"]["messages"][0]["content"]
+    assert f'<saved_context source="saved by the user in CA Mode">\n{SAVED.text}\n</saved_context>' in system
+    assert "never guess the user's income" in system and "never as expected or promised returns" in system
+    assert ("cannot see the user's INDmoney account" in system) is (agent_type == "finance")
+    assert [step["kind"] for step in answer.trace][:2] == ["route", "context"]
+    assert answer.trace[1]["items"] == ["Goal: Home"]
+
+
+@pytest.mark.asyncio
+async def test_prompts_are_unchanged_without_saved_context(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("A budget tracks spending.")], captured))
+
+    answer = await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "openai")
+
+    assert captured[0]["payload"]["messages"][0]["content"] == agent.FINANCE_SYSTEM_PROMPT
+    assert "context" not in [step["kind"] for step in answer.trace]
+
+
+@pytest.mark.asyncio
+async def test_declined_requests_do_not_use_saved_context(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([], []))
+
+    answer = await agent.run_agent("Write a python script for my goals", "https://unused", None, [], "finance", "openai", saved_context=SAVED)
+
+    assert answer == agent.CODE_REFUSAL_NOTICE
+    assert [step["kind"] for step in answer.trace] == ["route"]
+
+
+@pytest.mark.asyncio
+async def test_goal_figures_from_saved_context_are_not_flagged_as_unverified(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def snapshot_handler(arguments):
+        return '{"available": true, "figures": {"total_current_inr": "4200000"}}'
+
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    text = "Your portfolio is ₹42 lakh. For the home goal you are short by ₹1,50,000 with no growth; ₹32,308 a month closes it."
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion(text)], []))
+    context = _snapshot_context(snapshot_handler)
+
+    with_saved = await agent.run_agent("Can my portfolio cover my home goal?", "https://mcp", "token", [], "portfolio", "openai", context=context, saved_context=SAVED)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion(text)], []))
+    without = await agent.run_agent("Can my portfolio cover my home goal?", "https://mcp", "token", [], "portfolio", "openai", context=context)
+
+    assert str(with_saved) == text
+    assert str(without) != text  # The same figures with no saved context are flagged.
+
+
+@pytest.mark.parametrize("question", [
+    "Am I on track for my goals?",
+    "How much should I save each month for my home goal?",
+    "Is ₹5 lakh enough for the down payment?",
+])
+def test_goal_questions_pass_the_keyword_fallback(question):
+    assert agent._keyword_category(question, []) == "general_finance"

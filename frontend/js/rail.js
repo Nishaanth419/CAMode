@@ -135,19 +135,19 @@ async function renderRailGoals(isCurrent) {
   }
   // The nearest targets first; tones follow the user's own order so a goal keeps its colour.
   const shown = goals.map((goal, index) => ({ goal, index }))
-    .sort((a, b) => a.goal.targetYear - b.goal.targetYear || a.index - b.index)
+    .sort((a, b) => String(a.goal.targetDate).localeCompare(String(b.goal.targetDate)) || a.index - b.index)
     .slice(0, RAIL_GOALS);
   const rows = shown.map(({ goal, index }) => {
-    const projection = goalProjection(goal);
+    const progress = Number.isFinite(goal.plan?.progressPct) ? goal.plan.progressPct : 0;
     const tone = GOAL_TONES[index % GOAL_TONES.length];
-    const pct = Math.floor(projection.progress);
-    const status = projection.onTrack ? 'on track' : 'needs more';
-    return `<li><button class="rail-goal tone-${tone}" type="button" data-edit-goal="${escHtml(goal.id)}" title="${escHtml(`Edit ${goal.name} (${status}, target year ${goal.targetYear})`)}">
+    const pct = Math.floor(progress);
+    const status = goalStatus(goal.plan)[0].toLowerCase();
+    return `<li><button class="rail-goal tone-${tone}" type="button" data-edit-goal="${escHtml(goal.id)}" title="${escHtml(`Edit ${goal.name} (${status}, target ${formatDate(goal.targetDate)})`)}">
       ${goalIconHtml(goal, tone, 'rail-goal-icon')}
       <strong class="rail-goal-name">${escHtml(goal.name)}</strong>
       <span class="rail-goal-pct">${pct}%</span>
-      <small class="rail-goal-target">Target: ${money(goal.targetInr)}</small>
-      <span class="progress rail-progress" role="progressbar" aria-label="${escHtml(goal.name)} saved" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${projection.progress.toFixed(1)}%"></span></span>
+      <small class="rail-goal-target">Target: ${amount(goal.targetAmount, goal.currency)}</small>
+      <span class="progress rail-progress" role="progressbar" aria-label="${escHtml(goal.name)} earmarked" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${progress.toFixed(1)}%"></span></span>
     </button></li>`;
   }).join('');
   const add = goals.length < MAX_GOALS ? '<button class="rail-add" type="button" data-add-goal><span aria-hidden="true">+</span> Add a goal</button>' : '';

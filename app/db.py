@@ -85,6 +85,22 @@ _SCHEMA = """
         data TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS investigations_by_user ON investigations(user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS financial_goals (
+        id TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (user_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS financial_decisions (
+        id TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (user_id, id)
+    );
 """
 
 # Columns added to ``users`` after its first release; CREATE TABLE IF NOT EXISTS
