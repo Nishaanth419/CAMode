@@ -118,7 +118,7 @@ The model loads on the first question (a few seconds) and stays in memory for fi
 | `qwen3.5:9b` | 6.6 GB | 20/24 | **98.3%** | ~12 s |
 | `qwen3:8b` | 9.8 GB | 21/24 | 96.6% (1 run) | ~30 s |
 
-gpt-oss-20b gets the numbers right most often and answers fastest, which matters most for a finance assistant. Its routing misses are mostly prompt-injection test cases sent to Finance Agent, which then declines anything that isn't finance, and a routing call that fails falls back to the keyword rules. On a Mac with 8–16 GB of memory, use `FROM qwen3.5:9b` in the Modelfile instead. `gemma4:26b` was shortlisted but not scored.
+gpt-oss-20b gets the numbers right most often and answers fastest, which matters most for a finance assistant. The routing set has since grown to 64 cases (price-history and candlestick requests, and the concepts behind them); with the classifier call at temperature 0, gpt-oss-20b scores 60/64 on every run (59–61 at the model's default temperature, which once sent a candlestick request to the general-finance path). Its routing misses are mostly prompt-injection test cases sent to Finance Agent, which then declines anything that isn't finance, and a routing call that fails falls back to the keyword rules. On a Mac with 8–16 GB of memory, use `FROM qwen3.5:9b` in the Modelfile instead. `gemma4:26b` was shortlisted but not scored.
 
 ## Run with Docker
 

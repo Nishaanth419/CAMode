@@ -56,3 +56,9 @@
 {"message": "Is HDFC Bank a good buy?", "history": [], "expected": "account_data", "note": "needs live data/analyst targets"}
 {"message": "What should I invest in next?", "history": [], "expected": "account_data", "note": "ambiguous; benefits from holdings"}
 {"message": "Is my SIP amount enough to retire at 50?", "history": [], "expected": "account_data", "note": "needs their SIPs"}
+{"message": "Show a candlestick chart of INFY daily prices for the last 30 days, with a one-line summary of the move.", "history": [], "expected": "account_data", "note": "price history (the reported bug)"}
+{"message": "Plot TCS price for the last 3 months", "history": [], "expected": "account_data", "note": "price history"}
+{"message": "How has Reliance moved this week?", "history": [], "expected": "account_data", "note": "live data, no chart word"}
+{"message": "Show BEL's OHLC candles for the past year", "history": [], "expected": "account_data", "note": "price history"}
+{"message": "What is a candlestick chart?", "history": [], "expected": "general_finance", "note": "concept, not data"}
+{"message": "How do I read OHLC candles?", "history": [], "expected": "general_finance", "note": "concept, not data"}

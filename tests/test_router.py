@@ -174,3 +174,16 @@ def test_routing_eval_set_is_well_formed():
     assert {case["expected"] for case in cases} == set(router.CATEGORIES)
     for case in cases:
         assert case["message"].strip() and isinstance(case["history"], list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("provider", "temperature"), [("ollama", 0), ("openai", None)])
+async def test_local_classifier_is_deterministic(model_router, monkeypatch, provider, temperature):
+    # The local model samples at temperature 1, which occasionally labelled a price-chart request general_finance.
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+    captured = use_responses(monkeypatch, [_classified("account_data")])
+
+    category = await router.classify("Show a candlestick chart of INFY", [], agent.provider_config(provider), provider=provider)
+
+    assert category == "account_data"
+    assert captured[0]["payload"].get("temperature") == temperature

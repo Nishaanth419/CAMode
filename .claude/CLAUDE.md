@@ -84,7 +84,8 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - The route is the first trace step (`kind: "route"`, `source: "model" | "keywords"`)
 - Portfolio Analyzer gets `get_cas_holdings` (`snapshots.cas_tool()`) only when the profile has uploaded a CAS; the prompt says to state the statement date and never add CAS figures to INDmoney's
 - Portfolio Analyzer always gets its local snapshot tools; live INDmoney tools (and the must-call-a-tool retry) only for `account_data`
-- Changing `ROUTER_PROMPT` means bumping `ROUTER_PROMPT_VERSION` and re-running `python -m scripts.eval_router --provider <p>` on `evals/request_routing.jsonl` (keyword baseline: 65.5%)
+- Changing `ROUTER_PROMPT` means bumping `ROUTER_PROMPT_VERSION` and re-running `python -m scripts.eval_router --provider <p>` on `evals/request_routing.jsonl` (64 cases; keyword baseline 41/64, 64.1%; `ca-mode` 60/64 on every run)
+- The Ollama classifier call sets `temperature: 0`; at the model's default of 1 it occasionally labelled a price-chart request `general_finance`, so Portfolio Analyzer got no live tools. Cloud providers get no temperature because some reasoning models reject one
 - `_contains_code_output()` replaces code-shaped model output (except `chart` blocks) with the refusal notice
 - If Portfolio Analyzer was not given the live tools and the model writes a tool call as JSON text (`_looks_like_tool_call()`), the request is rerun once with `force_account_data=True` instead of showing the JSON
 

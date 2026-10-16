@@ -92,6 +92,10 @@ async def classify(
         "tools": [CLASSIFY_TOOL],
         "tool_choice": {"type": "function", "function": {"name": "classify_request"}},
     }
+    if provider == "ollama":
+        # The local model samples at temperature 1 (gpt-oss default), which now and then labelled a price-chart
+        # request general_finance. Not set for cloud providers: some reasoning models reject a temperature.
+        payload["temperature"] = 0
     if provider == "groq":
         # Groq's gpt-oss reasons before calling the tool; 100 tokens cut it off (HTTP 400, no tool call).
         payload["max_tokens"] = 512
