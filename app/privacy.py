@@ -19,8 +19,8 @@ from pydantic import BaseModel, ConfigDict
 from . import chats, users
 from .db import connect_db
 
-# 2026-10-15.2: saved portfolio change investigations.
-POLICY_VERSION: Final = "2026-10-15.2"
+# 2026-10-16.1: savings goals and recorded decisions in their own store, shared with either agent when relevant.
+POLICY_VERSION: Final = "2026-10-16.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -29,8 +29,9 @@ NOTICE: Final = (
     {
         "title": "What is saved on this computer",
         "body": (
-            "Your profile name, a scrypt hash of your PIN, the optional profile details you enter, and your INDmoney "
-            "connection tokens. If you choose to save history: your chats (each kept 30 days after its last message, "
+            "Your profile name, a scrypt hash of your PIN, the optional profile details, savings goals and decisions you "
+            "enter yourself, and your INDmoney connection tokens. CA Mode never saves details the assistant infers "
+            "from your chats. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick, the holdings from any CAS statement you upload (the last 12; never the PDF, its "
             "password, or your name, PAN or contact details), and the portfolio change investigations you run (the "
@@ -41,7 +42,7 @@ NOTICE: Final = (
     {
         "title": "Locked with your PIN",
         "body": (
-            "Your saved chats, portfolio snapshots, investigations, CAS holdings and profile details are encrypted with a key that only your PIN or "
+            "Your saved chats, portfolio snapshots, investigations, CAS holdings, profile details, goals and decisions are encrypted with a key that only your PIN or "
             "your recovery code can unlock. Nobody else using this computer, and nobody with a copy of the database, "
             "can read them. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
             "code lets you set a new one. If you lose both, your saved history cannot be recovered by anyone."
@@ -50,7 +51,8 @@ NOTICE: Final = (
     {
         "title": "What leaves this computer",
         "body": (
-            "To answer you, your message, recent chat history and profile details go to the AI model you select, "
+            "To answer you, your message, recent chat history, and the profile details, goals and decisions that bear on "
+            "your question (with figures calculated from them) go to the AI model you select, "
             "along with any INDmoney or snapshot data Portfolio Analyzer reads for that answer. With Ollama (on this "
             "device) the model runs on this computer and none of it leaves. With OpenAI or Groq it is sent to that "
             "company and handled under its own data policy. Portfolio Analyzer reads from INDmoney with read-only "
@@ -63,14 +65,16 @@ NOTICE: Final = (
             "Chats are kept in memory only and are gone when you sign out or the app restarts. No portfolio snapshots "
             "are taken, CAS statements cannot be uploaded, investigations are not saved, and switching to private mode "
             "deletes the chats, snapshots, investigations and CAS holdings already saved for this profile. "
-            "Your INDmoney connection tokens are still saved so you stay connected; disconnect INDmoney to remove them."
+            "Your INDmoney connection tokens, profile details, goals and decisions are still saved; disconnect INDmoney "
+            "or remove your saved goals and decisions on the Goals page to delete them."
         ),
     },
     {
         "title": "Your controls",
         "body": (
             "From your profile you can change these choices at any time, export your data, clear your saved history, "
-            "disconnect INDmoney, or delete the profile and everything stored for it."
+            "disconnect INDmoney, or delete the profile and everything stored for it. The Goals page shows the goals, "
+            "decisions and profile details the assistant can use, and lets you edit or remove them."
         ),
     },
 )
@@ -168,6 +172,7 @@ def export_data(
     snapshots: list[dict[str, Any]],
     cas_statements: list[dict[str, Any]] | None = None,
     investigations: list[dict[str, Any]] | None = None,
+    saved_context: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Return everything stored for the profile except its PIN hash, keys and INDmoney tokens.
 
@@ -192,4 +197,6 @@ def export_data(
         "snapshots": snapshots,
         "casStatements": cas_statements or [],
         "investigations": investigations or [],
+        "goals": (saved_context or {}).get("goals", []),
+        "decisions": (saved_context or {}).get("decisions", []),
     }

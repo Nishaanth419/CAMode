@@ -61,29 +61,6 @@ class ProfileLockedError(ProfileError):
         self.retry_after_seconds = retry_after_seconds
 
 
-MAX_GOALS = 10
-GoalKind = Literal["home", "education", "retirement", "car", "travel", "wedding", "emergency", "other"]
-
-
-class Goal(BaseModel):
-    """A savings goal the user tracks on the Goals page; amounts are whole rupees.
-
-    ``kind`` picks the goal's icon; goals saved before it existed have none and
-    the app infers one from the name.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,32}$")
-    name: str = Field(min_length=1, max_length=80)
-    kind: GoalKind | None = None
-    targetInr: int = Field(ge=1, le=100_000_000_000)
-    targetYear: int = Field(ge=2000, le=2100)
-    savedInr: int = Field(default=0, ge=0, le=100_000_000_000)
-    monthlyInr: int = Field(default=0, ge=0, le=1_000_000_000)
-    expectedReturnPct: float = Field(default=10, ge=0, le=30)
-
-
 class ProfileFields(BaseModel):
     """Optional, user-entered context the Portfolio Analyzer may use to tailor answers."""
 
@@ -94,7 +71,11 @@ class ProfileFields(BaseModel):
     primaryGoal: str | None = Field(default=None, max_length=200)
     monthlyInvestmentInr: int | None = Field(default=None, ge=0, le=1_000_000_000)
     ageBand: Literal["under-25", "25-34", "35-44", "45-54", "55+"] | None = None
-    goals: list[Goal] | None = Field(default=None, max_length=MAX_GOALS)
+
+
+# Keys stored in the sealed profile JSON beside the fields: when the user last saved
+# them, and (before ``memory.migrate_profile_goals`` moves them out) the old goals list.
+PROFILE_META_KEYS = ("updatedAt", "goals")
 
 
 def now_ms() -> int:
@@ -293,26 +274,32 @@ def check_pin(user: dict[str, Any], pin: str) -> bool:
     return check_with_lockout(user["id"], lambda row: verify_pin(pin, row["pin_hash"]))
 
 
-def profile_fields(user: dict[str, Any], keys: ProfileKeys) -> dict[str, Any]:
-    """Return the profile's fields. Raises ``sealing.LockedError`` if they are sealed and ``keys`` is locked."""
+def stored_profile(user: dict[str, Any], keys: ProfileKeys) -> dict[str, Any]:
+    """Return the profile JSON as stored, including ``PROFILE_META_KEYS``.
+
+    Raises ``sealing.LockedError`` if it is sealed and ``keys`` is locked.
+    """
     return json.loads(keys.open(user["profileStored"] or "{}"))
 
 
-def update_profile(user_id: str, fields: ProfileFields, keys: ProfileKeys) -> dict[str, Any]:
-    """Replace the profile's fields, keeping its saved goals when ``fields`` leaves ``goals`` unset.
+def profile_fields(user: dict[str, Any], keys: ProfileKeys) -> dict[str, Any]:
+    """Return the fields the user entered. Raises ``sealing.LockedError`` if they are sealed and ``keys`` is locked."""
+    return {key: value for key, value in stored_profile(user, keys).items() if key not in PROFILE_META_KEYS}
 
-    Raises ``sealing.LockedError`` if goals must be carried over and ``keys`` is locked.
-    """
+
+def profile_updated_at(user: dict[str, Any], keys: ProfileKeys) -> int | None:
+    """When the user last saved their profile fields (ms), or None for profiles saved before this was recorded."""
+    return stored_profile(user, keys).get("updatedAt")
+
+
+def update_profile(user_id: str, fields: ProfileFields, keys: ProfileKeys) -> dict[str, Any]:
+    """Replace the profile's fields with what the user just confirmed, recording when."""
     profile = fields.model_dump(exclude_none=True)
-    if "goals" not in fields.model_fields_set:
-        user = get_user(user_id)
-        saved_goals = profile_fields(user, keys).get("goals") if user else None
-        if saved_goals:
-            profile["goals"] = saved_goals
+    stored = {**profile, "updatedAt": now_ms()} if profile else {}
     with connect_db() as connection:
         connection.execute(
             "UPDATE users SET profile = ?, updated_at = ? WHERE id = ?",
-            (keys.seal(json.dumps(profile)), now_ms(), user_id),
+            (keys.seal(json.dumps(stored)) if stored else "{}", now_ms(), user_id),
         )
     return profile
 

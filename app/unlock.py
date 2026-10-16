@@ -16,7 +16,7 @@ from typing import Any
 
 from nacl.public import PrivateKey
 
-from . import chats, sealing, snapshots, users
+from . import chats, memory, sealing, snapshots, users
 from .db import connect_db
 from .sealing import ProfileKeys, WrongSecretError
 
@@ -45,7 +45,11 @@ def keys_for_session(user: dict[str, Any], sid: str | None) -> ProfileKeys:
 
 
 def activate(sid: str, user_id: str, private_key: PrivateKey) -> None:
-    """Remember the unlocked key for ``sid`` and seal any of the profile's rows still in plaintext."""
+    """Remember the unlocked key for ``sid``, seal the profile's rows still in plaintext, and move old goals.
+
+    Goals saved inside the profile JSON (before ``financial_goals`` existed) move to
+    their own table here, the first time the PIN is entered after the upgrade.
+    """
     _unlocked[sid] = (user_id, private_key)
     keys = ProfileKeys(public_key=private_key.public_key, private_key=private_key)
     chats.seal_plaintext_chats(user_id, keys)
@@ -54,6 +58,7 @@ def activate(sid: str, user_id: str, private_key: PrivateKey) -> None:
         row = connection.execute("SELECT profile FROM users WHERE id = ?", (user_id,)).fetchone()
         if row and row["profile"] != "{}" and not sealing.is_sealed(row["profile"]):
             connection.execute("UPDATE users SET profile = ? WHERE id = ?", (keys.seal(row["profile"]), user_id))
+    memory.migrate_profile_goals(user_id, keys)
 
 
 def forget_session(sid: str) -> None:

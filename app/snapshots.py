@@ -577,28 +577,15 @@ def cas_tool(user_id: str, keys: ProfileKeys) -> LocalTool:
     )
 
 
-_PROFILE_LABELS = {
-    "riskAppetite": "Risk appetite",
-    "investmentHorizonYears": "Investment horizon (years)",
-    "primaryGoal": "Primary goal",
-    "monthlyInvestmentInr": "Monthly investment budget (INR)",
-    "ageBand": "Age band",
-}
+def snapshot_context(snapshot: dict[str, Any] | None) -> str:
+    """Say whether a saved snapshot exists and when it was captured, for the Portfolio Analyzer prompt.
 
-
-def profile_context(fields: dict[str, Any], snapshot: dict[str, Any] | None) -> str | None:
-    """Render user-entered profile fields and snapshot availability for the system prompt."""
-    lines = [f"- {label}: {fields[key]}" for key, label in _PROFILE_LABELS.items() if fields.get(key) not in (None, "")]
-    for goal in fields.get("goals") or []:
-        lines.append(
-            f"- Goal: {goal['name']}, target INR {goal['targetInr']} by {goal['targetYear']}, "
-            f"saved INR {goal.get('savedInr', 0)}, investing INR {goal.get('monthlyInr', 0)} a month"
-        )
+    The user's saved preferences, goals and decisions reach the prompt separately,
+    through ``app.context``, and only when they bear on the request.
+    """
     if snapshot:
-        lines.append(f"- Latest saved portfolio snapshot: captured {_iso(snapshot['capturedAt'])} (use get_portfolio_snapshot)")
-    else:
-        lines.append("- No saved portfolio snapshot yet; use the live INDmoney tools.")
-    return "\n".join(lines)
+        return f"- Latest saved portfolio snapshot: captured {_iso(snapshot['capturedAt'])} (use get_portfolio_snapshot)"
+    return "- No saved portfolio snapshot yet; use the live INDmoney tools."
 
 
 def fresh_cached_mcp_tools(user: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -622,7 +609,7 @@ def portfolio_context(user: dict[str, Any], *, extra_tools: Sequence[LocalTool] 
     local_tools.extend(extra_tools)
     return PortfolioContext(
         local_tools=tuple(local_tools),
-        profile_context=profile_context(users.profile_fields(user, keys), latest_snapshot(user["id"], keys=keys)),
+        profile_context=snapshot_context(latest_snapshot(user["id"], keys=keys)),
         cached_mcp_tools=fresh_cached_mcp_tools(user),
         on_mcp_tools=lambda tools: users.cache_mcp_tools(user["id"], filter_portfolio_tools(tools)),
     )

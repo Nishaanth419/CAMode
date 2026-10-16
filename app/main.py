@@ -11,6 +11,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from datetime import date
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -20,8 +21,9 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from . import backup, cas, chats, investigations, privacy, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, goal_planning, investigations, memory, privacy, sealing, snapshots, unlock, users, vault
 from .agent import configured_providers, default_provider, run_agent
+from .context import observed_sources, retrieve_context, with_plan
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
 from .mcp_client import fetch_mcp_session, filter_portfolio_tools
@@ -30,7 +32,6 @@ from .users import (
     INDMONEY_TOKEN_URL,
     MCP_RESOURCE,
     SESSION_MAX_AGE_SECONDS,
-    Goal,
     ProfileFields,
     get_session,
     random_token,
@@ -374,7 +375,10 @@ async def get_profile(request: Request):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    return {"displayName": user["displayName"], "profile": users.profile_fields(user, user["keys"])}
+    return {
+        "displayName": user["displayName"], "profile": users.profile_fields(user, user["keys"]),
+        "updatedAt": users.profile_updated_at(user, user["keys"]),
+    }
 
 
 @app.put("/api/profile")
@@ -382,34 +386,174 @@ async def put_profile(body: ProfileFields, request: Request):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    return {"displayName": user["displayName"], "profile": users.update_profile(user["id"], body, user["keys"])}
+    profile = users.update_profile(user["id"], body, user["keys"])
+    updated = users.get_user(user["id"]) or user
+    return {"displayName": user["displayName"], "profile": profile, "updatedAt": users.profile_updated_at(updated, user["keys"])}
 
 
-class GoalsRequest(BaseModel):
+# ── Goals, decisions and saved context ────────────────────────────────────────
+
+class GoalPlanRequest(BaseModel):
+    """A goal's planning inputs (saved or still being edited) and, optionally, the returns to compare."""
+
     model_config = ConfigDict(extra="forbid")
 
-    goals: list[Goal] = Field(max_length=users.MAX_GOALS)
+    currency: memory.Currency
+    targetAmount: int = Field(ge=1, le=100_000_000_000)
+    targetDate: date
+    savedAmount: int = Field(default=0, ge=0, le=100_000_000_000)
+    monthlyContribution: int = Field(default=0, ge=0, le=1_000_000_000)
+    assumedReturnPct: float | None = Field(default=None, ge=0, le=30)
+    # Yearly returns to compare instead of the default scenarios (no growth and the assumption ± 2 points).
+    annualReturnPcts: list[float] | None = Field(default=None, min_length=1, max_length=goal_planning.MAX_SCENARIOS)
+
+
+def _today() -> date:
+    return snapshots.local_now().date()
+
+
+def _not_found(what: str) -> JSONResponse:
+    return JSONResponse({"error": f"{what} not found."}, status_code=404)
 
 
 @app.get("/api/goals")
-async def get_goals(request: Request):
+async def list_goals(request: Request):
+    """The profile's goals, each with its plan calculated today."""
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    return {"goals": users.profile_fields(user, user["keys"]).get("goals") or []}
+    today = _today()
+    goals = [with_plan(goal, today) for goal in memory.list_goals(user["id"], user["keys"])]
+    return {"asOf": today.isoformat(), "maxGoals": memory.MAX_GOALS, "goals": goals}
 
 
-@app.put("/api/goals")
-async def put_goals(body: GoalsRequest, request: Request):
-    """Replace the profile's goals, keeping its other profile fields."""
+@app.post("/api/goals", status_code=201)
+async def create_goal(body: memory.GoalInput, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    try:
+        goal = memory.create_goal(user["id"], body, user["keys"])
+    except memory.LimitReachedError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    return JSONResponse(with_plan(goal, _today()), status_code=201, headers={"Location": f"/api/goals/{goal['id']}"})
+
+
+@app.post("/api/goals/plan")
+async def plan_goal(body: GoalPlanRequest, request: Request):
+    """Calculate a plan without saving anything, for the goal editor's preview and what-if returns."""
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    if len({goal.id for goal in body.goals}) != len(body.goals):
-        return JSONResponse({"error": "Each goal needs a different id."}, status_code=422)
-    fields = ProfileFields(**{**users.profile_fields(user, user["keys"]), "goals": body.goals})
-    profile = users.update_profile(user["id"], fields, user["keys"])
-    return {"goals": profile.get("goals") or []}
+    inputs = body.model_dump(mode="json", exclude={"annualReturnPcts"})
+    try:
+        return goal_planning.plan_goal(inputs, _today(), return_rates=body.annualReturnPcts)
+    except goal_planning.PlanningError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+
+@app.get("/api/goals/{goal_id}")
+async def get_goal(goal_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    goal = memory.get_goal(user["id"], goal_id, user["keys"])
+    return with_plan(goal, _today()) if goal else _not_found("Goal")
+
+
+@app.put("/api/goals/{goal_id}")
+async def update_goal(goal_id: str, body: memory.GoalInput, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    goal = memory.update_goal(user["id"], goal_id, body, user["keys"])
+    return with_plan(goal, _today()) if goal else _not_found("Goal")
+
+
+@app.delete("/api/goals/{goal_id}")
+async def delete_goal(goal_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"deleted": True} if memory.delete_goal(user["id"], goal_id) else _not_found("Goal")
+
+
+@app.get("/api/decisions")
+async def list_decisions(request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"maxDecisions": memory.MAX_DECISIONS, "decisions": memory.list_decisions(user["id"], user["keys"])}
+
+
+@app.post("/api/decisions", status_code=201)
+async def create_decision(body: memory.DecisionInput, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    try:
+        decision = memory.create_decision(user["id"], body, user["keys"])
+    except memory.LimitReachedError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except memory.UnknownGoalError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    return JSONResponse(decision, status_code=201, headers={"Location": f"/api/decisions/{decision['id']}"})
+
+
+@app.put("/api/decisions/{decision_id}")
+async def update_decision(decision_id: str, body: memory.DecisionInput, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    try:
+        decision = memory.update_decision(user["id"], decision_id, body, user["keys"])
+    except memory.UnknownGoalError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    return decision or _not_found("Decision")
+
+
+@app.delete("/api/decisions/{decision_id}")
+async def delete_decision(decision_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"deleted": True} if memory.delete_decision(user["id"], decision_id) else _not_found("Decision")
+
+
+@app.get("/api/context")
+async def get_saved_context(request: Request):
+    """Everything the assistant may draw on, grouped by where it came from."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    keys = user["keys"]
+    return {
+        "confirmed": {
+            "preferences": {
+                "fields": users.profile_fields(user, keys), "updatedAt": users.profile_updated_at(user, keys),
+                "source": memory.SOURCE_USER,
+            },
+            "goals": memory.list_goals(user["id"], keys),
+            "decisions": memory.list_decisions(user["id"], keys),
+        },
+        "observed": observed_sources(user),
+        "inferred": {
+            "stored": False,
+            "note": "CA Mode does not save details the assistant infers in chats. Goal projections are calculated "
+                    "when needed from your saved goals and are never stored.",
+        },
+    }
+
+
+@app.delete("/api/context")
+async def clear_saved_context(request: Request):
+    """Delete the profile's goals, decisions and profile details. Chats, snapshots and statements are kept."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    memory.clear_saved_context(user["id"])
+    logger.info("saved_context_cleared", extra={"user_id": user["id"]})
+    return {"cleared": True}
 
 
 async def revoke_indmoney(user: dict[str, Any]) -> None:
@@ -488,7 +632,7 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
     return JSONResponse(
         privacy.export_data(
             user, snapshots.all_snapshots(user["id"], keys), cas.all_statements(user["id"], keys),
-            investigations.all_investigations(user["id"], keys),
+            investigations.all_investigations(user["id"], keys), memory.export_context(user["id"], keys),
         ),
         headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
     )
@@ -878,6 +1022,8 @@ async def chat(body: ChatRequest, request: Request):
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
     if body.agentType != data["agentType"]:
         return JSONResponse({"error": "This conversation belongs to a different agent. Start a new chat to switch agents."}, status_code=409)
+    history = data.get("messages", [])
+    saved_context = retrieve_context(user, message, history)
     token = None
     context = None
     if body.agentType == "portfolio":
@@ -887,16 +1033,20 @@ async def chat(body: ChatRequest, request: Request):
         context = snapshots.portfolio_context(
             user, extra_tools=[investigations.investigation_tool(user, provider=provider, chat_id=data["id"])],
         )
-    history = data.get("messages", [])
     try:
-        answer = await run_agent(message, MCP_RESOURCE, token, history, body.agentType, provider, context=context)
+        answer = await run_agent(
+            message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
+        )
     except Exception as exc:
         if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
             refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
             if not refreshed_token:
                 return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
             try:
-                answer = await run_agent(message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider, context=context)
+                answer = await run_agent(
+                    message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
+                    context=context, saved_context=saved_context,
+                )
             except Exception as retry_exc:
                 if is_indmoney_auth_error(retry_exc):
                     return auth_error("INDmoney rejected the renewed session. Reconnect your account and try again.")

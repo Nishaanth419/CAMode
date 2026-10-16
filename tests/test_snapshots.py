@@ -213,18 +213,14 @@ def test_snapshot_retention_prunes_old_rows(monkeypatch):
     assert dates == ["2026-10-11", "2026-10-12", "2026-10-13"]
 
 
-def test_profile_context_lists_fields_and_snapshot_time():
+def test_snapshot_context_states_the_capture_time_or_its_absence():
     user_id = make_user()
-    users.update_profile(user_id, users.ProfileFields(riskAppetite="low", monthlyInvestmentInr=5000), ProfileKeys())
     snapshots.store_snapshot(user_id, at(13, 9), {"networth_snapshot": "{}"}, {})
-    fields = users.profile_fields(users.get_user(user_id), ProfileKeys())
 
-    text = snapshots.profile_context(fields, snapshots.latest_snapshot(user_id))
+    text = snapshots.snapshot_context(snapshots.latest_snapshot(user_id))
 
-    assert "Risk appetite: low" in text
-    assert "Monthly investment budget (INR): 5000" in text
-    assert "captured 2026-10-13T09:00+05:30" in text
-    assert "No saved portfolio snapshot" in snapshots.profile_context(fields, None)
+    assert text == "- Latest saved portfolio snapshot: captured 2026-10-13T09:00+05:30 (use get_portfolio_snapshot)"
+    assert "No saved portfolio snapshot" in snapshots.snapshot_context(None)
 
 
 def test_timezone_falls_back_to_fixed_ist_without_tz_data(monkeypatch):

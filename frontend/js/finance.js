@@ -67,23 +67,72 @@
   }
 
   /* ── Goals ────────────────────────────────────────────────────────── */
-  // Months from ``now`` to the end of the goal's target year.
-  function monthsUntil(targetYear, now = new Date()) {
-    return Math.max(0, (targetYear - now.getFullYear()) * 12 + (11 - now.getMonth()));
+  // Goal plans (gap, scenarios, status) are calculated on the server (app/goal_planning.py);
+  // these helpers only format them. Amounts stay in each goal's own currency.
+  const GOAL_CURRENCIES = ['INR', 'USD', 'EUR', 'GBP'];
+  const currencyFormats = new Map();
+
+  function currencyFormat(currency, compact) {
+    const key = `${currency}:${compact ? 'short' : 'exact'}`;
+    if (!currencyFormats.has(key)) {
+      currencyFormats.set(key, new Intl.NumberFormat('en-US', {
+        style: 'currency', currency, maximumFractionDigits: compact ? 1 : 0, ...(compact ? { notation: 'compact' } : {}),
+      }));
+    }
+    return currencyFormats.get(key);
   }
 
-  function goalProjection(goal, now = new Date()) {
-    const months = monthsUntil(goal.targetYear, now);
-    const rate = goal.expectedReturnPct ?? 10;
-    const saved = goal.savedInr || 0;
-    const projected = grow(saved, rate, months) + sipValue(goal.monthlyInr || 0, rate, months);
-    return {
-      months,
-      projected,
-      onTrack: projected >= goal.targetInr,
-      needed: monthlyNeeded(goal.targetInr, saved, rate, months),
-      progress: goal.targetInr > 0 ? Math.min(100, saved / goal.targetInr * 100) : 0,
-    };
+  // An exact amount in ``currency``; rupees keep the Indian grouping.
+  function amount(value, currency = 'INR') {
+    if (!Number.isFinite(value)) return '—';
+    return currency === 'INR' ? money(value) : currencyFormat(currency, false).format(value);
+  }
+
+  // A headline amount: ₹12.40 L for rupees, $45.2K for other currencies.
+  function amountShort(value, currency = 'INR') {
+    if (!Number.isFinite(value)) return '—';
+    return currency === 'INR' ? moneyShort(value) : currencyFormat(currency, true).format(value);
+  }
+
+  // Sums of ``field`` per currency (rupees first), since amounts in different currencies are never added.
+  function totalsByCurrency(goals, field) {
+    const totals = new Map();
+    for (const goal of goals || []) {
+      const value = Number(goal && goal[field]);
+      if (!goal || !goal.currency || !Number.isFinite(value)) continue;
+      totals.set(goal.currency, (totals.get(goal.currency) || 0) + value);
+    }
+    return [...totals.entries()].sort(([a], [b]) => (a === 'INR' ? -1 : b === 'INR' ? 1 : a.localeCompare(b)));
+  }
+
+  function formatTotals(totals, short = true) {
+    if (!totals.length) return '—';
+    return totals.map(([currency, value]) => (short ? amountShort : amount)(value, currency)).join(' + ');
+  }
+
+  const GOAL_STATUSES = {
+    reached: ['Reached', 'is-connected'],
+    on_track: ['On track', 'is-connected'],
+    behind: ['Needs more', 'is-behind'],
+    due_now: ['Due now', 'is-behind'],
+    past_due: ['Past due', 'is-behind'],
+    insufficient_data: ['Missing details', 'is-behind'],
+  };
+
+  // [label, pill class] for a plan status; unknown statuses show as missing details.
+  function goalStatus(plan) {
+    return GOAL_STATUSES[plan && plan.status] || GOAL_STATUSES.insufficient_data;
+  }
+
+  function goalIsOnTrack(goal) {
+    const status = goal && goal.plan && goal.plan.status;
+    return status === 'on_track' || status === 'reached';
+  }
+
+  // The scenario the goal is judged by: the user's assumption, else no growth.
+  function baseScenario(plan) {
+    const scenarios = (plan && plan.scenarios) || [];
+    return scenarios.find((item) => item.name === plan.baseScenario) || scenarios[0] || null;
   }
 
   const GOAL_KINDS = [
@@ -309,7 +358,8 @@
 
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
-    sipValue, grow, monthlyNeeded, monthsUntil, goalProjection, goalKind, goalIcon,
+    sipValue, grow, monthlyNeeded, goalKind, goalIcon,
+    GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, baseScenario,
     spanLabel, historyChange, portfolioInsights,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };

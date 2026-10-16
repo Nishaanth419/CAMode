@@ -131,7 +131,7 @@ def test_legacy_chats_and_tokens_are_adopted_on_sign_in(tmp_path, monkeypatch):
 
 
 def test_profile_update_validates_fields(client, signed_in):
-    assert client.get("/api/profile").json() == {"displayName": "Asha", "profile": {}}
+    assert client.get("/api/profile").json() == {"displayName": "Asha", "profile": {}, "updatedAt": None}
     assert client.put("/api/profile", json={"riskAppetite": "reckless"}).status_code == 422
     assert client.put("/api/profile", json={"salary": 10}).status_code == 422
     assert client.put("/api/profile", json={"investmentHorizonYears": 99}).status_code == 422
@@ -142,6 +142,7 @@ def test_profile_update_validates_fields(client, signed_in):
     })
 
     assert saved.status_code == 200
+    assert isinstance(saved.json()["updatedAt"], int)
     assert client.get("/api/profile").json()["profile"] == {
         "riskAppetite": "high", "investmentHorizonYears": 15, "primaryGoal": "Retire early",
         "monthlyInvestmentInr": 25000, "ageBand": "25-34",

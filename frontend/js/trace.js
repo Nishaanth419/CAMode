@@ -132,6 +132,12 @@
       view.tool = item.source === 'model' ? `AI check · ${item.model || 'model'}` : 'keyword rules';
       view.purpose = 'Decide whether it needs your account data, is general finance, or is declined';
       view.summary = ROUTE_LABELS[item.category] || (item.category ? String(item.category) : '');
+    } else if (item.kind === 'context') {
+      const items = Array.isArray(item.items) ? item.items.map((entry) => redactText(String(entry))) : [];
+      view.title = 'Use your saved goals and details';
+      view.tool = 'saved context';
+      view.purpose = 'Only what you entered that bears on this question, with figures calculated in code';
+      view.summary = items.length ? items.join(' · ') : '';
     } else if (item.kind === 'model') {
       view.title = `Ask ${item.provider || 'the AI model'}`;
       view.tool = item.model || '';

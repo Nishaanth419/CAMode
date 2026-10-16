@@ -14,7 +14,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 ### Backend modules
 - **`app/main.py`**: FastAPI routes, INDmoney OAuth, and the lifespan task that runs the snapshot scheduler. `POST /api/chat` returns the full answer as plain text with the call trace in an `X-Agent-Trace` header (no streaming to the browser).
-- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
+- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations`, `financial_goals`, `financial_decisions` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
 - **`app/users.py`**: Profiles (scrypt PIN hashes, account-bound lockout), browser sessions bound to profiles, profile fields (`ProfileFields`), and per-profile INDmoney tokens (`user_access_token` refreshes them).
 - **`app/privacy.py`**: The privacy notice (`NOTICE`, `POLICY_VERSION`), consent records, per-profile storage mode and snapshot retention, data export, and history clearing.
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
@@ -29,6 +29,9 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
 - **`app/investigation_math.py`**: Pure `Decimal` layer: `normalize_snapshot()` (`PortfolioSnapshot` / `HoldingSnapshot` with scope, capture time, currency, holdings coverage), `calculate_change()`, `calculate_portfolio_change()` (price and unit effects per holding), `calculate_allocation()`.
 - **`app/investigation_checks.py`**: `run_checks()` returns `CheckResult`s (`passed`/`warning`/`failed`/`not_checked`, evidence, next step); tolerance from `INVESTIGATION_TOLERANCE_PCT` / `_INR`, staleness from `INVESTIGATION_STALE_HOURS`.
+- **`app/memory.py`**: User-confirmed context: `GoalInput` / `DecisionInput`, sealed CRUD on `financial_goals` / `financial_decisions` (max 10 / 50, counted in a `BEGIN IMMEDIATE` insert), `migrate_profile_goals()` (called by `unlock.activate()`), `export_context()`, `clear_saved_context()`.
+- **`app/goal_planning.py`**: Pure `Decimal` goal maths: `months_until()`, `future_value()`, `required_monthly()`, `plan_goal()` (status, gap, progress, scenarios, assumptions, warnings; `PlanningError` for invalid inputs).
+- **`app/context.py`**: `retrieve_context()` picks the saved goals, decisions and preferences relevant to one chat request (keyword rules) and renders the prompt text; `with_plan()`, `observed_sources()`.
 - **`app/investigations.py`**: The bounded portfolio-change workflow (`investigate_portfolio_change()`), sealed `investigations` rows (newest 50), `agent_payload()` and the `investigate_portfolio_change` `LocalTool`.
 
 ### Key Design Patterns
@@ -59,7 +62,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - The key lives outside `.data/`; Docker mounts `~/.config/ca-mode` so both run modes share it. Tests set a generated `APP_MASTER_KEY` in `conftest.py` and must never touch the real key file
 
 **Consent and storage modes** (`privacy.py`, `chats.py`):
-- A profile must accept the current `POLICY_VERSION` before `POST /api/chats`, `POST /api/chat`, `GET /api/tools`, `POST /api/snapshots/refresh` or `/auth/indmoney/connect`; otherwise `403 {"consentRequired": true}` (connect redirects home). Reading, deleting and exporting existing data stays allowed
+- A profile must accept the current `POLICY_VERSION` before `POST /api/chats`, `POST /api/chat`, `POST`/`PUT` on goals and decisions, `GET /api/tools`, `POST /api/snapshots/refresh` or `/auth/indmoney/connect`; otherwise `403 {"consentRequired": true}` (connect redirects home). Reading, deleting and exporting existing data stays allowed
 - Every acceptance or settings change appends a `consents` row (version, mode, retention, time); the latest row decides `has_current_consent()`
 - Bump `POLICY_VERSION` whenever `NOTICE` changes what is stored or shared: every profile is asked again and its scheduled snapshots pause until it accepts
 - `storage_mode` is `device` or `private`. Private keeps chats in `chats._private_chats` (lost on sign-out, mode switch or restart), takes no snapshots, and switching to it deletes saved chats and snapshots. INDmoney tokens are still stored in both modes
@@ -94,6 +97,15 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - With cached MCP tools (< 24h), the MCP session opens lazily on the first MCP tool call; snapshot-only answers make no MCP calls
 - A failing local tool returns an error tool result so the model can fall back to live tools. An MCP result flagged `isError` (e.g. an argument outside the tool's enum) raises `mcp_client.McpToolError` and goes back to the model as an error tool result with a `next_step`, so it can correct the call; it still counts as a tool call. Transport and JSON-RPC errors, and `isError` text that reads as an auth failure (401, `invalid_token`, unauthorized), abort the request so `main.chat` can refresh the token
 - Profile fields go into a labelled `<user_profile>` block in the portfolio system prompt as context, not instructions
+
+**Goals and saved context** (`memory.py`, `goal_planning.py`, `context.py`):
+- Confirmed context (goals, decisions, profile fields) is written only by explicit user actions and carries `source: "user_entered"` plus created/updated times; observed data stays in snapshots and CAS rows; nothing the model infers is stored (`tests/test_memory.py::test_chats_never_write_saved_context`)
+- Goals: `name`, `kind`, required `currency` (INR/USD/EUR/GBP, never converted or summed across currencies), `targetAmount`, `targetDate`, `savedAmount`, `monthlyContribution`, optional `assumedReturnPct` (0–30; none means only the no-growth scenario), optional `notes`. Plans are computed on every read (`context.with_plan()`), never stored
+- `plan_goal()` mirrors `finance.js` (start-of-month contributions, monthly compounding); scenarios are no growth plus the assumption ±2 points; `requiredMonthly` rounds up, `additionalMonthly` is the extra over the planned contribution; missing target/date/currency is `insufficient_data`, not a guess
+- `retrieve_context()` matches the message alone first and adds the last 2 user turns only for follow-ups (`is_follow_up()`); goals named (or by kind) else all goals for goal-ish questions; decisions linked to chosen goals, sharing a word, or all for "what did I decide"; preferences with goals or risk/allocation questions. Capped at `MAX_CONTEXT_CHARS`
+- `main.chat` passes it as `run_agent(..., saved_context=)` to both agents: `<saved_context>` block plus `SAVED_CONTEXT_RULES` (quote calculated figures, never recompute, projections are illustrations, unknown means unknown); a `context` trace step lists the items; `_number_warning` accepts figures from it. Without saved context the prompts are unchanged. `PortfolioContext.profile_context` now holds only `snapshots.snapshot_context()`
+- Old goals inside `users.profile` (`targetInr`, `targetYear`) move to `financial_goals` on unlock with `targetDate` = 31 Dec and a `migratedFrom` note; `ProfileFields` has no `goals`, and the stored profile carries `updatedAt`
+- Goal and decision create/update need consent; reads and deletes do not. `DELETE /api/context` removes goals, decisions and profile fields (not chats/snapshots). Export includes goals and decisions; profile deletion cascades
 
 **Portfolio change investigations** (`investigations.py`, `investigation_math.py`, `investigation_checks.py`):
 - A coded workflow, not a model loop: latest snapshot → `snapshots.previous_snapshot()` (before it, on or before `baseline_date`) → normalise → changes → allocation → checks → `build_result()`. The model only narrates `agent_payload()`
@@ -139,7 +151,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `index.html`: app shell, profile picker (`#profile-gate`, including the `#consent-form` privacy step), profile dialog (`<dialog id="profile-dialog">`, including the `#data-zone` privacy settings)
 - `app.js`: profile sign-in/creation, privacy notice and storage choices, export and history clearing, profile dialog (including INDmoney connect/disconnect), chat UI, agent switch above the input, sidebar recent chats (newest 6), `refreshSnapshot()`, Markdown rendering (links limited to http(s)/mailto), Plotly charts, theme toggle. Fires `ca:session`, `ca:chats` and `ca:snapshot` document events for the pages
 - `trace.js` (loaded after `finance.js`): answer trace timeline, investigation evidence card and Activity helpers (see "Answer trace and Activity")
-- `finance.js` (loaded first): pure helpers shared by the pages and the rail and exported for Node tests: Indian money formatting, SIP/lumpsum/goal math, `goalProjection()`, `goalKind()`, `historyChange()`, `portfolioInsights()` (observations about the user's own holdings, never market news) and `incomeTax()` with `TAX_RULES` (FY 2026-27 slabs, 87A rebate and marginal relief, surcharge with marginal relief, 4% cess). Update `TAX_RULES`, its label and `tests/js/finance.test.js` after each budget
+- `finance.js` (loaded first): pure helpers shared by the pages and the rail and exported for Node tests: Indian money formatting, SIP/lumpsum/goal math, `goalKind()`, `historyChange()`, `portfolioInsights()` (observations about the user's own holdings, never market news) and goal formatting (`amount()`, `amountShort()`, `totalsByCurrency()`, `goalStatus()`, `baseScenario()`; plans come from the server) and `incomeTax()` with `TAX_RULES` (FY 2026-27 slabs, 87A rebate and marginal relief, surcharge with marginal relief, 4% cess). Update `TAX_RULES`, its label and `tests/js/finance.test.js` after each budget
 - `rail.js` (loaded last): the right rail's Financial Portfolio (net worth, change over the saved history, sparkline, Total Invested / Total Returns / Return % over holdings with a cost), Financial Goals (the 3 nearest target years; a row opens the goal editor, "+ Add a goal" below), Market Insights and Quick Tools cards; renders on `ca:session`, `ca:snapshot` and `ca:goals`, and clears on `ca:session-ended`. Hidden below 1280px like before
 - Session events: `loadChats()` sets `isSessionReady = false` and fires `ca:session-ended` (pages and rail drop the previous profile's figures), then `ca:session` once the profile is signed in, unlocked and consenting. Data loaders in `pages.js` (`getPortfolio()`, `getHistory(days)`, `getGoals()`) share one cached request; a 401/403 from them triggers a single `reloadSession()`
 - `pages.js` (loaded after `app.js`, uses its globals): hash routes `#/` (Home), `#/chat` (Ask AI), `#/activity` and `#/activity/<id>` (saved investigations), `#/portfolio`, `#/investments` (holdings table, CSV, CAS upload), `#/planning/<sip|lumpsum|goal|emi|tax>` (calculators run in the browser), `#/markets` (`#/markets/funds` focuses the fund form), `#/goals`, `#/reports`, `#/chats`; `navigate(route)` switches between the chat view and `#page-view`. Prompt buttons anywhere use `data-prompt` / `data-agent` (one delegated listener in `app.js`)
@@ -197,14 +209,15 @@ python -m compileall -q app tests && python -m pytest -q
 - Investigation routes: `POST /api/investigations` (consent + unlocked; `201` + `Location` when saved, `200` when not), `GET /api/investigations?limit=`, `GET`/`DELETE /api/investigations/{id}`
 - Backup routes: `GET /api/backups` (status), `POST /api/backups` (back up now)
 - CAS routes: `GET /api/cas`, `POST /api/cas` (JSON `{password, pdfBase64}`; needs an unlocked session, consent, and `device` mode), `DELETE /api/cas/{id}`
-- Page routes: `GET /api/portfolio` (latest snapshot's `figures` plus every holding via `portfolio_math.all_holdings()`, or `{available: false}`), `GET`/`PUT /api/goals` (replaces the goals list, max 10; each goal has an optional `kind` for its icon, inferred from the name when missing). Goals are added, edited and deleted in one `#goal-dialog` opened from the Goals page, the rail and the goal planner (`openGoalDialog()` in `pages.js`)
+- Page routes: `GET /api/portfolio` (latest snapshot's `figures` plus every holding via `portfolio_math.all_holdings()`, or `{available: false}`)
+- Goal routes: `GET`/`POST /api/goals`, `GET`/`PUT`/`DELETE /api/goals/{id}` (each with `plan`), `POST /api/goals/plan` (stateless preview, optional `annualReturnPcts`), `GET`/`POST /api/decisions`, `PUT`/`DELETE /api/decisions/{id}`, `GET`/`DELETE /api/context`. Goals are added, edited and deleted in one `#goal-dialog` opened from the Goals page, the rail and the goal planner (`openGoalDialog()` in `pages.js`); its preview calls `/api/goals/plan`. The Goals page's "What the assistant can use" panel lists and deletes saved context
 - Other: `GET /api/providers`, `GET /api/tools`, `GET /healthz`
 - Helpers: `current_user(request)`, `profile_required()`, `auth_error()`, `lifespan()` (scheduler)
 - Re-exports `connect_db`, `initialize_db`, `get_session`, `save_session`, `touch_session` for tests
 
 ### `app/users.py`
 - `hash_pin()` / `verify_pin()` / `check_pin()` / `check_with_lockout()`: scrypt hashes and the atomic lockout shared by PINs and recovery codes
-- `profile_fields(user, keys)`, `update_profile(user_id, fields, keys)`: profile fields are sealed; `ProfileFields.goals` (`Goal` list) is kept when an update leaves it unset, and goals reach the portfolio prompt through `snapshots.profile_context()`
+- `profile_fields(user, keys)` (without `PROFILE_META_KEYS`), `stored_profile()`, `profile_updated_at()`, `update_profile(user_id, fields, keys)`: profile fields are sealed and stamped with `updatedAt`; they reach the prompts through `context.retrieve_context()`
 - `create_user()`, `get_user()`, `list_profiles()`, `update_profile()`, `delete_user()`
 - `get_session()`, `save_session()`, `touch_session()`, `session_user_id()`, `sign_in()` (rotates the id and adopts legacy data), `sign_out()`
 - `get_indmoney()`, `save_indmoney()`, `clear_indmoney()`, `user_access_token()`, `cache_mcp_tools()`, `users_with_indmoney()`, `has_indmoney_tokens()`
@@ -221,7 +234,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `snapshots_allowed()`, `prune_snapshots()`
 - `capture_snapshot()`, `refresh_user()`, `refresh_due_users()`, `due_user_ids()`, `run_scheduler()`
 - `store_snapshot()`, `latest_snapshot()`, `networth_history()`, `extract_networth_inr()`, `latest_scheduled_time()`
-- `snapshot_tools()`, `profile_context()`, `portfolio_context()` (builds the agent's `PortfolioContext`)
+- `snapshot_tools()`, `snapshot_context()`, `portfolio_context()` (builds the agent's `PortfolioContext`)
 
 ### `app/agent.py`
 - `_blocked_request_reason()`, `_requires_indmoney_data()`, `_contains_code_output()`: request/answer filtering
@@ -264,6 +277,9 @@ Test coverage:
 - `test_investigation_math.py`, `test_investigation_checks.py`: change maths (zero/missing bases, duplicates, changed codes, coverage, allocation bases) and every check, including the asset-type `holding_percent` denominator trap; `tests/fixtures/snapshot_pairs.py` builds self-consistent snapshot pairs
 - `test_investigations.py`: API, sealed persistence, gates, profile isolation, private mode, privacy deletion paths, deadline, lock retry, safe errors, storage failures, interruption, cancellation, the agent tool and its trace link
 - `test_eval_investigations.py`: every eval fixture yields its expected investigation status and flagged checks; the grader's arithmetic, unsupported-claim, honesty and refusal rules on canned answers
+- `test_goal_planning.py`: months left, future value and required contribution (matching `finance.js`), scenarios, statuses, rounding, missing inputs, invalid assumptions, currencies
+- `test_memory.py`: goal/decision CRUD, sealing, validation, limits, access rules (no profile, locked, no consent, other profiles), context inspection and clearing, export, cascade, the old-goal move, chats never writing context
+- `test_context.py`: goal/decision/preference selection, follow-ups, rendered sections, currencies, size cap, Finance Agent receiving context
 - `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API, CLI
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch

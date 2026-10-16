@@ -14,13 +14,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=30" />
+  <link rel="stylesheet" href="/css/app.css?v=31" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/finance.js?v=2" defer></script>
-  <script src="/js/trace.js?v=2" defer></script>
+  <script src="/js/finance.js?v=3" defer></script>
+  <script src="/js/trace.js?v=3" defer></script>
   <script src="/js/app.js?v=25" defer></script>
-  <script src="/js/pages.js?v=11" defer></script>
-  <script src="/js/rail.js?v=4" defer></script>
+  <script src="/js/pages.js?v=12" defer></script>
+  <script src="/js/rail.js?v=5" defer></script>
 </head>
 <body>
   <div id="app">
@@ -367,11 +367,12 @@
           <header class="page-head">
             <div>
               <h1 id="goals-title" class="page-title">Goals</h1>
-              <p class="page-sub">Track what you are saving for. Goals are locked with your PIN and shared with Portfolio Analyzer so it can relate your portfolio to them.</p>
+              <p class="page-sub">Track what you are saving for. Goals are locked with your PIN; Finance Agent and Portfolio Analyzer see a goal only when your question is about it.</p>
             </div>
             <button id="add-goal" class="rail-button page-cta" type="button">Add a goal</button>
           </header>
           <div id="goals-body"></div>
+          <div id="saved-context-body"></div>
         </section>
 
         <section class="page" data-page="reports" aria-labelledby="reports-title">
@@ -634,7 +635,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
         </button>
       </header>
-      <p class="dialog-sub">Goals are locked with your PIN. Portfolio Analyzer can see them so it can relate your holdings to what you are saving for.</p>
+      <p class="dialog-sub">Only what you enter here is saved. Projections use the return you assume and are illustrations, not promised returns.</p>
       <div class="field-grid">
         <label class="field field-wide"><span>Goal</span><input id="goal-name" type="text" maxlength="80" placeholder="e.g. Home purchase" autocomplete="off" required /></label>
         <label class="field"><span>Type</span>
@@ -644,11 +645,17 @@
             <option value="emergency">Emergency fund</option><option value="other">Other</option>
           </select>
         </label>
-        <label class="field"><span>Target year</span><input id="goal-year" type="number" min="2000" max="2100" step="1" inputmode="numeric" required /></label>
-        <label class="field"><span>Target amount (₹)</span><input id="goal-target" type="number" min="1" max="100000000000" step="1" inputmode="numeric" required /></label>
-        <label class="field"><span>Already saved (₹)</span><input id="goal-saved" type="number" min="0" max="100000000000" step="1" inputmode="numeric" value="0" /></label>
-        <label class="field"><span>Investing each month (₹)</span><input id="goal-monthly" type="number" min="0" max="1000000000" step="1" inputmode="numeric" value="0" /></label>
-        <label class="field"><span>Expected yearly return (%)</span><input id="goal-return" type="number" min="0" max="30" step="0.1" inputmode="decimal" value="10" /></label>
+        <label class="field"><span>Currency</span>
+          <select id="goal-currency" required>
+            <option value="INR">INR (₹)</option><option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option>
+          </select>
+        </label>
+        <label class="field"><span>Target date</span><input id="goal-date" type="date" min="2000-01-01" max="2100-12-31" required /></label>
+        <label class="field"><span>Target amount</span><input id="goal-target" type="number" min="1" max="100000000000" step="1" inputmode="numeric" required /></label>
+        <label class="field"><span>Earmarked savings so far</span><input id="goal-saved" type="number" min="0" max="100000000000" step="1" inputmode="numeric" value="0" required /></label>
+        <label class="field"><span>Planned monthly contribution</span><input id="goal-monthly" type="number" min="0" max="1000000000" step="1" inputmode="numeric" value="0" required /></label>
+        <label class="field"><span>Assumed yearly return (%, optional)</span><input id="goal-return" type="number" min="0" max="30" step="0.1" inputmode="decimal" placeholder="Leave blank for no growth" /></label>
+        <label class="field field-wide"><span>Notes (optional)</span><textarea id="goal-notes" maxlength="500" rows="2" placeholder="Anything you want to remember about this goal"></textarea></label>
       </div>
       <p id="goal-preview" class="goal-preview" aria-live="polite"></p>
       <p id="goal-status" class="dialog-status is-error" role="alert"></p>
