@@ -76,7 +76,9 @@
     const key = `${currency}:${compact ? 'short' : 'exact'}`;
     if (!currencyFormats.has(key)) {
       currencyFormats.set(key, new Intl.NumberFormat('en-US', {
-        style: 'currency', currency, maximumFractionDigits: compact ? 1 : 0, ...(compact ? { notation: 'compact' } : {}),
+        // Both digit limits are explicit: runtimes default minimumFractionDigits differently for currencies.
+        style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: compact ? 1 : 0,
+        ...(compact ? { notation: 'compact' } : {}),
       }));
     }
     return currencyFormats.get(key);
