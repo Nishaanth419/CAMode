@@ -14,13 +14,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=31" />
+  <link rel="stylesheet" href="/css/app.css?v=32" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/finance.js?v=3" defer></script>
+  <script src="/js/finance.js?v=4" defer></script>
   <script src="/js/trace.js?v=3" defer></script>
   <script src="/js/app.js?v=25" defer></script>
-  <script src="/js/pages.js?v=12" defer></script>
-  <script src="/js/rail.js?v=5" defer></script>
+  <script src="/js/pages.js?v=13" defer></script>
+  <script src="/js/rail.js?v=6" defer></script>
 </head>
 <body>
   <div id="app">
@@ -372,6 +372,7 @@
             <button id="add-goal" class="rail-button page-cta" type="button">Add a goal</button>
           </header>
           <div id="goals-body"></div>
+          <div id="goal-investments-body"></div>
           <div id="saved-context-body"></div>
         </section>
 
@@ -635,14 +636,15 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
         </button>
       </header>
-      <p class="dialog-sub">Only what you enter here is saved. Projections use the return you assume and are illustrations, not promised returns.</p>
+      <p class="dialog-sub">Only what you enter here is saved. Projections use the return you assume and are illustrations, not promised returns. You can save a goal as a draft with just a name and finish it later.</p>
       <div class="field-grid">
         <label class="field field-wide"><span>Goal</span><input id="goal-name" type="text" maxlength="80" placeholder="e.g. Home purchase" autocomplete="off" required /></label>
         <label class="field"><span>Type</span>
           <select id="goal-kind">
-            <option value="home">Home</option><option value="education">Education</option><option value="retirement">Retirement</option>
+            <option value="home">Home / house</option><option value="education">Education</option><option value="retirement">Retirement</option>
+            <option value="financial_independence">Financial independence</option>
             <option value="car">Vehicle</option><option value="travel">Travel</option><option value="wedding">Wedding</option>
-            <option value="emergency">Emergency fund</option><option value="other">Other</option>
+            <option value="emergency">Emergency fund</option><option value="other">Custom</option>
           </select>
         </label>
         <label class="field"><span>Currency</span>
@@ -650,11 +652,35 @@
             <option value="INR">INR (₹)</option><option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option>
           </select>
         </label>
-        <label class="field"><span>Target date</span><input id="goal-date" type="date" min="2000-01-01" max="2100-12-31" required /></label>
+        <fieldset class="field field-wide goal-when">
+          <legend>Target</legend>
+          <label class="radio-inline"><input type="radio" name="goal-when" value="date" checked /> By date</label>
+          <label class="radio-inline"><input type="radio" name="goal-when" value="horizon" /> In N years</label>
+          <input id="goal-date" type="date" min="2000-01-01" max="2100-12-31" required aria-label="Target date" />
+          <input id="goal-horizon" type="number" min="1" max="60" step="1" inputmode="numeric" placeholder="Years from today" aria-label="Years from today" hidden />
+        </fieldset>
         <label class="field"><span>Target amount</span><input id="goal-target" type="number" min="1" max="100000000000" step="1" inputmode="numeric" required /></label>
-        <label class="field"><span>Earmarked savings so far</span><input id="goal-saved" type="number" min="0" max="100000000000" step="1" inputmode="numeric" value="0" required /></label>
+        <label class="field"><span>Earmarked savings (not in assigned holdings)</span><input id="goal-saved" type="number" min="0" max="100000000000" step="1" inputmode="numeric" value="0" required /></label>
         <label class="field"><span>Planned monthly contribution</span><input id="goal-monthly" type="number" min="0" max="1000000000" step="1" inputmode="numeric" value="0" required /></label>
         <label class="field"><span>Assumed yearly return (%, optional)</span><input id="goal-return" type="number" min="0" max="30" step="0.1" inputmode="decimal" placeholder="Leave blank for no growth" /></label>
+        <details class="field-wide goal-risk-inputs">
+          <summary>Flexibility and risk (optional, used for the suitability check)</summary>
+          <div class="field-grid">
+            <label class="field"><span>Can the date or amount move?</span>
+              <select id="goal-flex"><option value="">Not sure yet</option><option value="fixed">No, it is fixed</option><option value="some">A little</option><option value="flexible">Yes, flexible</option></select>
+            </label>
+            <label class="field"><span>Might you need it early?</span>
+              <select id="goal-liquidity"><option value="">Not sure yet</option><option value="high">Quite possibly</option><option value="medium">Perhaps</option><option value="low">Unlikely</option></select>
+            </label>
+            <label class="field"><span>Comfort with ups and downs</span>
+              <select id="goal-risk"><option value="">Not sure yet</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
+            </label>
+            <label class="field"><span>How badly would a fall hurt this goal?</span>
+              <select id="goal-loss"><option value="">Not sure yet</option><option value="low">Very badly</option><option value="medium">Somewhat</option><option value="high">Not much</option></select>
+            </label>
+            <label class="field field-wide"><span>Yearly inflation for the target (%, optional)</span><input id="goal-inflation" type="number" min="0" max="15" step="0.1" inputmode="decimal" placeholder="Blank keeps the target as entered" /></label>
+          </div>
+        </details>
         <label class="field field-wide"><span>Notes (optional)</span><textarea id="goal-notes" maxlength="500" rows="2" placeholder="Anything you want to remember about this goal"></textarea></label>
       </div>
       <p id="goal-preview" class="goal-preview" aria-live="polite"></p>
@@ -662,7 +688,27 @@
       <div class="dialog-actions">
         <button id="goal-delete" class="gate-secondary danger-text" type="button" hidden>Delete</button>
         <button class="gate-secondary" type="button" data-close-goal>Cancel</button>
-        <button class="rail-button dialog-save" type="submit">Save goal</button>
+        <button class="gate-secondary" type="submit" value="draft" formnovalidate>Save as draft</button>
+        <button class="rail-button dialog-save" type="submit" value="active">Save goal</button>
+      </div>
+    </form>
+  </dialog>
+  <!-- ── Assign a holding to goals ─────────────────────────────────────── -->
+  <dialog id="allocation-dialog" class="profile-dialog goal-dialog" aria-labelledby="allocation-title">
+    <form id="allocation-form" method="dialog" novalidate>
+      <header class="dialog-head">
+        <h2 id="allocation-title">Assign holding</h2>
+        <button class="icon-button" type="button" data-close-allocation aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <p id="allocation-sub" class="dialog-sub"></p>
+      <div id="allocation-fields" class="field-grid"></div>
+      <p id="allocation-remaining" class="goal-preview" aria-live="polite"></p>
+      <p id="allocation-status" class="dialog-status is-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="gate-secondary" type="button" data-close-allocation>Cancel</button>
+        <button class="rail-button dialog-save" type="submit">Save</button>
       </div>
     </form>
   </dialog>

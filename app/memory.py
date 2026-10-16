@@ -19,9 +19,9 @@ import secrets
 from datetime import date, timedelta
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import users
+from . import goal_planning, users
 from .db import connect_db
 from .sealing import ProfileKeys
 
@@ -35,7 +35,14 @@ EARLIEST_DATE: Final = date(2000, 1, 1)
 LATEST_DATE: Final = date(2100, 12, 31)
 
 Currency = Literal["INR", "USD", "EUR", "GBP"]
-GoalKind = Literal["home", "education", "retirement", "car", "travel", "wedding", "emergency", "other"]
+# "custom" is accepted as input and stored as "other", so one meaning has one value.
+GoalKind = Literal[
+    "home", "education", "retirement", "financial_independence", "car", "travel", "wedding", "emergency", "other",
+]
+GoalStatus = Literal["draft", "active"]
+Flexibility = Literal["fixed", "some", "flexible"]
+Level = Literal["low", "medium", "high"]
+MAX_HORIZON_YEARS: Final = 60
 Table = Literal["financial_goals", "financial_decisions"]
 
 
@@ -48,7 +55,11 @@ class LimitReachedError(SavedContextError):
 
 
 class UnknownGoalError(SavedContextError):
-    """A decision names a goal this profile does not have."""
+    """A decision or an allocation names a goal this profile does not have."""
+
+
+class InvalidGoalError(SavedContextError):
+    """A goal's values cannot be saved as given (for example a horizon that ends after 2100)."""
 
 
 def _blank_to_none(value: str | None) -> str | None:
@@ -56,30 +67,62 @@ def _blank_to_none(value: str | None) -> str | None:
 
 
 class GoalInput(BaseModel):
-    """A savings goal as the user confirms it. Amounts are whole units of ``currency``."""
+    """A savings goal as the user confirms it. Amounts are whole units of ``currency``.
+
+    A draft needs only a name, so the user can start a goal and finish it later. An
+    active goal needs a currency, a target amount and a target date (or a horizon in
+    years, which is converted to a date when the goal is saved).
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=80, examples=["Home down payment"])
     kind: GoalKind | None = None
-    # Required: the app never assumes a currency for a new goal.
-    currency: Currency
-    targetAmount: int = Field(ge=1, le=100_000_000_000, examples=[2_500_000])
-    targetDate: date = Field(examples=["2032-03-31"])
+    status: GoalStatus = "active"
+    # Never assumed: an active goal must name its currency.
+    currency: Currency | None = None
+    targetAmount: int | None = Field(default=None, ge=1, le=100_000_000_000, examples=[2_500_000])
+    targetDate: date | None = Field(default=None, examples=["2032-03-31"])
+    # An alternative way to give the date: "in N years" from the day the goal is saved.
+    horizonYears: int | None = Field(default=None, ge=1, le=MAX_HORIZON_YEARS)
     savedAmount: int = Field(default=0, ge=0, le=100_000_000_000)
     monthlyContribution: int = Field(default=0, ge=0, le=1_000_000_000)
     # The user's own assumption; None means none was given, and plans show only no growth.
     assumedReturnPct: float | None = Field(default=None, ge=0, le=30)
+    # Yearly inflation applied to the target, which is then read as today's money; None means not applied.
+    inflationPct: float | None = Field(default=None, ge=0, le=15)
+    # Suitability inputs; None means the user did not say, and the rules then assume the cautious answer.
+    flexibility: Flexibility | None = None
+    liquidityNeed: Level | None = None
+    riskTolerance: Level | None = None
+    lossCapacity: Level | None = None
     notes: str | None = Field(default=None, max_length=500)
 
     _notes = field_validator("notes")(_blank_to_none)
 
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _custom_is_other(cls, value: Any) -> Any:
+        return "other" if value == "custom" else value
+
     @field_validator("targetDate")
     @classmethod
-    def _date_in_range(cls, value: date) -> date:
-        if not EARLIEST_DATE <= value <= LATEST_DATE:
+    def _date_in_range(cls, value: date | None) -> date | None:
+        if value is not None and not EARLIEST_DATE <= value <= LATEST_DATE:
             raise ValueError("Choose a target date between 2000 and 2100.")
         return value
+
+    @model_validator(mode="after")
+    def _complete_when_active(self) -> GoalInput:
+        if self.targetDate is not None and self.horizonYears is not None:
+            raise ValueError("Give a target date or a horizon, not both.")
+        if self.status == "active" and (
+            self.currency is None or self.targetAmount is None or (self.targetDate is None and self.horizonYears is None)
+        ):
+            raise ValueError(
+                "Add a currency, a target amount and a target date (or horizon), or save the goal as a draft."
+            )
+        return self
 
 
 class DecisionInput(BaseModel):
@@ -159,8 +202,15 @@ def _delete(table: Table, user_id: str, record_id: str) -> bool:
 
 # ── Goals ──────────────────────────────────────────────────────────────────────
 
-def _goal_data(body: GoalInput, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+def _goal_data(body: GoalInput, previous: dict[str, Any] | None = None, today: date | None = None) -> dict[str, Any]:
     data = {**body.model_dump(mode="json"), "source": SOURCE_USER}
+    if body.horizonYears is not None:
+        # Stored as a date (what every plan reads) with the horizon kept for display.
+        target = goal_planning.date_after_years(today or date.today(), body.horizonYears)
+        if target > LATEST_DATE:
+            raise InvalidGoalError("That horizon ends after 2100. Choose a shorter one.")
+        data["targetDate"] = target.isoformat()
+        data["targetDateFrom"] = "horizon"
     if previous and previous.get("migratedFrom"):
         data["migratedFrom"] = previous["migratedFrom"]
     return data
@@ -170,29 +220,147 @@ def list_goals(user_id: str, keys: ProfileKeys) -> list[dict[str, Any]]:
     return _list("financial_goals", user_id, keys)
 
 
+def count_goals(user_id: str) -> int:
+    with connect_db() as connection:
+        return connection.execute("SELECT COUNT(*) FROM financial_goals WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+
 def get_goal(user_id: str, goal_id: str, keys: ProfileKeys) -> dict[str, Any] | None:
     return _get("financial_goals", user_id, goal_id, keys)
 
 
-def create_goal(user_id: str, body: GoalInput, keys: ProfileKeys) -> dict[str, Any]:
-    """Save a goal the user confirmed. Raises ``LimitReachedError`` at ``MAX_GOALS``."""
+def create_goal(user_id: str, body: GoalInput, keys: ProfileKeys, *, today: date | None = None) -> dict[str, Any]:
+    """Save a goal the user confirmed. Raises ``LimitReachedError`` at ``MAX_GOALS``, ``InvalidGoalError``."""
+    data = _goal_data(body, today=today)
     try:
-        return _insert("financial_goals", user_id, keys, _goal_data(body), limit=MAX_GOALS)
+        return _insert("financial_goals", user_id, keys, data, limit=MAX_GOALS)
     except LimitReachedError as exc:
         raise LimitReachedError(f"You can keep up to {MAX_GOALS} goals. Delete one to add another.") from exc
 
 
-def update_goal(user_id: str, goal_id: str, body: GoalInput, keys: ProfileKeys) -> dict[str, Any] | None:
+def update_goal(
+    user_id: str, goal_id: str, body: GoalInput, keys: ProfileKeys, *, today: date | None = None,
+) -> dict[str, Any] | None:
     """Replace a goal with the user's edited version; None if the profile has no such goal."""
     previous = get_goal(user_id, goal_id, keys)
-    if previous is None or not _replace("financial_goals", user_id, goal_id, keys, _goal_data(body, previous)):
+    if previous is None or not _replace("financial_goals", user_id, goal_id, keys, _goal_data(body, previous, today)):
         return None
     return get_goal(user_id, goal_id, keys)
 
 
-def delete_goal(user_id: str, goal_id: str) -> bool:
-    """Delete a goal. Decisions linked to it keep their text and show the goal as deleted."""
-    return _delete("financial_goals", user_id, goal_id)
+def delete_goal(user_id: str, goal_id: str, keys: ProfileKeys | None = None) -> bool:
+    """Delete a goal. Decisions linked to it keep their text and show the goal as deleted.
+
+    With ``keys``, holdings assigned to the goal are released in the same transaction.
+    """
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("DELETE FROM financial_goals WHERE user_id = ? AND id = ?", (user_id, goal_id))
+        if cursor.rowcount and keys is not None:
+            holdings = _read_allocations(connection, user_id, keys)
+            for key, entry in list(holdings.items()):
+                if entry["goals"].pop(goal_id, None) is not None and not entry["goals"] and not entry["generalWealthPct"]:
+                    del holdings[key]
+            _write_allocations(connection, user_id, keys, holdings)
+    return cursor.rowcount > 0
+
+
+# ── Holding allocations ────────────────────────────────────────────────────────
+
+MAX_ALLOCATED_HOLDINGS: Final = 500
+
+
+class GoalShare(BaseModel):
+    """A whole-number share of one holding assigned to one goal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    goalId: str = Field(pattern=ID_PATTERN)
+    pct: int = Field(ge=1, le=100)
+
+
+class AllocationInput(BaseModel):
+    """How one holding's value is split across goals and general wealth. One PUT replaces the whole split."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    holdingKey: str = Field(min_length=1, max_length=200)
+    goals: list[GoalShare] = Field(default_factory=list, max_length=MAX_GOALS)
+    generalWealthPct: int = Field(default=0, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _within_the_whole(self) -> AllocationInput:
+        if len({share.goalId for share in self.goals}) != len(self.goals):
+            raise ValueError("Each goal can appear once.")
+        if sum(share.pct for share in self.goals) + self.generalWealthPct > 100:
+            raise ValueError("A holding can be assigned at most 100% in total.")
+        return self
+
+
+def _read_allocations(connection: Any, user_id: str, keys: ProfileKeys) -> dict[str, dict[str, Any]]:
+    row = connection.execute("SELECT data FROM goal_allocations WHERE user_id = ?", (user_id,)).fetchone()
+    if row is None:
+        return {}
+    return json.loads(keys.open(row["data"])).get("holdings", {})
+
+
+def _write_allocations(connection: Any, user_id: str, keys: ProfileKeys, holdings: dict[str, dict[str, Any]]) -> None:
+    if not holdings:
+        connection.execute("DELETE FROM goal_allocations WHERE user_id = ?", (user_id,))
+        return
+    data = keys.seal(json.dumps({"source": SOURCE_USER, "holdings": holdings}, ensure_ascii=False))
+    connection.execute(
+        "INSERT INTO goal_allocations(user_id, updated_at, data) VALUES (?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data",
+        (user_id, users.now_ms(), data),
+    )
+
+
+def get_allocations(user_id: str, keys: ProfileKeys) -> dict[str, dict[str, Any]]:
+    """Every holding's split, keyed by holding key: ``{name, assetType, broker, goals: {goalId: pct}, generalWealthPct}``."""
+    with connect_db() as connection:
+        return _read_allocations(connection, user_id, keys)
+
+
+def set_allocation(
+    user_id: str, keys: ProfileKeys, holding_key: str, entry: dict[str, Any] | None, *,
+    max_holdings: int = MAX_ALLOCATED_HOLDINGS,
+) -> dict[str, Any] | None:
+    """Replace one holding's split, or remove it when ``entry`` is empty. Returns the stored entry (None if removed).
+
+    The read-modify-write runs in one write transaction, so concurrent updates to
+    different holdings both survive. Raises ``UnknownGoalError`` for a goal this
+    profile does not have and ``LimitReachedError`` past ``max_holdings`` holdings.
+    """
+    shares = (entry or {}).get("goals", {})
+    empty = not entry or not (shares or entry.get("generalWealthPct"))
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if shares:
+            marks = ",".join("?" * len(shares))
+            known = {
+                row["id"] for row in connection.execute(
+                    f"SELECT id FROM financial_goals WHERE user_id = ? AND id IN ({marks})", (user_id, *shares),
+                )
+            }
+            if known != set(shares):
+                raise UnknownGoalError("One of those goals no longer exists. Reload the page and try again.")
+        holdings = _read_allocations(connection, user_id, keys)
+        if empty:
+            holdings.pop(holding_key, None)
+            stored = None
+        else:
+            if holding_key not in holdings and len(holdings) >= max_holdings:
+                raise LimitReachedError(f"You can assign up to {max_holdings} holdings.")
+            stored = {**entry, "updatedAt": users.now_ms()}
+            holdings[holding_key] = stored
+        _write_allocations(connection, user_id, keys, holdings)
+    return stored
+
+
+def clear_allocations(user_id: str) -> None:
+    with connect_db() as connection:
+        connection.execute("DELETE FROM goal_allocations WHERE user_id = ?", (user_id,))
 
 
 # ── Decisions ──────────────────────────────────────────────────────────────────
@@ -281,12 +449,16 @@ def migrate_profile_goals(user_id: str, keys: ProfileKeys) -> int:
 
 
 def export_context(user_id: str, keys: ProfileKeys) -> dict[str, list[dict[str, Any]]]:
-    return {"goals": list_goals(user_id, keys), "decisions": list_decisions(user_id, keys)}
+    return {
+        "goals": list_goals(user_id, keys), "decisions": list_decisions(user_id, keys),
+        "goalAllocations": [{"holdingKey": key, **entry} for key, entry in get_allocations(user_id, keys).items()],
+    }
 
 
 def clear_saved_context(user_id: str) -> None:
-    """Delete the profile's goals, decisions and profile fields (its preferences)."""
+    """Delete the profile's goals, decisions, holding allocations and profile fields (its preferences)."""
     with connect_db() as connection:
+        connection.execute("DELETE FROM goal_allocations WHERE user_id = ?", (user_id,))
         connection.execute("DELETE FROM financial_goals WHERE user_id = ?", (user_id,))
         connection.execute("DELETE FROM financial_decisions WHERE user_id = ?", (user_id,))
         connection.execute("UPDATE users SET profile = '{}', updated_at = ? WHERE id = ?", (users.now_ms(), user_id))

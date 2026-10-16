@@ -19,11 +19,11 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import backup, cas, chats, goal_planning, investigations, memory, privacy, sealing, snapshots, unlock, users, vault
-from .agent import configured_providers, default_provider, run_agent
-from .context import observed_sources, retrieve_context, with_plan
+from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, privacy, sealing, snapshots, unlock, users, vault
+from .agent import PortfolioContext, configured_providers, default_provider, run_agent
+from .context import observed_sources, retrieve_context
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
 from .mcp_client import fetch_mcp_session, filter_portfolio_tools
@@ -400,12 +400,25 @@ class GoalPlanRequest(BaseModel):
 
     currency: memory.Currency
     targetAmount: int = Field(ge=1, le=100_000_000_000)
-    targetDate: date
+    # Exactly one of the date and the horizon (years from today) is given.
+    targetDate: date | None = None
+    horizonYears: int | None = Field(default=None, ge=1, le=memory.MAX_HORIZON_YEARS)
     savedAmount: int = Field(default=0, ge=0, le=100_000_000_000)
     monthlyContribution: int = Field(default=0, ge=0, le=1_000_000_000)
     assumedReturnPct: float | None = Field(default=None, ge=0, le=30)
+    inflationPct: float | None = Field(default=None, ge=0, le=15)
+    flexibility: memory.Flexibility | None = None
+    liquidityNeed: memory.Level | None = None
+    riskTolerance: memory.Level | None = None
+    lossCapacity: memory.Level | None = None
     # Yearly returns to compare instead of the default scenarios (no growth and the assumption ± 2 points).
     annualReturnPcts: list[float] | None = Field(default=None, min_length=1, max_length=goal_planning.MAX_SCENARIOS)
+
+    @model_validator(mode="after")
+    def _one_date(self) -> "GoalPlanRequest":
+        if (self.targetDate is None) == (self.horizonYears is None):
+            raise ValueError("Give a target date or a horizon, not both and not neither.")
+        return self
 
 
 def _today() -> date:
@@ -418,13 +431,11 @@ def _not_found(what: str) -> JSONResponse:
 
 @app.get("/api/goals")
 async def list_goals(request: Request):
-    """The profile's goals, each with its plan calculated today."""
+    """The profile's goals, each with its plan, suitability and assigned holdings calculated today."""
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    today = _today()
-    goals = [with_plan(goal, today) for goal in memory.list_goals(user["id"], user["keys"])]
-    return {"asOf": today.isoformat(), "maxGoals": memory.MAX_GOALS, "goals": goals}
+    return await asyncio.to_thread(goal_portfolio.goals_overview, user, _today())
 
 
 @app.post("/api/goals", status_code=201)
@@ -432,11 +443,15 @@ async def create_goal(body: memory.GoalInput, request: Request):
     user = current_user(request)
     if blocked := history_gate(user, needs_consent=True):
         return blocked
+    today = _today()
     try:
-        goal = memory.create_goal(user["id"], body, user["keys"])
+        goal = memory.create_goal(user["id"], body, user["keys"], today=today)
     except memory.LimitReachedError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
-    return JSONResponse(with_plan(goal, _today()), status_code=201, headers={"Location": f"/api/goals/{goal['id']}"})
+    except memory.InvalidGoalError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    view = await asyncio.to_thread(goal_portfolio.goal_with_mapping, user, goal, today)
+    return JSONResponse(view, status_code=201, headers={"Location": f"/api/goals/{goal['id']}"})
 
 
 @app.post("/api/goals/plan")
@@ -445,10 +460,42 @@ async def plan_goal(body: GoalPlanRequest, request: Request):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    inputs = body.model_dump(mode="json", exclude={"annualReturnPcts"})
+    today = _today()
+    inputs = body.model_dump(mode="json", exclude={"annualReturnPcts", "horizonYears"})
+    if body.horizonYears is not None:
+        inputs["targetDate"] = goal_planning.date_after_years(today, body.horizonYears).isoformat()
     try:
-        return goal_planning.plan_goal(inputs, _today(), return_rates=body.annualReturnPcts)
+        plan = goal_planning.plan_goal(inputs, today, return_rates=body.annualReturnPcts)
     except goal_planning.PlanningError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    return {
+        **plan, "suitability": goal_suitability.evaluate(inputs, today), "followUps": goal_planning.follow_ups(inputs, today),
+    }
+
+
+# Declared before /api/goals/{goal_id}, which would otherwise take "allocations" as an id.
+@app.get("/api/goals/allocations")
+async def get_goal_allocations(request: Request):
+    """Every holding in the latest snapshot with how it is split across goals, and what is still unassigned."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return await asyncio.to_thread(goal_portfolio.allocations_view, user)
+
+
+@app.put("/api/goals/allocations")
+async def put_goal_allocation(body: memory.AllocationInput, request: Request):
+    """Replace how one holding is split across goals. Bookkeeping only: nothing is bought or sold."""
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    try:
+        return await asyncio.to_thread(goal_portfolio.assign, user, body)
+    except goal_portfolio.NoSnapshotError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except memory.LimitReachedError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except (goal_portfolio.UnknownHoldingError, memory.UnknownGoalError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
 
@@ -458,7 +505,9 @@ async def get_goal(goal_id: str, request: Request):
     if blocked := history_gate(user):
         return blocked
     goal = memory.get_goal(user["id"], goal_id, user["keys"])
-    return with_plan(goal, _today()) if goal else _not_found("Goal")
+    if goal is None:
+        return _not_found("Goal")
+    return await asyncio.to_thread(goal_portfolio.goal_with_mapping, user, goal, _today())
 
 
 @app.put("/api/goals/{goal_id}")
@@ -466,8 +515,14 @@ async def update_goal(goal_id: str, body: memory.GoalInput, request: Request):
     user = current_user(request)
     if blocked := history_gate(user, needs_consent=True):
         return blocked
-    goal = memory.update_goal(user["id"], goal_id, body, user["keys"])
-    return with_plan(goal, _today()) if goal else _not_found("Goal")
+    today = _today()
+    try:
+        goal = memory.update_goal(user["id"], goal_id, body, user["keys"], today=today)
+    except memory.InvalidGoalError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    if goal is None:
+        return _not_found("Goal")
+    return await asyncio.to_thread(goal_portfolio.goal_with_mapping, user, goal, today)
 
 
 @app.delete("/api/goals/{goal_id}")
@@ -475,7 +530,7 @@ async def delete_goal(goal_id: str, request: Request):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    return {"deleted": True} if memory.delete_goal(user["id"], goal_id) else _not_found("Goal")
+    return {"deleted": True} if memory.delete_goal(user["id"], goal_id, user["keys"]) else _not_found("Goal")
 
 
 @app.get("/api/decisions")
@@ -1023,16 +1078,21 @@ async def chat(body: ChatRequest, request: Request):
     if body.agentType != data["agentType"]:
         return JSONResponse({"error": "This conversation belongs to a different agent. Start a new chat to switch agents."}, status_code=409)
     history = data.get("messages", [])
-    saved_context = retrieve_context(user, message, history)
+    saved_context = retrieve_context(user, message, history, include_holdings=body.agentType == "portfolio")
     token = None
     context = None
+    # Goal tools are offered only to profiles that have a goal, so every other request is unchanged.
+    has_goals = memory.count_goals(user["id"]) > 0
+    if body.agentType != "portfolio" and has_goals:
+        context = PortfolioContext(local_tools=tuple(goal_portfolio.goal_tools(user, include_holdings=False)))
     if body.agentType == "portfolio":
         token = await users.user_access_token(user["id"])
         if not token:
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
-        context = snapshots.portfolio_context(
-            user, extra_tools=[investigations.investigation_tool(user, provider=provider, chat_id=data["id"])],
-        )
+        extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
+        if has_goals:
+            extra_tools += goal_portfolio.goal_tools(user, include_holdings=True)
+        context = snapshots.portfolio_context(user, extra_tools=extra_tools)
     try:
         answer = await run_agent(
             message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,

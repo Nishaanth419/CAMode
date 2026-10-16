@@ -108,6 +108,8 @@ def _holding_metrics(row: dict[str, Any], portfolio_value: Decimal) -> dict[str,
         "name": row.get("investment"),
         "code": row.get("investment_code"),
         "asset_type": row.get("asset_type"),
+        # INDmoney's class for the row (for example "Equity"); None when the response has none.
+        "asset_class": row.get("assetclass_l2") or None,
         "broker": row.get("broker") or None,
         "units": _money(_dec(row.get("total_units"))),
         "unit_price_inr": _money(_dec(row.get("unit_price"))),

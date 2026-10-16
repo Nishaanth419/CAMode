@@ -314,3 +314,95 @@ def test_goals_from_the_old_profile_list_move_to_their_own_table_on_unlock(clien
     unlock._unlocked.clear()
     client.post("/api/session/unlock", json={"pin": "2468"})
     assert len(client.get("/api/goals").json()["goals"]) == 1
+
+
+# ── Drafts, horizons and the wider goal schema ────────────────────────────────
+
+def test_a_draft_needs_only_a_name_and_plans_as_insufficient_data(client, signed_in):
+    created = client.post("/api/goals", json={"name": "Someday", "status": "draft"})
+
+    assert created.status_code == 201, created.text
+    goal = created.json()
+    assert goal["status"] == "draft" and goal["currency"] is None and goal["targetAmount"] is None
+    assert goal["plan"]["status"] == "insufficient_data"
+    assert set(goal["plan"]["missing"]) == {"target amount", "target date", "currency"}
+    assert [item["id"] for item in client.get("/api/goals").json()["goals"]] == [goal["id"]]
+
+
+@pytest.mark.parametrize("missing", ["currency", "targetAmount", "targetDate"])
+def test_an_active_goal_still_needs_currency_amount_and_date(client, signed_in, missing):
+    body = {key: value for key, value in GOAL.items() if key != missing}
+    response = client.post("/api/goals", json=body)
+    assert response.status_code == 422
+    assert "save the goal as a draft" in response.text
+
+
+def test_a_horizon_becomes_a_date_when_saved(client, signed_in, monkeypatch):
+    monkeypatch.setattr(main, "_today", lambda: date(2026, 10, 16))
+    body = {key: value for key, value in GOAL.items() if key != "targetDate"}
+
+    goal = client.post("/api/goals", json={**body, "horizonYears": 10}).json()
+
+    assert goal["targetDate"] == "2036-10-16" and goal["horizonYears"] == 10 and goal["targetDateFrom"] == "horizon"
+    assert goal["plan"]["monthsRemaining"] == 120
+    edited = client.put(f"/api/goals/{goal['id']}", json={**body, "targetDate": "2034-01-31"}).json()
+    assert edited["targetDate"] == "2034-01-31" and edited["horizonYears"] is None and "targetDateFrom" not in edited
+
+
+def test_a_date_and_a_horizon_together_are_rejected(client, signed_in):
+    response = client.post("/api/goals", json={**GOAL, "horizonYears": 5})
+    assert response.status_code == 422 and "not both" in response.text
+    assert client.post("/api/goals", json={**GOAL, "targetDate": None, "horizonYears": 61}).status_code == 422
+
+
+def test_a_horizon_ending_after_2100_is_rejected(client, signed_in, monkeypatch):
+    monkeypatch.setattr(main, "_today", lambda: date(2060, 6, 1))
+    body = {key: value for key, value in GOAL.items() if key != "targetDate"}
+    assert client.post("/api/goals", json={**body, "horizonYears": 60}).status_code == 422
+
+
+@pytest.mark.parametrize("changes", [
+    {"flexibility": "rigid"}, {"liquidityNeed": "extreme"}, {"riskTolerance": "reckless"}, {"lossCapacity": "none"},
+    {"inflationPct": 16}, {"inflationPct": -1}, {"status": "archived"},
+])
+def test_goal_suitability_inputs_are_validated(client, signed_in, changes):
+    assert client.post("/api/goals", json={**GOAL, **changes}).status_code == 422
+
+
+def test_custom_is_stored_as_other_and_financial_independence_is_a_kind(client, signed_in):
+    assert create_goal(client, kind="custom")["kind"] == "other"
+    assert create_goal(client, kind="financial_independence", name="FI")["kind"] == "financial_independence"
+    stored = create_goal(
+        client, name="Full", flexibility="some", liquidityNeed="low", riskTolerance="medium", lossCapacity="high",
+        inflationPct=6,
+    )
+    assert (stored["flexibility"], stored["liquidityNeed"], stored["riskTolerance"], stored["lossCapacity"]) == (
+        "some", "low", "medium", "high")
+    assert stored["inflationPct"] == 6
+
+
+def test_goals_saved_before_the_new_fields_still_list_and_plan(client, signed_in):
+    goal = create_goal(client)
+    keys = unlock.keys_for_session(users.get_user(signed_in["id"]), client.cookies.get(main.SESSION_COOKIE))
+    with db.connect_db() as connection:
+        old = {key: GOAL[key] for key in GOAL} | {"source": "user_entered"}
+        connection.execute("UPDATE financial_goals SET data = ? WHERE id = ?", (keys.seal(json.dumps(old)), goal["id"]))
+
+    listed = client.get("/api/goals").json()["goals"]
+
+    assert len(listed) == 1 and "status" not in listed[0]
+    assert listed[0]["plan"]["status"] != "insufficient_data"
+    assert client.put(f"/api/goals/{goal['id']}", json=GOAL).status_code == 200
+
+
+def test_plan_preview_accepts_a_horizon_and_saves_nothing(client, signed_in, monkeypatch):
+    monkeypatch.setattr(main, "_today", lambda: date(2026, 10, 16))
+    body = {key: value for key, value in PLAN_INPUTS.items() if key != "targetDate"}
+
+    preview = client.post("/api/goals/plan", json={**body, "horizonYears": 5, "inflationPct": 6})
+
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["targetDate"] == "2031-10-16"
+    assert client.post("/api/goals/plan", json={**body}).status_code == 422
+    assert client.post("/api/goals/plan", json={**PLAN_INPUTS, "horizonYears": 5}).status_code == 422
+    assert client.get("/api/goals").json()["goals"] == []

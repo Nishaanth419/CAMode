@@ -12,7 +12,7 @@ It runs its AI model on your computer through [Ollama](https://ollama.com), so y
 - A profile per person (name + PIN), with a profile picker and a quick **Switch profile**.
 - A privacy notice each profile accepts before use, a choice between saving history on this computer and a private mode that saves no chats or snapshots, plus data export and history clearing.
 - Optional profile details (risk appetite, investment horizon, primary goal, monthly investment, age band) that Portfolio Analyzer uses as context.
-- Savings goals (amount, currency, target date, earmarked savings, monthly contribution, notes) with projections calculated in code under your own return assumption, and a list of decisions you record. Either agent sees the ones your question is about.
+- Savings goals (amount, currency, target date, earmarked savings, monthly contribution, notes) with projections calculated in code under your own return assumption, and a list of decisions you record. Either agent sees the ones your question is about; both can also call two read-only tools, `get_goal_plans` and `plan_goal_what_if` (a what-if is never saved), when you have a goal. Only Portfolio Analyzer sees the value of assigned holdings.
 - A daily INDmoney portfolio snapshot at 09:00 IST, with net worth and a 30-day trend in the portfolio card.
 - Chats you can return to, each tied to Finance Agent or Portfolio Analyzer.
 - Read-only INDmoney access: net worth, allocation, holdings, SIPs, watchlists, stock and fund details, OHLC candles, option chains, and option Greeks.
@@ -257,7 +257,12 @@ Most failures are the model's own arithmetic: lakh amounts written 100 times too
 The **Goals** page keeps up to 10 goals and 50 decisions, sealed with your PIN like your chats.
 
 - **A goal** has a name, a target amount in INR, USD, EUR or GBP, a target date, the savings you have already earmarked, a planned monthly contribution, an optional yearly return you assume, and optional notes. Amounts are never converted or added across currencies.
-- **Its plan** is calculated in code (`app/goal_planning.py`, `Decimal`) each time the goal is shown or a question needs it, and never stored: the gap still to save, progress, months left, and for each scenario the projected amount, the shortfall or surplus, and the monthly contribution that would reach the target (rounded up) and how much more that is than planned. The scenarios are no growth, and when you give an assumption, that return and 2 points either side of it. Contributions are made at the start of each month, returns compound monthly, and inflation is not added to the target. Missing details give "missing details" rather than guesses, and a goal with no months left says so.
+- **Its plan** is calculated in code (`app/goal_planning.py`, `Decimal`) each time the goal is shown or a question needs it, and never stored: the gap still to save, progress, months left, and for each scenario the projected amount, the shortfall or surplus, and the monthly contribution that would reach the target (rounded up) and how much more that is than planned. The scenarios are no growth, and when you give an assumption, that return and 2 points either side of it. Contributions are made at the start of each month, returns compound monthly, and inflation is added to the target only when you give a rate. Missing details give "missing details" rather than guesses, and a goal with no months left says so.
+- **Drafts and horizons.** A goal can be saved as a draft with only a name and finished later. The target can be a date or "in N years", which is converted to a date when you save. Types include financial independence and custom. Optional answers (can the date move, might you need the money early, comfort with ups and downs, how badly a fall would hurt, yearly inflation) feed the suitability check; any you leave out are assumed in the cautious direction and CA Mode asks for them instead of guessing.
+- **More in the plan.** Total planned contributions; the target raised by inflation when you give a rate (read as today's money); whether the plan is covered with no growth, depends on your assumed return, or falls short; and, when it is not covered, ways to close the gap (raise the monthly amount, move the date, lower the target, or earmark a lump sum), each tagged "no growth" (plain arithmetic) or "at your X%" (an illustration under your assumption).
+- **Which kinds of investment fit** (`app/goal_suitability.py`): fixed rules, not a model, rate six broad categories (liquid and overnight, short-duration debt, conservative hybrid, balanced and multi-asset, large/flexi/index equity, mid and small cap) as allowed, caution or unsuitable from the time to the target date, risk tolerance, capacity for loss, liquidity need and flexibility, and say why. Equity is unsuitable under 36 months, and a fixed goal with low capacity for loss rules out equity at any horizon. This is not advice.
+- **No fund shortlist.** CA Mode has no reliable, dated scheme data (category, expense ratio, benchmark, risk level, returns), so it does not rank or name funds, and the app and both agents say so. INDmoney's `get_mf_by_category` and `get_mf_funds_details` tools are allowlisted but their response layout is undocumented; a parser needs a recorded live response (`scripts/inspect_indmoney_shapes.py`) with an as-of date before funds can be ranked. Overlap between holdings also needs scheme holdings and is reported as not assessable.
+- **Assign what you hold to goals.** On the Goals page, "Your investments and goals" lists the holdings in your latest snapshot. Give each holding's value to goals in whole percent (the total for a holding cannot pass 100%); each share is valued from the snapshot, rounded down, and counted once. "Earmarked savings" is money not held in assigned holdings. Holdings that are no longer in the snapshot are listed as value unknown and not counted. Rupee holdings count only toward rupee goals. This is bookkeeping: nothing is bought or sold.
 - **Decisions** are short notes in your own words (for example "keep six months of expenses in a liquid fund"), optionally dated and linked to a goal.
 - **What the assistant can use** on the Goals page lists your profile details, decisions, and the observed data (snapshot and CAS dates) with when each was saved. You can delete any item, or remove all goals, decisions and profile details at once. Chats, snapshots and statements stay.
 
@@ -355,9 +360,10 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `POST /api/session/recover` | Set a new PIN with the recovery code and sign in (body: `{"userId", "recoveryCode", "newPin"}`); returns a new recovery code |
 | `POST /api/users/me/recovery-code` | Replace the recovery code (body: `{"pin": ...}`) |
 | `GET /api/profile`, `PUT /api/profile` | Read or update the profile details (with `updatedAt`) |
-| `GET /api/goals`, `POST /api/goals` | List goals, each with its `plan`; create one (`201` with `Location`; `409` at 10 goals) |
+| `GET /api/goals`, `POST /api/goals` | List goals, each with its `plan`, `suitability`, `followUps` and `mapping`, plus `fundData` and `portfolio` totals; create one (`201` with `Location`; `409` at 10 goals) |
 | `GET /api/goals/{id}`, `PUT /api/goals/{id}`, `DELETE /api/goals/{id}` | Read, replace, or delete a goal |
-| `POST /api/goals/plan` | Calculate a plan without saving (body: `currency`, `targetAmount`, `targetDate`, `savedAmount`, `monthlyContribution`, optional `assumedReturnPct` and `annualReturnPcts` with 1 to 4 returns between -20 and 30) |
+| `POST /api/goals/plan` | Calculate a plan without saving (body: `currency`, `targetAmount`, one of `targetDate` or `horizonYears`, `savedAmount`, `monthlyContribution`, optional `assumedReturnPct`, `inflationPct`, `flexibility`, `liquidityNeed`, `riskTolerance`, `lossCapacity` and `annualReturnPcts` with 1 to 4 returns between -20 and 30); the response adds `suitability` and `followUps` |
+| `GET /api/goals/allocations`, `PUT /api/goals/allocations` | Every holding in the latest snapshot with its split across goals; replace one holding's split (`{"holdingKey", "goals": [{"goalId", "pct"}], "generalWealthPct"}`; `422` over 100% or for an unknown goal or holding, `409` without a snapshot) |
 | `GET /api/decisions`, `POST /api/decisions`, `PUT /api/decisions/{id}`, `DELETE /api/decisions/{id}` | Recorded decisions (body: `{"text", "decidedOn"?, "goalId"?}`) |
 | `GET /api/context`, `DELETE /api/context` | Everything the assistant may use, grouped as `confirmed`, `observed` and `inferred` (always empty); remove all goals, decisions and profile details |
 | `DELETE /api/users/me` | Delete the signed-in profile (body: `{"pin": ...}`) |
@@ -435,7 +441,9 @@ app/
   sealing.py       Per-profile keypairs, PIN and recovery-code key wrapping, sealing
   unlock.py        Key setup, unlocking, recovery, and the in-memory unlocked sessions
   memory.py        Goals and recorded decisions the user confirmed, sealed per profile
-  goal_planning.py Goal gap, required contribution and scenarios, in Decimal
+  goal_planning.py Goal gap, required contribution, scenarios, feasibility and alternatives, in Decimal
+  goal_suitability.py Fixed rules for which investment categories fit a goal; no fund data
+  goal_portfolio.py  Holdings assigned to goals, their valuation and the goal tools for the agents
   context.py       Picks the saved context relevant to a request and renders it for the prompt
 frontend/
   index.html       App shell, profile picker, and profile dialog
@@ -454,7 +462,7 @@ tests/
   test_unlock.py     PIN-locked history, restart locking, recovery codes, upgrading old profiles
   test_investigation_math.py, test_investigation_checks.py, test_investigations.py
                      Change maths, consistency checks, and the investigation API, storage and agent tool
-  test_goal_planning.py, test_memory.py, test_context.py
+  test_goal_planning.py, test_goal_suitability.py, test_goal_portfolio.py, test_memory.py, test_context.py
                      Goal maths, the goals/decisions/context API and its access rules, context selection
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup

@@ -128,13 +128,15 @@ async function renderRailGoals(isCurrent) {
   }
   if (!isCurrent()) return;
   document.querySelector('#right-rail a[href="#/goals"]').textContent = goals.length > RAIL_GOALS ? `See all (${goals.length})` : 'See all';
-  if (!goals.length) {
+  // Drafts and goals without a date have no target to rank by; they stay on the Goals page.
+  const dated = goals.filter((goal) => !isDraft(goal) && goal.targetDate);
+  if (!dated.length) {
     railGoals.innerHTML = railMessage('Set what you are saving for, like a home or your child\'s education, and track your progress here.',
       '<button class="rail-button" type="button" data-add-goal>Set a goal</button>');
     return;
   }
   // The nearest targets first; tones follow the user's own order so a goal keeps its colour.
-  const shown = goals.map((goal, index) => ({ goal, index }))
+  const shown = goals.map((goal, index) => ({ goal, index })).filter(({ goal }) => !isDraft(goal) && goal.targetDate)
     .sort((a, b) => String(a.goal.targetDate).localeCompare(String(b.goal.targetDate)) || a.index - b.index)
     .slice(0, RAIL_GOALS);
   const rows = shown.map(({ goal, index }) => {
@@ -146,7 +148,7 @@ async function renderRailGoals(isCurrent) {
       ${goalIconHtml(goal, tone, 'rail-goal-icon')}
       <strong class="rail-goal-name">${escHtml(goal.name)}</strong>
       <span class="rail-goal-pct">${pct}%</span>
-      <small class="rail-goal-target">Target: ${amount(goal.targetAmount, goal.currency)}</small>
+      <small class="rail-goal-target">Target: ${amount(headlineTarget(goal).amount, goal.currency)}${headlineTarget(goal).todayMoney != null ? ' with inflation' : ''}</small>
       <span class="progress rail-progress" role="progressbar" aria-label="${escHtml(goal.name)} earmarked" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${progress.toFixed(1)}%"></span></span>
     </button></li>`;
   }).join('');

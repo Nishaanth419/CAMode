@@ -934,3 +934,92 @@ async def test_goal_figures_from_saved_context_are_not_flagged_as_unverified(mon
 ])
 def test_goal_questions_pass_the_keyword_fallback(question):
     assert agent._keyword_category(question, []) == "general_finance"
+
+
+# ── Finance Agent and goal-planning tools ─────────────────────────────────────
+
+async def _goal_tool_handler(arguments):
+    return json.dumps({"goals": [{"name": "Home", "plan": {"status": "behind"}}]})
+
+
+def _finance_context_with_goal_and_account_tools():
+    return agent.PortfolioContext(
+        local_tools=(
+            agent.LocalTool(name="get_goal_plans", description="Goal plans", input_schema={"type": "object", "properties": {}},
+                            handler=_goal_tool_handler),
+            agent.LocalTool(name="get_portfolio_snapshot", description="Saved snapshot",
+                            input_schema={"type": "object", "properties": {}}, handler=_goal_tool_handler),
+        ),
+        profile_context="Risk appetite: high",
+        cached_mcp_tools=[{"name": "networth_snapshot", "description": "x"}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_is_offered_only_the_goal_tools_and_can_call_them(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    tool_call = {"id": "call-1", "function": {"name": "get_goal_plans", "arguments": "{}"}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("Your home goal needs more.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "Can I reach my house goal?", "https://unused", None, [], "finance", "openai",
+        context=_finance_context_with_goal_and_account_tools(),
+    )
+
+    assert answer == "Your home goal needs more."
+    assert [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]] == ["get_goal_plans"]
+    system = captured[0]["payload"]["messages"][0]["content"]
+    assert "Risk appetite" not in system
+    assert captured[1]["payload"]["messages"][-1]["role"] == "tool"
+    assert [step["name"] for step in answer.trace if step["kind"] == "tool"] == ["get_goal_plans"]
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_cannot_call_a_snapshot_tool_it_was_not_given(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call])], [])
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    with pytest.raises(agent.AgentRunError, match="unknown INDmoney tool"):
+        await agent.run_agent(
+            "What is my net worth?", "https://unused", None, [], "finance", "openai",
+            context=_finance_context_with_goal_and_account_tools(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_with_only_account_tools_in_its_context_sends_none(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("A budget.")], captured))
+
+    await agent.run_agent(
+        "What is a budget?", "https://unused", None, [], "finance", "openai",
+        context=_snapshot_context(_goal_tool_handler),
+    )
+
+    assert "tools" not in captured[0]["payload"]
+
+
+def test_finance_tool_allowlist_is_exactly_the_goal_tools():
+    assert agent.FINANCE_LOCAL_TOOL_NAMES == {"get_goal_plans", "plan_goal_what_if"}
+    assert agent._finance_context(None) is None
+
+
+@pytest.mark.asyncio
+async def test_saved_context_rules_point_to_the_what_if_tool_and_forbid_naming_funds(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("ok")], captured))
+
+    await agent.run_agent(
+        "How is my goal?", "https://unused", None, [], "finance", "openai",
+        saved_context=agent.SavedContext(text='- Goal "Home"', items=("Goal: Home",)),
+    )
+
+    system = captured[0]["payload"]["messages"][0]["content"]
+    assert "plan_goal_what_if" in system and "never name, rank or describe specific funds" in system
+    assert "Never save or change a goal yourself" in system
