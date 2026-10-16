@@ -15,7 +15,7 @@ It runs its AI model on your computer through [Ollama](https://ollama.com), so y
 - A daily INDmoney portfolio snapshot at 09:00 IST, with net worth and a 30-day trend in the portfolio card.
 - Chats you can return to, each tied to Finance Agent or Portfolio Analyzer.
 - Read-only INDmoney access: net worth, allocation, holdings, SIPs, watchlists, stock and fund details, OHLC candles, option chains, and option Greeks.
-- Charts (bar, donut, line, candlestick) when the data supports them, plus a call trace for every answer.
+- Charts (bar, donut, line, candlestick) when the data supports them, plus a call trace for every answer. Candlestick charts are drawn from INDmoney's OHLC data by the app; candles the model typed out are replaced.
 - Light and dark themes, and an installable web app (PWA).
 
 ## How it works
@@ -405,6 +405,7 @@ app/
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
+  charts.py        Candlestick charts rebuilt from the OHLC tool result, never from the model's copy
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
   vault.py         Master key and encryption for stored INDmoney tokens
   backup.py        Daily database backups, verification, pruning, and restore

@@ -25,6 +25,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/cas.py`**: CAS uploads. `parse_statement()` runs `casparser.read_cas_pdf` in memory (offline) on NSDL/CDSL (demat accounts by broker, MF folios, NPS) or CAMS/KFintech (MF folios) statements and keeps only holdings rows in INDmoney's `networth_holdings` layout, so `statement_metrics()` reuses `portfolio_math.compute_metrics()`. Never stored: the PDF, password, investor name, PAN, address, contact details, DP/client IDs. Statements are sealed in `cas_statements` (newest 12 kept)
 - **`app/backup.py`**: Daily database backups (`backup_if_due()` from the scheduler loop, `create_backup()` via SQLite's online backup API with `journal_mode = DELETE` so each backup is one file, verified before it is kept), pruning to `BACKUP_KEEP`, `verify_backup()`, and `restore_backup()` (moves the current database aside). Never copies the master key. CLI: `python -m scripts.backup now|list|verify|restore`
 - **`app/vault.py`**: Master key resolution (`APP_MASTER_KEY`, `APP_MASTER_KEY_FILE`, default `~/.config/ca-mode/master.key`) and Fernet `encrypt()` / `decrypt()` for secrets stored in SQLite.
+- **`app/charts.py`**: Candlestick charts in answers filled from the OHLC tool result, and chart data kept out of the model's history.
 - **`app/mcp_client.py`**: INDmoney MCP session setup, tool calls, and the read-only tool allowlist.
 - **`app/investigation_math.py`**: Pure `Decimal` layer: `normalize_snapshot()` (`PortfolioSnapshot` / `HoldingSnapshot` with scope, capture time, currency, holdings coverage), `calculate_change()`, `calculate_portfolio_change()` (price and unit effects per holding), `calculate_allocation()`.
 - **`app/investigation_checks.py`**: `run_checks()` returns `CheckResult`s (`passed`/`warning`/`failed`/`not_checked`, evidence, next step); tolerance from `INVESTIGATION_TOLERANCE_PCT` / `_INR`, staleness from `INVESTIGATION_STALE_HOURS`.
@@ -111,6 +112,11 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `#/activity` lists `GET /api/investigations?limit=50` with client-side filters (All/Running/Completed/Failed; no approval state exists); `#/activity/<id>` shows one run. Lists are reconciled with `reconcileInvestigations()` (newer `updatedAt` wins, a finished run is never replaced by an older running copy) and out-of-order responses dropped with `createSequencer()`; polling (`pollDelay()`) runs only while a run is active and the page is visible
 - No streaming: the trace arrives with the finished answer. "Run again" (failed/cancelled only) re-POSTs the same `baselineDate` on a click, never automatically
 
+**Charts from tool data** (`charts.py`):
+- `ground_candlestick_charts()` (run on every answer in `stream_agent`) replaces each candlestick block with the latest `get_indian_stocks_ohlc` result as compact `ohlc` rows `[label, open, high, low, close]`, titled with the tool's instrument name. Candles the model wrote (or elided) are always replaced; with no OHLC candles the block becomes `CANDLES_UNAVAILABLE_NOTE`. The prompt still asks the model for full candles: telling it to write a title-only block instead raised unsupported claims in the investigation eval (9/60 vs 4/60 answers), so that change was dropped
+- `ohlc_candles()` searches the parsed result (including a JSON string under `result`) for rows with open/high/low/close and a date, dropping impossible rows
+- `strip_chart_blocks()` replaces chart blocks in assistant history before it reaches the model; `app.js` `chartCandles()` reads both `candles` and `ohlc`, and an undrawable chart block shows a note instead of a blank space
+
 **Tool allowlist** (`mcp_client.py`):
 - `IMPORTANT_PORTFOLIO_TOOL_NAMES`: 15 documented read-only INDmoney tools
 - `filter_portfolio_tools()` drops anything else the MCP server exposes, including write tools
@@ -122,7 +128,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 **Chat persistence** (`main.py`):
 - Lives in `chats.py`; routes in `main.py` only call it
-- Max 20 messages per conversation, max 12,000 chars per stored message, max 50 chats per profile (oldest evicted), in both storage modes
+- Max 20 messages per conversation, max 12,000 chars per stored question and 24,000 per stored answer (`chats.MAX_ANSWER_CHARS`, room for a year of candles), max 50 chats per profile (oldest evicted), in both storage modes
 - Chats expire 30 days after their last message and are hidden/purged once expired
 - Sessions and the cookie slide forward on each `/api/session` visit
 - Disconnect revokes the INDmoney token and deletes snapshots and cached tools but keeps chats; deleting a profile cascades to everything, including consent records
@@ -261,6 +267,7 @@ Test coverage:
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers
+- `test_charts.py`: reading OHLC results in any nesting, replacing model-written and elided candles with tool candles, the no-data note, other charts untouched, a year of candles fitting a saved answer, chart data left out of model history
 - `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering
 - `tests/js/trace.test.js` (`node --test`): status labels and tones, step ordering and investigation links, details disclosure, missing fields and unknown kinds, evidence card sections, Activity filters, retry rules, reconciliation of duplicate/out-of-order/refreshed lists, redaction and escaping
