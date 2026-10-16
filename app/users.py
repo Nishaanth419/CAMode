@@ -417,6 +417,8 @@ def clear_indmoney(user_id: str) -> None:
         )
         connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ?", (user_id,))
         connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
+        # Allocations name INDmoney holdings, so they go with the connection (goals themselves stay).
+        connection.execute("DELETE FROM goal_allocations WHERE user_id = ?", (user_id,))
 
 
 def has_indmoney_tokens(values: dict[str, Any]) -> bool:

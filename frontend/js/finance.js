@@ -100,8 +100,10 @@
   function totalsByCurrency(goals, field) {
     const totals = new Map();
     for (const goal of goals || []) {
-      const value = Number(goal && goal[field]);
-      if (!goal || !goal.currency || !Number.isFinite(value)) continue;
+      // A draft can lack the amount or the currency; Number(null) would count it as 0.
+      const raw = goal && goal[field];
+      const value = Number(raw);
+      if (!goal || !goal.currency || raw === null || raw === undefined || !Number.isFinite(value)) continue;
       totals.set(goal.currency, (totals.get(goal.currency) || 0) + value);
     }
     return [...totals.entries()].sort(([a], [b]) => (a === 'INR' ? -1 : b === 'INR' ? 1 : a.localeCompare(b)));
@@ -126,6 +128,53 @@
     return GOAL_STATUSES[plan && plan.status] || GOAL_STATUSES.insufficient_data;
   }
 
+  // A goal saved with only a name (status "draft"); old goals have no status and are active.
+  // The amount a goal is measured against: the plan's inflation-adjusted target when it raised one, else the target
+  // as entered. todayMoney is the entered target when the two differ (null otherwise).
+  function headlineTarget(goal) {
+    const plan = (goal && goal.plan) || {};
+    const entered = goal && goal.targetAmount != null ? Number(goal.targetAmount) : null;
+    if (plan.inflation && Number.isFinite(Number(plan.effectiveTarget))) {
+      return { amount: Number(plan.effectiveTarget), todayMoney: entered, inflationPct: plan.inflation.inflationPct };
+    }
+    return { amount: entered, todayMoney: null, inflationPct: null };
+  }
+
+  function isDraft(goal) {
+    return Boolean(goal) && goal.status === 'draft';
+  }
+
+  // Percent of a holding still unassigned after the goal shares and general wealth (negative when over 100).
+  function allocationRemaining(goalPcts, generalPct) {
+    const numbers = [...(goalPcts || []), generalPct].map((value) => Number(value));
+    return 100 - numbers.reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0);
+  }
+
+  // Category labels grouped by the server's verdict, in the order shown to the user.
+  function suitabilityGroups(suitability) {
+    const groups = { allowed: [], caution: [], unsuitable: [] };
+    for (const item of (suitability && suitability.categories) || []) {
+      if (groups[item.verdict]) groups[item.verdict].push(item.label);
+    }
+    return groups;
+  }
+
+  // A tag and a sentence for one way to close a gap, formatting the server's numbers (nothing is calculated here).
+  function alternativeLabel(item, currency = 'INR', dateLabel = (isoDate) => isoDate) {
+    const tag = item.basis === 'zero_return' ? 'No growth' : `At your ${item.annualReturnPct}%`;
+    let text = '';
+    if (item.kind === 'increase_monthly') {
+      text = `Raise the monthly contribution to ${amount(item.requiredMonthly, currency)}`;
+    } else if (item.kind === 'extend_deadline') {
+      text = `Move the date by ${item.extraMonths} months, to ${dateLabel(item.newTargetDate)}`;
+    } else if (item.kind === 'reduce_target') {
+      text = `Lower the target to ${amount(item.reachableTarget, currency)}${item.inTodayMoney ? " in today's money" : ''}`;
+    } else if (item.kind === 'earmark_lump_sum') {
+      text = `Earmark ${amount(item.lumpSum, currency)} more today`;
+    }
+    return { tag, text };
+  }
+
   function goalIsOnTrack(goal) {
     const status = goal && goal.plan && goal.plan.status;
     return status === 'on_track' || status === 'reached';
@@ -140,6 +189,7 @@
   const GOAL_KINDS = [
     ['home', /\b(home|house|flat|apartment|property|down ?payment)\b/i],
     ['education', /\b(education|college|school|university|study|studies|child|kid|son|daughter)\b/i],
+    ['financial_independence', /\b(financial(ly)? independen\w*|fire|early retire\w*)\b/i],
     ['retirement', /\b(retire|retirement|pension)\b/i],
     ['car', /\b(car|bike|vehicle|scooter)\b/i],
     ['travel', /\b(travel|trip|vacation|holiday|tour)\b/i],
@@ -361,7 +411,7 @@
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
-    GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, baseScenario,
+    GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
     spanLabel, historyChange, portfolioInsights,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };

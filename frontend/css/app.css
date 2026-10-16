@@ -1300,7 +1300,7 @@ body.gate-open #app { visibility: hidden; }
   white-space: nowrap;
 }
 #page-view { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 28px 28px; }
-.page { display: grid; width: min(1080px, 100%); gap: 18px; margin: 0 auto; }
+.page { display: grid; grid-template-columns: minmax(0, 1fr); width: min(1080px, 100%); gap: 18px; margin: 0 auto; }
 .page-head, .page-hero { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; }
 .page-hero {
   padding: 26px 28px;
@@ -1651,3 +1651,35 @@ a.tool-tile { text-decoration: none; }
 .goal-scenarios .table-scroll { overflow-x: auto; }
 .goal-scenarios .data-table th { white-space: normal; }
 .goal-grid { align-items: start; }
+
+/* Goal planning: alternatives, suitability, assigned holdings and the assign dialog. */
+.goal-section { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.goal-section h4 { color: var(--text); font-size: 12.5px; }
+.goal-card.is-draft { border-style: dashed; }
+.goal-meta.is-warn { color: var(--amber); }
+.goal-alts { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.basis-tag { display: inline-block; margin-right: 4px; padding: 1px 7px; border-radius: 99px; background: var(--surface-3); color: var(--text-soft); font-size: 11px; font-weight: 600; }
+.basis-tag.is-certain { background: var(--green-soft); color: var(--green); }
+.chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip-row-label { min-width: 74px; color: var(--text-muted); font-size: 11.5px; font-weight: 600; }
+.verdict-chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--surface-2); color: var(--text-soft); font-size: 11.5px; }
+.verdict-chip.is-allowed { border-color: var(--green); color: var(--green); }
+.verdict-chip.is-caution { border-color: var(--amber); color: var(--amber); }
+.verdict-chip.is-unsuitable { border-color: var(--error); color: var(--error); }
+.verdict-chip.is-cannot_assess { color: var(--text-muted); }
+.goal-notes ul { margin: 2px 0 4px; padding-left: 16px; }
+.goal-when { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0; padding: 0; border: 0; }
+.goal-when legend { padding: 0; margin-bottom: 4px; color: var(--text-soft); font-size: 12.5px; font-weight: 600; }
+.goal-when input[type="date"], .goal-when input[type="number"] { flex: 1 1 160px; }
+.radio-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.goal-risk-inputs summary { cursor: pointer; color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.goal-risk-inputs .field-grid { margin-top: 10px; }
+.data-table td.alloc-goals { min-width: 150px; white-space: normal; }
+
+@media (max-width: 600px) {
+  .goal-grid, .stat-grid { grid-template-columns: 1fr; }
+  .goal-dialog { width: 100%; max-width: 100%; margin: 0; border-radius: 0; }
+  .goal-dialog .dialog-actions { flex-wrap: wrap; }
+  .goal-dialog .dialog-actions .rail-button { flex: 1 1 100%; }
+  .chip-row-label { min-width: 100%; }
+}

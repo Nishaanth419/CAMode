@@ -117,3 +117,12 @@ def test_old_snapshots_fall_back_to_raw_text():
     payload = snapshots._snapshot_payload(snapshot)
 
     assert payload["raw"] == {"networth_snapshot": "Net worth ₹10"}
+
+
+def test_every_holding_carries_indmoneys_asset_class():
+    from app.portfolio_math import all_holdings
+    from tests.fixtures import indmoney_sample
+
+    holdings = all_holdings(indmoney_sample.results())
+
+    assert holdings and {item["asset_class"] for item in holdings} == {"Equity"}

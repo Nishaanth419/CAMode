@@ -23,12 +23,13 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any, Final
 
-from . import cas, goal_planning, memory, snapshots, users
+from . import cas, goal_planning, goal_portfolio, memory, snapshots, users
 from .agent import SavedContext
 from .sealing import ProfileKeys
 
 MAX_CONTEXT_CHARS: Final = 6000
 MAX_DECISIONS_SHOWN: Final = 10
+MAX_FOLLOW_UPS_SHOWN: Final = 3
 RECENT_USER_TURNS: Final = 2
 
 PREFERENCE_LABELS: Final = {
@@ -59,6 +60,7 @@ _KIND_TERMS: Final = {
     "home": r"home|house|flat|apartment|property|down ?payment",
     "education": r"education|college|school|university|studies|child|kid|son|daughter",
     "retirement": r"retire\w*|pension",
+    "financial_independence": r"financial(?:ly)? independen\w*|fire|early retire\w*",
     "car": r"car|bike|vehicle|scooter",
     "travel": r"travel|trip|vacation|holiday|tour",
     "wedding": r"wedding|marriage",
@@ -141,17 +143,32 @@ def _preference_line(fields: dict[str, Any], updated_at: int | None) -> str | No
     return f"- Profile, saved {_day(updated_at)}: " + "; ".join(parts) if parts else None
 
 
+_INPUT_NAMES: Final = {
+    "flexibility": "flexibility", "liquidityNeed": "liquidity need", "riskTolerance": "risk tolerance",
+    "lossCapacity": "capacity for loss",
+}
+
+
 def _goal_line(goal: dict[str, Any]) -> str:
     currency = goal.get("currency") or "currency not given"
     assumption = (
         f"return assumption {goal['assumedReturnPct']:g}% a year" if goal.get("assumedReturnPct") is not None
         else "no return assumption given"
     )
+    given = goal.get("targetAmount") is not None and goal.get("targetDate")
+    target = f"target {currency} {goal['targetAmount']} by {goal['targetDate']}" if given else "target amount or date not given"
+    draft = " (draft)" if goal.get("status") == "draft" else ""
     line = (
-        f'- Goal "{goal.get("name")}": target {currency} {goal.get("targetAmount")} by {goal.get("targetDate")}; '
+        f'- Goal "{goal.get("name")}"{draft}: {target}; '
         f"earmarked savings {currency} {goal.get('savedAmount', 0)}; planned monthly contribution "
-        f"{currency} {goal.get('monthlyContribution', 0)}; {assumption}; saved {_day(goal.get('updatedAt'))}"
+        f"{currency} {goal.get('monthlyContribution', 0)}; {assumption}"
     )
+    if goal.get("inflationPct") is not None:
+        line += f"; inflation {goal['inflationPct']:g}% a year (the target is in today's money)"
+    answers = [f"{label} {goal[field]}" for field, label in _INPUT_NAMES.items() if goal.get(field)]
+    if answers:
+        line += "; user said: " + ", ".join(answers)
+    line += f"; saved {_day(goal.get('updatedAt'))}"
     if goal.get("notes"):
         line += f'; notes: "{goal["notes"]}"'
     return line
@@ -165,14 +182,66 @@ def _decision_line(decision: dict[str, Any], goal_names: dict[str, str]) -> str:
     return f'- Decision recorded {when}{linked}: "{decision.get("text")}"'
 
 
-def _plan_lines(goal: dict[str, Any], plan: dict[str, Any]) -> list[str]:
-    name, currency = goal.get("name"), plan.get("currency")
+def _alternative_text(item: dict[str, Any], currency: str) -> str:
+    kind, label = item["kind"], item["label"]
+    if kind == "increase_monthly":
+        return f"raise the monthly contribution to {currency} {item['requiredMonthly']} ({label})"
+    if kind == "extend_deadline":
+        return f"extend the deadline by {item['extraMonths']} months to {item['newTargetDate']} ({label})"
+    if kind == "reduce_target":
+        today_money = " in today's money" if item.get("inTodayMoney") else ""
+        return f"lower the target to {currency} {item['reachableTarget']}{today_money} ({label})"
+    return f"earmark {currency} {item['lumpSum']} more today ({label})"
+
+
+def _suitability_line(suitability: dict[str, Any]) -> str:
+    groups = {"allowed": [], "caution": [], "unsuitable": []}
+    for item in suitability["categories"]:
+        groups[item["verdict"]].append(item["label"])
+    text = "; ".join(f"{verdict}: {', '.join(names) or 'none'}" for verdict, names in groups.items())
+    line = f"  - Category suitability from CA Mode's fixed rules (not advice) - {text}."
+    if not suitability["enoughInformation"]:
+        names = ", ".join(suitability["assumedLabels"])
+        line += f" Not enough information: cautious values were assumed for {names}."
+    return line
+
+
+def _mapping_lines(goal: dict[str, Any]) -> list[str]:
+    mapping = goal.get("mapping")
+    if mapping is None:
+        # Finance Agent: how many holdings are assigned, never their value.
+        count = goal.get("assignedHoldings", 0)
+        if not count:
+            return []
+        return [f"  - {count} INDmoney holdings are assigned to this goal; their value is not shown here. "
+                "Portfolio Analyzer can include it."]
+    if not mapping["available"] or not (mapping["holdings"] or mapping["missing"]):
+        return []
+    currency = goal.get("currency")
+    parts = [f"{item['name']} {item['pct']}% = INR {item['valueInr']}" for item in mapping["holdings"]]
+    counted = (
+        f"counted toward the plan: INR {mapping['mappedValueInr']}" if mapping["counted"]
+        else f"not counted toward the {currency} plan"
+    )
+    lines = [f"  - Assigned INDmoney holdings (snapshot {mapping['snapshotDate']}; {counted}): " + "; ".join(parts) + "."]
+    lines += [f"  - Assigned but not in the latest snapshot (value unknown, not counted): {item['name']}." for item in mapping["missing"]]
+    return lines
+
+
+def _plan_lines(goal: dict[str, Any]) -> list[str]:
+    plan, name, currency = goal["plan"], goal.get("name"), goal["plan"].get("currency")
     if plan["status"] == "insufficient_data":
-        return [f'- "{name}": cannot be calculated; missing {", ".join(plan["missing"])}.']
+        return [f'- "{name}": cannot be calculated; missing {", ".join(plan["missing"])}.', *_follow_up_lines(goal)]
     lines = [
         f'- "{name}": status {plan["status"].replace("_", " ")}; {plan["monthsRemaining"]} months left; '
         f'{currency} {plan["remainingGap"]} still to save today ({plan["progressPct"]:g}% saved).'
     ]
+    if plan.get("inflation"):
+        inflation = plan["inflation"]
+        lines.append(
+            f"  - Inflation {inflation['inflationPct']:g}% a year: {currency} {inflation['targetInTodayMoney']} in today's "
+            f"money becomes {currency} {inflation['inflatedTarget']} on the target date."
+        )
     for scenario in plan["scenarios"]:
         difference = scenario["difference"]
         outcome = f"ahead by {currency} {difference}" if difference >= 0 else f"short by {currency} {-difference}"
@@ -183,8 +252,22 @@ def _plan_lines(goal: dict[str, Any], plan: dict[str, Any]) -> list[str]:
             if scenario["additionalMonthly"]:
                 needed += f" ({currency} {scenario['additionalMonthly']} more than planned)"
         lines.append(f"  - {scenario['label']}: projected {currency} {scenario['projectedAmount']}, {outcome}; {needed}.")
+    lines.append(f"  - Feasibility: {plan['feasibility']['summary']}")
+    if plan["alternatives"]:
+        lines.append("  - Ways to close the gap: " + "; ".join(_alternative_text(item, currency) for item in plan["alternatives"]) + ".")
+    lines.extend(_mapping_lines(goal))
     lines.extend(f"  - Note: {warning}" for warning in plan["warnings"])
+    if goal.get("suitability"):
+        lines.append(_suitability_line(goal["suitability"]))
+    lines.extend(_follow_up_lines(goal))
     return lines
+
+
+def _follow_up_lines(goal: dict[str, Any]) -> list[str]:
+    questions = [item["question"] for item in goal.get("followUps", [])][:MAX_FOLLOW_UPS_SHOWN]
+    if not questions:
+        return []
+    return ["  - Still unknown (ask the user the most important one rather than assuming): " + " | ".join(questions)]
 
 
 def render(
@@ -201,9 +284,15 @@ def render(
             f"Calculated in code on {today.isoformat()} from the goals above "
             "(hypothetical illustrations, not forecasts or promised returns):"
         )
+        sections.append("No fund-level data: do not name or rank specific funds.")
         for goal in goals:
-            sections.extend(_plan_lines(goal, goal["plan"]))
-        sections.append("Assumptions behind these figures: " + " ".join(goal_planning.ASSUMPTIONS))
+            sections.extend(_plan_lines(goal))
+        assumptions = list(goal_planning.ASSUMPTIONS)
+        if any(goal["plan"].get("inflation") for goal in goals):
+            assumptions = [text for text in assumptions if "inflation is not added" not in text] + [
+                "A goal with an inflation rate reads its target as today's money and raises it by that rate to the target date."
+            ]
+        sections.append("Assumptions behind these figures: " + " ".join(assumptions))
     sections.append(
         "Not saved: anything not listed here (for example income, expenses, age or dependants) is unknown; "
         "ask the user rather than assume it."
@@ -215,19 +304,31 @@ def render(
 
 
 def with_plan(goal: dict[str, Any], today: date) -> dict[str, Any]:
-    """The goal with its default scenarios; a goal whose stored values no longer validate gets a failed plan."""
-    try:
-        plan = goal_planning.plan_goal(goal, today)
-    except goal_planning.PlanningError as exc:
-        plan = {"status": "insufficient_data", "missing": [str(exc)], "scenarios": [], "warnings": [str(exc)]}
-    return {**goal, "plan": plan}
+    """The goal with its plan, follow-up questions and suitability (no holdings mapping)."""
+    return goal_portfolio.goal_view(goal, today)
+
+
+def _views(
+    user: dict[str, Any], goals: list[dict[str, Any]], today: date, *, include_holdings: bool,
+) -> list[dict[str, Any]]:
+    """Goal views with plans. Holdings are valued only for Portfolio Analyzer; the Finance Agent sees a count."""
+    if not goals:
+        return []
+    allocations = memory.get_allocations(user["id"], user["keys"])
+    if include_holdings:
+        return goal_portfolio.mapped_views(goals, today, allocations, goal_portfolio.load_portfolio(user))
+    return [
+        {**with_plan(goal, today), "assignedHoldings": sum(1 for entry in allocations.values() if entry["goals"].get(goal["id"]))}
+        for goal in goals
+    ]
 
 
 def _select(
     user: dict[str, Any], text: str, all_goals: list[dict[str, Any]], decisions: list[dict[str, Any]], today: date,
+    *, include_holdings: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     keys: ProfileKeys = user["keys"]
-    goals = [with_plan(goal, today) for goal in select_goals(all_goals, text)]
+    goals = _views(user, select_goals(all_goals, text), today, include_holdings=include_holdings)
     chosen = select_decisions(decisions, text, {goal["id"] for goal in goals})
     preferences = None
     if wants_preferences(text, has_goals=bool(goals)):
@@ -237,13 +338,15 @@ def _select(
 
 def retrieve_context(
     user: dict[str, Any], message: str, history: Sequence[dict[str, str]], *, today: date | None = None,
+    include_holdings: bool = False,
 ) -> SavedContext | None:
     """Return the saved context relevant to ``message``, or None when nothing saved bears on it.
 
     The message is matched on its own first; the user's previous turns are added only
     when it matches nothing and reads as a follow-up, so an unrelated new question
     does not carry the last topic's goals along. ``user["keys"]`` must be unlocked
-    (``main.history_gate`` checks this before chat).
+    (``main.history_gate`` checks this before chat). ``include_holdings`` adds the value of
+    INDmoney holdings assigned to a goal; only Portfolio Analyzer asks for it.
     """
     keys: ProfileKeys = user["keys"]
     today = today or snapshots.local_now().date()
@@ -251,9 +354,11 @@ def retrieve_context(
     all_decisions = memory.list_decisions(user["id"], keys)
     if not (all_goals or all_decisions or users.profile_fields(user, keys)):
         return None
-    goals, decisions, preferences = _select(user, message, all_goals, all_decisions, today)
+    goals, decisions, preferences = _select(user, message, all_goals, all_decisions, today, include_holdings=include_holdings)
     if not (goals or decisions or preferences) and history and is_follow_up(message):
-        goals, decisions, preferences = _select(user, request_text(message, history), all_goals, all_decisions, today)
+        goals, decisions, preferences = _select(
+            user, request_text(message, history), all_goals, all_decisions, today, include_holdings=include_holdings,
+        )
     if not (goals or decisions or preferences):
         return None
     items = [*(["Profile preferences"] if preferences else [])]

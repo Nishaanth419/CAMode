@@ -199,4 +199,5 @@ def export_data(
         "investigations": investigations or [],
         "goals": (saved_context or {}).get("goals", []),
         "decisions": (saved_context or {}).get("decisions", []),
+        "goalAllocations": (saved_context or {}).get("goalAllocations", []),
     }

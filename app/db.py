@@ -93,6 +93,11 @@ _SCHEMA = """
         data TEXT NOT NULL,
         PRIMARY KEY (user_id, id)
     );
+    CREATE TABLE IF NOT EXISTS goal_allocations (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS financial_decisions (
         id TEXT NOT NULL,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

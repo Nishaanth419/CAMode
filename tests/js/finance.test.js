@@ -198,3 +198,74 @@ test('incomeTax compares both regimes', () => {
   assert.equal(result.saving, Math.abs(result.new.total - result.old.total));
   assert.equal(finance.TAX_RULES.label, 'FY 2026-27');
 });
+
+test('financial independence has its own goal kind and drafts are recognised', () => {
+  assert.equal(finance.goalKind('Financial independence by 50'), 'financial_independence');
+  assert.equal(finance.goalKind('Early retirement fund'), 'financial_independence');
+  assert.equal(finance.goalKind('Retirement corpus'), 'retirement');
+  assert.equal(finance.goalIcon({ name: 'x', kind: 'financial_independence' }), 'financial_independence');
+  assert.equal(finance.isDraft({ status: 'draft' }), true);
+  assert.equal(finance.isDraft({ status: 'active' }), false);
+  assert.equal(finance.isDraft({}), false);
+  assert.equal(finance.isDraft(null), false);
+});
+
+test('headlineTarget uses the plan\'s inflation-adjusted target and keeps the entered one as today\'s money', () => {
+  const inflated = { targetAmount: 2000000, plan: { effectiveTarget: 2247200, inflation: { inflationPct: 6 } } };
+  assert.deepEqual(finance.headlineTarget(inflated), { amount: 2247200, todayMoney: 2000000, inflationPct: 6 });
+  assert.deepEqual(finance.headlineTarget({ targetAmount: 500000, plan: { effectiveTarget: 500000, inflation: null } }),
+    { amount: 500000, todayMoney: null, inflationPct: null });
+  assert.deepEqual(finance.headlineTarget({ targetAmount: null, status: 'draft' }), { amount: null, todayMoney: null, inflationPct: null });
+  assert.deepEqual(finance.headlineTarget(null), { amount: null, todayMoney: null, inflationPct: null });
+});
+
+test('goal totals skip drafts without a currency or an amount instead of counting them as zero', () => {
+  const goals = [
+    { currency: 'INR', targetAmount: 100000, status: 'active' },
+    { currency: null, targetAmount: null, status: 'draft' },
+    { currency: 'INR', targetAmount: null, status: 'draft' },
+  ];
+  assert.deepEqual(finance.totalsByCurrency(goals, 'targetAmount'), [['INR', 100000]]);
+  assert.deepEqual(finance.totalsByCurrency([goals[2]], 'targetAmount'), []);
+});
+
+test('allocationRemaining is what is left of 100 and goes negative when over-assigned', () => {
+  assert.equal(finance.allocationRemaining([60, 40], 0), 0);
+  assert.equal(finance.allocationRemaining([30], 20), 50);
+  assert.equal(finance.allocationRemaining([], 0), 100);
+  assert.equal(finance.allocationRemaining([70, 40], 10), -20);
+  assert.equal(finance.allocationRemaining(['25', ''], '5'), 70);
+  assert.equal(finance.allocationRemaining([NaN, -5], undefined), 100);
+});
+
+test('suitabilityGroups lists category labels by verdict', () => {
+  const groups = finance.suitabilityGroups({ categories: [
+    { label: 'Liquid', verdict: 'allowed' }, { label: 'Hybrid', verdict: 'caution' },
+    { label: 'Equity', verdict: 'unsuitable' }, { label: 'Debt', verdict: 'allowed' }, { label: 'Odd', verdict: 'other' },
+  ] });
+  assert.deepEqual(groups, { allowed: ['Liquid', 'Debt'], caution: ['Hybrid'], unsuitable: ['Equity'] });
+  assert.deepEqual(finance.suitabilityGroups(null), { allowed: [], caution: [], unsuitable: [] });
+});
+
+test('alternativeLabel tags each alternative with its basis and formats the server numbers', () => {
+  assert.deepEqual(
+    finance.alternativeLabel({ kind: 'increase_monthly', basis: 'zero_return', requiredMonthly: 32308, annualReturnPct: 0 }, 'INR'),
+    { tag: 'No growth', text: 'Raise the monthly contribution to ₹32,308' },
+  );
+  assert.deepEqual(
+    finance.alternativeLabel({ kind: 'extend_deadline', basis: 'assumed_return', annualReturnPct: 9, extraMonths: 14, newTargetDate: '2036-02-29' }),
+    { tag: 'At your 9%', text: 'Move the date by 14 months, to 2036-02-29' },
+  );
+  assert.equal(
+    finance.alternativeLabel({ kind: 'extend_deadline', basis: 'zero_return', extraMonths: 3, newTargetDate: '2031-01-16' }, 'INR', (iso) => `[${iso}]`).text,
+    'Move the date by 3 months, to [2031-01-16]',
+  );
+  assert.equal(
+    finance.alternativeLabel({ kind: 'reduce_target', basis: 'zero_return', reachableTarget: 1500, inTodayMoney: true }, 'USD').text,
+    "Lower the target to $1,500 in today's money",
+  );
+  assert.equal(
+    finance.alternativeLabel({ kind: 'earmark_lump_sum', basis: 'zero_return', lumpSum: 250000 }, 'INR').text,
+    'Earmark ₹2,50,000 more today',
+  );
+});
