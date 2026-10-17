@@ -129,12 +129,20 @@ def read_chat(user: dict[str, Any], chat_id: str) -> dict[str, Any] | None:
     }
 
 
-def append_turn(user: dict[str, Any], chat: dict[str, Any], message: str, answer: str, trace: list[dict[str, Any]]) -> None:
-    """Store a question and its answer, keeping the newest ``MAX_HISTORY_MESSAGES`` messages."""
+def append_turn(
+    user: dict[str, Any], chat: dict[str, Any], message: str, answer: str, trace: list[dict[str, Any]],
+    *, run_id: str | None = None,
+) -> None:
+    """Store a question and its answer, keeping the newest ``MAX_HISTORY_MESSAGES`` messages.
+
+    ``run_id`` names the saved answer run (``agent_runs``) behind the answer, when there is one.
+    """
     now = users.now_ms()
     assistant_message: dict[str, Any] = {"role": "assistant", "content": answer[:MAX_ANSWER_CHARS]}
     if trace:
         assistant_message["trace"] = trace
+    if run_id:
+        assistant_message["runId"] = run_id
     messages = [*chat["messages"], {"role": "user", "content": message[:MAX_HISTORY_MESSAGE_CHARS]}, assistant_message]
     messages = messages[-MAX_HISTORY_MESSAGES:]
     title = message[:60] if chat["title"] == "New chat" else chat["title"]

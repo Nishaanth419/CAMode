@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -740,6 +740,7 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
         privacy.export_data(
             user, snapshots.all_snapshots(user["id"], keys), cas.all_statements(user["id"], keys),
             investigations.all_investigations(user["id"], keys), memory.export_context(user["id"], keys),
+            agent_runs.all_runs(user["id"], keys),
         ),
         headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
     )
@@ -1059,6 +1060,37 @@ async def delete_investigation(investigation_id: str, request: Request):
     return {"deleted": True}
 
 
+# ── Answer runs ────────────────────────────────────────────────────────────────
+
+@app.get("/api/runs")
+async def list_agent_runs(request: Request, limit: int = Query(default=50, ge=1, le=agent_runs.KEEP_RUNS)):
+    """Saved answer runs, newest first: the question's start, task, verdict, outcome and counts."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    return {"runs": agent_runs.list_runs(user["id"], user["keys"], limit=limit)}
+
+
+@app.get("/api/runs/{run_id}")
+async def get_agent_run(run_id: str, request: Request):
+    """One saved answer run with its recorded events."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    record = agent_runs.get_run(user["id"], run_id, user["keys"])
+    return record if record is not None else _not_found("Answer run")
+
+
+@app.delete("/api/runs/{run_id}")
+async def delete_agent_run(run_id: str, request: Request):
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    if not agent_runs.delete_run(user["id"], run_id):
+        return _not_found("Answer run")
+    return {"deleted": True}
+
+
 # ── Chats ──────────────────────────────────────────────────────────────────────
 
 @app.get("/api/chats")
@@ -1095,6 +1127,7 @@ async def delete_chat(chat_id: str, request: Request):
         return blocked
     if not chats.delete_chat(user, chat_id):
         return JSONResponse({"error": "Chat not found."}, status_code=404)
+    agent_runs.delete_chat_runs(user["id"], chat_id)
     return {"deleted": True}
 
 
@@ -1180,17 +1213,36 @@ async def chat(body: ChatRequest, request: Request):
             details = str(exc)
             error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
             trace = getattr(exc, "trace", [])[:12]
+            run_id = _save_agent_run(user, data, body, provider, exc, error=details)
             return JSONResponse(
-                {"error": error, "details": details}, status_code=502,
-                headers={"X-Agent-Trace": trace_header(trace)},
+                {"error": error, "details": details, **({"runId": run_id} if run_id else {})}, status_code=502,
+                headers={"X-Agent-Trace": trace_header(trace), **_run_header(run_id)},
             )
     answer_text = str(answer)
     trace = getattr(answer, "trace", [])[:12]
+    run_id = _save_agent_run(user, data, body, provider, answer)
     if answer_text.strip():
-        chats.append_turn(user, data, message, answer_text, trace)
+        chats.append_turn(user, data, message, answer_text, trace, run_id=run_id)
     return PlainTextResponse(answer_text, headers={
-        "X-Agent-Trace": trace_header(trace),
+        "X-Agent-Trace": trace_header(trace), **_run_header(run_id),
     })
+
+
+def _save_agent_run(
+    user: dict[str, Any], chat: dict[str, Any], body: ChatRequest, provider: str, outcome: Any, *, error: str | None = None,
+) -> str | None:
+    """Save the run behind an answer (or a failed attempt) for the Activity page; ``None`` when not saved."""
+    events = getattr(outcome, "events", None)
+    if not events:
+        return None
+    return agent_runs.save_run(
+        user, chat_id=chat["id"], agent_type=body.agentType, provider=provider, question=body.message,
+        events=events, verdict=getattr(outcome, "verdict", None), error=error,
+    )
+
+
+def _run_header(run_id: str | None) -> dict[str, str]:
+    return {"X-Agent-Run": run_id} if run_id else {}
 
 
 # ── Public pages: app shell, privacy policy, crawler files, 404 ───────────────

@@ -790,7 +790,9 @@ async def test_a_long_run_keeps_its_final_steps_in_the_trace(monkeypatch):
 
     assert len(answer.trace) == agent.MAX_TRACE_STEPS
     assert answer.trace[3]["kind"] == "omitted"
-    assert answer.trace[-1]["kind"] == "model" and answer.trace[-1]["attempt"] == 7
+    # The final model call and the checks on its answer close the trace.
+    assert [step.get("attempt") for step in answer.trace if step["kind"] == "model"][-1] == 7
+    assert answer.trace[-1]["kind"] == "check" and answer.trace[-1]["check"] == "task_contract"
 
 
 @pytest.mark.parametrize(("question", "needs_data"), [
@@ -1329,3 +1331,137 @@ async def test_a_clarifying_question_that_repeats_the_users_numbers_is_not_retri
     answer = await agent.run_agent(QUESTION, "https://unused", None, [], "finance", "openai", context=_calculator_context())
 
     assert answer == reply and len(captured) == 1
+
+
+# ── Recorded events, tool-result kinds and task contracts ──────────────────────
+
+def _kinds(events):
+    return [event["kind"] for event in events]
+
+
+@pytest.mark.asyncio
+async def test_a_run_records_tokens_tool_results_and_a_met_contract(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def snapshot_handler(arguments):
+        return '{"available": true, "networthInr": 4200000}'
+
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    first = FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [tool_call]}}],
+                          "usage": {"prompt_tokens": 1700, "completion_tokens": 50}})
+    second = FakeResponse({"choices": [{"finish_reason": "stop", "message": {"content": "₹42 lakh."}}],
+                           "usage": {"prompt_tokens": 3000, "completion_tokens": 120}})
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([first, second], []))
+
+    answer = await agent.run_agent("What is my net worth?", "https://mcp", "token", [], "portfolio", "openai",
+                                   context=_snapshot_context(snapshot_handler))
+
+    assert _kinds(answer.events) == ["route", "contract", "model_call", "model_result", "tool_call", "tool_result",
+                                     "model_call", "model_result", "validation", "answer", "validation", "termination"]
+    contract = answer.events[1]
+    assert contract["task"] == "account_data" and "get_portfolio_snapshot" in contract["requiredTools"]
+    assert answer.events[3]["toolCalls"] == ["get_portfolio_snapshot"] and answer.events[3]["promptTokens"] == 1700
+    assert answer.verdict["status"] == "met" and answer.events[-1]["reason"] == "answered"
+    assert agent.summarize(answer.events)["promptTokens"] == 4700
+    assert [step.get("tokens") for step in answer.trace if step["kind"] == "model"] == [1750, 3120]
+    assert [(step["check"], step["status"]) for step in answer.trace if step["kind"] == "check"] == [
+        ("numbers", "passed"), ("task_contract", "passed")]
+
+
+@pytest.mark.asyncio
+async def test_the_goal_calculator_retry_is_recorded(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    replies = [
+        _completion("Without growth you need ₹75,000 a month."),
+        _completion(tool_calls=[_calculator_call()]),
+        _completion("With no growth you need ₹75,000 a month."),
+    ]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, []))
+
+    answer = await agent.run_agent(QUESTION, "https://unused", None, [], "finance", "openai", context=_calculator_context())
+
+    retry = next(event for event in answer.events if event["kind"] == "retry")
+    assert retry["reason"] == "goal_calculator"
+    assert answer.verdict["task"] == "goal_calculation" and answer.verdict["status"] == "met"
+    assert [step["reason"] for step in answer.trace if step["kind"] == "retry"] == ["goal_calculator"]
+
+
+@pytest.mark.asyncio
+async def test_a_goal_tool_does_not_count_as_reading_account_data(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    replies = [_completion(tool_calls=[_calculator_call()]), _completion("Done."), _completion("Done.")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, []))
+    context = agent.PortfolioContext(local_tools=_calculator_context().local_tools,
+                                     cached_mcp_tools=[{"name": "networth_snapshot", "description": "Net worth"}])
+
+    with pytest.raises(agent.AgentRunError, match="did not call an INDmoney account tool") as raised:
+        await agent.run_agent("What is my portfolio XIRR?", "https://mcp", "token", [], "portfolio", "openai", context=context)
+
+    events = raised.value.events
+    assert [event["reason"] for event in events if event["kind"] == "retry"] == ["no_account_tool"]
+    assert events[-1] == {**events[-1], "kind": "termination", "reason": "failed", "code": "no_account_tool"}
+    assert raised.value.verdict["status"] == "unmet"
+
+
+@pytest.mark.asyncio
+async def test_an_argument_outside_the_tools_enum_is_refused_before_calling_indmoney(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def never(*args, **kwargs):
+        raise AssertionError("INDmoney must not be called with arguments its schema rejects")
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", never)
+    monkeypatch.setattr(agent, "call_mcp_tool", never)
+    schema = {"type": "object", "required": ["ind_key"],
+              "properties": {"ind_key": {"type": "string"}, "lookback": {"type": "string", "enum": ["1d", "7d", "1y"]}}}
+    context = agent.PortfolioContext(cached_mcp_tools=[{"name": "get_indian_stocks_ohlc", "inputSchema": schema}])
+    call = {"id": "call-1", "function": {"name": "get_indian_stocks_ohlc", "arguments": '{"ind_key": "INFY", "lookback": "5d"}'}}
+    captured = []
+    replies = [_completion(tool_calls=[call]), _completion("I could not fetch that chart.")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, captured))
+
+    answer = await agent.run_agent("Show the Infosys candle chart", "https://mcp", "token", [], "portfolio", "openai", context=context)
+
+    result = json.loads(captured[1]["payload"]["messages"][-1]["content"])
+    assert result["errorKind"] == "invalid_arguments" and "lookback must be one of 1d, 7d, 1y" in result["error"]
+    recorded = next(event for event in answer.events if event["kind"] == "tool_result")
+    assert recorded["errorKind"] == "invalid_arguments"
+
+
+@pytest.mark.asyncio
+async def test_a_local_tool_that_refuses_the_call_is_recorded_as_rejected(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    bad_call = {"id": "call-1", "function": {"name": "calculate_goal_plan", "arguments": '{"currency": "JPY", "targetAmount": 100}'}}
+    replies = [_completion(tool_calls=[bad_call]), _completion("Which currency is this goal in?")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, []))
+
+    answer = await agent.run_agent(QUESTION, "https://unused", None, [], "finance", "openai", context=_calculator_context())
+
+    step = next(step for step in answer.trace if step["kind"] == "tool")
+    assert step["status"] == "failed" and step["error_kind"] == "rejected" and "currency" in step["error"]
+    # Asking for the missing input still meets a goal question's contract.
+    assert answer.verdict["status"] == "met"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_records_why_it_ended(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: RaisingAsyncClient([httpx.ReadTimeout("")], []))
+
+    with pytest.raises(agent.AgentRunError) as raised:
+        await agent.run_agent("Explain saving", "https://unused", None, [], "finance", "openai")
+
+    assert _kinds(raised.value.events)[-2:] == ["validation", "termination"]
+    assert raised.value.events[-1]["code"] == "provider_timeout"
+    assert raised.value.events[-3] == {**raised.value.events[-3], "kind": "error", "code": "provider_timeout"}
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_records_its_contract_without_a_model_call(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    answer = await agent.run_agent("Write python code to track my budget", "https://unused", None, [], "finance", "openai")
+
+    assert _kinds(answer.events) == ["route", "contract", "answer", "validation", "termination"]
+    assert answer.verdict == {**answer.verdict, "task": "refusal", "status": "met"}
+    assert answer.events[-1]["reason"] == "refused"

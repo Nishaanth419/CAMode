@@ -375,8 +375,9 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/privacy` | Privacy notice, its version, whether it needs accepting, and the profile's storage settings |
 | `POST /api/privacy/consent` | Accept the notice and set storage settings (body: `{"policyVersion", "storageMode": "device" \| "private", "snapshotRetentionDays": 30 \| 90 \| 180 \| 365}`) |
 | `POST /api/users/me/export` | Download the profile's data as JSON (body: `{"pin": ...}`) |
-| `DELETE /api/users/me/history` | Delete the profile's chats, snapshots, investigations, and CAS holdings |
+| `DELETE /api/users/me/history` | Delete the profile's chats, answer runs, snapshots, investigations, and CAS holdings |
 | `POST /api/investigations` | Investigate the change between the latest snapshot and an earlier one (body: `{"baselineDate": "YYYY-MM-DD"}`, optional); `201` with `Location` when the run was saved, `200` when it was not (private mode) |
+| `GET /api/runs?limit=50`, `GET /api/runs/{id}`, `DELETE /api/runs/{id}` | List, read, or delete saved answer runs: the steps behind each chat answer (model and tool calls with token counts, retries, checks, the task contract's verdict and how the answer ended). `POST /api/chat` returns the run's id in `X-Agent-Run` |
 | `GET /api/investigations?limit=20`, `GET /api/investigations/{id}`, `DELETE /api/investigations/{id}` | List, read, or delete saved investigations; list items carry `updatedAt`, `durationMs`, `trigger`, `baselineDate`, `chatId`, `period`, `error`, `findingCount` and `warningCount` |
 | `GET /api/cas`, `POST /api/cas`, `DELETE /api/cas/{id}` | List, upload (body: `{"password", "pdfBase64"}`), or delete CAS statements |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
@@ -438,6 +439,10 @@ app/
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
+  agent_events.py  The recorded events of each answer, and the redaction applied to them
+  agent_runs.py    Saved answer runs (sealed) for the Activity page
+  tasks.py         Task contracts: what each kind of request must do, and the check on each answer
+  tool_results.py  Tool failure kinds and the argument check before INDmoney calls
   charts.py        Candlestick charts rebuilt from the OHLC tool result, never from the model's copy
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
   vault.py         Master key and encryption for stored INDmoney tokens
@@ -464,7 +469,9 @@ frontend/
   sw.js            Service worker (offline app shell)
 tests/
   test_api.py        Routes, OAuth, chats, snapshot endpoints
-  test_agent.py      Request filtering, agent loop, snapshot tools, lazy MCP
+  test_agent.py      Request filtering, agent loop, snapshot tools, lazy MCP, recorded events
+  test_tasks.py      Task contracts, tool error kinds and argument checks, the event recorder
+  test_agent_runs.py Saved answer runs: sealing, gates, deletion paths, export, pruning
   test_users.py      PINs, lockout, sessions, migration, profile isolation
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices

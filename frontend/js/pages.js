@@ -14,7 +14,7 @@ const ROUTE_META = {
   markets: ['Market insights', 'Mutual fund figures from INDmoney for your goals.'],
   goals: ['Goals', 'Your savings goals, their plans and the investments assigned to them.'],
   reports: ['Reports', 'Portfolio reports from your saved snapshots, ready to print.'],
-  activity: ['Activity', 'Portfolio change investigations you have run, with their evidence.'],
+  activity: ['Activity', 'Portfolio change investigations and the steps behind each answer, with their evidence.'],
   chats: ['All chats', 'Every saved conversation with CA Mode.'],
   'not-found': ['Page not found', 'There is no page at this address in CA Mode.'],
 };
@@ -152,6 +152,12 @@ function promptChips(prompts) {
     `<button class="chip" type="button" data-agent="${agent}" data-prompt="${escHtml(prompt)}">${escHtml(label)}</button>`).join('')}</div>`;
 }
 
+// Both agents read saved goals and their plans; Portfolio Analyzer refuses every
+// question until INDmoney is connected, so goal questions go to Finance Agent until then.
+function goalAgent() {
+  return isConnected ? 'portfolio' : 'finance';
+}
+
 // Line charts draw at most 100 points per series, so thin long histories evenly, keeping the newest.
 function thin(points, limit = 100) {
   if (points.length <= limit) return points;
@@ -226,7 +232,7 @@ function safeDecode(text) {
 function routeTitle(route, sub) {
   const [title] = ROUTE_META[route] || ROUTE_META['not-found'];
   if (route === 'planning' && CALCULATORS[sub]) return `${CALCULATORS[sub].title} · ${title}`;
-  if (route === 'activity' && sub) return `Investigation · ${title}`;
+  if (route === 'activity' && sub) return `${sub.startsWith('answer-') ? 'Answer' : 'Investigation'} · ${title}`;
   return title;
 }
 
@@ -1149,7 +1155,7 @@ async function renderGoals() {
   body.innerHTML = `${goalStats(goals)}${summary}
     <div class="goal-grid">${goals.map((goal, index) => goalCard(goal, GOAL_TONES[index % GOAL_TONES.length])).join('')}</div>
     ${fundNote}
-    ${promptChips([['Review my goals', 'Review my goals: which are on track, which need more, and which kinds of investment fit each goal\'s timeline and risk?']])}`;
+    ${promptChips([['Review my goals', 'Review my goals: which are on track, which need more, and which kinds of investment fit each goal\'s timeline and risk?', goalAgent()]])}`;
 }
 
 function goalCard(goal, tone) {
@@ -1186,7 +1192,7 @@ function goalCard(goal, tone) {
     <div class="goal-actions">
       <button class="table-action" type="button" data-edit-goal="${escHtml(goal.id)}">Edit</button>
       <button class="table-action" type="button" data-delete-goal="${escHtml(goal.id)}">Delete</button>
-      <button class="table-action" type="button" data-agent="portfolio" data-prompt="${escHtml(ask)}">Ask AI</button>
+      <button class="table-action" type="button" data-agent="${goalAgent()}" data-prompt="${escHtml(ask)}">Ask AI</button>
     </div>
   </article>`;
 }
@@ -1737,13 +1743,13 @@ const ACTIVITY_LIMIT = 50;
 const activityBody = document.getElementById('activity-body');
 const activityLive = document.getElementById('activity-live');
 const activityState = {
-  items: [], filter: 'all', loaded: false, record: null,
+  items: [], runs: [], runsError: null, filter: 'all', loaded: false, record: null,
   listRequests: createSequencer(), detailRequests: createSequencer(), pollTimer: null, pollAttempt: 0,
 };
 
 function resetActivity() {
   stopActivityPolling();
-  Object.assign(activityState, { items: [], filter: 'all', loaded: false, record: null, pollAttempt: 0 });
+  Object.assign(activityState, { items: [], runs: [], runsError: null, filter: 'all', loaded: false, record: null, pollAttempt: 0 });
   activityLive.textContent = '';
 }
 
@@ -1768,7 +1774,8 @@ function onActivityList() {
 async function renderActivity() {
   stopActivityPolling();
   activityState.pollAttempt = 0;
-  if (currentSub) await loadActivityDetail(currentSub);
+  if (currentSub?.startsWith('answer-')) await loadRunDetail(currentSub.slice('answer-'.length));
+  else if (currentSub) await loadActivityDetail(currentSub);
   else await loadActivityList();
 }
 
@@ -1779,9 +1786,14 @@ async function loadActivityList({ quiet = false } = {}) {
     if (activityState.loaded) drawActivityList();
     else setHtml(activityBody, activitySkeleton());
   }
+  // Answer runs load beside investigations; a failure there never hides the investigations.
+  const [investigationResult, runResult] = await Promise.allSettled([
+    fetchJson(`/api/investigations?limit=${ACTIVITY_LIMIT}`), fetchJson(`/api/runs?limit=${ACTIVITY_LIMIT}`),
+  ]);
   let data;
   try {
-    data = await fetchJson(`/api/investigations?limit=${ACTIVITY_LIMIT}`);
+    if (investigationResult.status === 'rejected') throw investigationResult.reason;
+    data = investigationResult.value;
   } catch (error) {
     if (!activityState.listRequests.accept(ticket) || !onActivityList()) return;
     if (activityState.loaded) {
@@ -1794,6 +1806,12 @@ async function loadActivityList({ quiet = false } = {}) {
     return;
   }
   if (!activityState.listRequests.accept(ticket) || !onActivityList()) return;
+  if (runResult.status === 'fulfilled') {
+    activityState.runs = runResult.value.runs || [];
+    activityState.runsError = null;
+  } else {
+    activityState.runsError = runResult.reason;
+  }
   const before = new Map(activityState.items.map((item) => [item.id, item.status]));
   activityState.items = reconcileInvestigations(activityState.items, data.investigations || []);
   activityState.loaded = true;
@@ -1829,14 +1847,18 @@ function drawActivityList(refreshError = null) {
   const focus = activityFocus();
   const items = activityState.items;
   const stale = refreshError ? `<div class="page-error" role="alert">Could not refresh: ${escHtml(refreshError.message)} The list below may be out of date.</div>` : '';
-  if (!items.length) {
-    setHtml(activityBody, stale + (storageMode === 'private'
-      ? notice('Private mode', 'Private mode keeps no snapshots or investigation history. Turn on saving from your profile to keep investigations here.')
-      : notice('No investigations yet', 'An investigation compares two saved daily snapshots, checks the data and saves the evidence. Ask Portfolio Analyzer why your portfolio changed, or investigate the latest change now.')));
+  if (storageMode === 'private') {
+    setHtml(activityBody, stale + notice('Private mode', 'Private mode keeps no snapshots, investigations or answer records. Turn on saving from your profile to keep them here.'));
     return;
   }
   const chatIds = new Set(chats.map((chat) => chat.id));
-  setHtml(activityBody, `${stale}<section class="panel activity-panel">${renderActivityList(items, { filter: activityState.filter, chatIds })}</section>`);
+  const investigationsHtml = items.length
+    ? `<section class="panel activity-panel"><h2>Portfolio investigations</h2>${renderActivityList(items, { filter: activityState.filter, chatIds })}</section>`
+    : notice('No investigations yet', 'An investigation compares two saved daily snapshots, checks the data and saves the evidence. Ask Portfolio Analyzer why your portfolio changed, or investigate the latest change now.');
+  const runsBody = activityState.runsError
+    ? `<p class="page-error" role="alert">Could not load answers: ${escHtml(activityState.runsError.message)}</p>`
+    : renderRunList(activityState.runs, { chatIds });
+  setHtml(activityBody, `${stale}${investigationsHtml}<section class="panel activity-panel"><h2>Answers</h2>${runsBody}</section>`);
   restoreActivityFocus(focus);
 }
 
@@ -1873,6 +1895,27 @@ function drawActivityDetail(record, back = '<a class="panel-link activity-back" 
   const meta = [started && `Started ${started}`, took && `took ${took}`, record.request?.trigger === 'agent' ? 'from a chat' : ''].filter(Boolean).join(' · ');
   setHtml(activityBody, `<div class="activity-detail-head">${back}${meta ? `<span class="page-muted">${escHtml(meta)}</span>` : ''}${actions ? `<div class="activity-actions">${actions}</div>` : ''}</div>
     ${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
+}
+
+async function loadRunDetail(id) {
+  const ticket = activityState.detailRequests.next();
+  const back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>';
+  setHtml(activityBody, back + loadingBlock());
+  let record;
+  try {
+    record = await fetchJson('/api/runs/' + encodeURIComponent(id));
+  } catch (error) {
+    if (!activityState.detailRequests.accept(ticket) || currentSub !== `answer-${id}`) return;
+    setHtml(activityBody, back + errorBlock(error));
+    return;
+  }
+  if (!activityState.detailRequests.accept(ticket) || currentRoute !== 'activity' || currentSub !== `answer-${id}`) return;
+  const chatId = record.chatId;
+  const openChat = chatId && chats.some((chat) => chat.id === chatId)
+    ? `<div class="activity-actions"><button class="gate-secondary small-button" type="button" data-open-chat="${escHtml(chatId)}">Open chat</button></div>` : '';
+  const started = Number.isFinite(record.createdAt) ? new Date(record.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  setHtml(activityBody, `<div class="activity-detail-head">${back}${started ? `<span class="page-muted">${escHtml(`Asked ${started}`)}</span>` : ''}${openChat}</div>
+    ${renderRunCard(record)}`);
 }
 
 // Starts a run only when the user asks. Runs read saved snapshots and never write to INDmoney.

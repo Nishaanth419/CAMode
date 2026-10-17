@@ -20,7 +20,8 @@ from . import chats, users
 from .db import connect_db
 
 # 2026-10-17.1: anonymous daily counts of which app pages are opened, kept on this computer.
-POLICY_VERSION: Final = "2026-10-17.1"
+# 2026-10-17.2: a record of the steps behind each chat answer (agent_runs), for the Activity page.
+POLICY_VERSION: Final = "2026-10-17.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -35,14 +36,14 @@ NOTICE: Final = (
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick, the holdings from any CAS statement you upload (the last 12; never the PDF, its "
             "password, or your name, PAN or contact details), and the portfolio change investigations you run (the "
-            "last 50: the snapshots compared, the figures computed from them, the checks and the result). Everything is in a SQLite file readable only by this computer's user account. INDmoney "
+            "last 50: the snapshots compared, the figures computed from them, the checks and the result), and a record of the steps behind each chat answer (the last 200, none older than 30 days: the start of your question, which data was read and a short preview of it, the checks on the answer and how long each step took; never the answer itself or your PIN, tokens or PAN). Everything is in a SQLite file readable only by this computer's user account. INDmoney "
             "tokens are encrypted with a key kept outside that file."
         ),
     },
     {
         "title": "Locked with your PIN",
         "body": (
-            "Your saved chats, portfolio snapshots, investigations, CAS holdings, profile details, goals and decisions are encrypted with a key that only your PIN or "
+            "Your saved chats, answer records, portfolio snapshots, investigations, CAS holdings, profile details, goals and decisions are encrypted with a key that only your PIN or "
             "your recovery code can unlock. Nobody else using this computer, and nobody with a copy of the database, "
             "can read them. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
             "code lets you set a new one. If you lose both, your saved history cannot be recovered by anyone."
@@ -63,8 +64,9 @@ NOTICE: Final = (
         "title": "Private mode",
         "body": (
             "Chats are kept in memory only and are gone when you sign out or the app restarts. No portfolio snapshots "
-            "are taken, CAS statements cannot be uploaded, investigations are not saved, and switching to private mode "
-            "deletes the chats, snapshots, investigations and CAS holdings already saved for this profile. "
+            "are taken, CAS statements cannot be uploaded, investigations and answer records are not saved, and switching "
+            "to private mode deletes the chats, answer records, snapshots, investigations and CAS holdings already "
+            "saved for this profile. "
             "Your INDmoney connection tokens, profile details, goals and decisions are still saved; disconnect INDmoney "
             "or remove your saved goals and decisions on the Goals page to delete them."
         ),
@@ -152,6 +154,7 @@ def _delete_saved_history(connection: Any, user_id: str) -> None:
     connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM cas_statements WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
+    connection.execute("DELETE FROM agent_runs WHERE user_id = ?", (user_id,))
     connection.execute("UPDATE users SET snapshot_attempted_at = 0 WHERE id = ?", (user_id,))
 
 
@@ -193,6 +196,7 @@ def export_data(
     cas_statements: list[dict[str, Any]] | None = None,
     investigations: list[dict[str, Any]] | None = None,
     saved_context: dict[str, list[dict[str, Any]]] | None = None,
+    agent_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return everything stored for the profile except its PIN hash, keys and INDmoney tokens.
 
@@ -217,6 +221,7 @@ def export_data(
         "snapshots": snapshots,
         "casStatements": cas_statements or [],
         "investigations": investigations or [],
+        "agentRuns": agent_runs or [],
         "goals": (saved_context or {}).get("goals", []),
         "decisions": (saved_context or {}).get("decisions", []),
         "goalAllocations": (saved_context or {}).get("goalAllocations", []),

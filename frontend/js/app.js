@@ -962,8 +962,18 @@ function resetConversationView() {
   chatScroll.scrollTop = 0;
 }
 
+// A new conversation stays a draft (no activeChatId) until its first message is
+// sent, so New Chat and agent switches change no state a send could race with,
+// and never leave an empty chat behind (creating one can evict the oldest).
 async function startNewChat() {
   if (isStreaming) return;
+  activeChatId = null;
+  resetConversationView();
+  renderChats();
+  userInput.focus();
+}
+
+async function createChat() {
   const response = await fetch('/api/chats', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -973,22 +983,42 @@ async function startNewChat() {
   if (!response.ok) throw new Error(data.error || 'Could not create a new chat.');
   chats.unshift(data);
   activeChatId = data.id;
-  resetConversationView();
   renderChats();
-  userInput.focus();
+  return data.id;
+}
+
+// A chat created for a message that then failed holds nothing; drop it so
+// failed sends do not fill the chat list.
+async function discardEmptyChat(chatId) {
+  try {
+    const response = await fetch('/api/chats/' + encodeURIComponent(chatId));
+    if (!response.ok || ((await response.json()).messages || []).length) return;
+    await fetch('/api/chats/' + encodeURIComponent(chatId), { method: 'DELETE' });
+    chats = chats.filter((chat) => chat.id !== chatId);
+    if (activeChatId === chatId) activeChatId = null;
+    renderChats();
+  } catch { /* An empty chat left behind is harmless and expires with the others. */ }
 }
 
 async function selectChat(chatId) {
   if (isStreaming) return;
-  const response = await fetch('/api/chats/' + encodeURIComponent(chatId));
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Could not open this chat.');
+  // Hold sends until the chat has loaded, so a message cannot go to the
+  // previous chat and then be wiped from the view.
+  setBusy(true);
+  let data;
+  try {
+    const response = await fetch('/api/chats/' + encodeURIComponent(chatId));
+    data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not open this chat.');
+  } finally {
+    setBusy(false);
+  }
   activeChatId = chatId;
   setAgent(data.agentType || 'portfolio');
   resetConversationView();
   for (const message of data.messages || []) {
     if (message.role === 'user') addMessage('user', escHtml(message.content).replace(/\n/g, '<br>'));
-    else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content), message.trace || []);
+    else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content), message.trace || [], message.runId);
   }
   renderChats();
 }
@@ -1041,7 +1071,7 @@ function messageShell(role, label, time = '') {
     </div>`;
 }
 
-function addMessage(role, content, trace = []) {
+function addMessage(role, content, trace = [], runId = null) {
   showMessages();
   const div = document.createElement('div');
   div.className = `message ${role}`;
@@ -1049,7 +1079,7 @@ function addMessage(role, content, trace = []) {
   div.innerHTML = `
     ${messageShell(role, label, timeStr())}
     <div class="message-body">${content}</div>
-    ${role === 'assistant' ? renderChatTrace(trace) : ''}
+    ${role === 'assistant' ? renderChatTrace(trace, { runId }) : ''}
   `;
   messages.appendChild(div);
   renderPlotlyCharts(div);
@@ -1119,8 +1149,10 @@ async function sendMessage(text) {
   autoResize();
 
   const typingDiv = addTypingIndicator();
+  let createdChatId = null;
 
   try {
+    if (!activeChatId) createdChatId = await createChat();
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1139,12 +1171,12 @@ async function sendMessage(text) {
         const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
         throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
       }
-      throw Object.assign(new Error([err.error, err.details].filter(Boolean).join(': ') || `HTTP ${res.status}`), { trace });
+      throw Object.assign(new Error([err.error, err.details].filter(Boolean).join(': ') || `HTTP ${res.status}`), { trace, runId: err.runId });
     }
 
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
     removeTypingIndicator();
-    const msgDiv = addMessage('assistant', '', trace);
+    const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'));
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
 
@@ -1177,7 +1209,7 @@ async function sendMessage(text) {
         const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
         if (savedAssistant?.trace?.length) {
           const currentTrace = msgDiv.querySelector('.chat-trace');
-          if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace);
+          if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace, { runId: savedAssistant.runId });
         }
       }
     } catch { /* The compact trace from the response header is still visible. */ }
@@ -1185,9 +1217,10 @@ async function sendMessage(text) {
     removeTypingIndicator();
     addMessage('assistant',
       `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`,
-      err.trace || [],
+      err.trace || [], err.runId,
     );
     setStatus('error', 'Request failed');
+    if (createdChatId) await discardEmptyChat(createdChatId);
   } finally {
     setBusy(false);
     scrollToBottom();
@@ -1261,6 +1294,14 @@ function renderMarkdown(text) {
   // Process inline elements
   text = esc(text);
 
+  // Mark list items, quote lines and rules before emphasis runs, so a "* " bullet
+  // is not read as the start of italics. ">" is already escaped here.
+  text = text
+    .replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, '\x00HR\x00')
+    .replace(/^[ \t]*[-*+][ \t]+(?=\S)/gm, '\x00UL\x00')
+    .replace(/^[ \t]*\d{1,3}[.)][ \t]+(?=\S)/gm, '\x00OL\x00')
+    .replace(/^[ \t]*&gt;[ \t]?/gm, '\x00QUOTE\x00');
+
   // Inline code
   text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
 
@@ -1282,6 +1323,31 @@ function renderMarkdown(text) {
     const idx = headingBlocks.push(`<h${level}>${content}</h${level}>`) - 1;
     return `@@CA_HEADING_${idx}@@`;
   });
+
+  // Consecutive marked lines become one list or quote (each rule stands alone),
+  // set apart as its own paragraph so it is restored outside any <p>.
+  const listBlocks = [];
+  const blockLines = text.split('\n');
+  const groupedLines = [];
+  for (let i = 0; i < blockLines.length;) {
+    const kind = blockLines[i].match(/^\x00(UL|OL|QUOTE|HR)\x00/)?.[1];
+    if (!kind) {
+      groupedLines.push(blockLines[i++]);
+      continue;
+    }
+    const marker = `\x00${kind}\x00`;
+    const items = [];
+    if (kind === 'HR') i++;
+    else while (i < blockLines.length && blockLines[i].startsWith(marker)) items.push(blockLines[i++].slice(marker.length).trimEnd());
+    const tag = kind.toLowerCase();
+    const idx = listBlocks.push(kind === 'HR' ? '<hr>'
+      : kind === 'QUOTE' ? `<blockquote>${items.join('<br>')}</blockquote>`
+      : `<${tag}>${items.map(item => `<li>${item}</li>`).join('')}</${tag}>`) - 1;
+    groupedLines.push(`@@CA_LIST_${idx}@@`);
+  }
+  text = groupedLines.join('\n')
+    .replace(/\n*(@@CA_LIST_\d+@@)\n*/g, '\n\n$1\n\n')
+    .replace(/^\n+|\n+$/g, '');
 
   // Line breaks & paragraphs
   text = text.replace(/\n\n/g, '</p><p style="margin-top:12px">');
@@ -1308,6 +1374,8 @@ function renderMarkdown(text) {
   text = text.replace(/<p(?: style="margin-top:12px")?>\s*@@CA_HEADING_(\d+)@@\s*<\/p>/g, (_, idx) => headingBlocks[idx]);
   text = text.replace(/@@CA_TABLE_(\d+)@@/g, (_, idx) => tableBlocks[idx]);
   text = text.replace(/@@CA_HEADING_(\d+)@@/g, (_, idx) => headingBlocks[idx]);
+  text = text.replace(/<p(?: style="margin-top:12px")?>\s*@@CA_LIST_(\d+)@@\s*<\/p>/g, (_, idx) => listBlocks[idx]);
+  text = text.replace(/@@CA_LIST_(\d+)@@/g, (_, idx) => listBlocks[idx]);
 
   // A chart block that cannot be drawn says so instead of leaving a blank space.
   text = text.replace(/\x00CHART(\d+)\x00/g, (_, idx) => renderDataChart(chartBlocks[idx])

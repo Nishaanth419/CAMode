@@ -14,7 +14,8 @@ from typing import Any, AsyncIterator, Final
 
 import httpx
 
-from . import charts, number_check, router
+from . import charts, number_check, router, tasks, tool_results
+from .agent_events import REDACTED, RunRecorder, redact_trace_text, summarize  # noqa: F401 (re-exported)
 from .mcp_client import (
     IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
 )
@@ -341,26 +342,29 @@ def _unverified_numbers(
     return number_check.unverified_numbers(content, sources)
 
 
-def _number_warning(
+def _number_check(
     content: str, messages: list[dict[str, Any]], agent_type: str, message: str, saved_context: SavedContext | None = None,
     *, goal_maths: bool = False,
-) -> str:
-    """A warning to append when an answer cites figures that no tool returned, else "".
+) -> tuple[str, dict[str, Any] | None]:
+    """The warning to append when an answer cites figures that no tool returned, and the check as a validation event.
 
     Answers are checked whenever a tool ran (for Finance Agent that is always a goal tool), and also when the
     request was goal arithmetic (``goal_maths``: the goal calculator was offered) even if the model skipped it.
     Figures from the saved context (the user's goals and the plans computed from them) also count as sourced.
+    Returns ``("", None)`` when the answer is not checked.
     """
     used_tools = any(item.get("role") == "tool" for item in messages)
     if not (used_tools or goal_maths):
-        return ""
+        return "", None
     unverified = _unverified_numbers(content, messages, message, saved_context)
     if not unverified:
-        return ""
+        return "", {"check": "numbers", "outcome": "passed"}
     logger.warning("answer_unverified_numbers", extra={"count": len(unverified), "agent_type": agent_type})
     if agent_type != "portfolio" or (goal_maths and not used_tools):
-        return number_check.warning_note(unverified, number_check.GOAL_SOURCE)
-    return number_check.warning_note(unverified)
+        note = number_check.warning_note(unverified, number_check.GOAL_SOURCE)
+    else:
+        note = number_check.warning_note(unverified)
+    return note, {"check": "numbers", "outcome": "warning", "detail": ", ".join(unverified[:8])}
 
 
 GOAL_CALCULATOR_NUDGE: Final = (
@@ -563,39 +567,6 @@ async def _ollama_context_problem(client: httpx.AsyncClient, config: dict[str, A
     return None
 
 
-# Trace text is shown to the user and saved with the chat, so secrets and identifiers a tool
-# argument or result might carry are masked first. Keys are matched on their last word(s).
-_SENSITIVE_KEY_WORDS: tuple[str, ...] = (
-    "token", "secret", "password", "passwd", "pin", "pan", "otp", "cookie", "authorization",
-    "api_key", "apikey", "private_key", "secret_key", "session_id", "client_secret",
-)
-_JSON_PAIR = re.compile(r'"([A-Za-z0-9_\-]{1,60})"(\s*:\s*)("(?:[^"\\]|\\.)*(?:"|$)|[^,}\]\s]+)')
-_FREE_TEXT_SECRETS = (
-    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]+", re.IGNORECASE), "Bearer [redacted]"),
-    (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[redacted]"),
-    (re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"), "[redacted PAN]"),
-)
-REDACTED = "[redacted]"
-
-
-def _is_sensitive_key(key: str) -> bool:
-    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower().replace("-", "_")
-    return any(words == word or words.endswith("_" + word) for word in _SENSITIVE_KEY_WORDS)
-
-
-def redact_trace_text(text: str) -> str:
-    """Mask credentials and identifiers in trace text (JSON or a JSON prefix cut at any point)."""
-    def mask(match: re.Match[str]) -> str:
-        if not _is_sensitive_key(match.group(1)):
-            return match.group(0)
-        return f'"{match.group(1)}"{match.group(2)}"{REDACTED}"'
-
-    text = _JSON_PAIR.sub(mask, text)
-    for pattern, replacement in _FREE_TEXT_SECRETS:
-        text = pattern.sub(replacement, text)
-    return text
-
-
 def _evidence_reference(result: str) -> dict[str, str]:
     """The saved investigation a local tool result refers to, so the trace can link to its evidence."""
     if '"investigationId"' not in result:
@@ -631,17 +602,35 @@ def _tool_arguments(raw: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _tool_error_message(call: dict[str, Any], error: str, next_step: str) -> dict[str, Any]:
-    """A tool result telling the model a call failed and what to do instead."""
-    return {"role": "tool", "tool_call_id": call.get("id", ""), "content": json.dumps({
-        "error": error[:MAX_TOOL_ERROR_CHARS], "next_step": next_step,
-    })}
+def _tool_error_message(
+    call: dict[str, Any], kind: tool_results.ToolErrorKind, error: str, next_step: str | None = None,
+) -> dict[str, Any]:
+    """A tool result telling the model a call failed, how (``errorKind``) and what to do instead."""
+    return {"role": "tool", "tool_call_id": call.get("id", ""), "content": tool_results.error_payload(kind, error, next_step)}
 
 
-UNAVAILABLE_NEXT_STEP: Final = (
-    "Do not call it again for this answer. Tell the user which data is unavailable right now and answer from "
-    "what the other tools returned."
-)
+def _completion_summary(response: httpx.Response, attempt: int) -> dict[str, Any]:
+    """The ``model_result`` event for one provider response; never raises on a malformed body."""
+    summary: dict[str, Any] = {"attempt": attempt, "status": "completed" if response.is_success else "failed",
+                               "http_status": response.status_code}
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return summary
+    if not isinstance(body, dict):
+        return summary
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    choices = body.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+    summary.update(
+        finish_reason=choice.get("finish_reason"),
+        tool_calls=[str((call.get("function") or {}).get("name", ""))[:100] for call in calls if isinstance(call, dict)],
+        prompt_tokens=usage.get("prompt_tokens") if isinstance(usage.get("prompt_tokens"), int) else None,
+        completion_tokens=usage.get("completion_tokens") if isinstance(usage.get("completion_tokens"), int) else None,
+    )
+    return summary
 
 
 def _message_text(content: Any) -> str | None:
@@ -674,15 +663,19 @@ async def stream_agent(
     answers with a tool call written as text. ``saved_context`` (either agent) adds
     the user's relevant saved goals, decisions and preferences to the system prompt.
 
-    Event types:
-      • route       – { category, source, model?, duration_ms }  how the request was classified
-      • context     – { items }                     saved context added to the prompt
-      • model_call  – { provider, model, attempt }  model endpoint called
-      • tool_call   – { name, arguments, source }  tool is about to be called (source: local | indmoney)
-      • tool_result – { name, result, error?, investigation_id? }  tool returned
-      • content     – { text }                      final answer text
-      • error       – { message }                   fatal error
-      • done        – {}                            stream finished
+    Event types (``agent_events.RunRecorder`` records them):
+      • route        – { category, source, model?, duration_ms }  how the request was classified
+      • context      – { items }                     saved context added to the prompt
+      • contract     – { contract }                  the task contract (``tasks.TaskContract``)
+      • model_call   – { provider, model, attempt }  model endpoint called
+      • model_result – { attempt, status, http_status, finish_reason?, tool_calls?, prompt_tokens?, completion_tokens? }
+      • tool_call    – { name, arguments, source }  tool is about to be called (source: local | indmoney)
+      • tool_result  – { name, result?, error?, error_kind?, investigation_id? }  tool returned
+      • retry        – { reason, detail? }           the model is asked again
+      • validation   – { check, outcome, detail? }   a check on the answer
+      • content      – { text }                      final answer text
+      • error        – { message, code, auth_failed? }  fatal error
+      • done         – {}                            stream finished
     """
     if force_account_data:
         category: router.Category = "account_data"
@@ -690,6 +683,7 @@ async def stream_agent(
         category, route_info = await _route_request(message, history, provider)
         yield "route", route_info
     if category in ("code_request", "off_topic"):
+        yield "contract", {"contract": tasks.contract_for(category, agent_type, ())}
         yield "content", {"text": CODE_REFUSAL_NOTICE if category == "code_request" else FINANCE_ONLY_NOTICE}
         yield "done", {}
         return
@@ -706,7 +700,7 @@ async def stream_agent(
     requires_indmoney_data = agent_type == "portfolio" and category == "account_data"
     if requires_indmoney_data:
         if not token:
-            yield "error", {"message": "Connect your INDmoney account to use Portfolio Analyzer."}
+            yield "error", {"message": "Connect your INDmoney account to use Portfolio Analyzer.", "code": "indmoney_not_connected"}
             yield "done", {}
             return
         if context and context.cached_mcp_tools:
@@ -715,23 +709,28 @@ async def stream_agent(
             try:
                 session = await fetch_mcp_session(mcp_url, token)
             except Exception as exc:
-                yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}", **_auth_flag(exc)}
+                yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}",
+                                "code": "indmoney_auth" if isinstance(exc, McpAuthError) else "indmoney_unavailable",
+                                **_auth_flag(exc)}
                 yield "done", {}
                 return
             if context and context.on_mcp_tools:
                 context.on_mcp_tools(session["tools"])
             tools = filter_portfolio_tools(session["tools"])
         if not tools and not local_tools:
-            yield "error", {"message": "INDmoney did not provide any of CA Mode's supported portfolio tools. Reconnect INDmoney or check the MCP server."}
+            yield "error", {"message": "INDmoney did not provide any of CA Mode's supported portfolio tools. Reconnect INDmoney or check the MCP server.",
+                            "code": "no_tools"}
             yield "done", {}
             return
 
     tool_names = {tool["name"] for tool in tools}
+    tool_schemas = {tool["name"]: tool.get("inputSchema") for tool in tools}
     model_tools = _model_tools(
         [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema} for tool in local_tools.values()]
         + [tool for tool in tools if tool["name"] not in local_tools],
         provider,
     )
+    yield "contract", {"contract": tasks.contract_for(category, agent_type, [*local_tools, *tool_names])}
 
     if agent_type == "portfolio":
         prompt = _portfolio_prompt(context.profile_context if context else None)
@@ -754,7 +753,8 @@ async def stream_agent(
     goal_maths = "calculate_goal_plan" in local_tools
     retried_goal_calculation = False
     context_checked = provider != "ollama"
-    portfolio_tool_called = False
+    # An account-data request is satisfied only by a tool that reads account or market data (tasks.is_account_tool).
+    account_tool_called = False
     # Set when the lazily opened INDmoney session failed; later INDmoney calls in this answer fail fast.
     session_error: str | None = None
     ohlc_results: list[str] = []
@@ -769,7 +769,7 @@ async def stream_agent(
                         if provider == "groq" else messages
                     )
                 except RuntimeError as exc:
-                    yield "error", {"message": str(exc)}
+                    yield "error", {"message": str(exc), "code": "request_too_large"}
                     yield "done", {}
                     return
 
@@ -788,7 +788,7 @@ async def stream_agent(
                         json=payload,
                     )
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    yield "error", {"message": f"Could not connect to {config['label']}: {_error_text(exc)}"}
+                    yield "error", {"message": f"Could not connect to {config['label']}: {_error_text(exc)}", "code": "provider_unreachable"}
                     yield "done", {}
                     return
                 except httpx.TimeoutException:
@@ -796,9 +796,10 @@ async def stream_agent(
                     yield "error", {"message": (
                         f"{config['label']} did not finish answering within {config['timeout']} seconds. "
                         "Try again, or ask a shorter question."
-                    )}
+                    ), "code": "provider_timeout"}
                     yield "done", {}
                     return
+                yield "model_result", _completion_summary(response, attempt)
 
                 failed_generation = _failed_tool_generation(response)
                 if failed_generation is not None and not retried_failed_tool_use:
@@ -806,15 +807,16 @@ async def stream_agent(
                     # "repo_browser.run_code"); Groq rejects the whole response with HTTP 400.
                     retried_failed_tool_use = True
                     logger.warning("Model produced an invalid tool call; retrying")
-                    if agent_type == "portfolio" and not requires_indmoney_data and any(
-                        name in failed_generation for name in known_tools
-                    ):
+                    named = next((name for name in sorted(known_tools) if name in failed_generation), None)
+                    if agent_type == "portfolio" and not requires_indmoney_data and named:
+                        yield "retry", {"reason": "rerun_with_live_tools", "detail": f"invalid tool call naming {named}"}
                         async for event in stream_agent(
                             message, mcp_url, token, history, agent_type, provider,
                             context=context, saved_context=saved_context, force_account_data=True,
                         ):
                             yield event
                         return
+                    yield "retry", {"reason": "invalid_tool_call", "detail": "the provider rejected a malformed tool call"}
                     continue
 
                 if response.is_success and not context_checked:
@@ -822,12 +824,13 @@ async def stream_agent(
                     context_checked = True
                     problem = await _ollama_context_problem(client, config)
                     if problem:
-                        yield "error", {"message": problem}
+                        yield "error", {"message": problem, "code": "context_too_small"}
                         yield "done", {}
                         return
 
                 if not response.is_success:
-                    yield "error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"}
+                    yield "error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}",
+                                    "code": "provider_error"}
                     yield "done", {}
                     return
 
@@ -836,7 +839,8 @@ async def stream_agent(
                 choice_data = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
                 choice = choice_data.get("message")
                 if not isinstance(choice, dict):
-                    yield "error", {"message": f"{config['label']} returned an unexpected response with no message. Try again or select another provider."}
+                    yield "error", {"message": f"{config['label']} returned an unexpected response with no message. Try again or select another provider.",
+                                    "code": "provider_bad_response"}
                     yield "done", {}
                     return
                 calls = choice.get("tool_calls") or []
@@ -844,23 +848,26 @@ async def stream_agent(
                 if not calls:
                     content = _message_text(choice.get("content"))
 
-                    if requires_indmoney_data and not portfolio_tool_called:
+                    if requires_indmoney_data and not account_tool_called:
                         if not retried_portfolio_tool_selection:
                             logger.warning("Portfolio model returned no INDmoney tool call; retrying")
                             retried_portfolio_tool_selection = True
+                            yield "retry", {"reason": "no_account_tool", "detail": "answered an account question without reading account data"}
                             messages.append({"role": "assistant", "content": content or ""})
                             messages.append({
                                 "role": "user",
                                 "content": "Do not tell me to run an account check. Use one of the available INDmoney tools now to retrieve the account data needed for my original question. After the tool returns, answer using that data only.",
                             })
                             continue
-                        yield "error", {"message": f"{config['label']} did not call an INDmoney account tool. No portfolio summary was generated; try a stronger tool-capable model or another provider."}
+                        yield "error", {"message": f"{config['label']} did not call an INDmoney account tool. No portfolio summary was generated; try a stronger tool-capable model or another provider.",
+                                        "code": "no_account_tool"}
                         yield "done", {}
                         return
 
                     if (agent_type == "portfolio" and not requires_indmoney_data and content
                             and _looks_like_tool_call(content, known_tools)):
                         logger.warning("Portfolio model wrote a tool call as text; retrying with live INDmoney tools")
+                        yield "retry", {"reason": "rerun_with_live_tools", "detail": "the model wrote a tool call as text"}
                         async for event in stream_agent(
                             message, mcp_url, token, history, agent_type, provider,
                             context=context, saved_context=saved_context, force_account_data=True,
@@ -873,6 +880,7 @@ async def stream_agent(
                             and _unverified_numbers(content, messages, message, saved_context)):
                         logger.warning("Goal answer computed figures without the calculator; retrying")
                         retried_goal_calculation = True
+                        yield "retry", {"reason": "goal_calculator", "detail": "goal figures written without the calculator"}
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": GOAL_CALCULATOR_NUDGE})
                         continue
@@ -880,19 +888,25 @@ async def stream_agent(
                     if content and content.strip():
                         if _contains_code_output(content):
                             logger.warning("Blocked code-shaped model output for %s agent", agent_type)
+                            yield "validation", {"check": "code_output", "outcome": "failed", "detail": "replaced with the finance-only notice"}
                             content = FINANCE_ONLY_NOTICE
                         else:
                             content = charts.ground_candlestick_charts(content, ohlc_results)
-                            content += _number_warning(
+                            warning, number_result = _number_check(
                                 content, messages, agent_type, message, saved_context, goal_maths=goal_maths,
                             )
+                            if number_result:
+                                yield "validation", number_result
+                            content += warning
                             if choice_data.get("finish_reason") == "length":
+                                yield "validation", {"check": "length", "outcome": "warning", "detail": "cut off at the model's length limit"}
                                 content += TRUNCATION_NOTICE
                         yield "content", {"text": content}
                         yield "done", {}
                         return
 
-                    yield "error", {"message": f"{config['label']} returned an empty response. Check that the selected model is available and try again."}
+                    yield "error", {"message": f"{config['label']} returned an empty response. Check that the selected model is available and try again.",
+                                    "code": "empty_response"}
                     yield "done", {}
                     return
 
@@ -902,7 +916,7 @@ async def stream_agent(
                     function = call.get("function", {})
                     name = function.get("name", "")
                     if name not in tool_names and name not in local_tools:
-                        yield "error", {"message": f"Model requested an unknown INDmoney tool: {name}"}
+                        yield "error", {"message": f"Model requested an unknown INDmoney tool: {name}", "code": "unknown_tool"}
                         yield "done", {}
                         return
 
@@ -911,40 +925,53 @@ async def stream_agent(
                     if arguments is None:
                         # Never run a tool on arguments the model did not send: report it so the model can resend them.
                         yield "tool_call", {"name": name, "arguments": str(function.get("arguments"))[:600], "source": source}
-                        yield "tool_result", {"name": name, "error": "The arguments were not a valid JSON object; the tool was not called."}
+                        yield "tool_result", {"name": name, "error_kind": "invalid_arguments",
+                                              "error": "The arguments were not a valid JSON object; the tool was not called."}
                         messages.append(_tool_error_message(
-                            call, f"The arguments for {name} were not a valid JSON object, so it was not called.",
-                            "Call it again with a JSON object that matches its input schema, or tell the user this data is unavailable.",
+                            call, "invalid_arguments", f"The arguments for {name} were not a valid JSON object, so it was not called.",
                         ))
                         continue
 
                     yield "tool_call", {"name": name, "arguments": arguments, "source": source}
 
                     if name in local_tools:
+                        if tasks.is_account_tool(name, local_tools):
+                            account_tool_called = True
                         try:
                             result_str = await local_tools[name].handler(arguments)
                         except Exception as exc:
-                            # Report as a tool result so the model can fall back to live tools.
                             logger.warning("Local tool %s failed", name, exc_info=True)
-                            yield "tool_result", {"name": name, "error": _error_text(exc)}
+                            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "failed"}
                             # Point to live tools only when this request offers them.
                             fallback = "use the live INDmoney tools instead." if tools else "tell the user this data is unavailable right now."
-                            result_str = json.dumps({"error": f"{name} failed; {fallback}"})
-                        else:
-                            yield "tool_result", {
-                                "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
-                                **_evidence_reference(result_str),
-                            }
-                        portfolio_tool_called = True
+                            messages.append(_tool_error_message(call, "failed", f"{name} failed; {fallback}"))
+                            continue
+                        refusal = tool_results.reported_error(result_str)
+                        yield "tool_result", {
+                            "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
+                            **({"error": refusal, "error_kind": "rejected"} if refusal else {}),
+                            **_evidence_reference(result_str),
+                        }
                         messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
+                        continue
+
+                    # INDmoney tools read account or market data, so even a refused call counts as trying one.
+                    account_tool_called = True
+                    problems = tool_results.argument_problems(tool_schemas.get(name), arguments)
+                    if problems:
+                        # The tool would reject these; say so without a round trip to INDmoney.
+                        detail = "; ".join(problems)
+                        yield "tool_result", {"name": name, "error": detail, "error_kind": "invalid_arguments"}
+                        messages.append(_tool_error_message(call, "invalid_arguments", f"{name} was not called: {detail}"))
                         continue
 
                     if session is None and session_error is None:
                         try:
                             session = await fetch_mcp_session(mcp_url, token)
                         except McpAuthError as exc:
-                            yield "tool_result", {"name": name, "error": _error_text(exc)}
-                            yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}", "auth_failed": True}
+                            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
+                            yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}",
+                                            "code": "indmoney_auth", "auth_failed": True}
                             yield "done", {}
                             return
                         except Exception as exc:
@@ -954,9 +981,9 @@ async def stream_agent(
                             if context and context.on_mcp_tools:
                                 context.on_mcp_tools(session["tools"])
                     if session is None:
-                        portfolio_tool_called = True
-                        yield "tool_result", {"name": name, "error": session_error}
-                        messages.append(_tool_error_message(call, session_error or "INDmoney is unavailable.", UNAVAILABLE_NEXT_STEP))
+                        error = session_error or "INDmoney is unavailable."
+                        yield "tool_result", {"name": name, "error": error, "error_kind": "unavailable"}
+                        messages.append(_tool_error_message(call, "unavailable", error))
                         continue
 
                     try:
@@ -966,30 +993,24 @@ async def stream_agent(
                         )
                     except McpToolError as exc:
                         # The tool rejected this call (e.g. an argument outside its enum): let the model fix it.
-                        portfolio_tool_called = True
-                        yield "tool_result", {"name": name, "error": str(exc)}
-                        messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": json.dumps({
-                            "error": str(exc)[:MAX_TOOL_ERROR_CHARS],
-                            "next_step": "Correct the arguments using the tool's input schema and call it again, "
-                                         "or tell the user this data is unavailable.",
-                        })})
+                        yield "tool_result", {"name": name, "error": str(exc), "error_kind": "rejected"}
+                        messages.append(_tool_error_message(call, "rejected", str(exc)))
                         continue
                     except McpAuthError as exc:
                         # End the request so main.chat can refresh the token and try again.
-                        yield "tool_result", {"name": name, "error": _error_text(exc)}
-                        yield "error", {"message": f"INDmoney data request failed: {_error_text(exc)}", "auth_failed": True}
+                        yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
+                        yield "error", {"message": f"INDmoney data request failed: {_error_text(exc)}",
+                                        "code": "indmoney_auth", "auth_failed": True}
                         yield "done", {}
                         return
                     except Exception as exc:
                         # INDmoney could not be reached or failed: report it so the model can answer without this data.
                         logger.warning("mcp_tool_unavailable", extra={"tool": name})
-                        portfolio_tool_called = True
-                        yield "tool_result", {"name": name, "error": _error_text(exc)}
+                        yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "unavailable"}
                         messages.append(_tool_error_message(
-                            call, f"INDmoney could not provide {name}: {_error_text(exc)}", UNAVAILABLE_NEXT_STEP,
+                            call, "unavailable", f"INDmoney could not provide {name}: {_error_text(exc)}",
                         ))
                         continue
-                    portfolio_tool_called = True
                     result_str = str(result)
                     if name == charts.OHLC_TOOL_NAME:
                         ohlc_results.append(result_str)
@@ -1001,32 +1022,43 @@ async def stream_agent(
 
     except Exception as exc:
         logger.error("agent_run_failed", exc_info=True)
-        yield "error", {"message": _error_text(exc)}
+        yield "error", {"message": _error_text(exc), "code": "internal_error"}
         yield "done", {}
         return
 
-    yield "error", {"message": "Could not finish processing the INDmoney response within the tool-call limit."}
+    yield "error", {"message": "Could not finish processing the INDmoney response within the tool-call limit.",
+                    "code": "tool_call_limit"}
     yield "done", {}
 
 
 # ── Non-streaming wrapper used by the HTTP API ─────────────────────────────────
 
 class AgentResult(str):
-    """String answer with compact trace metadata for the chat UI."""
+    """String answer with the trace for the chat UI, the run's recorded events and its task-contract verdict."""
 
-    def __new__(cls, answer: str, trace: list[dict[str, Any]]):
+    def __new__(
+        cls, answer: str, trace: list[dict[str, Any]], events: list[dict[str, Any]] | None = None,
+        verdict: dict[str, Any] | None = None,
+    ):
         value = super().__new__(cls, answer)
         value.trace = trace
+        value.events = events or []
+        value.verdict = verdict
         return value
 
 
 class AgentRunError(RuntimeError):
     """The agent produced no answer. ``auth_failed`` means INDmoney rejected the token (refresh and retry)."""
 
-    def __init__(self, message: str, trace: list[dict[str, Any]], *, auth_failed: bool = False):
+    def __init__(
+        self, message: str, trace: list[dict[str, Any]], *, auth_failed: bool = False,
+        events: list[dict[str, Any]] | None = None, verdict: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.trace = trace
         self.auth_failed = auth_failed
+        self.events = events or []
+        self.verdict = verdict
 
 
 MAX_TRACE_STEPS: Final = 12
@@ -1045,6 +1077,96 @@ def bounded_trace(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [*trace[:TRACE_HEAD_STEPS], omitted, *trace[-tail:]]
 
 
+_CHECK_STATUS: Final = {"passed": "passed", "warning": "warning", "failed": "failed"}
+
+
+class _TraceBuilder:
+    """The compact step list shown under an answer, built from the same events as the recorded run."""
+
+    def __init__(self) -> None:
+        self.steps: list[dict[str, Any]] = []
+        self._model_step: dict[str, Any] | None = None
+
+    def finish_model_step(self, status: str, duration_ms: int | None = None) -> None:
+        step = self._model_step
+        if step and step.get("status") == "running":
+            step["status"] = status
+            started = step.pop("_started")
+            step["duration_ms"] = duration_ms if duration_ms is not None else round((time.perf_counter() - started) * 1000)
+        self._model_step = None
+
+    def add(self, event_type: str, payload: dict[str, Any], recorded: dict[str, Any] | None) -> None:
+        if event_type == "route":
+            self.steps.append({"kind": "route", "status": "completed", **payload})
+        elif event_type == "context" and recorded:
+            self.steps.append({"kind": "context", "status": "completed", "items": recorded["items"]})
+        elif event_type == "model_call":
+            self.finish_model_step("completed")
+            self._model_step = {
+                "kind": "model", "provider": payload.get("provider", "AI"), "model": payload.get("model", ""),
+                "attempt": payload.get("attempt", 1), "status": "running", "_started": time.perf_counter(),
+            }
+            self.steps.append(self._model_step)
+        elif event_type == "model_result":
+            step = self._model_step
+            if step is not None:
+                tokens = [payload.get(key) for key in ("prompt_tokens", "completion_tokens")]
+                if all(isinstance(value, int) for value in tokens):
+                    step["tokens"] = sum(tokens)
+                self.finish_model_step(payload.get("status", "completed"), recorded.get("durationMs") if recorded else None)
+        elif event_type == "tool_call" and recorded:
+            self.finish_model_step("completed")
+            self.steps.append({"kind": "tool", "name": recorded["name"], "source": payload.get("source", "indmoney"),
+                               "arguments": recorded["arguments"], "status": "running", "_started": time.perf_counter()})
+        elif event_type == "tool_result" and recorded:
+            self._finish_tool(recorded)
+        elif event_type == "retry":
+            self.finish_model_step("completed")
+            self.steps.append({"kind": "retry", "status": "completed", "reason": payload.get("reason", ""),
+                               **({"detail": recorded["detail"]} if recorded and recorded.get("detail") else {})})
+        elif event_type == "validation" and recorded:
+            self.add_check(recorded)
+        elif event_type == "content":
+            self.finish_model_step("completed")
+        elif event_type == "error":
+            self.finish_model_step("failed")
+
+    def _finish_tool(self, recorded: dict[str, Any]) -> None:
+        step = next((item for item in reversed(self.steps)
+                     if item.get("kind") == "tool" and item.get("name") == recorded["name"] and item.get("status") == "running"), None)
+        if not step:
+            return
+        step.pop("_started", None)
+        step["status"] = "failed" if recorded.get("errorKind") else "completed"
+        step["duration_ms"] = recorded.get("durationMs")
+        for source, target in (("resultPreview", "result_preview"), ("error", "error"), ("errorKind", "error_kind"),
+                               ("investigationId", "investigation_id")):
+            if recorded.get(source):
+                step[target] = recorded[source]
+
+    def add_check(self, recorded: dict[str, Any]) -> None:
+        self.steps.append({"kind": "check", "check": recorded.get("check", ""),
+                           "status": _CHECK_STATUS.get(recorded.get("outcome", ""), "failed"),
+                           **({"detail": recorded["detail"]} if recorded.get("detail") else {})})
+
+
+def _contract_verdict(
+    contract: tasks.TaskContract | None, recorder: RunRecorder, answer: str, trace: _TraceBuilder,
+) -> dict[str, Any] | None:
+    """Evaluate the run against its contract and record the result as a validation event and trace step."""
+    if contract is None:
+        return None
+    verdict = tasks.evaluate(contract, tasks.facts_from_events(recorder.events, answer))
+    failed = [f"{item['check']}: {item.get('detail', item['outcome'])}" for item in verdict["checks"] if item["outcome"] == "failed"]
+    recorded = recorder.add("validation", {
+        "check": "task_contract", "outcome": "passed" if verdict["status"] == "met" else "failed",
+        "detail": f"{contract.task}: " + ("; ".join(failed) if failed else "met"),
+    })
+    if recorded and contract.task != "refusal":  # A fixed refusal needs no check step under it.
+        trace.add_check(recorded)
+    return verdict
+
+
 async def run_agent(
     message: str,
     mcp_url: str,
@@ -1056,66 +1178,33 @@ async def run_agent(
     context: PortfolioContext | None = None,
     saved_context: SavedContext | None = None,
 ) -> AgentResult:
-    """Collect the answer and call trace from the agent event stream."""
+    """Collect the answer, the trace, the recorded events and the contract verdict from the agent event stream."""
     answer_parts: list[str] = []
-    trace: list[dict[str, Any]] = []
-    last_error: str | None = None
-    auth_failed = False
-    active_model_step: dict[str, Any] | None = None
-
-    def finish_model_step(status: str) -> None:
-        if active_model_step and active_model_step.get("status") == "running":
-            active_model_step["status"] = status
-            active_model_step["duration_ms"] = round((time.perf_counter() - active_model_step.pop("_started")) * 1000)
+    recorder = RunRecorder()
+    trace = _TraceBuilder()
+    contract: tasks.TaskContract | None = None
+    last_error: dict[str, Any] | None = None
 
     async for event_type, payload in stream_agent(
         message, mcp_url, token, history, agent_type, provider, context=context, saved_context=saved_context,
     ):
-        if event_type == "route":
-            trace.append({"kind": "route", "status": "completed", **payload})
-        elif event_type == "context":
-            items = [redact_trace_text(str(item)[:120]) for item in payload.get("items", [])[:12]]
-            trace.append({"kind": "context", "status": "completed", "items": items})
-        elif event_type == "content":
-            finish_model_step("completed")
+        if event_type == "contract":
+            contract = payload["contract"]
+        recorded = recorder.add(event_type, payload)
+        trace.add(event_type, payload, recorded)
+        if event_type == "content":
             answer_parts.append(payload.get("text", ""))
-        elif event_type == "model_call":
-            finish_model_step("completed")
-            active_model_step = {
-                "kind": "model", "provider": payload.get("provider", "AI"),
-                "model": payload.get("model", ""), "attempt": payload.get("attempt", 1),
-                "status": "running", "_started": time.perf_counter(),
-            }
-            trace.append(active_model_step)
-        elif event_type == "tool_call":
-            finish_model_step("completed")
-            arguments = payload.get("arguments", {})
-            # A string is the model's own text when it was not a JSON object (the call was refused).
-            arguments_text = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
-            trace.append({
-                "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
-                "source": payload.get("source", "indmoney"),
-                "arguments": redact_trace_text(arguments_text[:600]), "status": "running",
-                "_started": time.perf_counter(),
-            })
-        elif event_type == "tool_result":
-            name = str(payload.get("name", ""))
-            step = next((item for item in reversed(trace) if item.get("kind") == "tool" and item.get("name") == name and item.get("status") == "running"), None)
-            if step:
-                step["status"] = "failed" if payload.get("error") else "completed"
-                step["duration_ms"] = round((time.perf_counter() - step.pop("_started")) * 1000)
-                if payload.get("result"):
-                    step["result_preview"] = redact_trace_text(str(payload["result"])[:1000])
-                if payload.get("error"):
-                    step["error"] = redact_trace_text(str(payload["error"])[:300])
-                if payload.get("investigation_id"):
-                    step["investigation_id"] = payload["investigation_id"]
         elif event_type == "error":
-            finish_model_step("failed")
-            last_error = payload.get("message") or "The request failed without an error message."
-            auth_failed = bool(payload.get("auth_failed"))
-    finish_model_step("completed")
+            last_error = payload
+    trace.finish_model_step("completed")
     answer = "".join(answer_parts)
+    verdict = _contract_verdict(contract, recorder, answer, trace)
     if not answer:
-        raise AgentRunError(last_error or "No answer was produced.", bounded_trace(trace), auth_failed=auth_failed)
-    return AgentResult(answer, bounded_trace(trace))
+        auth_failed = bool(last_error and last_error.get("auth_failed"))
+        code = (last_error or {}).get("code")
+        recorder.terminate("auth_failed" if auth_failed else "failed", code)
+        message_text = (last_error or {}).get("message") or "No answer was produced."
+        raise AgentRunError(message_text, bounded_trace(trace.steps), auth_failed=auth_failed,
+                            events=recorder.events, verdict=verdict)
+    recorder.terminate("refused" if contract and contract.task == "refusal" else "answered")
+    return AgentResult(answer, bounded_trace(trace.steps), recorder.events, verdict)

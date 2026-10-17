@@ -156,6 +156,9 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
   overflow-y: auto;
 }
 #sidebar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .12); }
+/* Only the recent chats shrink and scroll, so the profile button stays in view;
+   the sidebar itself scrolls only when even the menu does not fit. */
+#sidebar > * { flex-shrink: 0; }
 .brand {
   display: flex;
   align-items: center;
@@ -230,7 +233,8 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 }
 .see-all { color: var(--side-soft); font-size: 12px; font-weight: 500; text-decoration: none; }
 .see-all:hover, .see-all[aria-current="page"] { color: var(--mint); }
-#chat-list { margin: -10px -6px 0; padding: 0 6px; }
+#chat-list { flex: 0 1 auto; min-height: 56px; margin: -10px -6px 0; padding: 0 6px; overflow-y: auto; }
+#chat-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .12); }
 .chat-row { position: relative; display: flex; align-items: center; margin: 2px 0; }
 .chat-select {
   display: grid;
@@ -551,6 +555,16 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 .message-body strong { color: var(--text); font-weight: 700; }
 .message-body a { color: var(--accent-3); text-decoration: underline; text-underline-offset: 2px; }
 .message-body ul, .message-body ol { margin: 8px 0 8px 20px; }
+.message-body li + li { margin-top: 4px; }
+.message-body hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border); }
+.message-body blockquote {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--amber);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--amber-soft);
+  color: var(--text);
+}
 .message-body code {
   padding: 2px 6px;
   border: 1px solid var(--border);
@@ -1701,3 +1715,9 @@ a.tool-tile { text-decoration: none; }
 .gate-legal { margin: 10px 0 0; font-size: 11.5px; }
 .gate-legal a, .notice-link a { color: var(--accent); }
 .notice-link { margin: 10px 0 0; font-size: 12.5px; }
+
+/* Answer runs in Activity (trace.js renderRunCard) and the link under an answer's trace */
+.run-card { display: grid; gap: 12px; }
+.run-title { margin: 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.chat-trace-link { display: inline-block; margin-top: 8px; font-size: 12px; }
+.activity-panel > h2 { margin: 0; font-size: 15px; }
