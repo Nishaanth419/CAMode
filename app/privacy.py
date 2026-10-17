@@ -70,6 +70,15 @@ NOTICE: Final = (
         ),
     },
     {
+        "title": "In your browser",
+        "body": (
+            "CA Mode sets one cookie, which keeps this browser signed in to your profile, and remembers your theme, "
+            "agent and model choice in this browser. It has no analytics, advertising or tracking. Pages load fonts "
+            "from Google Fonts and the chart library from cdn.plot.ly, so those services see this computer's IP "
+            "address when the app opens."
+        ),
+    },
+    {
         "title": "Your controls",
         "body": (
             "From your profile you can change these choices at any time, export your data, clear your saved history, "

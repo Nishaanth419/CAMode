@@ -300,6 +300,9 @@ python -m scripts.eval_numbers --provider groq --delay 70   # the delay keeps wi
 
 ## Local data and privacy
 
+The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.
+
+
 The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney OAuth tokens, and portfolio snapshots. Each profile sees only its own data.
 
 - PINs are stored as salted scrypt hashes. Five wrong PINs or recovery codes lock the profile for five minutes.
@@ -383,8 +386,10 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/tools` | INDmoney tools available to the signed-in profile |
 | `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect` | INDmoney OAuth |
 | `GET /healthz` | Health check |
+| `GET /privacy` | Privacy policy page, rendered from the same notice profiles accept (no profile needed) |
+| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy`; URLs use `APP_ORIGIN` |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, and the sign-up, sign-in, and sign-out routes requires a signed-in profile. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
+Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, and sign-out routes, and the public pages (`/`, `/privacy`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
 
 ## Troubleshooting
 
@@ -425,6 +430,7 @@ app/
   db.py            SQLite connection, schema, and migrations
   users.py         Profiles, PIN sign-in, sessions, and per-profile INDmoney tokens
   privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
+  public_pages.py  App shell with absolute Open Graph URLs, privacy policy and 404 pages, robots.txt, sitemap.xml
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
@@ -457,6 +463,7 @@ tests/
   test_users.py      PINs, lockout, sessions, migration, profile isolation
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
+  test_public_pages.py Meta tags, privacy page, robots/sitemap, HTML vs JSON 404s, icons and manifest
   test_mcp_client.py MCP protocol handling and tool filtering
   test_vault.py      Master key handling, token encryption, startup migration
   test_unlock.py     PIN-locked history, restart locking, recovery codes, upgrading old profiles

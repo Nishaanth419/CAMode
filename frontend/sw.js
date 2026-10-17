@@ -1,5 +1,5 @@
-const CACHE_NAME = 'ca-mode-shell-v21';
-const APP_SHELL = ['/', '/css/app.css', '/js/finance.js', '/js/trace.js', '/js/app.js', '/js/pages.js', '/js/rail.js', '/manifest.webmanifest', '/icon.svg'];
+const CACHE_NAME = 'ca-mode-shell-v22';
+const APP_SHELL = ['/', '/css/app.css', '/js/finance.js', '/js/trace.js', '/js/app.js', '/js/pages.js', '/js/rail.js', '/manifest.webmanifest', '/icon.svg', '/favicon.ico', '/icon-192.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
