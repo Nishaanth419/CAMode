@@ -170,11 +170,7 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, signed_in, mon
         calls.append(token)
         assert context is not None
         if token == "stale-token":
-            raise AgentRunError(
-                'MCP tools/call failed for "get_indian_stocks_option_chain": 401 '
-                '{"error":"invalid_token","error_description":"Authentication required"}',
-                [],
-            )
+            raise AgentRunError('MCP tools/call failed for "get_indian_stocks_option_chain": 401 ', [], auth_failed=True)
         return "Option-chain data from refreshed INDmoney session."
 
     monkeypatch.setattr(users, "user_access_token", fake_user_access_token)
@@ -189,6 +185,29 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, signed_in, mon
     assert response.text == "Option-chain data from refreshed INDmoney session."
     assert refreshed == [signed_in["id"]]
     assert calls == ["stale-token", "fresh-token"]
+
+
+def test_an_ai_provider_401_does_not_refresh_the_indmoney_token(client, signed_in, monkeypatch):
+    connect_user_to_indmoney(signed_in["id"])
+    chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
+    refreshed = []
+
+    async def fake_user_access_token(user_id, *, force_refresh=False):
+        if force_refresh:
+            refreshed.append(user_id)
+        return "token"
+
+    async def fake_run_agent(*args, **kwargs):
+        # The words the old text check looked for, but from the AI provider rather than INDmoney.
+        raise AgentRunError('OpenAI request failed: HTTP 401 {"error": "Unauthorized", "code": "invalid_token"}', [])
+
+    monkeypatch.setattr(users, "user_access_token", fake_user_access_token)
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    response = client.post("/api/chat", json={"message": "Show my holdings", "chatId": chat["id"], "agentType": "portfolio"})
+
+    assert response.status_code == 502
+    assert refreshed == []
 
 
 def test_portfolio_chat_passes_snapshot_context_and_only_relevant_saved_context(client, signed_in, monkeypatch):

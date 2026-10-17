@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
-from typing import Any, Final
+from typing import Any, Final, get_args
 
 from pydantic import ValidationError
 
@@ -465,6 +465,25 @@ _CALCULATOR_FIELDS: Final = {
     "inflationPct": "inflationPct", "flexibility": "flexibility", "liquidityNeed": "liquidityNeed",
     "riskTolerance": "riskTolerance", "lossCapacity": "lossCapacity",
 }
+# Models fill arguments the user never gave with placeholders ("", "₹", "Moderate"). Blanks count as not given and
+# currency symbols map to codes, so the call is not rejected and retried.
+_CURRENCY_ALIASES: Final = {
+    "₹": "INR", "RS": "INR", "RS.": "INR", "RUPEE": "INR", "RUPEES": "INR", "$": "USD", "US$": "USD", "€": "EUR",
+    "£": "GBP",
+}
+# A goal written in rupees ("₹50 lakh", "Rs 2 crore") is in INR even when the model leaves the currency out, unless
+# the same text also names another currency.
+_INR_TEXT: Final = re.compile(r"₹|\brs\.?(?![a-z])|\b(?:lakhs?|lacs?|crores?)\b", re.IGNORECASE)
+_OTHER_CURRENCY_TEXT: Final = re.compile(r"[$€£]|\b(?:usd|eur|gbp|dollars?|euros?|pounds?)\b", re.IGNORECASE)
+CURRENCY_FROM_TEXT_NOTE: Final = (
+    "No currency was given, so INR was used because the user's message is in rupees (₹, Rs, lakh or crore)."
+)
+# Suitability inputs are taken only as the exact choices. Anything else ("Moderate", "High") is left out, so the
+# rules use their cautious value, and is reported instead of failing the call.
+_SUITABILITY_CHOICES: Final = {
+    "flexibility": get_args(memory.Flexibility), "liquidityNeed": get_args(memory.Level),
+    "riskTolerance": get_args(memory.Level), "lossCapacity": get_args(memory.Level),
+}
 
 
 def _validation_message(exc: ValidationError) -> str:
@@ -476,13 +495,46 @@ def _validation_message(exc: ValidationError) -> str:
     return f"{where}: {message}" if where else message
 
 
-def calculate_goal(arguments: dict[str, Any], today: date) -> dict[str, Any]:
-    """A plan for a goal described in chat (never saved), validated like a saved goal; ``{"error"}`` when invalid."""
-    fields = {_CALCULATOR_FIELDS[key]: value for key, value in arguments.items() if key in _CALCULATOR_FIELDS and value is not None}
-    for name in _CALCULATOR_AMOUNTS:
-        # Models write amounts as floats ("5000000.0"); goals keep whole units.
-        if isinstance(fields.get(name), float):
-            fields[name] = round(fields[name])
+def _calculator_fields(arguments: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """The calculator arguments as goal fields, and the suitability inputs left out with the reason."""
+    fields: dict[str, Any] = {}
+    ignored: dict[str, str] = {}
+    for key, value in arguments.items():
+        if key not in _CALCULATOR_FIELDS:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+        if value is None or value == "":
+            continue
+        if key == "currency" and isinstance(value, str):
+            value = _CURRENCY_ALIASES.get(value.upper(), value.upper())
+        if key in _SUITABILITY_CHOICES and value not in _SUITABILITY_CHOICES[key]:
+            choices = ", ".join(_SUITABILITY_CHOICES[key])
+            ignored[key] = f"{str(value)[:40]!r} is not one of {choices}, so the cautious value was used"
+            continue
+        if key in _CALCULATOR_AMOUNTS and isinstance(value, float):
+            # Models write amounts as floats ("5000000.0"); goals keep whole units.
+            value = round(value)
+        fields[_CALCULATOR_FIELDS[key]] = value
+    return fields, ignored
+
+
+def _reads_as_inr(user_text: str) -> bool:
+    """Whether the user's own words put the goal in rupees and name no other currency."""
+    return bool(_INR_TEXT.search(user_text)) and not _OTHER_CURRENCY_TEXT.search(user_text)
+
+
+def calculate_goal(arguments: dict[str, Any], today: date, *, user_text: str = "") -> dict[str, Any]:
+    """A plan for a goal described in chat (never saved), validated like a saved goal; ``{"error"}`` when invalid.
+
+    ``user_text`` is what the user wrote in this chat: when the call has no currency and that text is in rupees,
+    the goal is planned in INR and the result says so in ``currencyNote``.
+    """
+    fields, ignored = _calculator_fields(arguments)
+    currency_note = None
+    if "currency" not in fields and _reads_as_inr(user_text):
+        fields["currency"] = "INR"
+        currency_note = CURRENCY_FROM_TEXT_NOTE
     try:
         body = memory.GoalInput(name="Goal described in chat", status="draft", **fields)
         goal = memory._goal_data(body, today=today)
@@ -501,15 +553,20 @@ def calculate_goal(arguments: dict[str, Any], today: date) -> dict[str, Any]:
         },
         "plan": item["plan"], "suitability": item["suitability"], "followUps": item["followUps"],
         "assumptions": plan.get("assumptions", list(goal_planning.ASSUMPTIONS)), "fundData": goal_suitability.FUND_DATA["reason"],
+        **({"ignoredInputs": ignored} if ignored else {}),
+        **({"currencyNote": currency_note} if currency_note else {}),
     }
 
 
-def goal_calculator_tool(*, today: date | None = None) -> LocalTool:
-    """A read-only calculator for a goal the user describes in chat. It reads and saves nothing."""
+def goal_calculator_tool(*, today: date | None = None, user_text: str = "") -> LocalTool:
+    """A read-only calculator for a goal the user describes in chat. It reads and saves nothing.
+
+    ``user_text`` (the user's own messages in this chat) lets a goal written in rupees default to INR.
+    """
 
     async def calculate_goal_plan(arguments: dict[str, Any]) -> str:
         day = today or snapshots.local_now().date()
-        return json.dumps(calculate_goal(arguments, day), ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(calculate_goal(arguments, day, user_text=user_text), ensure_ascii=False, separators=(",", ":"))
 
     level = {"type": "string", "enum": ["low", "medium", "high"]}
     return LocalTool(
@@ -629,7 +686,7 @@ def goal_tools(user: dict[str, Any], *, include_holdings: bool, today: date | No
             description=(
                 "The user's saved goals with calculated plans, feasibility, ways to close a gap, investment category "
                 "suitability from fixed rules, and questions still unanswered. Quote its figures; never recompute. "
-                "It has no fund data, so never name or rank funds."
+                "It has no fund figures, so never name or rank funds from it."
             ),
             input_schema={"type": "object", "properties": {
                 "goalName": {"type": "string", "description": "Only the goal with this name; omit for all goals."},

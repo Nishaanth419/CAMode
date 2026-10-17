@@ -1020,6 +1020,69 @@ function suitabilityBlock(suitability) {
     <details class="goal-scenarios"><summary>Why</summary><ul class="goal-notes">${reasons}</ul><p class="goal-meta">${escHtml(suitability.note)}</p></details></div>`;
 }
 
+/* Fund figures for a goal's suitable categories: fetched on request, every figure with its date and source */
+const FUND_COLUMNS = [
+  ['expenseRatioPct', 'Expense ratio'], ['return1yPct', '1Y return'], ['return3yPct', '3Y return'],
+  ['return5yPct', '5Y return'], ['risk', 'Risk level'], ['benchmark', 'Benchmark'],
+];
+
+function fundBlock(goal) {
+  return `<div class="goal-section" data-fund-host="${escHtml(goal.id)}"><h4>Funds in the categories that fit</h4>
+    <p class="goal-meta">INDmoney's figures for the largest schemes in each suitable category, each with its date. Listed by name, not ranked. Not advice.</p>
+    <div><button class="table-action" type="button" data-compare-funds="${escHtml(goal.id)}">Show fund figures</button></div></div>`;
+}
+
+function fundFigure(fund, field, label) {
+  const metric = fund.metrics[field];
+  if (metric) {
+    return `<div><dt>${label}</dt><dd>${escHtml(fundMetricValue(field, metric))}<small class="fund-note ${metric.status === 'current' ? '' : 'is-warn'}" title="${escHtml(metric.source)}">${escHtml(fundMetricNote(metric, formatDate))}</small></dd></div>`;
+  }
+  const gap = fund.missing.find((item) => item.field === field);
+  return `<div><dt>${label}</dt><dd>—<small class="fund-note">${escHtml(gap ? `Missing: ${gap.reason}` : 'Missing')}</small></dd></div>`;
+}
+
+function fundCategoryBlock(entry) {
+  const head = `<h5>${escHtml(entry.label)} <span class="verdict-chip is-${escHtml(entry.verdict)}">${escHtml(VERDICT_LABELS[entry.verdict] || entry.verdict)}</span></h5>`;
+  if (!entry.available) return `${head}<p class="goal-meta is-warn">${escHtml(entry.reason || 'No fund data.')}</p>`;
+  const items = entry.funds.map((fund) => {
+    const navNote = fund.missing.find((item) => item.field === 'navDate');
+    return `<li class="fund-item"><strong>${escHtml(fund.name)}</strong><small class="fund-note">INDmoney category: ${escHtml(fund.category || 'not given')}${navNote ? ` · ${escHtml(navNote.reason)}` : ''}</small>
+      <dl class="fund-metrics">${FUND_COLUMNS.map(([field, label]) => fundFigure(fund, field, label)).join('')}</dl></li>`;
+  }).join('');
+  const excluded = entry.excluded.length
+    ? `<p class="goal-meta">Left out: ${entry.excluded.map((item) => `${escHtml(item.name)} (${escHtml(item.reason)})`).join('; ')}</p>` : '';
+  return `${head}<ul class="fund-list">${items}</ul>${excluded}`;
+}
+
+function fundComparisonHtml(data, goalName) {
+  const title = '<h4>Funds in the categories that fit</h4>';
+  const notCompared = (data.unsuitableCategories || []).length
+    ? `<p class="goal-meta">Not compared, because they are unsuitable for this goal: ${escHtml(data.unsuitableCategories.join(', '))}.</p>` : '';
+  const footer = `${notCompared}<p class="goal-meta">${escHtml(data.selection || '')} ${escHtml(data.datedBy || '')} Figures older than ${data.staleAfterDays} days are marked old.</p>
+    <p class="goal-meta">${escHtml(data.note || '')}</p>`;
+  if (!data.available) {
+    const reasons = (data.categories || []).map(fundCategoryBlock).join('');
+    return `${title}<p class="goal-meta is-warn">${escHtml(data.reason || 'No fund data.')}</p>${reasons}${notCompared}`;
+  }
+  const ask = `Show the INDmoney fund figures for my goal "${goalName}" with their dates and what is missing. Do not rank them.`;
+  return `${title}${data.categories.map(fundCategoryBlock).join('')}${footer}
+    <div><button class="table-action" type="button" data-agent="portfolio" data-prompt="${escHtml(ask)}">Ask AI about these figures</button></div>`;
+}
+
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-compare-funds]');
+  if (!button) return;
+  const host = button.closest('[data-fund-host]');
+  const goalName = host.closest('.goal-card')?.querySelector('h3')?.textContent || '';
+  host.innerHTML = loadingBlock();
+  try {
+    const data = await fetchJson(`/api/goals/${encodeURIComponent(button.dataset.compareFunds)}/funds`);
+    host.innerHTML = fundComparisonHtml(data, goalName);
+  } catch (error) {
+    host.innerHTML = `<h4>Funds in the categories that fit</h4>${errorBlock(error)}`;
+  }
+});
+
 function followUpsBlock(goal) {
   const items = goal.followUps || [];
   if (!items.length) return '';
@@ -1114,6 +1177,7 @@ function goalCard(goal, tone) {
     ${feasibility}
     ${alternativesList(plan)}
     ${suitabilityBlock(goal.suitability)}
+    ${fundBlock(goal)}
     ${mappingBlock(goal)}
     ${followUpsBlock(goal)}
     ${goal.notes ? `<p class="goal-meta goal-note">${escHtml(goal.notes)}</p>` : ''}

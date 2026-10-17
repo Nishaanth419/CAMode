@@ -80,6 +80,14 @@ async def _post(client: httpx.AsyncClient, url: str, headers: dict[str, str], pa
     return await client.post(url, headers=headers, json=payload)
 
 
+class McpAuthError(RuntimeError):
+    """INDmoney rejected the OAuth token (HTTP 401, or an error that reads as one).
+
+    The agent ends the request on this error so ``main.chat`` can refresh the token
+    and try once more; every other MCP failure is reported to the model instead.
+    """
+
+
 async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=45) as client:
         init = await _post(client, url, _headers(token), {
@@ -95,7 +103,7 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
             hint = " INDmoney rejected the saved OAuth token; reconnect the account." if init.status_code == 401 else ""
             if init.status_code == 401 and not token:
                 hint = " INDmoney requires OAuth sign-in; this request has no user token."
-            raise RuntimeError(
+            raise (McpAuthError if init.status_code == 401 else RuntimeError)(
                 f"MCP initialize failed: {init.status_code} {init.reason_phrase}.{hint}"
                 f"{f' WWW-Authenticate: {challenge}.' if challenge else ''}"
                 f"{f' Response: {init.text[:500]}' if init.text else ''}"
@@ -111,7 +119,9 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
         })
         if not tools_response.is_success:
-            raise RuntimeError(f"MCP tools/list failed: {tools_response.status_code} {tools_response.text[:500]}")
+            raise (McpAuthError if tools_response.status_code == 401 else RuntimeError)(
+                f"MCP tools/list failed: {tools_response.status_code} {tools_response.text[:500]}"
+            )
         tools_result = _rpc_body(tools_response)
         tools = (tools_result or {}).get("result", {}).get("tools")
         if not isinstance(tools, list):
@@ -123,9 +133,8 @@ class McpToolError(RuntimeError):
     """A tool ran and reported an error (``isError``), such as rejected arguments.
 
     MCP returns these as results so the model can correct the call; the agent passes
-    them back instead of failing the request. Transport and JSON-RPC errors, and
-    tool errors that read as an authentication failure (so the token is refreshed),
-    stay plain ``RuntimeError``.
+    them back instead of failing the request. Tool errors that read as an
+    authentication failure raise ``McpAuthError`` instead, so the token is refreshed.
     """
 
 
@@ -153,16 +162,19 @@ async def call_mcp_tool(
     else:
         response = await _post(client, url, headers, payload)
     if not response.is_success:
-        raise RuntimeError(f'MCP tools/call failed for "{name}": {response.status_code} {response.text[:500]}')
+        raise (McpAuthError if response.status_code == 401 else RuntimeError)(
+            f'MCP tools/call failed for "{name}": {response.status_code} {response.text[:500]}'
+        )
     rpc = _rpc_body(response) or {}
     if rpc.get("error"):
-        raise RuntimeError(f'MCP tools/call error for "{name}": {rpc["error"].get("message", rpc["error"])}')
+        message = f'MCP tools/call error for "{name}": {rpc["error"].get("message", rpc["error"])}'
+        raise McpAuthError(message) if _reads_as_auth_failure(message) else RuntimeError(message)
     result = rpc.get("result") or {}
     content = result.get("content")
     if result.get("isError") is True:
         rendered = "\n".join(str(item.get("text", item)) for item in content or [])
         message = f'MCP tool "{name}" failed: {rendered or result}'
-        raise RuntimeError(message) if _reads_as_auth_failure(message) else McpToolError(message)
+        raise McpAuthError(message) if _reads_as_auth_failure(message) else McpToolError(message)
     if isinstance(content, list):
         return "\n".join(str(item.get("text", json.dumps(item, ensure_ascii=False))) for item in content)
     return result

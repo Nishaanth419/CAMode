@@ -23,12 +23,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
-from .context import observed_sources, retrieve_context, wants_goal_calculator
+from .context import observed_sources, request_text, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
-from .mcp_client import fetch_mcp_session, filter_portfolio_tools
+from .mcp_client import McpAuthError, fetch_mcp_session, filter_portfolio_tools
 from .users import (
     INDMONEY_REVOKE_URL,
     INDMONEY_TOKEN_URL,
@@ -219,8 +219,12 @@ def pin_error(exc: users.ProfileLockedError | None = None) -> JSONResponse:
 
 
 def is_indmoney_auth_error(error: Exception) -> bool:
-    details = str(error).lower()
-    return "401" in details and any(term in details for term in ("invalid_token", "authentication required", "unauthorized"))
+    """Whether INDmoney rejected the token, so the chat refreshes it and tries once more.
+
+    The agent marks these errors (``AgentRunError.auth_failed``) from ``McpAuthError``; matching the text instead
+    missed some INDmoney 401s and could mistake an AI provider's 401 for an INDmoney one.
+    """
+    return bool(getattr(error, "auth_failed", False)) or isinstance(error, McpAuthError)
 
 
 @app.middleware("http")
@@ -520,6 +524,25 @@ async def get_goal(goal_id: str, request: Request):
     if goal is None:
         return _not_found("Goal")
     return await asyncio.to_thread(goal_portfolio.goal_with_mapping, user, goal, _today())
+
+
+@app.get("/api/goals/{goal_id}/funds")
+async def goal_funds(goal_id: str, request: Request, category: str | None = None):
+    """INDmoney's figures for funds in the categories that suit a goal, each with its source and date.
+
+    Fetched live (cached in memory, never stored); listed by name, never ranked. ``category`` limits it to one
+    ``goal_suitability.CATEGORIES`` id. Not advice.
+    """
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    goal = memory.get_goal(user["id"], goal_id, user["keys"])
+    if goal is None:
+        return _not_found("Goal")
+    try:
+        return await fund_data.goal_comparison(user, goal, _today(), category)
+    except fund_data.FundDataError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
 
 
 @app.put("/api/goals/{goal_id}")
@@ -922,6 +945,7 @@ async def disconnect_indmoney(request: Request):
         return profile_required()
     await revoke_indmoney(user)
     users.clear_indmoney(user["id"])
+    fund_data.clear_cache(user["id"])
     return {"connected": False}
 
 
@@ -1113,7 +1137,10 @@ async def chat(body: ChatRequest, request: Request):
     # Saved-goal tools are offered only to profiles that have a goal, and the calculator only to requests that read
     # as goal arithmetic, so every other request is unchanged.
     has_goals = memory.count_goals(user["id"]) > 0
-    calculator = [goal_portfolio.goal_calculator_tool()] if wants_goal_calculator(message, history) else []
+    calculator = (
+        [goal_portfolio.goal_calculator_tool(user_text=request_text(message, history))]
+        if wants_goal_calculator(message, history) else []
+    )
     if body.agentType != "portfolio":
         goal_tools = goal_portfolio.goal_tools(user, include_holdings=False) if has_goals else []
         if goal_tools or calculator:
@@ -1124,7 +1151,7 @@ async def chat(body: ChatRequest, request: Request):
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
         extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
         if has_goals:
-            extra_tools += goal_portfolio.goal_tools(user, include_holdings=True)
+            extra_tools += [*goal_portfolio.goal_tools(user, include_holdings=True), fund_data.fund_comparison_tool(user)]
         extra_tools += calculator
         context = snapshots.portfolio_context(user, extra_tools=extra_tools)
     try:

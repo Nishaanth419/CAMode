@@ -153,7 +153,8 @@ def test_rpc_body_skips_notifications_and_joins_multiline_data():
 @pytest.mark.parametrize(("text", "error_type"), [
     ("1 validation error for get_indian_stocks_ohlcArguments lookback Input should be '1h', '3h', '1d', '7d', '14d' or '1y'",
      mcp_client.McpToolError),
-    ("401 Unauthorized: invalid_token", RuntimeError),
+    ("401 Unauthorized: invalid_token", mcp_client.McpAuthError),
+    ("invalid_token: access token expired", mcp_client.McpAuthError),
 ])
 async def test_tool_errors_are_retryable_unless_they_read_as_auth_failures(monkeypatch, text, error_type):
     class FakeClient:
@@ -170,5 +171,51 @@ async def test_tool_errors_are_retryable_unless_they_read_as_auth_failures(monke
 
     with pytest.raises(RuntimeError) as raised:
         await mcp_client.call_mcp_tool("https://mcp.example/mcp", "token", "v", None, "get_indian_stocks_ohlc", {})
+
+    assert type(raised.value) is error_type
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "body", "error_type"), [
+    (401, "", mcp_client.McpAuthError),
+    (401, '{"error":"token expired"}', mcp_client.McpAuthError),
+    (503, "Service Unavailable", RuntimeError),
+])
+async def test_a_failed_tool_call_is_an_auth_error_only_for_http_401(monkeypatch, status, body, error_type):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return httpx.Response(status, text=body, request=httpx.Request("POST", "https://mcp.example/mcp"))
+
+    monkeypatch.setattr(mcp_client.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    with pytest.raises(RuntimeError) as raised:
+        await mcp_client.call_mcp_tool("https://mcp.example/mcp", "token", "v", None, "networth_snapshot", {})
+
+    assert type(raised.value) is error_type
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "error_type"), [(401, mcp_client.McpAuthError), (500, RuntimeError)])
+async def test_session_setup_is_an_auth_error_only_for_http_401(monkeypatch, status, error_type):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return httpx.Response(status, text="no", request=httpx.Request("POST", "https://mcp.example/mcp"))
+
+    monkeypatch.setattr(mcp_client.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    with pytest.raises(RuntimeError) as raised:
+        await mcp_client.fetch_mcp_session("https://mcp.example/mcp", "token")
 
     assert type(raised.value) is error_type

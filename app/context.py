@@ -303,7 +303,7 @@ def render(
             f"Calculated in code on {today.isoformat()} from the goals above "
             "(hypothetical illustrations, not forecasts or promised returns):"
         )
-        sections.append("No fund-level data: do not name or rank specific funds.")
+        sections.append("Fund-level data: only what get_goal_fund_comparison returns, when it is offered; never rank funds.")
         for goal in goals:
             sections.extend(_plan_lines(goal))
         assumptions = list(goal_planning.ASSUMPTIONS)

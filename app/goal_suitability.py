@@ -3,9 +3,9 @@
 Pure functions with no I/O. The rules are data (``CATEGORIES`` and the checks in
 ``_rules``) so they can be read, tested and changed in one place; the model only
 explains the output and never decides. Suitability is judged for broad categories,
-never for named funds: CA Mode holds no reliable, dated scheme data (see
-``FUND_DATA``), and the category descriptions carry no returns or risk figures
-because none can be sourced here. Nothing in this module is advice.
+never for named funds, and the category descriptions carry no returns or risk
+figures. Scheme figures for the categories a goal allows come separately from
+``app.fund_data`` (see ``FUND_DATA``). Nothing in this module is advice.
 
 Missing inputs never make a category look safer: each one is replaced by its most
 cautious value, listed in ``assumed``, and ``enoughInformation`` is False.
@@ -59,16 +59,16 @@ _INPUT_LABELS: Final = {
     "riskTolerance": "risk tolerance", "lossCapacity": "capacity for loss",
 }
 
+# Scheme figures come from app.fund_data (live INDmoney responses, each figure with its source and date), only for
+# categories a goal does not rule out, and never ranked. Suitability here stays category-level and fund-blind.
 FUND_DATA: Final = {
-    "available": False,
+    "available": True,
+    "source": "INDmoney get_mf_by_category and get_mf_funds_details",
+    "fields": ["expense ratio", "1-, 3- and 5-year returns", "risk level", "benchmark"],
     "reason": (
-        "CA Mode has no reliable, dated scheme data (category, expense ratio, benchmark, risk level, returns), "
-        "so it does not rank or name funds."
-    ),
-    "missingIntegration": (
-        "INDmoney's get_mf_by_category and get_mf_funds_details tools are allowlisted but their response layout is "
-        "undocumented; a parser needs a recorded live response (scripts/inspect_indmoney_shapes.py) with an as-of "
-        "date before funds can be ranked."
+        "Fund figures (expense ratio, 1/3/5-year returns, risk level, benchmark) come from INDmoney with their date, "
+        "for the categories that suit a saved goal, on the Goals page and in Portfolio Analyzer when INDmoney is "
+        "connected. Funds are listed by name, never ranked, and nothing here is advice."
     ),
 }
 

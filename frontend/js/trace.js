@@ -155,6 +155,11 @@
         view.details.push({ label: 'Output preview (first 1,000 characters)', code: prettyJson(redactText(item.result_preview)) });
       }
       if (item.investigation_id) view.links.push({ label: 'Open investigation', href: `#/activity/${encodeURIComponent(item.investigation_id)}` });
+    } else if (item.kind === 'omitted') {
+      // The server keeps a long run's first and last steps and counts the ones in between (agent.bounded_trace).
+      const count = omittedCount(item);
+      view.title = `${count} step${count === 1 ? '' : 's'} not shown`;
+      view.purpose = 'Long answers keep their first and last steps';
     } else {
       view.title = item.kind ? `Step: ${String(item.kind)}` : 'Step';
       view.tool = item.name || '';
@@ -225,12 +230,17 @@
   }
 
   // The disclosure under each assistant answer. The trace arrives after the answer, so every step has ended.
+  function omittedCount(step) {
+    return Math.max(0, Math.floor(Number(step.count)) || 0);
+  }
+
   function renderChatTrace(trace) {
     if (!Array.isArray(trace) || !trace.length) return '';
     const views = trace.map((step) => chatStepView(step, true));
     const failed = countBy(views, 'error');
     const extra = failed ? ` · ${failed} did not complete` : '';
-    return `<details class="chat-trace"><summary>How this answer was made · ${views.length} step${views.length === 1 ? '' : 's'}${extra}</summary>${renderTimeline(views, { label: 'Answer steps' })}</details>`;
+    const total = trace.reduce((sum, step) => sum + (step && step.kind === 'omitted' ? omittedCount(step) : 1), 0);
+    return `<details class="chat-trace"><summary>How this answer was made · ${total} step${total === 1 ? '' : 's'}${extra}</summary>${renderTimeline(views, { label: 'Answer steps' })}</details>`;
   }
 
   function stoppedNote(record) {
