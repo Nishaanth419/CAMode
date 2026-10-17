@@ -299,6 +299,32 @@ python -m scripts.eval_numbers --provider ollama --delay 0
 python -m scripts.eval_numbers --provider groq --delay 70   # the delay keeps within Groq's free-tier limits
 ```
 
+## Answer records and task checks
+
+Every chat answer records its steps as events: how the request was routed, the task it was given, each model call (with prompt and completion tokens), each tool call and how it failed if it did (`invalid_arguments`, `rejected`, `unavailable`, `auth` or `failed`), every retry and why, the checks on the answer, and how it ended. The trace under an answer shows them, and when the profile saves history the full record is kept for Activity (`#/activity`, the newest 200, none older than 30 days, sealed with your PIN like your chats).
+
+Each request gets a task contract from fixed rules, not the model: a declined request, general finance, a goal calculation (the calculator, or a clarifying question when inputs are missing) or account data (a snapshot, investigation, CAS or INDmoney tool). The finished answer is checked against it. Contracts only report; the one rule they enforce is that an account question is not satisfied by the goal calculator alone.
+
+```bash
+python -m scripts.eval_tasks                                   # 21 cases on scripted model replies, offline (also in the test suite)
+python -m scripts.eval_tasks --provider ollama --runs 3        # the 8 live cases on the real model
+```
+
+The scripted cases check CA Mode's own handling: the contract and verdict, how the run ended, retries, and how each tool failure was classified (timeouts, empty replies, unknown tools, rejected and malformed arguments, INDmoney outages and expired tokens). The live cases grade the model's answers in code: contract met, every figure traced to a tool, the expected figures stated, a clarifying question when inputs are missing, no invented amounts, no rejected tool calls, and how many model calls it took.
+
+**Live baseline** (`ca-mode`, gpt-oss-20b, 3 runs × 8 cases, 2026-10-17; the clarification check was widened after the run to accept "I'll need ..." without a question mark, and the saved answers were re-graded):
+
+| Metric | Score |
+| --- | --- |
+| Contract met | 15/15 |
+| Figures traced to a tool | 13/15 |
+| Expected figures stated | 9/9 |
+| Clarifying question when inputs are missing | 3/6 (a goal with no amount or date: 0/3) |
+| No invented amounts (that same goal) | 2/3 |
+| No rejected tool calls (goal calculator) | 5/6 |
+| **Cases passed** | **18/24** |
+| Latency | p50 8.6 s, max 57.8 s; 1.5 model and 0.6 tool calls, about 3,400 tokens per case |
+
 ## Local data and privacy
 
 The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no third-party analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.

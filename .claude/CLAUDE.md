@@ -154,6 +154,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `agent.bounded_trace()` caps a trace at `MAX_TRACE_STEPS` (12): the first 3 steps, an `{"kind": "omitted", "count": n}` step, and the last 8, so the final answer or failure always shows; `trace.js` renders it as "n steps not shown" and counts it in the total
 - Recorded events (`agent_events`): `route`, `context`, `contract`, `model_call`/`model_result` (status, finish reason, tool names, prompt/completion tokens), `tool_call`/`tool_result` (`errorKind`), `retry` (`no_account_tool`, `goal_calculator`, `invalid_tool_call`, `rerun_with_live_tools`), `validation` (`code_output`, `numbers`, `length`, `task_contract`), `answer`, `error` (with a `code` such as `provider_timeout`, `unknown_tool`, `tool_call_limit`) and `termination` (`answered`, `refused`, `failed`, `auth_failed`). The trace adds `retry` and `check` steps and model `tokens`; a refusal gets no contract step
 - Task contracts observe and never change an answer, with one rule enforced: an account-data question is satisfied only by an account tool (`tasks.is_account_tool`: snapshot, history, CAS, investigation, fund comparison or any INDmoney tool), so the goal calculator alone triggers the `no_account_tool` retry. INDmoney calls with a missing required argument or a value outside the schema's `enum` are refused before the call (`invalid_arguments`); a local tool returning `{"error"}` is recorded as `rejected`
+- `scripts/eval_tasks.py` grades task handling from the recorded events on `evals/agent_tasks.jsonl` (21 cases). Scripted mode (default, offline, also run by `tests/test_eval_tasks.py`) replays each case's model replies and checks the contract, verdict, termination and code, retries, tool error kinds and number check; `--provider ollama --runs 3` runs the 8 `live` cases on the real model with the real calculator, the synthetic snapshot and stubbed INDmoney behaviours, graded on contract, traced figures, expected figures, clarifying questions, invented amounts, rejected calls and model calls. Re-run it before changing the agent loop, the goal tools or the contracts; a new case needs `expect` (and optionally `live.grade`)
 - No streaming: the trace arrives with the finished answer. "Run again" (failed/cancelled only) re-POSTs the same `baselineDate` on a click, never automatically
 
 **Charts from tool data** (`charts.py`):
@@ -225,6 +226,7 @@ python -m pytest tests/test_agent.py::test_finance_agent_blocks_net_worth_code_r
 python -m compileall -q app tests
 for file in frontend/js/*.js; do node --check "$file"; done
 node --test tests/js/*.test.js
+python -m scripts.eval_tasks   # task contracts on scripted replies, offline
 
 # GitHub Actions runs all of these
 python -m compileall -q app tests && python -m pytest -q
@@ -316,6 +318,7 @@ Test coverage:
 - `test_cas.py`: parsing NSDL/CDSL and CAMS statements built from `casparser`'s own models (personal details dropped), error messages, upload/list/delete API and gates, retention, the agent tool, clearing and export
 - `test_investigation_math.py`, `test_investigation_checks.py`: change maths (zero/missing bases, duplicates, changed codes, coverage, allocation bases) and every check, including the asset-type `holding_percent` denominator trap; `tests/fixtures/snapshot_pairs.py` builds self-consistent snapshot pairs
 - `test_agent_runs.py`: runs saved from real agent runs (scripted provider), sealing, failed runs, private mode, unlock and profile isolation, deletion with the chat and every history path, export, pruning by count and age, redaction, a database error never failing the answer
+- `test_eval_tasks.py`: every scripted task case behaves as `evals/agent_tasks.jsonl` expects, unique ids, scripted replies, the live grader
 - `test_tasks.py`: contracts per route/agent/tools, account tools, evaluation (required tools, clarification, numbers, budgets, allowed tools), tool argument checks and error payloads, the event recorder (numbering, timing, redaction, no answer text) and summaries
 - `test_investigations.py`: API, sealed persistence, gates, profile isolation, private mode, privacy deletion paths, deadline, lock retry, safe errors, storage failures, interruption, cancellation, the agent tool and its trace link
 - `test_eval_investigations.py`: every eval fixture yields its expected investigation status and flagged checks; the grader's arithmetic, unsupported-claim, honesty and refusal rules on canned answers

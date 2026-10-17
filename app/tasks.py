@@ -11,6 +11,7 @@ INDmoney tool), not by, say, the goal calculator.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
@@ -88,8 +89,17 @@ class RunFacts:
     number_check: str | None = None  # "passed" | "warning" | None when not run
 
 
-def _asks_question(answer: str) -> bool:
-    return "?" in answer
+# A clarifying question is often a numbered list of what is missing, with no question mark.
+_ASKS: Final = re.compile(
+    r"\?|\b(?:let me know|tell me|please (?:share|provide|confirm|specify)|could you|can you (?:share|tell|confirm)|"
+    r"i(?:'|’)ll need|i need (?:a few|some|more|a bit)|once (?:i|we) (?:have|know))\b",
+    re.IGNORECASE,
+)
+
+
+def asks_question(answer: str) -> bool:
+    """Whether an answer asks the user for something (a question mark, or a request such as "I'll need ...")."""
+    return bool(_ASKS.search(answer))
 
 
 def evaluate(contract: TaskContract, facts: RunFacts) -> dict[str, Any]:
@@ -104,7 +114,7 @@ def evaluate(contract: TaskContract, facts: RunFacts) -> dict[str, Any]:
         succeeded = [item["name"] for item in facts.tool_results if item["ok"] and item["name"] in contract.required_tools]
         if succeeded:
             check("required_tool", "passed", ", ".join(sorted(set(succeeded))))
-        elif contract.clarification_ok and _asks_question(facts.answer):
+        elif contract.clarification_ok and asks_question(facts.answer):
             check("required_tool", "passed", "asked a clarifying question instead")
         else:
             called = sorted({item["name"] for item in facts.tool_results})
