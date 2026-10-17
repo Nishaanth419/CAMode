@@ -65,6 +65,9 @@ test('goal status comes from the server plan', () => {
   assert.deepEqual(finance.goalStatus({ status: 'on_track' }), ['On track', 'is-connected']);
   assert.deepEqual(finance.goalStatus({ status: 'past_due' }), ['Past due', 'is-behind']);
   assert.deepEqual(finance.goalStatus(undefined), ['Missing details', 'is-behind']);
+  // Reaching the target only under the assumed return is not shown as a plain "On track".
+  assert.deepEqual(finance.goalStatus({ status: 'on_track', feasibility: { status: 'depends_on_returns' } }), ['On track if returns hold', 'is-behind']);
+  assert.deepEqual(finance.goalStatus({ status: 'on_track', feasibility: { status: 'covered_without_growth' } }), ['On track', 'is-connected']);
   assert.equal(finance.goalIsOnTrack({ plan: { status: 'reached' } }), true);
   assert.equal(finance.goalIsOnTrack({ plan: { status: 'behind' } }), false);
   assert.equal(finance.goalIsOnTrack({}), false);

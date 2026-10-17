@@ -941,8 +941,8 @@ function scenarioDetails(plan) {
     </tr>`).join('');
   const notes = [...(plan.warnings || []), ...(plan.assumptions || []), RISK_NOTE];
   const inflation = plan.inflation
-    ? `<p class="goal-meta">Target ${amount(plan.inflation.targetInTodayMoney, cur)} in today's money becomes ${amount(plan.inflation.inflatedTarget, cur)} at ${plan.inflation.inflationPct}% a year. Total planned contributions: ${amount(plan.totalFutureContributions, cur)}.</p>`
-    : `<p class="goal-meta">Total planned contributions: ${amount(plan.totalFutureContributions, cur)}.</p>`;
+    ? `<p class="goal-meta">Target ${amount(plan.inflation.targetInTodayMoney, cur)} in today's money becomes ${amount(plan.inflation.inflatedTarget, cur)} at ${plan.inflation.inflationPct}% a year. Projected amounts are in money of the target date and are compared with that raised target. Total planned contributions: ${amount(plan.totalFutureContributions, cur)}.</p>`
+    : `<p class="goal-meta">Projected amounts are in money of the target date; inflation is not taken into account. Total planned contributions: ${amount(plan.totalFutureContributions, cur)}.</p>`;
   return `<details class="goal-scenarios"><summary>Scenarios and assumptions</summary>
     ${inflation}
     <div class="table-scroll"><table class="data-table compact"><thead><tr><th>Yearly return</th><th>Projected</th><th>vs target</th><th>Needed a month</th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -1187,6 +1187,8 @@ async function renderGoalPreview() {
   setGoalPreview('Calculating…', 'is-loading');
   const { name, kind, notes, status, ...inputs } = draft;
   for (const key of Object.keys(inputs)) if (inputs[key] === null) delete inputs[key];
+  // An edited goal's assigned holdings count toward the preview, as they do on the saved goal.
+  if (editingGoalId) inputs.goalId = editingGoalId;
   try {
     const plan = await fetchJson('/api/goals/plan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inputs),
@@ -1194,10 +1196,13 @@ async function renderGoalPreview() {
     if (seq !== goalPreviewSeq) return;
     const groups = suitabilityGroups(plan.suitability);
     const lines = [goalSummary(plan), plan.feasibility?.summary];
+    if (plan.mappedAmount) lines.push(`Includes ${amount(plan.mappedAmount, 'INR')} from holdings assigned to this goal.`);
+    // Warnings about the return assumption itself belong next to the projection that uses it.
+    lines.push(...(plan.warnings || []).filter((warning) => /high return|Equity is unsuitable/.test(warning)));
     if (groups.unsuitable.length) lines.push(`Unsuitable for this timeline and risk: ${groups.unsuitable.join(', ')}.`);
     if (plan.suitability && !plan.suitability.enoughInformation) lines.push('Add the flexibility and risk answers for a fuller suitability check.');
     if (plan.followUps?.length) lines.push(`Still open: ${plan.followUps.map((item) => item.question).join(' ')}`);
-    setGoalPreview(lines.filter(Boolean).join(' '), goalIsOnTrack({ plan }) ? 'is-up' : 'is-behind');
+    setGoalPreview(lines.filter(Boolean).join(' '), goalStatus(plan)[1] === 'is-connected' ? 'is-up' : 'is-behind');
   } catch (error) {
     if (seq === goalPreviewSeq) setGoalPreview(`Could not calculate the projection: ${error.message}`, 'is-behind');
   }

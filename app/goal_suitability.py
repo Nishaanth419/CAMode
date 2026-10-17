@@ -176,6 +176,20 @@ def evaluate(goal: Mapping[str, Any], today: date) -> dict[str, Any]:
     }
 
 
+def assumption_warning(assumed_return_pct: Any, suitability: Mapping[str, Any]) -> str | None:
+    """A warning when the plan assumes growth but the rules rule out every equity category for the goal.
+
+    The plan's assumed return is the user's own number; this only asks them to check it against the
+    categories that suit the goal, without claiming what any category earns.
+    """
+    if suitability["equitySuitable"] or not isinstance(assumed_return_pct, int | float) or assumed_return_pct <= 0:
+        return None
+    return (
+        f"Equity is unsuitable for this goal under CA Mode's rules, so check that the {assumed_return_pct:g}% a year "
+        "assumption fits the lower-risk categories that suit it; the no-growth figures do not depend on it."
+    )
+
+
 # ── Reviewing holdings against a goal ──────────────────────────────────────────
 
 # Broad class of a holding -> the categories it can fall in, depending on what the scheme or instrument really is.

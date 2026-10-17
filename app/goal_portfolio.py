@@ -22,6 +22,8 @@ from datetime import date
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Final
 
+from pydantic import ValidationError
+
 from . import goal_planning, goal_suitability, memory, portfolio_math, snapshots
 from .agent import LocalTool
 from .investigation_checks import settings_from_env
@@ -210,11 +212,16 @@ def goal_view(goal: dict[str, Any], today: date, mapping: dict[str, Any] | None 
     except goal_planning.PlanningError as exc:
         plan = {"status": "insufficient_data", "missing": [str(exc)], "scenarios": [], "warnings": [str(exc)],
                 "alternatives": [], "feasibility": {"status": "insufficient_data", "summary": str(exc)}}
+    suitability = goal_suitability.evaluate(goal, today)
+    extra = [] if plan["status"] == "insufficient_data" else [
+        warning for warning in [goal_suitability.assumption_warning(goal.get("assumedReturnPct"), suitability)] if warning
+    ]
     if mapping is not None:
-        plan = {**plan, "warnings": [*plan.get("warnings", []), *_mapping_warnings(goal, mapping)]}
+        extra += _mapping_warnings(goal, mapping)
+    if extra:
+        plan = {**plan, "warnings": [*plan.get("warnings", []), *extra]}
     view = {
-        **goal, "plan": plan, "followUps": goal_planning.follow_ups(goal, today),
-        "suitability": goal_suitability.evaluate(goal, today),
+        **goal, "plan": plan, "followUps": goal_planning.follow_ups(goal, today), "suitability": suitability,
     }
     if mapping is not None:
         view["mapping"] = mapping
@@ -271,6 +278,15 @@ def goals_overview(user: dict[str, Any], today: date) -> dict[str, Any]:
         "fundData": goal_suitability.FUND_DATA,
         "portfolio": _portfolio_summary(portfolio, allocations, {goal["id"] for goal in goals}, views),
     }
+
+
+def counted_value(user: dict[str, Any], goal_id: str) -> int | None:
+    """The INR value of the holdings assigned to ``goal_id`` in the latest snapshot; None when none can be counted."""
+    portfolio = load_portfolio(user)
+    if not portfolio.available:
+        return None
+    rows, _ = _goal_shares(goal_id, memory.get_allocations(user["id"], user["keys"]), portfolio)
+    return sum(value for _, _, value in rows) if rows else None
 
 
 def goal_with_mapping(user: dict[str, Any], goal: dict[str, Any], today: date) -> dict[str, Any]:
@@ -412,6 +428,10 @@ def _tool_goal(view: dict[str, Any], *, reasons: bool, holdings: bool) -> dict[s
         item["holdings"] = _tool_mapping(view["mapping"])
     elif view.get("assignedHoldings"):
         item["assignedHoldings"] = view["assignedHoldings"]
+        item["assignedHoldingsNote"] = (
+            "Their value is not available here and is left out of this plan, so its figures differ from the Goals "
+            "page, which counts it. Portfolio Analyzer can include it."
+        )
     return item
 
 
@@ -435,6 +455,85 @@ def _fit(goals: list[dict[str, Any]], head: dict[str, Any]) -> dict[str, Any]:
         note = (f"{len(goals) - len(shown)} more goals were left out to fit; ask about one by name "
                 "with goalName to see it.")
     return {**head, "goals": shown, **({"truncated": note} if note else {})}
+
+
+CALCULATOR_NOTE: Final = "Calculated from the numbers in this chat. Nothing is saved; to keep it, add the goal on the Goals page."
+_CALCULATOR_AMOUNTS: Final = ("targetAmount", "savedAmount", "monthlyContribution")
+_CALCULATOR_FIELDS: Final = {
+    "currency": "currency", "targetAmount": "targetAmount", "targetDate": "targetDate", "horizonYears": "horizonYears",
+    "savedAmount": "savedAmount", "monthlyContribution": "monthlyContribution", "annualReturnPct": "assumedReturnPct",
+    "inflationPct": "inflationPct", "flexibility": "flexibility", "liquidityNeed": "liquidityNeed",
+    "riskTolerance": "riskTolerance", "lossCapacity": "lossCapacity",
+}
+
+
+def _validation_message(exc: ValidationError) -> str:
+    first = exc.errors()[0]
+    # Name the argument as the model sent it (annualReturnPct, not the stored assumedReturnPct).
+    arguments = {field: argument for argument, field in _CALCULATOR_FIELDS.items()}
+    where = ".".join(arguments.get(str(part), str(part)) for part in first.get("loc", ()) if part != "__root__")
+    message = str(first.get("msg", "invalid value")).removeprefix("Value error, ")
+    return f"{where}: {message}" if where else message
+
+
+def calculate_goal(arguments: dict[str, Any], today: date) -> dict[str, Any]:
+    """A plan for a goal described in chat (never saved), validated like a saved goal; ``{"error"}`` when invalid."""
+    fields = {_CALCULATOR_FIELDS[key]: value for key, value in arguments.items() if key in _CALCULATOR_FIELDS and value is not None}
+    for name in _CALCULATOR_AMOUNTS:
+        # Models write amounts as floats ("5000000.0"); goals keep whole units.
+        if isinstance(fields.get(name), float):
+            fields[name] = round(fields[name])
+    try:
+        body = memory.GoalInput(name="Goal described in chat", status="draft", **fields)
+        goal = memory._goal_data(body, today=today)
+        plan = goal_planning.plan_goal(goal, today)
+    except ValidationError as exc:
+        return {"error": _validation_message(exc)}
+    except (memory.InvalidGoalError, goal_planning.PlanningError) as exc:
+        return {"error": str(exc)}
+    view = goal_view(goal, today)
+    item = _tool_goal(view, reasons=False, holdings=False)
+    item.pop("name", None)
+    item.pop("status", None)
+    return {
+        "asOf": today.isoformat(), "saved": False, "note": CALCULATOR_NOTE, "inputs": {
+            key: value for key, value in item.items() if key not in ("plan", "suitability", "followUps")
+        },
+        "plan": item["plan"], "suitability": item["suitability"], "followUps": item["followUps"],
+        "assumptions": plan.get("assumptions", list(goal_planning.ASSUMPTIONS)), "fundData": goal_suitability.FUND_DATA["reason"],
+    }
+
+
+def goal_calculator_tool(*, today: date | None = None) -> LocalTool:
+    """A read-only calculator for a goal the user describes in chat. It reads and saves nothing."""
+
+    async def calculate_goal_plan(arguments: dict[str, Any]) -> str:
+        day = today or snapshots.local_now().date()
+        return json.dumps(calculate_goal(arguments, day), ensure_ascii=False, separators=(",", ":"))
+
+    level = {"type": "string", "enum": ["low", "medium", "high"]}
+    return LocalTool(
+        name="calculate_goal_plan",
+        description=(
+            "Calculate a savings goal the user describes in this chat (not a saved goal): the monthly amount it needs, "
+            "projections, feasibility, ways to close a gap and which investment categories suit it under fixed rules. "
+            "Use it instead of doing goal arithmetic yourself. Pass only numbers the user gave; missing ones come back "
+            "as followUps to ask about. Nothing is saved."
+        ),
+        input_schema={"type": "object", "properties": {
+            "currency": {"type": "string", "enum": list(memory.Currency.__args__)},
+            "targetAmount": {"type": "number", "description": "Amount needed, in whole units of the currency."},
+            "targetDate": {"type": "string", "description": "YYYY-MM-DD. Give this or horizonYears."},
+            "horizonYears": {"type": "integer", "description": "Years from today until the money is needed."},
+            "savedAmount": {"type": "number", "description": "Already set aside for this goal."},
+            "monthlyContribution": {"type": "number", "description": "Planned amount each month."},
+            "annualReturnPct": {"type": "number", "description": "The user's assumed yearly return, 0 to 30. Omit if not given."},
+            "inflationPct": {"type": "number", "description": "Yearly inflation to raise the target by, 0 to 15. Omit if not given."},
+            "flexibility": {"type": "string", "enum": ["fixed", "some", "flexible"]},
+            "liquidityNeed": level, "riskTolerance": level, "lossCapacity": level,
+        }, "additionalProperties": False},
+        handler=calculate_goal_plan,
+    )
 
 
 def goal_tools(user: dict[str, Any], *, include_holdings: bool, today: date | None = None) -> list[LocalTool]:
@@ -492,8 +591,9 @@ def goal_tools(user: dict[str, Any], *, include_holdings: bool, today: date | No
                         f"extraMonths must be a whole number from 0 to {goal_planning.MAX_EXTENSION_MONTHS}."
                     )
                 base = goal_planning._target_date(goal.get("targetDate"))
-                if base is not None:
-                    goal["targetDate"] = goal_planning.add_months(base, extra).isoformat()
+                if base is None:
+                    raise goal_planning.PlanningError("This goal has no target date to move; give targetDate instead.")
+                goal["targetDate"] = goal_planning.add_months(base, extra).isoformat()
                 changes["extraMonths"] = extra
             if arguments.get("lumpSum") is not None:
                 lump = goal_planning._decimal(arguments["lumpSum"], "The lump sum")

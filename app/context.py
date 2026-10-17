@@ -125,6 +125,20 @@ def request_text(message: str, history: Sequence[dict[str, str]]) -> str:
     return "\n".join([*earlier, message])
 
 
+# A number with a time span ("50 lakh in 5 years", "20,000 a month for 3 years") reads as goal arithmetic too.
+_AMOUNT: Final = re.compile(r"\d")
+_SPAN: Final = re.compile(r"\b(years?|yrs?|months?|monthly|a month|per month|by 20\d\d)\b", re.IGNORECASE)
+
+
+def wants_goal_calculator(message: str, history: Sequence[dict[str, str]]) -> bool:
+    """Whether to offer ``calculate_goal_plan``: the request is about a goal or has an amount and a time span.
+
+    Follow-ups ("what if I add 5,000 more?") are judged with the previous user turns.
+    """
+    texts = [message, request_text(message, history)] if history and is_follow_up(message) else [message]
+    return any(_GOAL_TERMS.search(text) or (_AMOUNT.search(text) and _SPAN.search(text)) for text in texts)
+
+
 def is_follow_up(message: str) -> bool:
     """Whether ``message`` leans on the previous turns ("and if I add 5,000 more?", "is that enough?")."""
     return bool(_FOLLOW_UP.search(message))
@@ -213,7 +227,8 @@ def _mapping_lines(goal: dict[str, Any]) -> list[str]:
         count = goal.get("assignedHoldings", 0)
         if not count:
             return []
-        return [f"  - {count} INDmoney holdings are assigned to this goal; their value is not shown here. "
+        return [f"  - {count} INDmoney holdings are assigned to this goal; their value is not shown here and is left out "
+                "of the figures above, so they differ from the Goals page, which counts it. Say so when quoting them; "
                 "Portfolio Analyzer can include it."]
     if not mapping["available"] or not (mapping["holdings"] or mapping["missing"]):
         return []
@@ -232,9 +247,13 @@ def _plan_lines(goal: dict[str, Any]) -> list[str]:
     plan, name, currency = goal["plan"], goal.get("name"), goal["plan"].get("currency")
     if plan["status"] == "insufficient_data":
         return [f'- "{name}": cannot be calculated; missing {", ".join(plan["missing"])}.', *_follow_up_lines(goal)]
+    status = plan["status"].replace("_", " ")
+    if plan["feasibility"]["status"] == "depends_on_returns":
+        # "On track" here rests on the assumed return alone; with no growth the plan falls short.
+        status += " only if the assumed return holds"
     lines = [
-        f'- "{name}": status {plan["status"].replace("_", " ")}; {plan["monthsRemaining"]} months left; '
-        f'{currency} {plan["remainingGap"]} still to save today ({plan["progressPct"]:g}% saved).'
+        f'- "{name}": status {status}; {plan["monthsRemaining"]} months left; '
+        f'{currency} {plan["remainingGap"]} between the amount counted so far and the target ({plan["progressPct"]:g}% counted).'
     ]
     if plan.get("inflation"):
         inflation = plan["inflation"]

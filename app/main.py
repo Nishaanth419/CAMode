@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, privacy, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
-from .context import observed_sources, retrieve_context
+from .context import observed_sources, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
 from .mcp_client import fetch_mcp_session, filter_portfolio_tools
@@ -413,6 +413,8 @@ class GoalPlanRequest(BaseModel):
     lossCapacity: memory.Level | None = None
     # Yearly returns to compare instead of the default scenarios (no growth and the assumption ± 2 points).
     annualReturnPcts: list[float] | None = Field(default=None, min_length=1, max_length=goal_planning.MAX_SCENARIOS)
+    # The saved goal being edited: its assigned holdings count toward the preview, as they do on the saved goal.
+    goalId: str | None = Field(default=None, pattern=memory.ID_PATTERN)
 
     @model_validator(mode="after")
     def _one_date(self) -> "GoalPlanRequest":
@@ -461,16 +463,24 @@ async def plan_goal(body: GoalPlanRequest, request: Request):
     if blocked := history_gate(user):
         return blocked
     today = _today()
-    inputs = body.model_dump(mode="json", exclude={"annualReturnPcts", "horizonYears"})
+    inputs = body.model_dump(mode="json", exclude={"annualReturnPcts", "horizonYears", "goalId"})
     if body.horizonYears is not None:
         inputs["targetDate"] = goal_planning.date_after_years(today, body.horizonYears).isoformat()
+    mapped = None
+    if body.goalId is not None:
+        if memory.get_goal(user["id"], body.goalId, user["keys"]) is None:
+            return _not_found("Goal")
+        # Rupee holdings count only toward a rupee goal, as on the saved goal; amounts are never converted.
+        if body.currency == "INR":
+            mapped = await asyncio.to_thread(goal_portfolio.counted_value, user, body.goalId)
     try:
-        plan = goal_planning.plan_goal(inputs, today, return_rates=body.annualReturnPcts)
+        plan = goal_planning.plan_goal(inputs, today, return_rates=body.annualReturnPcts, mapped_amount=mapped)
     except goal_planning.PlanningError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
-    return {
-        **plan, "suitability": goal_suitability.evaluate(inputs, today), "followUps": goal_planning.follow_ups(inputs, today),
-    }
+    suitability = goal_suitability.evaluate(inputs, today)
+    if warning := goal_suitability.assumption_warning(inputs.get("assumedReturnPct"), suitability):
+        plan = {**plan, "warnings": [*plan["warnings"], warning]}
+    return {**plan, "suitability": suitability, "followUps": goal_planning.follow_ups(inputs, today)}
 
 
 # Declared before /api/goals/{goal_id}, which would otherwise take "allocations" as an id.
@@ -1081,10 +1091,14 @@ async def chat(body: ChatRequest, request: Request):
     saved_context = retrieve_context(user, message, history, include_holdings=body.agentType == "portfolio")
     token = None
     context = None
-    # Goal tools are offered only to profiles that have a goal, so every other request is unchanged.
+    # Saved-goal tools are offered only to profiles that have a goal, and the calculator only to requests that read
+    # as goal arithmetic, so every other request is unchanged.
     has_goals = memory.count_goals(user["id"]) > 0
-    if body.agentType != "portfolio" and has_goals:
-        context = PortfolioContext(local_tools=tuple(goal_portfolio.goal_tools(user, include_holdings=False)))
+    calculator = [goal_portfolio.goal_calculator_tool()] if wants_goal_calculator(message, history) else []
+    if body.agentType != "portfolio":
+        goal_tools = goal_portfolio.goal_tools(user, include_holdings=False) if has_goals else []
+        if goal_tools or calculator:
+            context = PortfolioContext(local_tools=tuple([*goal_tools, *calculator]))
     if body.agentType == "portfolio":
         token = await users.user_access_token(user["id"])
         if not token:
@@ -1092,6 +1106,7 @@ async def chat(body: ChatRequest, request: Request):
         extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
         if has_goals:
             extra_tools += goal_portfolio.goal_tools(user, include_holdings=True)
+        extra_tools += calculator
         context = snapshots.portfolio_context(user, extra_tools=extra_tools)
     try:
         answer = await run_agent(
