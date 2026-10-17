@@ -355,22 +355,122 @@ async def test_portfolio_agent_rejects_unknown_model_tool(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_portfolio_agent_reports_mcp_tool_call_failures(monkeypatch):
+async def test_unreachable_indmoney_tool_goes_back_to_the_model_instead_of_ending_the_answer(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     async def fake_fetch(url, token):
         return {"tools": [{"name": "networth_snapshot"}], "protocolVersion": "v", "sessionId": "sid"}
 
     async def failing_call(*args, **kwargs):
-        raise RuntimeError("account temporarily unavailable")
+        raise RuntimeError('MCP tools/call failed for "networth_snapshot": 503 Service Unavailable')
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    monkeypatch.setattr(agent, "call_mcp_tool", failing_call)
+    tool_call = {"id": "call-1", "function": {"name": "networth_snapshot", "arguments": "{}"}}
+    captured = []
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("Live net worth is unavailable right now.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent("Show my portfolio", "https://mcp", "token", [], "portfolio", "openai")
+
+    assert answer == "Live net worth is unavailable right now."
+    result = json.loads(captured[1]["payload"]["messages"][-1]["content"])
+    assert "503 Service Unavailable" in result["error"] and "Do not call it again" in result["next_step"]
+    step = next(step for step in answer.trace if step["kind"] == "tool")
+    assert step["status"] == "failed" and "503" in step["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_indmoney_session_is_tried_once_and_reported_to_the_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    fetches = []
+
+    async def failing_fetch(url, token):
+        fetches.append(url)
+        raise httpx.ConnectError("")
+
+    async def handler(arguments):
+        return '{"available": true}'
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", failing_fetch)
+    calls = [{"id": f"call-{i}", "function": {"name": "networth_snapshot", "arguments": "{}"}} for i in range(2)]
+    captured = []
+    fake_client = FakeAsyncClient([_completion(tool_calls=calls), _completion("INDmoney is unreachable right now.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent("Show my net worth", "https://mcp", "token", [], "portfolio", "openai",
+                                   context=_snapshot_context(handler))
+
+    assert answer == "INDmoney is unreachable right now."
+    assert len(fetches) == 1
+    errors = [json.loads(item["content"])["error"] for item in captured[1]["payload"]["messages"] if item["role"] == "tool"]
+    assert errors == ["Could not connect to INDmoney: ConnectError"] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["session", "call"])
+async def test_an_indmoney_auth_failure_ends_the_request_marked_for_a_token_refresh(monkeypatch, where):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    rejection = agent.McpAuthError('MCP tools/call failed for "networth_snapshot": 401 ')
+
+    async def fake_fetch(url, token):
+        if where == "session":
+            raise rejection
+        return {"tools": [{"name": "networth_snapshot"}], "protocolVersion": "v", "sessionId": "sid"}
+
+    async def failing_call(*args, **kwargs):
+        raise rejection
+
+    async def handler(arguments):
+        return '{"available": true}'
 
     monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
     monkeypatch.setattr(agent, "call_mcp_tool", failing_call)
     tool_call = {"id": "call-1", "function": {"name": "networth_snapshot", "arguments": "{}"}}
     monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion(tool_calls=[tool_call])], []))
 
-    with pytest.raises(RuntimeError, match="INDmoney data request failed: account temporarily unavailable"):
-        await agent.run_agent("Show my portfolio", "https://mcp", "token", [], "portfolio", "openai")
+    with pytest.raises(agent.AgentRunError) as raised:
+        await agent.run_agent("Show my net worth", "https://mcp", "token", [], "portfolio", "openai",
+                              context=_snapshot_context(handler))
+
+    assert raised.value.auth_failed is True
+
+
+class RaisingAsyncClient(FakeAsyncClient):
+    """Answers each post with the next item, raising it when it is an exception."""
+
+    async def post(self, url, headers, json):
+        self.captured.append({"url": url, "headers": headers, "payload": json})
+        item = self.responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+@pytest.mark.asyncio
+async def test_a_provider_timeout_is_an_error_never_a_blank_answer(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # httpx raises ReadTimeout with an empty message; it used to come back as an empty 200 answer.
+    fake_client = RaisingAsyncClient([httpx.ReadTimeout("")], [])
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    with pytest.raises(agent.AgentRunError, match="did not finish answering within 120 seconds") as raised:
+        await agent.run_agent("Explain saving", "https://unused", None, [], "finance", "openai")
+
+    assert raised.value.auth_failed is False
+    assert [step["status"] for step in raised.value.trace if step["kind"] == "model"] == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_without_a_message_is_named_and_logged(monkeypatch, caplog):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    fake_client = RaisingAsyncClient([KeyError()], [])
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    with pytest.raises(agent.AgentRunError, match="KeyError"):
+        await agent.run_agent("Explain saving", "https://unused", None, [], "finance", "openai")
+
+    assert any(record.message == "agent_run_failed" and record.exc_info for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -600,6 +700,97 @@ async def test_local_tool_failure_returns_error_result(monkeypatch):
     assert tool_message["role"] == "tool" and "use the live INDmoney tools" in tool_message["content"]
     step = next(step for step in answer.trace if step["kind"] == "tool")
     assert step["status"] == "failed" and "database is locked" in step["error"]
+
+
+@pytest.mark.asyncio
+async def test_local_tool_failure_without_live_tools_does_not_point_to_them(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def broken_handler(arguments):
+        raise ValueError("database is locked")
+
+    captured = []
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("The saved snapshot is unavailable right now.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    # A general question: Portfolio Analyzer is offered only its local tools.
+    await agent.run_agent(
+        "What is a good savings rate for my income?", "https://mcp", "token", [], "portfolio", "openai",
+        context=_snapshot_context(broken_handler),
+    )
+
+    assert [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]] == ["get_portfolio_snapshot"]
+    tool_message = captured[1]["payload"]["messages"][-1]
+    assert "live INDmoney" not in tool_message["content"] and "unavailable right now" in tool_message["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", ['{"targetAmount": 5000000, "horizonYears": 8', "[1, 2]", '"text"'])
+async def test_tool_arguments_that_are_not_a_json_object_are_refused_not_run_empty(monkeypatch, raw):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    received = []
+
+    async def handler(arguments):
+        received.append(arguments)
+        return "{}"
+
+    captured = []
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": raw}}
+    fake_client = FakeAsyncClient([_completion(tool_calls=[tool_call]), _completion("Please try again.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+
+    answer = await agent.run_agent(
+        "What is a good savings rate for my income?", "https://mcp", "token", [], "portfolio", "openai",
+        context=_snapshot_context(handler),
+    )
+
+    assert received == []
+    result = json.loads(captured[1]["payload"]["messages"][-1]["content"])
+    assert "not a valid JSON object" in result["error"] and "input schema" in result["next_step"]
+    step = next(step for step in answer.trace if step["kind"] == "tool")
+    assert step["status"] == "failed" and step["arguments"] == raw
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    (None, {}), ("", {}), ("  ", {}), ("{}", {}), ('{"a": 1}', {"a": 1}), ({"a": 1}, {"a": 1}),
+    ("{bad", None), ("[]", None), ("3", None),
+])
+def test_tool_arguments_parse_only_json_objects(raw, expected):
+    assert agent._tool_arguments(raw) == expected
+
+
+def test_bounded_trace_keeps_the_first_and_last_steps_and_counts_the_rest():
+    steps = [{"kind": "model", "attempt": number, "status": "completed"} for number in range(1, 21)]
+
+    bounded = agent.bounded_trace(steps)
+
+    assert len(bounded) == agent.MAX_TRACE_STEPS
+    assert [step.get("attempt") for step in bounded[:3]] == [1, 2, 3]
+    assert bounded[3] == {"kind": "omitted", "status": "completed", "count": 9}
+    assert [step["attempt"] for step in bounded[4:]] == list(range(13, 21))
+    assert agent.bounded_trace(steps[:12]) == steps[:12]
+
+
+@pytest.mark.asyncio
+async def test_a_long_run_keeps_its_final_steps_in_the_trace(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def handler(arguments):
+        return '{"available": true}'
+
+    tool_call = {"id": "call-1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}
+    responses = [_completion(tool_calls=[tool_call])] * 6 + [_completion("Done.")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(responses, []))
+
+    answer = await agent.run_agent(
+        "What is a good savings rate for my income?", "https://mcp", "token", [], "portfolio", "openai",
+        context=_snapshot_context(handler),
+    )
+
+    assert len(answer.trace) == agent.MAX_TRACE_STEPS
+    assert answer.trace[3]["kind"] == "omitted"
+    assert answer.trace[-1]["kind"] == "model" and answer.trace[-1]["attempt"] == 7
 
 
 @pytest.mark.parametrize(("question", "needs_data"), [

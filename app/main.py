@@ -28,7 +28,7 @@ from .agent import PortfolioContext, configured_providers, default_provider, run
 from .context import observed_sources, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
-from .mcp_client import fetch_mcp_session, filter_portfolio_tools
+from .mcp_client import McpAuthError, fetch_mcp_session, filter_portfolio_tools
 from .users import (
     INDMONEY_REVOKE_URL,
     INDMONEY_TOKEN_URL,
@@ -219,8 +219,12 @@ def pin_error(exc: users.ProfileLockedError | None = None) -> JSONResponse:
 
 
 def is_indmoney_auth_error(error: Exception) -> bool:
-    details = str(error).lower()
-    return "401" in details and any(term in details for term in ("invalid_token", "authentication required", "unauthorized"))
+    """Whether INDmoney rejected the token, so the chat refreshes it and tries once more.
+
+    The agent marks these errors (``AgentRunError.auth_failed``) from ``McpAuthError``; matching the text instead
+    missed some INDmoney 401s and could mistake an AI provider's 401 for an INDmoney one.
+    """
+    return bool(getattr(error, "auth_failed", False)) or isinstance(error, McpAuthError)
 
 
 @app.middleware("http")

@@ -100,7 +100,8 @@ Several people can share one machine: each has a PIN-protected local profile tha
 **Portfolio tools** (`agent.py`, `snapshots.py`):
 - `PortfolioContext` carries the local `LocalTool`s (`get_portfolio_snapshot`, `get_networth_history`), the profile text, cached MCP tools, and an `on_mcp_tools` cache callback
 - With cached MCP tools (< 24h), the MCP session opens lazily on the first MCP tool call; snapshot-only answers make no MCP calls
-- A failing local tool returns an error tool result so the model can fall back to live tools. An MCP result flagged `isError` (e.g. an argument outside the tool's enum) raises `mcp_client.McpToolError` and goes back to the model as an error tool result with a `next_step`, so it can correct the call; it still counts as a tool call. Transport and JSON-RPC errors, and `isError` text that reads as an auth failure (401, `invalid_token`, unauthorized), abort the request so `main.chat` can refresh the token
+- A failing local tool returns an error tool result pointing to the live tools only when they are offered. An MCP result flagged `isError` (e.g. an argument outside the tool's enum) raises `mcp_client.McpToolError` and goes back to the model as an error tool result with a `next_step`, so it can correct the call; it still counts as a tool call. Other INDmoney failures (transport, HTTP 5xx, JSON-RPC errors, a session that cannot be opened) also go back as an error tool result telling the model not to call again (a failed session is tried once per answer). Only `mcp_client.McpAuthError` (HTTP 401, or error text that reads as an auth failure) ends the request; `run_agent` raises `AgentRunError(auth_failed=True)` and `main.is_indmoney_auth_error()` checks that flag, never the message text, before refreshing the token
+- Tool arguments that are not a JSON object are refused with an error tool result (the tool is not run on `{}`); the trace keeps the model's raw text. Provider timeouts and errors with empty messages (`httpx.ReadTimeout`) become a readable error and are logged (`provider_timeout`, `agent_run_failed`); `run_agent` never returns an empty answer
 - Profile fields go into a labelled `<user_profile>` block in the portfolio system prompt as context, not instructions
 
 **Goal planning, suitability and allocations** (`goal_planning.py`, `goal_suitability.py`, `goal_portfolio.py`, `memory.py`):
@@ -145,6 +146,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `agent.redact_trace_text()` masks tokens, secrets, PINs, PAN and bearer/JWT strings in trace `arguments`, `result_preview` and `error` before the trace is sent or saved; `trace.js` `redactText()` repeats it for older saved chats
 - `trace.js` (loaded after `finance.js`, exported for Node tests) renders the answer trace (`renderChatTrace()`), the evidence card (`renderInvestigationCard(record, {chart})`) and Activity rows; it formats figures but never computes them. A step still `running` in a finished trace or run shows as *Did not finish*
 - `#/activity` lists `GET /api/investigations?limit=50` with client-side filters (All/Running/Completed/Failed; no approval state exists); `#/activity/<id>` shows one run. Lists are reconciled with `reconcileInvestigations()` (newer `updatedAt` wins, a finished run is never replaced by an older running copy) and out-of-order responses dropped with `createSequencer()`; polling (`pollDelay()`) runs only while a run is active and the page is visible
+- `agent.bounded_trace()` caps a trace at `MAX_TRACE_STEPS` (12): the first 3 steps, an `{"kind": "omitted", "count": n}` step, and the last 8, so the final answer or failure always shows; `trace.js` renders it as "n steps not shown" and counts it in the total
 - No streaming: the trace arrives with the finished answer. "Run again" (failed/cancelled only) re-POSTs the same `baselineDate` on a click, never automatically
 
 **Charts from tool data** (`charts.py`):
@@ -274,6 +276,7 @@ python -m compileall -q app tests && python -m pytest -q
 
 ### `app/mcp_client.py`
 - `fetch_mcp_session()`, `call_mcp_tool()`, `filter_portfolio_tools()`
+- `McpToolError` (the tool reported an error the model can fix) and `McpAuthError` (HTTP 401 or auth-failure text: refresh the token)
 
 ### Environment Variables
 - `OLLAMA_MODEL` (enables the local provider; `ca-mode`), `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`; Compose sets `host.docker.internal`), `OLLAMA_TIMEOUT_SECONDS`, `OLLAMA_ROUTER_MODEL`

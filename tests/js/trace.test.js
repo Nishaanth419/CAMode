@@ -166,6 +166,15 @@ test('missing optional fields and unknown step kinds render without errors', () 
   assert.equal(trace.investigationTitle({}), 'Portfolio change');
 });
 
+test('a long trace says how many steps were left out and counts them in the total', () => {
+  const steps = [{ kind: 'route', category: 'account_data' }, { kind: 'model', attempt: 1 }, { kind: 'tool', name: 'networth_snapshot' },
+    { kind: 'omitted', status: 'completed', count: 9 }, { kind: 'model', attempt: 9, status: 'completed' }];
+  assert.equal(trace.chatStepView(steps[3]).title, '9 steps not shown');
+  assert.equal(trace.chatStepView({ kind: 'omitted', count: 1 }).title, '1 step not shown');
+  assert.equal(trace.chatStepView({ kind: 'omitted', count: 'x' }).title, '0 steps not shown');
+  assert.match(trace.renderChatTrace(steps), /How this answer was made · 13 steps/);
+});
+
 /* ── Structured answer ─────────────────────────────────────────────── */
 
 test('the evidence card separates findings, warnings, sources, steps and actions with real ids', () => {

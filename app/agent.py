@@ -15,7 +15,9 @@ from typing import Any, AsyncIterator, Final
 import httpx
 
 from . import charts, number_check, router
-from .mcp_client import IMPORTANT_PORTFOLIO_TOOL_NAMES, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
+from .mcp_client import (
+    IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
+)
 
 logger = logging.getLogger("ca_mode.agent")
 
@@ -606,6 +608,42 @@ def _evidence_reference(result: str) -> dict[str, str]:
     return {"investigation_id": reference[:64]} if isinstance(reference, str) and reference else {}
 
 
+def _error_text(exc: BaseException) -> str:
+    """An exception as text for the user; some (``httpx.ReadTimeout``) have an empty message."""
+    return str(exc).strip() or type(exc).__name__
+
+
+def _auth_flag(exc: BaseException) -> dict[str, bool]:
+    """Marks an error event as INDmoney rejecting the token, so ``main.chat`` refreshes it and retries."""
+    return {"auth_failed": True} if isinstance(exc, McpAuthError) else {}
+
+
+def _tool_arguments(raw: Any) -> dict[str, Any] | None:
+    """The call's arguments as a dict; ``None`` when the model sent something other than a JSON object."""
+    if isinstance(raw, dict):
+        return raw
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _tool_error_message(call: dict[str, Any], error: str, next_step: str) -> dict[str, Any]:
+    """A tool result telling the model a call failed and what to do instead."""
+    return {"role": "tool", "tool_call_id": call.get("id", ""), "content": json.dumps({
+        "error": error[:MAX_TOOL_ERROR_CHARS], "next_step": next_step,
+    })}
+
+
+UNAVAILABLE_NEXT_STEP: Final = (
+    "Do not call it again for this answer. Tell the user which data is unavailable right now and answer from "
+    "what the other tools returned."
+)
+
+
 def _message_text(content: Any) -> str | None:
     """Flatten a chat-completions message content (string or text parts)."""
     if isinstance(content, list):
@@ -677,7 +715,7 @@ async def stream_agent(
             try:
                 session = await fetch_mcp_session(mcp_url, token)
             except Exception as exc:
-                yield "error", {"message": f"Could not connect to INDmoney: {exc}"}
+                yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}", **_auth_flag(exc)}
                 yield "done", {}
                 return
             if context and context.on_mcp_tools:
@@ -717,6 +755,8 @@ async def stream_agent(
     retried_goal_calculation = False
     context_checked = provider != "ollama"
     portfolio_tool_called = False
+    # Set when the lazily opened INDmoney session failed; later INDmoney calls in this answer fail fast.
+    session_error: str | None = None
     ohlc_results: list[str] = []
     known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
@@ -748,7 +788,15 @@ async def stream_agent(
                         json=payload,
                     )
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    yield "error", {"message": f"Could not connect to {config['label']}: {exc}"}
+                    yield "error", {"message": f"Could not connect to {config['label']}: {_error_text(exc)}"}
+                    yield "done", {}
+                    return
+                except httpx.TimeoutException:
+                    logger.warning("provider_timeout", extra={"provider": provider, "timeout_seconds": config["timeout"]})
+                    yield "error", {"message": (
+                        f"{config['label']} did not finish answering within {config['timeout']} seconds. "
+                        "Try again, or ask a shorter question."
+                    )}
                     yield "done", {}
                     return
 
@@ -858,14 +906,19 @@ async def stream_agent(
                         yield "done", {}
                         return
 
-                    try:
-                        arguments = json.loads(function.get("arguments") or "{}")
-                    except json.JSONDecodeError:
-                        arguments = {}
-                    if not isinstance(arguments, dict):
-                        arguments = {}
+                    source = "local" if name in local_tools else "indmoney"
+                    arguments = _tool_arguments(function.get("arguments"))
+                    if arguments is None:
+                        # Never run a tool on arguments the model did not send: report it so the model can resend them.
+                        yield "tool_call", {"name": name, "arguments": str(function.get("arguments"))[:600], "source": source}
+                        yield "tool_result", {"name": name, "error": "The arguments were not a valid JSON object; the tool was not called."}
+                        messages.append(_tool_error_message(
+                            call, f"The arguments for {name} were not a valid JSON object, so it was not called.",
+                            "Call it again with a JSON object that matches its input schema, or tell the user this data is unavailable.",
+                        ))
+                        continue
 
-                    yield "tool_call", {"name": name, "arguments": arguments, "source": "local" if name in local_tools else "indmoney"}
+                    yield "tool_call", {"name": name, "arguments": arguments, "source": source}
 
                     if name in local_tools:
                         try:
@@ -873,8 +926,10 @@ async def stream_agent(
                         except Exception as exc:
                             # Report as a tool result so the model can fall back to live tools.
                             logger.warning("Local tool %s failed", name, exc_info=True)
-                            yield "tool_result", {"name": name, "error": str(exc)}
-                            result_str = json.dumps({"error": f"{name} failed; use the live INDmoney tools instead."})
+                            yield "tool_result", {"name": name, "error": _error_text(exc)}
+                            # Point to live tools only when this request offers them.
+                            fallback = "use the live INDmoney tools instead." if tools else "tell the user this data is unavailable right now."
+                            result_str = json.dumps({"error": f"{name} failed; {fallback}"})
                         else:
                             yield "tool_result", {
                                 "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
@@ -884,16 +939,25 @@ async def stream_agent(
                         messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
                         continue
 
-                    if session is None:
+                    if session is None and session_error is None:
                         try:
                             session = await fetch_mcp_session(mcp_url, token)
-                        except Exception as exc:
-                            yield "tool_result", {"name": name, "error": str(exc)}
-                            yield "error", {"message": f"Could not connect to INDmoney: {exc}"}
+                        except McpAuthError as exc:
+                            yield "tool_result", {"name": name, "error": _error_text(exc)}
+                            yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}", "auth_failed": True}
                             yield "done", {}
                             return
-                        if context and context.on_mcp_tools:
-                            context.on_mcp_tools(session["tools"])
+                        except Exception as exc:
+                            session_error = f"Could not connect to INDmoney: {_error_text(exc)}"
+                            logger.warning("mcp_session_unavailable", extra={"tool": name})
+                        else:
+                            if context and context.on_mcp_tools:
+                                context.on_mcp_tools(session["tools"])
+                    if session is None:
+                        portfolio_tool_called = True
+                        yield "tool_result", {"name": name, "error": session_error}
+                        messages.append(_tool_error_message(call, session_error or "INDmoney is unavailable.", UNAVAILABLE_NEXT_STEP))
+                        continue
 
                     try:
                         result = await call_mcp_tool(
@@ -910,11 +974,21 @@ async def stream_agent(
                                          "or tell the user this data is unavailable.",
                         })})
                         continue
-                    except Exception as exc:
-                        yield "tool_result", {"name": name, "error": str(exc)}
-                        yield "error", {"message": f"INDmoney data request failed: {exc}"}
+                    except McpAuthError as exc:
+                        # End the request so main.chat can refresh the token and try again.
+                        yield "tool_result", {"name": name, "error": _error_text(exc)}
+                        yield "error", {"message": f"INDmoney data request failed: {_error_text(exc)}", "auth_failed": True}
                         yield "done", {}
                         return
+                    except Exception as exc:
+                        # INDmoney could not be reached or failed: report it so the model can answer without this data.
+                        logger.warning("mcp_tool_unavailable", extra={"tool": name})
+                        portfolio_tool_called = True
+                        yield "tool_result", {"name": name, "error": _error_text(exc)}
+                        messages.append(_tool_error_message(
+                            call, f"INDmoney could not provide {name}: {_error_text(exc)}", UNAVAILABLE_NEXT_STEP,
+                        ))
+                        continue
                     portfolio_tool_called = True
                     result_str = str(result)
                     if name == charts.OHLC_TOOL_NAME:
@@ -926,7 +1000,8 @@ async def stream_agent(
                     messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
 
     except Exception as exc:
-        yield "error", {"message": str(exc)}
+        logger.error("agent_run_failed", exc_info=True)
+        yield "error", {"message": _error_text(exc)}
         yield "done", {}
         return
 
@@ -946,9 +1021,28 @@ class AgentResult(str):
 
 
 class AgentRunError(RuntimeError):
-    def __init__(self, message: str, trace: list[dict[str, Any]]):
+    """The agent produced no answer. ``auth_failed`` means INDmoney rejected the token (refresh and retry)."""
+
+    def __init__(self, message: str, trace: list[dict[str, Any]], *, auth_failed: bool = False):
         super().__init__(message)
         self.trace = trace
+        self.auth_failed = auth_failed
+
+
+MAX_TRACE_STEPS: Final = 12
+TRACE_HEAD_STEPS: Final = 3
+
+
+def bounded_trace(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """At most ``MAX_TRACE_STEPS`` steps: the first few and the last ones, with one step counting those left out.
+
+    The end of a run (its final answer or the failure that stopped it) is what a reader needs most, so it is kept.
+    """
+    if len(trace) <= MAX_TRACE_STEPS:
+        return trace
+    tail = MAX_TRACE_STEPS - TRACE_HEAD_STEPS - 1
+    omitted = {"kind": "omitted", "status": "completed", "count": len(trace) - TRACE_HEAD_STEPS - tail}
+    return [*trace[:TRACE_HEAD_STEPS], omitted, *trace[-tail:]]
 
 
 async def run_agent(
@@ -966,6 +1060,7 @@ async def run_agent(
     answer_parts: list[str] = []
     trace: list[dict[str, Any]] = []
     last_error: str | None = None
+    auth_failed = False
     active_model_step: dict[str, Any] | None = None
 
     def finish_model_step(status: str) -> None:
@@ -994,7 +1089,9 @@ async def run_agent(
             trace.append(active_model_step)
         elif event_type == "tool_call":
             finish_model_step("completed")
-            arguments_text = json.dumps(payload.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
+            arguments = payload.get("arguments", {})
+            # A string is the model's own text when it was not a JSON object (the call was refused).
+            arguments_text = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
             trace.append({
                 "kind": "tool", "name": str(payload.get("name", "INDmoney tool"))[:100],
                 "source": payload.get("source", "indmoney"),
@@ -1015,9 +1112,10 @@ async def run_agent(
                     step["investigation_id"] = payload["investigation_id"]
         elif event_type == "error":
             finish_model_step("failed")
-            last_error = payload.get("message", "Unknown error")
+            last_error = payload.get("message") or "The request failed without an error message."
+            auth_failed = bool(payload.get("auth_failed"))
     finish_model_step("completed")
     answer = "".join(answer_parts)
-    if not answer and last_error:
-        raise AgentRunError(last_error, trace[:12])
-    return AgentResult(answer, trace[:12])
+    if not answer:
+        raise AgentRunError(last_error or "No answer was produced.", bounded_trace(trace), auth_failed=auth_failed)
+    return AgentResult(answer, bounded_trace(trace))
