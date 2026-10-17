@@ -175,6 +175,25 @@ test('a long trace says how many steps were left out and counts them in the tota
   assert.match(trace.renderChatTrace(steps), /How this answer was made · 13 steps/);
 });
 
+test('retries, checks, tokens and tool error kinds have their own rows', () => {
+  const retry = trace.chatStepView({ kind: 'retry', status: 'completed', reason: 'goal_calculator', detail: 'goal figures written without the calculator' });
+  assert.equal(retry.title, 'Ask the model again');
+  assert.match(retry.purpose, /calculator/);
+  assert.equal(retry.summary, 'goal figures written without the calculator');
+  const check = trace.chatStepView({ kind: 'check', check: 'numbers', status: 'warning', detail: '₹4.5 lakh' });
+  assert.equal(check.title, 'Check the figures');
+  assert.equal(check.status, 'warning');
+  assert.equal(trace.chatStepView({ kind: 'check', check: 'task_contract', status: 'failed' }).title, 'Check the answer is complete');
+  assert.equal(trace.chatStepView({ kind: 'check', check: 'new_rule', status: 'passed' }).title, 'Check: New rule');
+  assert.equal(trace.chatStepView({ kind: 'model', attempt: 2, tokens: 12345 }).summary, 'Attempt 2 · 12,345 tokens');
+  assert.equal(trace.chatStepView({ kind: 'model', attempt: 1, tokens: 'x' }).summary, '');
+  const tool = trace.chatStepView({ kind: 'tool', name: 'networth_snapshot', status: 'failed', error_kind: 'unavailable', error: '503' });
+  assert.equal(tool.summary, 'The data was unavailable');
+  assert.equal(tool.error, '503');
+  const html = trace.renderChatTrace([{ kind: 'retry', reason: '<b>x</b>', detail: '<img src=x>' }]);
+  assert.doesNotMatch(html, /<img|<b>/);
+});
+
 /* ── Structured answer ─────────────────────────────────────────────── */
 
 test('the evidence card separates findings, warnings, sources, steps and actions with real ids', () => {

@@ -110,6 +110,31 @@
     get_cas_holdings: ['Read CAS statement holdings', 'Holdings from your latest uploaded statement'],
   };
 
+  // Why the model was asked again (agent.py "retry" events).
+  const RETRY_REASONS = {
+    no_account_tool: 'It answered an account question without reading your account data',
+    goal_calculator: 'It worked out goal figures itself instead of using the calculator',
+    invalid_tool_call: 'The AI provider rejected a malformed tool call',
+    rerun_with_live_tools: 'Run again with the live INDmoney tools',
+  };
+
+  // Checks on the answer (agent.py "validation" events).
+  const CHECKS = {
+    numbers: ['Check the figures', 'Every amount and percentage should match a number a tool returned'],
+    task_contract: ['Check the answer is complete', 'The request type decides which data it needs before it counts as answered'],
+    code_output: ['Check for code', 'Answers never contain programming code'],
+    length: ['Check the answer length', 'Whether the model stopped at its length limit'],
+  };
+
+  // How a tool call failed (app/tool_results.py).
+  const TOOL_ERROR_KINDS = {
+    invalid_arguments: 'Not called: the arguments did not fit the tool',
+    rejected: 'The tool refused the request',
+    unavailable: 'The data was unavailable',
+    auth: 'INDmoney asked to sign in again',
+    failed: 'The tool failed',
+  };
+
   // What a tool result says about itself, when it is JSON with a status or summary (e.g. an investigation).
   function resultSummary(preview) {
     try {
@@ -142,7 +167,10 @@
       view.title = `Ask ${item.provider || 'the AI model'}`;
       view.tool = item.model || '';
       view.purpose = 'Write the answer or choose which data to read';
-      if (Number(item.attempt) > 1) view.summary = `Attempt ${Number(item.attempt)}`;
+      const parts = [];
+      if (Number(item.attempt) > 1) parts.push(`Attempt ${Number(item.attempt)}`);
+      if (Number.isFinite(Number(item.tokens)) && Number(item.tokens) > 0) parts.push(`${Number(item.tokens).toLocaleString('en-IN')} tokens`);
+      view.summary = parts.join(' · ');
     } else if (item.kind === 'tool') {
       const known = item.source === 'local' ? LOCAL_TOOLS[item.name] : null;
       view.title = known ? known[0] : item.source === 'local' ? 'Read saved data' : 'Fetch live INDmoney data';
@@ -155,6 +183,18 @@
         view.details.push({ label: 'Output preview (first 1,000 characters)', code: prettyJson(redactText(item.result_preview)) });
       }
       if (item.investigation_id) view.links.push({ label: 'Open investigation', href: `#/activity/${encodeURIComponent(item.investigation_id)}` });
+      if (item.error_kind && TOOL_ERROR_KINDS[item.error_kind]) view.summary = TOOL_ERROR_KINDS[item.error_kind];
+    } else if (item.kind === 'retry') {
+      view.title = 'Ask the model again';
+      view.tool = item.reason ? String(item.reason) : '';
+      view.purpose = RETRY_REASONS[item.reason] || 'The first reply could not be used';
+      view.summary = item.detail ? String(item.detail) : '';
+    } else if (item.kind === 'check') {
+      const known = CHECKS[item.check];
+      view.title = known ? known[0] : `Check: ${humanize(item.check)}`;
+      view.tool = item.check ? String(item.check) : '';
+      view.purpose = known ? known[1] : '';
+      view.summary = item.detail ? String(item.detail) : '';
     } else if (item.kind === 'omitted') {
       // The server keeps a long run's first and last steps and counts the ones in between (agent.bounded_trace).
       const count = omittedCount(item);
