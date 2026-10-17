@@ -108,6 +108,10 @@
     get_networth_history: ['Read net worth history', 'Daily net worth from saved snapshots'],
     investigate_portfolio_change: ['Investigate the portfolio change', 'Compare two saved snapshots and check the data'],
     get_cas_holdings: ['Read CAS statement holdings', 'Holdings from your latest uploaded statement'],
+    calculate_goal_plan: ['Calculate the goal', 'Goal figures worked out in code from the numbers in this chat; nothing is saved'],
+    get_goal_plans: ['Read your saved goals', 'Plans calculated in code from the goals you saved'],
+    plan_goal_what_if: ['Try a what-if on a goal', 'A different contribution, date or return, calculated in code; nothing is saved'],
+    get_goal_fund_comparison: ['Read fund figures for a goal', 'INDmoney figures for the categories that suit the goal, with their dates'],
   };
 
   // Why the model was asked again (agent.py "retry" events).
@@ -124,6 +128,15 @@
     task_contract: ['Check the answer is complete', 'The request type decides which data it needs before it counts as answered'],
     code_output: ['Check for code', 'Answers never contain programming code'],
     length: ['Check the answer length', 'Whether the model stopped at its length limit'],
+  };
+
+  const TASK_LABELS = {
+    refusal: 'Declined request', general_finance: 'General finance', goal_calculation: 'Goal calculation',
+    account_data: 'Account data',
+  };
+
+  const TERMINATIONS = {
+    answered: 'Answered', refused: 'Declined', failed: 'No answer', auth_failed: 'INDmoney asked to sign in again',
   };
 
   // How a tool call failed (app/tool_results.py).
@@ -195,6 +208,21 @@
       view.tool = item.check ? String(item.check) : '';
       view.purpose = known ? known[1] : '';
       view.summary = item.detail ? String(item.detail) : '';
+    } else if (item.kind === 'contract') {
+      const required = Array.isArray(item.requiredTools) ? item.requiredTools.map(String) : [];
+      view.title = 'Decide what the answer needs';
+      view.tool = TASK_LABELS[item.task] || (item.task ? String(item.task) : '');
+      view.purpose = 'Fixed rules from the request type and the data on offer, not the model';
+      view.summary = required.length ? `Needs one of: ${required.join(', ')}` : 'No account data needed';
+    } else if (item.kind === 'error') {
+      view.title = 'Stopped with an error';
+      view.tool = item.code ? String(item.code) : '';
+      view.status = 'failed';
+    } else if (item.kind === 'termination') {
+      view.title = 'Finished';
+      view.tool = item.code ? String(item.code) : '';
+      view.summary = TERMINATIONS[item.reason] || (item.reason ? String(item.reason) : '');
+      view.status = item.reason === 'answered' || item.reason === 'refused' ? 'completed' : 'failed';
     } else if (item.kind === 'omitted') {
       // The server keeps a long run's first and last steps and counts the ones in between (agent.bounded_trace).
       const count = omittedCount(item);
@@ -205,6 +233,7 @@
       view.tool = item.name || '';
     }
     if (item.error) view.error = redactText(item.error);
+    if (item.kind === 'error' && item.message) view.error = redactText(item.message);
     return view;
   }
 
@@ -274,13 +303,15 @@
     return Math.max(0, Math.floor(Number(step.count)) || 0);
   }
 
-  function renderChatTrace(trace) {
+  function renderChatTrace(trace, { runId = null } = {}) {
     if (!Array.isArray(trace) || !trace.length) return '';
     const views = trace.map((step) => chatStepView(step, true));
     const failed = countBy(views, 'error');
     const extra = failed ? ` · ${failed} did not complete` : '';
     const total = trace.reduce((sum, step) => sum + (step && step.kind === 'omitted' ? omittedCount(step) : 1), 0);
-    return `<details class="chat-trace"><summary>How this answer was made · ${total} step${total === 1 ? '' : 's'}${extra}</summary>${renderTimeline(views, { label: 'Answer steps' })}</details>`;
+    const link = typeof runId === 'string' && runId
+      ? `<a class="panel-link chat-trace-link" href="#/activity/answer-${encodeURIComponent(runId)}">Open the full record in Activity</a>` : '';
+    return `<details class="chat-trace"><summary>How this answer was made · ${total} step${total === 1 ? '' : 's'}${extra}</summary>${renderTimeline(views, { label: 'Answer steps' })}${link}</details>`;
   }
 
   function stoppedNote(record) {
@@ -555,12 +586,143 @@
     return `<div class="activity-skeleton" role="status" aria-label="Loading investigations">${'<div class="skeleton-row"><span></span><span></span></div>'.repeat(rows)}</div>`;
   }
 
+  /* ── Answer runs (app/agent_runs.py) ──────────────────────────────── */
+  const RUN_STATUSES = { answered: 'completed', refused: 'skipped', failed: 'failed', auth_failed: 'failed' };
+
+  function runStatus(item) {
+    return RUN_STATUSES[item?.status] || 'failed';
+  }
+
+  function runTitle(item) {
+    const question = typeof item?.question === 'string' ? item.question.trim() : '';
+    return question || TASK_LABELS[item?.task] || 'Answer';
+  }
+
+  function plural(count, word) {
+    return `${count} ${word}${count === 1 ? '' : 's'}`;
+  }
+
+  // Counts for one run: calls, failures, retries, tokens.
+  function runFacts(summary) {
+    const facts = [];
+    if (!summary || typeof summary !== 'object') return facts;
+    if (isNumber(summary.modelCalls) && summary.modelCalls > 0) facts.push(plural(summary.modelCalls, 'model call'));
+    if (isNumber(summary.toolCalls) && summary.toolCalls > 0) {
+      facts.push(plural(summary.toolCalls, 'tool call') + (summary.failedToolCalls ? ` (${summary.failedToolCalls} failed)` : ''));
+    }
+    if (isNumber(summary.retries) && summary.retries > 0) facts.push(plural(summary.retries, 'retry').replace('retrys', 'retries'));
+    const tokens = (Number(summary.promptTokens) || 0) + (Number(summary.completionTokens) || 0);
+    if (tokens > 0) facts.push(`${tokens.toLocaleString('en-IN')} tokens`);
+    return facts;
+  }
+
+  function verdictText(verdict) {
+    if (verdict === 'met') return 'Complete';
+    if (verdict === 'unmet') return 'Incomplete';
+    return '';
+  }
+
+  function runItem(item, { now = Date.now(), chatIds = null } = {}) {
+    const info = statusInfo(runStatus(item));
+    const href = `#/activity/answer-${encodeURIComponent(item.id)}`;
+    const meta = [
+      isNumber(item.createdAt) ? fin.timeAgo(item.createdAt, now) : '',
+      TASK_LABELS[item.task] || '', verdictText(item.verdict),
+      formatDuration(item.summary?.durationMs) ? `took ${formatDuration(item.summary.durationMs)}` : '',
+      ...runFacts(item.summary),
+    ].filter(Boolean).join(' · ');
+    const hasChat = item.chatId && (!chatIds || chatIds.has(item.chatId));
+    const actions = [
+      `<a class="gate-secondary small-button" href="${href}">Open</a>`,
+      hasChat ? `<button class="gate-secondary small-button" type="button" data-open-chat="${esc(item.chatId)}">Open chat</button>` : '',
+    ].join('');
+    return `<li class="activity-item is-${info.tone}" data-run-id="${esc(item.id)}" data-status="${esc(info.key)}">
+      <span class="timeline-marker" aria-hidden="true">${info.icon}</span>
+      <div class="activity-body">
+        <div class="timeline-head"><a class="activity-title" href="${href}">${esc(runTitle(item))}</a>${statusPill(runStatus(item))}</div>
+        ${item.error ? `<p class="activity-outcome">${esc(redactText(item.error))}</p>` : ''}
+        ${meta ? `<p class="timeline-meta">${esc(meta)}</p>` : ''}
+        <div class="activity-actions">${actions}</div>
+      </div>
+    </li>`;
+  }
+
+  function renderRunList(items, { now = Date.now(), chatIds = null } = {}) {
+    const runs = (Array.isArray(items) ? items : []).filter((item) => item && typeof item.id === 'string');
+    if (!runs.length) return '<p class="page-muted activity-empty">No saved answers yet. Each chat answer is recorded here with the steps behind it.</p>';
+    return `<ol class="activity-list">${runs.map((item) => runItem(item, { now, chatIds })).join('')}</ol>`;
+  }
+
+  const CHECK_OUTCOMES = { passed: 'passed', warning: 'warning', failed: 'failed', blocked: 'failed' };
+
+  // A saved run's events as the same step rows the answer trace uses, every step kept.
+  function runSteps(events) {
+    const steps = [];
+    const models = new Map();
+    const tools = new Map();
+    for (const event of Array.isArray(events) ? events : []) {
+      if (!event || typeof event !== 'object') continue;
+      const kind = event.kind;
+      if (kind === 'route') steps.push({ kind, status: 'completed', category: event.category, source: event.source, model: event.model, duration_ms: event.durationMs });
+      else if (kind === 'context') steps.push({ kind, status: 'completed', items: event.items });
+      else if (kind === 'contract') steps.push({ kind, status: 'completed', task: event.task, requiredTools: event.requiredTools });
+      else if (kind === 'model_call') {
+        const step = { kind: 'model', provider: event.provider, model: event.model, attempt: event.attempt, status: 'running' };
+        models.set(event.attempt, step);
+        steps.push(step);
+      } else if (kind === 'model_result') {
+        const step = models.get(event.attempt);
+        if (!step) continue;
+        step.status = event.status === 'failed' ? 'failed' : 'completed';
+        step.duration_ms = event.durationMs;
+        if (isNumber(event.promptTokens) && isNumber(event.completionTokens)) step.tokens = event.promptTokens + event.completionTokens;
+        models.delete(event.attempt);
+      } else if (kind === 'tool_call') {
+        const step = { kind: 'tool', name: event.name, source: event.source, arguments: event.arguments, status: 'running' };
+        if (!tools.has(event.name)) tools.set(event.name, []);
+        tools.get(event.name).push(step);
+        steps.push(step);
+      } else if (kind === 'tool_result') {
+        const step = (tools.get(event.name) || []).shift();
+        if (!step) continue;
+        Object.assign(step, {
+          status: event.errorKind ? 'failed' : 'completed', duration_ms: event.durationMs, result_preview: event.resultPreview,
+          error: event.error, error_kind: event.errorKind, investigation_id: event.investigationId,
+        });
+      } else if (kind === 'retry') steps.push({ kind, status: 'completed', reason: event.reason, detail: event.detail });
+      else if (kind === 'validation') steps.push({ kind: 'check', check: event.check, status: CHECK_OUTCOMES[event.outcome] || 'failed', detail: event.detail });
+      else if (kind === 'error') steps.push({ kind, status: 'failed', message: event.message, code: event.code });
+      else if (kind === 'termination') steps.push({ kind, reason: event.reason, code: event.code });
+    }
+    return steps;
+  }
+
+  function renderRunCard(record) {
+    if (!record || typeof record !== 'object') return '';
+    const views = runSteps(record.events).map((step) => chatStepView(step, true));
+    const checks = Array.isArray(record.verdict?.checks) ? record.verdict.checks : [];
+    const checkRows = checks.map((item) => `<tr><td>${esc(CHECKS[item.check]?.[0] || humanize(item.check))}</td><td>${statusPill(CHECK_OUTCOMES[item.outcome] || 'failed')}</td><td>${esc(item.detail || '')}</td></tr>`);
+    const meta = [
+      TASK_LABELS[record.task] || '', verdictText(record.verdict?.status),
+      formatDuration(record.summary?.durationMs) ? `took ${formatDuration(record.summary.durationMs)}` : '',
+      ...runFacts(record.summary),
+    ].filter(Boolean).join(' · ');
+    return `<article class="panel run-card">
+      <div class="timeline-head"><h3 class="run-title">${esc(runTitle(record))}</h3>${statusPill(runStatus(record))}</div>
+      ${meta ? `<p class="page-muted">${esc(meta)}</p>` : ''}
+      ${record.error ? `<p class="page-error" role="alert">${esc(redactText(record.error))}</p>` : ''}
+      ${section('Checks on this answer', checkRows.length ? table(['Check', 'Result', 'Detail'], checkRows) : '', { open: true })}
+      ${renderTimeline(views, { label: `Steps · ${views.length}` })}
+    </article>`;
+  }
+
   const api = {
     STATUSES, ACTIVITY_FILTERS, statusInfo, settledStatus, statusPill, formatDuration, formatIsoDate,
     redactText, chatStepView, orderedSteps, investigationStepView, renderTimeline, renderChatTrace,
     renderInvestigationTimeline, renderInvestigationCard,
     filterInvestigations, filterCounts, isActive, newerRun, reconcileInvestigations, createSequencer, pollDelay,
     investigationTitle, canRetry, activityItem, renderActivityList, activitySkeleton,
+    runStatus, runTitle, runFacts, runItem, renderRunList, runSteps, renderRunCard,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

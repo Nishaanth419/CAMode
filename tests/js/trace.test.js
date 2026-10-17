@@ -194,6 +194,81 @@ test('retries, checks, tokens and tool error kinds have their own rows', () => {
   assert.doesNotMatch(html, /<img|<b>/);
 });
 
+/* ── Answer runs ───────────────────────────────────────────────────── */
+
+function savedRun(overrides = {}) {
+  return {
+    id: 'run-1', createdAt: 1_760_500_000_000, chatId: 'chat-1', agentType: 'finance', question: 'How much a month for ₹50 lakh?',
+    status: 'answered', task: 'goal_calculation', verdict: { task: 'goal_calculation', status: 'met', checks: [
+      { check: 'answered', outcome: 'passed' }, { check: 'required_tool', outcome: 'passed', detail: 'calculate_goal_plan' },
+      { check: 'numbers', outcome: 'warning' }] },
+    summary: { modelCalls: 2, toolCalls: 2, failedToolCalls: 1, retries: 1, promptTokens: 3000, completionTokens: 400, durationMs: 15200, termination: 'answered' },
+    events: [
+      { seq: 1, atMs: 0, kind: 'route', category: 'general_finance', source: 'model', model: 'ca-mode', durationMs: 1200 },
+      { seq: 2, atMs: 1, kind: 'contract', task: 'goal_calculation', requiredTools: ['calculate_goal_plan'] },
+      { seq: 3, atMs: 2, kind: 'model_call', provider: 'Ollama', model: 'ca-mode', attempt: 1 },
+      { seq: 4, atMs: 3000, kind: 'model_result', attempt: 1, status: 'completed', promptTokens: 1000, completionTokens: 100, durationMs: 2998 },
+      { seq: 5, atMs: 3001, kind: 'tool_call', name: 'calculate_goal_plan', source: 'local', arguments: '{"currency":"₹"}' },
+      { seq: 6, atMs: 3002, kind: 'tool_result', name: 'calculate_goal_plan', errorKind: 'rejected', error: 'currency: Input should be INR', durationMs: 1 },
+      { seq: 7, atMs: 3003, kind: 'tool_call', name: 'calculate_goal_plan', source: 'local', arguments: '{"currency":"INR"}' },
+      { seq: 8, atMs: 3004, kind: 'tool_result', name: 'calculate_goal_plan', resultPreview: '{"plan":{}}', durationMs: 1 },
+      { seq: 9, atMs: 3005, kind: 'model_call', provider: 'Ollama', model: 'ca-mode', attempt: 2 },
+      { seq: 10, atMs: 9000, kind: 'retry', reason: 'goal_calculator' },
+      { seq: 11, atMs: 15000, kind: 'validation', check: 'numbers', outcome: 'warning', detail: '₹4.5 lakh' },
+      { seq: 12, atMs: 15100, kind: 'answer', chars: 420 },
+      { seq: 13, atMs: 15200, kind: 'termination', reason: 'answered' },
+    ],
+    ...overrides,
+  };
+}
+
+test('a saved run becomes the same step rows as the answer trace, every step kept', () => {
+  const steps = trace.runSteps(savedRun().events);
+  assert.deepEqual(steps.map((step) => step.kind), ['route', 'contract', 'model', 'tool', 'tool', 'model', 'retry', 'check', 'termination']);
+  assert.equal(steps[2].tokens, 1100);
+  assert.equal(steps[3].status, 'failed');
+  assert.equal(steps[3].error_kind, 'rejected');
+  assert.equal(steps[4].status, 'completed');
+  // A model call with no result never reported back.
+  assert.equal(trace.chatStepView(steps[5], true).status, 'unfinished');
+  assert.deepEqual(trace.runSteps([null, 'x', { kind: 'tool_result', name: 'nope' }, { kind: 'model_result', attempt: 9 }]), []);
+});
+
+test('the run card shows the question, verdict checks, counts and every step', () => {
+  const html = trace.renderRunCard(savedRun());
+  for (const part of ['How much a month for ₹50 lakh?', 'Goal calculation', 'Complete', 'Checks on this answer', 'Check the figures',
+    'Steps · 9', '2 model calls', '2 tool calls (1 failed)', '1 retry', '3,400 tokens', 'took 15', 'Decide what the answer needs',
+    'Needs one of: calculate_goal_plan', 'The tool refused the request', 'Finished']) {
+    assert.ok(html.includes(part), part);
+  }
+  assert.match(trace.renderRunCard(savedRun({ status: 'failed', error: 'Bearer abc.def broke', verdict: null })), /Bearer \[redacted\] broke/);
+  assert.equal(trace.renderRunCard(null), '');
+});
+
+test('the run list links each answer to its record and its chat', () => {
+  const html = trace.renderRunList([savedRun(), savedRun({ id: 'run-2', chatId: 'gone', question: '', task: 'account_data', status: 'auth_failed' })],
+    { now: 1_760_500_060_000, chatIds: new Set(['chat-1']) });
+  assert.match(html, /href="#\/activity\/answer-run-1"/);
+  assert.equal((html.match(/data-open-chat="chat-1"/g) || []).length, 1);
+  assert.match(html, /Account data/);
+  assert.equal(trace.runStatus({ status: 'auth_failed' }), 'failed');
+  assert.equal(trace.runStatus({ status: 'refused' }), 'skipped');
+  assert.match(trace.renderRunList([]), /No saved answers yet/);
+  assert.doesNotMatch(trace.renderRunList([savedRun({ question: '<script>x</script>' })]), /<script>/);
+});
+
+test('goal tools have their own titles instead of "Read saved data"', () => {
+  assert.equal(trace.chatStepView({ kind: 'tool', name: 'calculate_goal_plan', source: 'local' }).title, 'Calculate the goal');
+  assert.match(trace.chatStepView({ kind: 'tool', name: 'calculate_goal_plan', source: 'local' }).purpose, /nothing is saved/);
+  assert.equal(trace.chatStepView({ kind: 'tool', name: 'get_goal_fund_comparison', source: 'local' }).title, 'Read fund figures for a goal');
+});
+
+test('an answer trace links to its saved run only when there is one', () => {
+  const steps = [{ kind: 'route', category: 'general_finance' }];
+  assert.match(trace.renderChatTrace(steps, { runId: 'abc 1' }), /href="#\/activity\/answer-abc%201"/);
+  assert.doesNotMatch(trace.renderChatTrace(steps), /Open the full record/);
+});
+
 /* ── Structured answer ─────────────────────────────────────────────── */
 
 test('the evidence card separates findings, warnings, sources, steps and actions with real ids', () => {
