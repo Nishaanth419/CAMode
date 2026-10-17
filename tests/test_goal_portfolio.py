@@ -664,6 +664,82 @@ def test_the_calculator_returns_an_error_the_model_can_fix(arguments, message):
     assert set(result) == {"error"} and message in result["error"]
 
 
+def test_the_calculator_reads_placeholder_arguments_as_not_given():
+    # Arguments the local model sent in the Phase 1 traces; each call used to be rejected and retried.
+    result = calculate(annualReturnPct=10, currency="₹", flexibility="", horizonYears=8, inflationPct=0,
+                       liquidityNeed="High", lossCapacity="Low", monthlyContribution=0, riskTolerance="Moderate",
+                       savedAmount=500_000.0, targetAmount=5_000_000, targetDate="")
+
+    assert "error" not in result
+    assert result["inputs"]["currency"] == "INR" and result["inputs"]["targetDate"] == "2034-10-16"
+    assert result["plan"]["scenarios"][0]["requiredMonthly"] == 46_875
+    # Not the exact choices, so never taken as the user's answers: the rules use their cautious values instead.
+    assert set(result["ignoredInputs"]) == {"liquidityNeed", "lossCapacity", "riskTolerance"}
+    assert "'Moderate' is not one of low, medium, high" in result["ignoredInputs"]["riskTolerance"]
+    assert set(result["suitability"]["assumedCautiously"]) >= {"liquidityNeed", "lossCapacity", "riskTolerance", "flexibility"}
+
+
+@pytest.mark.parametrize(("currency", "expected"), [
+    ("₹", "INR"), ("Rs.", "INR"), ("rs", "INR"), ("inr", "INR"), (" INR ", "INR"), ("$", "USD"), ("€", "EUR"),
+    ("£", "GBP"), ("gbp", "GBP"),
+])
+def test_the_calculator_accepts_currency_symbols_and_any_case(currency, expected):
+    result = calculate(currency=currency, targetAmount=1_000_000, horizonYears=4)
+    assert result["inputs"]["currency"] == expected
+
+
+def test_the_calculator_keeps_exact_suitability_answers_and_reports_nothing_ignored():
+    result = calculate(currency="INR", targetAmount=1_500_000, horizonYears=2, flexibility="fixed", riskTolerance="high")
+    assert "ignoredInputs" not in result
+    assert "riskTolerance" not in result["suitability"]["assumedCautiously"]
+
+
+@pytest.mark.parametrize("user_text", [
+    "I want ₹50 lakh for a house in 8 years. I have ₹5 lakh saved.",
+    "I need Rs. 50,00,000 in 8 years", "I need Rs50,00,000 in 8 years", "50 LAKH in 8 years", "half a crore in 8 years",
+    "2 lacs a year for 8 years",
+])
+def test_a_goal_written_in_rupees_is_planned_in_inr_when_the_call_has_no_currency(user_text):
+    result = goal_portfolio.calculate_goal(
+        {"targetAmount": 5_000_000, "horizonYears": 8, "savedAmount": 500_000}, CALC_TODAY, user_text=user_text,
+    )
+
+    assert result["inputs"]["currency"] == "INR"
+    assert result["currencyNote"] == goal_portfolio.CURRENCY_FROM_TEXT_NOTE
+    assert result["plan"]["scenarios"][0]["requiredMonthly"] == 46_875
+    assert "Which currency is this goal in?" not in result["followUps"]
+
+
+@pytest.mark.parametrize("user_text", [
+    "",
+    "I need 50,00,000 in 8 years",  # No currency words at all.
+    "I need ₹50 lakh or $60,000 in 8 years",  # Two currencies: ask rather than pick one.
+    "Is 40 lakh in USD enough?",
+    "I sleep 8 hrs and save for 8 yrs",  # "hrs"/"yrs" are not "Rs".
+])
+def test_the_calculator_still_asks_for_the_currency_when_the_text_is_not_plainly_rupees(user_text):
+    result = goal_portfolio.calculate_goal({"targetAmount": 5_000_000, "horizonYears": 8}, CALC_TODAY, user_text=user_text)
+
+    assert result["plan"]["status"] == "insufficient_data" and "currency" in result["plan"]["missing"]
+    assert "currencyNote" not in result
+
+
+def test_a_currency_the_model_gives_is_kept_over_the_rupee_default():
+    result = goal_portfolio.calculate_goal(
+        {"currency": "USD", "targetAmount": 60_000, "horizonYears": 8}, CALC_TODAY, user_text="₹50 lakh in 8 years",
+    )
+    assert result["inputs"]["currency"] == "USD" and "currencyNote" not in result
+
+
+def test_the_chat_gives_the_calculator_the_users_own_words(client, signed_in, monkeypatch):
+    context, _ = _chat_with(client, "finance", monkeypatch, "I want ₹50 lakh for a house in 8 years. How much a month?")
+    calculator = next(tool for tool in context.local_tools if tool.name == "calculate_goal_plan")
+
+    result = json.loads(run(calculator.handler({"targetAmount": 5_000_000, "horizonYears": 8})))
+
+    assert result["inputs"]["currency"] == "INR" and "currencyNote" in result
+
+
 def test_the_calculator_flags_a_high_return_assumption():
     result = calculate(currency="INR", targetAmount=5_000_000, horizonYears=5, monthlyContribution=60_000, annualReturnPct=24)
     assert any("high return to assume" in warning for warning in result["plan"]["warnings"])

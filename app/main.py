@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
-from .context import observed_sources, retrieve_context, wants_goal_calculator
+from .context import observed_sources, request_text, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
 from .mcp_client import McpAuthError, fetch_mcp_session, filter_portfolio_tools
@@ -1137,7 +1137,10 @@ async def chat(body: ChatRequest, request: Request):
     # Saved-goal tools are offered only to profiles that have a goal, and the calculator only to requests that read
     # as goal arithmetic, so every other request is unchanged.
     has_goals = memory.count_goals(user["id"]) > 0
-    calculator = [goal_portfolio.goal_calculator_tool()] if wants_goal_calculator(message, history) else []
+    calculator = (
+        [goal_portfolio.goal_calculator_tool(user_text=request_text(message, history))]
+        if wants_goal_calculator(message, history) else []
+    )
     if body.agentType != "portfolio":
         goal_tools = goal_portfolio.goal_tools(user, include_holdings=False) if has_goals else []
         if goal_tools or calculator:
