@@ -272,3 +272,18 @@ test('alternativeLabel tags each alternative with its basis and formats the serv
     'Earmark ₹2,50,000 more today',
   );
 });
+
+test('fund figures carry their source and date, and only dated fresh figures read as current', () => {
+  const day = (iso) => `[${iso}]`;
+  const current = { value: '14.20', asOf: '2026-10-15', status: 'current', source: 'INDmoney get_mf_by_category' };
+  assert.equal(finance.fundMetricValue('return1yPct', current), '14.20%');
+  assert.equal(finance.fundMetricNote(current, day), 'as of [2026-10-15] · INDmoney');
+  assert.equal(finance.fundMetricNote({ ...current, status: 'stale' }, day), 'old: as of [2026-10-15] · INDmoney');
+  const undated = { value: '0.62', asOf: null, status: 'undated', source: 'INDmoney get_mf_by_category', retrievedAt: '2026-10-16T04:00:00Z' };
+  assert.equal(finance.fundMetricNote(undated, day), 'no date given · fetched [2026-10-16] · INDmoney');
+  // "current" without a date is never shown as current.
+  assert.equal(finance.fundMetricNote({ ...current, asOf: null }, day), 'no date given · INDmoney');
+  assert.equal(finance.fundMetricValue('benchmark', { value: 'NIFTY 500 TRI' }), 'NIFTY 500 TRI');
+  assert.equal(finance.fundMetricValue('return5yPct', undefined), '—');
+  assert.equal(finance.fundMetricNote(undefined, day), '');
+});

@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -522,6 +522,25 @@ async def get_goal(goal_id: str, request: Request):
     return await asyncio.to_thread(goal_portfolio.goal_with_mapping, user, goal, _today())
 
 
+@app.get("/api/goals/{goal_id}/funds")
+async def goal_funds(goal_id: str, request: Request, category: str | None = None):
+    """INDmoney's figures for funds in the categories that suit a goal, each with its source and date.
+
+    Fetched live (cached in memory, never stored); listed by name, never ranked. ``category`` limits it to one
+    ``goal_suitability.CATEGORIES`` id. Not advice.
+    """
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    goal = memory.get_goal(user["id"], goal_id, user["keys"])
+    if goal is None:
+        return _not_found("Goal")
+    try:
+        return await fund_data.goal_comparison(user, goal, _today(), category)
+    except fund_data.FundDataError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+
 @app.put("/api/goals/{goal_id}")
 async def update_goal(goal_id: str, body: memory.GoalInput, request: Request):
     user = current_user(request)
@@ -922,6 +941,7 @@ async def disconnect_indmoney(request: Request):
         return profile_required()
     await revoke_indmoney(user)
     users.clear_indmoney(user["id"])
+    fund_data.clear_cache(user["id"])
     return {"connected": False}
 
 
@@ -1124,7 +1144,7 @@ async def chat(body: ChatRequest, request: Request):
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
         extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
         if has_goals:
-            extra_tools += goal_portfolio.goal_tools(user, include_holdings=True)
+            extra_tools += [*goal_portfolio.goal_tools(user, include_holdings=True), fund_data.fund_comparison_tool(user)]
         extra_tools += calculator
         context = snapshots.portfolio_context(user, extra_tools=extra_tools)
     try:

@@ -68,7 +68,7 @@ def test_holdings_list_with_values_and_nothing_assigned(client, signed_in):
     infy = next(item for item in body["holdings"] if item["key"] == INFY)
     assert infy["goals"] == [] and infy["unassignedPct"] == 100 and infy["unassignedValueInr"] == 180_000
     assert infy["broadClass"] == "equity_direct"
-    assert body["fundData"]["available"] is False and "shortlist" not in body
+    assert body["fundData"]["available"] is True and "shortlist" not in body
 
 
 def test_assigning_one_holding_shows_in_the_plan_once(client, signed_in):
@@ -146,7 +146,7 @@ def test_goals_overview_keeps_its_old_keys_and_adds_fund_data(client, signed_in)
     body = client.get("/api/goals").json()
 
     assert {"asOf", "maxGoals", "goals"} <= set(body)
-    assert body["fundData"]["available"] is False and "shortlist" not in json.dumps(body).lower()
+    assert body["fundData"]["source"] and "shortlist" not in json.dumps(body).lower()
     goal = body["goals"][0]
     assert {"plan", "followUps", "suitability", "mapping"} <= set(goal)
     assert goal["plan"]["feasibility"]["status"] and "alternatives" in goal["plan"]
@@ -459,7 +459,7 @@ def test_get_goal_plans_with_and_without_holdings(client, signed_in):
     assert item["holdings"]["assignedValueInr"] == 150_000 and item["holdings"]["snapshotDate"]
     assert item["holdings"]["holdings"][0]["name"] == "Parag Parikh Flexi Cap Fund"
     assert item["plan"]["mappedAmount"] == 150_000 and item["plan"]["feasibility"]["status"]
-    assert with_holdings["fundData"]["available"] is False and "shortlist" not in json.dumps(with_holdings)
+    assert with_holdings["fundData"]["source"] and "shortlist" not in json.dumps(with_holdings)
     assert goal["id"] not in json.dumps(with_holdings) and "id" not in item
     assert "holdings" not in without["goals"][0] and without["goals"][0]["assignedHoldings"] == 1
     assert "differ from the Goals page" in without["goals"][0]["assignedHoldingsNote"]

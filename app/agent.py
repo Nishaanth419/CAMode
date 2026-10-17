@@ -443,9 +443,16 @@ GOAL_TOOL_RULES: Final = (
     "out yourself. Call it as soon as the amount, the date or horizon and the currency are known: without a return "
     "assumption it still gives the no-growth plan, so give that first and then ask about the return or inflation. "
     "Projections are illustrations under the stated assumptions, never expected or promised returns. When a result "
-    "lists missing inputs or follow-up questions, ask the most important one instead of assuming an answer. Category "
-    "suitability comes from CA Mode's fixed rules: explain it and never override it. No fund data is available, so "
-    "never name, rank or compare specific funds for a goal. These tools save nothing."
+    "lists missing inputs or follow-up questions, ask the most important one instead of assuming an answer. Category suitability comes from CA Mode's fixed rules: explain it and never override it. These tools "
+    "save nothing."
+)
+NO_FUND_DATA_RULE: Final = "No fund data is available here, so never name, rank or compare specific funds for a goal."
+# Replaces NO_FUND_DATA_RULE when get_goal_fund_comparison is offered (Portfolio Analyzer with a saved goal).
+FUND_COMPARISON_RULES: Final = (
+    "For specific funds in a goal's suitable categories, call get_goal_fund_comparison and name only the schemes it "
+    "returns. Give each figure with its date (returnsAsOf) and say INDmoney is the source; call figures stale or "
+    "undated when the result says so, never current. Say which figures are missing instead of filling them in. Never "
+    "rank, pick or recommend a fund, or call one better: list them as the tool does and say it is not advice."
 )
 
 
@@ -488,7 +495,8 @@ SAVED_CONTEXT_RULES = (
     "unknown: never guess the user's income, expenses, age, family, goals or other personal details, and never "
     "present something you infer as a fact the user confirmed. Do not mention goal ids. Investment suitability comes "
     "from CA Mode's fixed rules: explain it, never override it, and never name, rank or describe specific funds or "
-    "schemes for a goal, because no reliable fund data is available. When follow-up questions are listed, ask the "
+    "schemes for a goal unless get_goal_fund_comparison returned them (when it is offered), and even then never "
+    "rank or recommend one. When follow-up questions are listed, ask the "
     "most important one instead of assuming. Never save or change a goal yourself; the user confirms changes on the "
     "Goals page."
 )
@@ -693,7 +701,8 @@ async def stream_agent(
         prompt = FINANCE_SYSTEM_PROMPT
     prompt += _saved_context_block(saved_context, agent_type)
     if FINANCE_LOCAL_TOOL_NAMES & local_tools.keys():
-        prompt += "\n\n" + GOAL_TOOL_RULES
+        funds = "get_goal_fund_comparison" in local_tools
+        prompt += "\n\n" + GOAL_TOOL_RULES + " " + (FUND_COMPARISON_RULES if funds else NO_FUND_DATA_RULE)
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"],
                      "content": charts.strip_chart_blocks(item["content"]) if item["role"] == "assistant" else item["content"]}

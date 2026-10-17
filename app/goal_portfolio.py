@@ -629,7 +629,7 @@ def goal_tools(user: dict[str, Any], *, include_holdings: bool, today: date | No
             description=(
                 "The user's saved goals with calculated plans, feasibility, ways to close a gap, investment category "
                 "suitability from fixed rules, and questions still unanswered. Quote its figures; never recompute. "
-                "It has no fund data, so never name or rank funds."
+                "It has no fund figures, so never name or rank funds from it."
             ),
             input_schema={"type": "object", "properties": {
                 "goalName": {"type": "string", "description": "Only the goal with this name; omit for all goals."},

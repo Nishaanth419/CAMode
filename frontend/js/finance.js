@@ -412,11 +412,29 @@
     };
   }
 
+  // Fund figures from the server (app/fund_data.py): the value as given and, beside it, where it came from and how
+  // current it is. Only a figure with a date and status "current" reads as current; anything else says old or undated.
+  const FUND_PERCENT_FIELDS = ['expenseRatioPct', 'return1yPct', 'return3yPct', 'return5yPct'];
+
+  function fundMetricValue(field, metric) {
+    if (!metric || metric.value == null || metric.value === '') return '—';
+    return FUND_PERCENT_FIELDS.includes(field) ? `${metric.value}%` : String(metric.value);
+  }
+
+  function fundMetricNote(metric, formatDate) {
+    if (!metric) return '';
+    const source = String(metric.source || '').startsWith('INDmoney') ? 'INDmoney' : (metric.source || 'source unknown');
+    if (metric.asOf && metric.status === 'current') return `as of ${formatDate(metric.asOf)} · ${source}`;
+    if (metric.asOf && metric.status === 'stale') return `old: as of ${formatDate(metric.asOf)} · ${source}`;
+    const fetched = metric.retrievedAt ? ` · fetched ${formatDate(String(metric.retrievedAt).slice(0, 10))}` : '';
+    return `no date given${fetched} · ${source}`;
+  }
+
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
-    spanLabel, historyChange, portfolioInsights,
+    spanLabel, historyChange, portfolioInsights, fundMetricValue, fundMetricNote,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

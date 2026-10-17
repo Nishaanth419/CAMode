@@ -1662,6 +1662,14 @@ a.tool-tile { text-decoration: none; }
 .basis-tag.is-certain { background: var(--green-soft); color: var(--green); }
 .chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .chip-row-label { min-width: 74px; color: var(--text-muted); font-size: 11.5px; font-weight: 600; }
+.goal-section h5 { margin-top: 6px; color: var(--text); font-size: 12px; }
+.fund-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.fund-item { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.fund-metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 12px; margin: 2px 0 0; }
+.fund-metrics dt { color: var(--text-muted); font-size: 11px; }
+.fund-metrics dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fund-note { display: block; margin-top: 2px; color: var(--text-muted); font-size: 11px; white-space: normal; }
+.fund-note.is-warn { color: var(--amber); }
 .verdict-chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--surface-2); color: var(--text-soft); font-size: 11.5px; }
 .verdict-chip.is-allowed { border-color: var(--green); color: var(--green); }
 .verdict-chip.is-caution { border-color: var(--amber); color: var(--amber); }

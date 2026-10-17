@@ -156,9 +156,10 @@ def test_review_holding_allowed_caution_unsuitable_and_cannot_assess():
     assert "single-company" in review_holding("IND_STOCK", "Equity", long)["reason"]
 
 
-def test_fund_data_says_unavailable_and_nothing_offers_a_shortlist():
-    assert FUND_DATA["available"] is False
-    assert "shortlist" not in FUND_DATA and "get_mf_by_category" in FUND_DATA["missingIntegration"]
+def test_fund_data_names_its_source_and_nothing_offers_a_shortlist():
+    assert FUND_DATA["available"] is True and "get_mf_by_category" in FUND_DATA["source"]
+    assert "never ranked" in FUND_DATA["reason"] and "nothing here is advice" in FUND_DATA["reason"]
+    assert "shortlist" not in FUND_DATA
     assert not hasattr(goal_suitability, "shortlist")
 
 

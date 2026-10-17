@@ -192,7 +192,7 @@ def test_rendered_context_has_feasibility_alternatives_suitability_follow_ups_an
     text = retrieve_context(current(client), "Am I on track for my home goal?", [], today=TODAY).text
 
     calculated = text.split("Calculated in code on 2026-10-16")[1]
-    assert "No fund-level data: do not name or rank specific funds." in calculated
+    assert "Fund-level data: only what get_goal_fund_comparison returns, when it is offered; never rank funds." in calculated
     assert "Feasibility: The planned contributions fall short" in calculated
     assert "raise the monthly contribution to INR" in calculated and "(with no growth)" in calculated
     assert "(if your 9% a year assumption held)" in calculated
@@ -200,7 +200,7 @@ def test_rendered_context_has_feasibility_alternatives_suitability_follow_ups_an
     assert "unsuitable: " in calculated and "Not enough information: cautious values were assumed for" in calculated
     assert "Still unknown (ask the user the most important one rather than assuming):" in calculated
     assert "user said: flexibility fixed" in text
-    assert text.count("No fund-level data") == 1
+    assert text.count("Fund-level data") == 1
 
 
 def test_a_draft_goal_is_labelled_and_lists_what_is_missing(client, signed_in):
