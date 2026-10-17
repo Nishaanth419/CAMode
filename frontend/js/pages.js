@@ -230,6 +230,18 @@ function routeTitle(route, sub) {
   return title;
 }
 
+// One anonymous count per page opened (app/page_views.py stores only date, page and number).
+// The server decides whether to count; private mode is skipped here to save the request.
+let lastCountedRoute = null;
+function countPageView(route) {
+  if (!sessionReady() || route === lastCountedRoute) return;
+  lastCountedRoute = route;
+  if (storageMode === 'private') return;
+  fetch('/api/page-views', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route }), keepalive: true,
+  }).catch(() => {});
+}
+
 function updateRouteMeta(route, sub) {
   document.title = `${routeTitle(route, sub)} · CA Mode`;
   metaDescription?.setAttribute('content', (ROUTE_META[route] || ROUTE_META['not-found'])[1]);
@@ -252,6 +264,7 @@ function renderRoute() {
   pageView.hidden = isChat;
   pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
   updateRouteMeta(route, sub);
+  countPageView(route);
   document.querySelectorAll('#sidebar [data-route]').forEach((link) => {
     if (link.dataset.route === route) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -282,6 +295,7 @@ document.addEventListener('ca:session', () => {
 // Another profile may sign in next, so drop this one's figures from the page.
 document.addEventListener('ca:session-ended', () => {
   pageCache.clear();
+  lastCountedRoute = null;
   latestHoldings = [];
   reportPoints = [];
   resetActivity();

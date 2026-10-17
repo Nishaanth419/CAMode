@@ -55,10 +55,10 @@ def test_privacy_page_is_public_and_shows_the_current_notice(client):
     assert 'name="robots"' not in html
 
 
-def test_notice_says_there_is_no_tracking():
+def test_notice_says_there_is_no_third_party_tracking():
     text = " ".join(section["body"] for section in privacy.NOTICE)
 
-    assert "no analytics, advertising or tracking" in text
+    assert "no third-party analytics or tracking" in text
 
 
 def test_policy_date_comes_from_the_version():

@@ -14,7 +14,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 ### Backend modules
 - **`app/main.py`**: FastAPI routes, INDmoney OAuth, and the lifespan task that runs the snapshot scheduler. `POST /api/chat` returns the full answer as plain text with the call trace in an `X-Agent-Trace` header (no streaming to the browser).
-- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations`, `financial_goals`, `financial_decisions`, `goal_allocations` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
+- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations`, `financial_goals`, `financial_decisions`, `goal_allocations`, `page_views` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
 - **`app/users.py`**: Profiles (scrypt PIN hashes, account-bound lockout), browser sessions bound to profiles, profile fields (`ProfileFields`), and per-profile INDmoney tokens (`user_access_token` refreshes them).
 - **`app/privacy.py`**: The privacy notice (`NOTICE`, `POLICY_VERSION`), consent records, per-profile storage mode and snapshot retention, data export, and history clearing.
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
@@ -35,6 +35,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/goal_portfolio.py`**: Goals joined with snapshot holdings: `holding_key()`, `load_portfolio()`, `goal_view()`, `goals_overview()`, `allocations_view()`, `assign()` and `goal_tools()` (`get_goal_plans`, `plan_goal_what_if`).
 - **`app/context.py`**: `retrieve_context()` picks the saved goals, decisions and preferences relevant to one chat request (keyword rules) and renders the prompt text; `with_plan()`, `observed_sources()`.
 - **`app/public_pages.py`**: Pages served without a profile: `app_shell(origin)` (index.html with `{{origin}}` replaced, escaped, for absolute `og:*` URLs; file read once), `privacy_page()` (renders `privacy.NOTICE`, dated from `POLICY_VERSION`), `not_found_page()`, `robots_txt()`, `sitemap_xml()` (only `INDEXABLE_PATHS` = `/privacy`; the app shell is `noindex` because the sign-in screen lists profile names). `main.http_error()` serves the HTML 404 for unknown GET/HEAD pages and leaves `/api/` and `/auth/` on FastAPI's JSON errors
+- **`app/page_views.py`**: Anonymous page-view counts: `page_views(day, route, views)` rows only (no profile, session, IP or browser), `Route` literal matching `pages.js` `ROUTE_META`, `record()` (upsert + prune past `RETENTION_DAYS` 90), `counts()`, `totals()`, `is_enabled()` (`PAGE_VIEWS_ENABLED`). Counted only when `snapshots.snapshots_allowed(user)`; not in export, history clearing or profile deletion (not linked to a profile). CLI: `python -m scripts.page_views [--days N] [--daily]`
 - **`app/investigations.py`**: The bounded portfolio-change workflow (`investigate_portfolio_change()`), sealed `investigations` rows (newest 50), `agent_payload()` and the `investigate_portfolio_change` `LocalTool`.
 
 ### Key Design Patterns
@@ -167,7 +168,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - Session events: `loadChats()` sets `isSessionReady = false` and fires `ca:session-ended` (pages and rail drop the previous profile's figures), then `ca:session` once the profile is signed in, unlocked and consenting. Data loaders in `pages.js` (`getPortfolio()`, `getHistory(days)`, `getGoals()`) share one cached request; a 401/403 from them triggers a single `reloadSession()`
 - `pages.js` (loaded after `app.js`, uses its globals): hash routes `#/` (Home), `#/chat` (Ask AI), `#/activity` and `#/activity/<id>` (saved investigations), `#/portfolio`, `#/investments` (holdings table, CSV, CAS upload), `#/planning/<sip|lumpsum|goal|emi|tax>` (calculators run in the browser), `#/markets` (`#/markets/funds` focuses the fund form), `#/goals`, `#/reports`, `#/chats`; `navigate(route)` switches between the chat view and `#page-view`. Prompt buttons anywhere use `data-prompt` / `data-agent` (one delegated listener in `app.js`)
 - `sw.js`: service worker that serves the cached app shell offline (API data is always fetched live)
-- `pages.js` `ROUTE_META` sets `document.title` and the meta description per hash route; an unknown hash shows the `not-found` page section instead of falling back to Home
+- `pages.js` `countPageView()` POSTs `/api/page-views` once per route change after sign-in (skipped in private mode, never retried); `ROUTE_META` sets `document.title` and the meta description per hash route; an unknown hash shows the `not-found` page section instead of falling back to Home
 - Icons: `icon.svg` (source), `favicon.ico`, `apple-touch-icon.png`, `icon-192/512.png`, `icon-maskable-512.png` and `og-image.jpg` are generated by `python -m scripts.build_icons` (macOS `sips`) from `frontend/icon.svg` and `assets/brand/*.svg`; commit the outputs
 - `css/public.css` styles `/privacy` and the 404 page (system light/dark, no app shell)
 - Plotly is loaded from the CDN by a `<script>` tag in `index.html`
@@ -226,6 +227,7 @@ python -m compileall -q app tests && python -m pytest -q
 - Page routes: `GET /api/portfolio` (latest snapshot's `figures` plus every holding via `portfolio_math.all_holdings()`, or `{available: false}`)
 - Goal routes: `GET`/`POST /api/goals`, `GET`/`PUT`/`DELETE /api/goals/{id}` (each with `plan`), `POST /api/goals/plan` (stateless preview, optional `annualReturnPcts`), `GET`/`POST /api/decisions`, `PUT`/`DELETE /api/decisions/{id}`, `GET`/`DELETE /api/context`. Goals are added, edited and deleted in one `#goal-dialog` opened from the Goals page, the rail and the goal planner (`openGoalDialog()` in `pages.js`); its preview calls `/api/goals/plan`. The Goals page's "What the assistant can use" panel lists and deletes saved context
 - Other: `GET /api/providers`, `GET /api/tools`, `GET /healthz`
+- Page views: `POST /api/page-views` (`{route}`; `200 {counted}`, `false` without consent, in private mode or when disabled; `422` for an unknown page)
 - Public pages: `GET /` and `/index.html` (app shell via `public_pages.app_shell()`), `GET /privacy`, `GET /robots.txt`, `GET /sitemap.xml`
 - Helpers: `current_user(request)`, `profile_required()`, `auth_error()`, `lifespan()` (scheduler)
 - Re-exports `connect_db`, `initialize_db`, `get_session`, `save_session`, `touch_session` for tests
@@ -275,6 +277,7 @@ python -m compileall -q app tests && python -m pytest -q
 - `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; falls back to a fixed +05:30 offset when tz data is missing)
 - `APP_MASTER_KEY_FILE` / `APP_MASTER_KEY`: token encryption key (default file `~/.config/ca-mode/master.key`, created on first start)
 - `BACKUP_DIR` (default `~/ca-mode-backups`), `BACKUP_KEEP` (14), `BACKUP_ENABLED` (true): daily backups; `conftest.py` points `BACKUP_DIR` at a temp folder
+- `PAGE_VIEWS_ENABLED` (true): anonymous local page-view counts
 - `APP_DATA_DIR`: SQLite directory (default `.data/`); `LOG_LEVEL` (default `INFO`); `PORT` (Docker, default `8080`)
 
 ## Testing Strategy
@@ -297,6 +300,7 @@ Test coverage:
 - `test_goal_portfolio.py`: allocations and their gates, valuation and rounding, missing and stale holdings, cleanup paths, concurrent assignments, the agent tools and chat wiring
 - `test_memory.py`: goal/decision CRUD, sealing, validation, limits, access rules (no profile, locked, no consent, other profiles), context inspection and clearing, export, cascade, the old-goal move, chats never writing context
 - `test_context.py`: goal/decision/preference selection, follow-ups, rendered sections, currencies, size cap, Finance Agent receiving context
+- `test_page_views.py`: counting, retention, table columns, route gates (no profile, private, no or stale consent, disabled), rejected routes, counts outliving profile deletion, notice wording
 - `test_public_pages.py`: absolute Open Graph URLs and escaping, noindex, privacy page content, robots and sitemap, HTML 404 for pages vs JSON for API paths, icon sizes, manifest icons
 - `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API, CLI
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling

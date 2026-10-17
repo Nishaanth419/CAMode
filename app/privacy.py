@@ -19,8 +19,8 @@ from pydantic import BaseModel, ConfigDict
 from . import chats, users
 from .db import connect_db
 
-# 2026-10-16.1: savings goals and recorded decisions in their own store, shared with either agent when relevant.
-POLICY_VERSION: Final = "2026-10-16.1"
+# 2026-10-17.1: anonymous daily counts of which app pages are opened, kept on this computer.
+POLICY_VERSION: Final = "2026-10-17.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -73,9 +73,20 @@ NOTICE: Final = (
         "title": "In your browser",
         "body": (
             "CA Mode sets one cookie, which keeps this browser signed in to your profile, and remembers your theme, "
-            "agent and model choice in this browser. It has no analytics, advertising or tracking. Pages load fonts "
-            "from Google Fonts and the chart library from cdn.plot.ly, so those services see this computer's IP "
-            "address when the app opens."
+            "agent and model choice in this browser. It has no advertising and no third-party analytics or tracking. "
+            "Pages load fonts from Google Fonts and the chart library from cdn.plot.ly, so those services see this "
+            "computer's IP address when the app opens."
+        ),
+    },
+    {
+        "title": "Page-view counts",
+        "body": (
+            "If you save history on this computer, CA Mode adds one to a daily count each time you open one of its "
+            "pages, such as Goals or Portfolio Overview. Only the date, the page name and the number are stored: not "
+            "your profile, what you typed, which chat or investigation you opened, your IP address or your browser. "
+            "The counts stay in the same SQLite file for 90 days, are never sent anywhere, and can be read by whoever "
+            "runs CA Mode on this computer. Because they are not linked to you, they are not part of your export and "
+            "are not removed when you clear history or delete your profile. Private mode is never counted."
         ),
     },
     {

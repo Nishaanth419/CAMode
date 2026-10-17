@@ -300,8 +300,9 @@ python -m scripts.eval_numbers --provider groq --delay 70   # the delay keeps wi
 
 ## Local data and privacy
 
-The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.
+The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no third-party analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.
 
+**Page-view counts.** For profiles that save history, the app adds one to a daily count per page opened (`page_views` table: date, page name, number; nothing about the profile, browser or IP). Counts are kept 90 days, never leave the computer, and are not part of exports or profile deletion because they are not linked to a profile. Read them with `python -m scripts.page_views` (`--days 7`, `--daily`); set `PAGE_VIEWS_ENABLED=false` to stop counting.
 
 The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney OAuth tokens, and portfolio snapshots. Each profile sees only its own data.
 
@@ -386,6 +387,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/tools` | INDmoney tools available to the signed-in profile |
 | `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect` | INDmoney OAuth |
 | `GET /healthz` | Health check |
+| `POST /api/page-views` | Count one anonymous page view (body: `{"route"}`, an app page name); returns `{"counted"}`, `false` in private mode, without current consent, or when disabled |
 | `GET /privacy` | Privacy policy page, rendered from the same notice profiles accept (no profile needed) |
 | `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy`; URLs use `APP_ORIGIN` |
 
@@ -430,6 +432,7 @@ app/
   db.py            SQLite connection, schema, and migrations
   users.py         Profiles, PIN sign-in, sessions, and per-profile INDmoney tokens
   privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
+  page_views.py    Anonymous local page-view counts
   public_pages.py  App shell with absolute Open Graph URLs, privacy policy and 404 pages, robots.txt, sitemap.xml
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
@@ -463,6 +466,7 @@ tests/
   test_users.py      PINs, lockout, sessions, migration, profile isolation
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
+  test_page_views.py   Page-view counting, retention and gates
   test_public_pages.py Meta tags, privacy page, robots/sitemap, HTML vs JSON 404s, icons and manifest
   test_mcp_client.py MCP protocol handling and tool filtering
   test_vault.py      Master key handling, token encryption, startup migration

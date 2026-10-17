@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -664,6 +664,23 @@ async def get_privacy(request: Request):
     if not user:
         return profile_required()
     return privacy.privacy_state(user)
+
+
+@app.post("/api/page-views")
+async def count_page_view(body: page_views.PageViewInput, request: Request):
+    """Count one anonymous view of an app page.
+
+    ``counted`` is false when counting is off, or the profile has not accepted the current
+    notice or is in private mode; nothing is stored then. No Idempotency-Key: the client sends
+    each view once and never retries, and a duplicate only adds one to a daily count.
+    """
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    counted = page_views.is_enabled() and snapshots.snapshots_allowed(user)
+    if counted:
+        page_views.record(body.route, today=snapshots.local_now().date())
+    return {"counted": counted}
 
 
 @app.post("/api/privacy/consent")
