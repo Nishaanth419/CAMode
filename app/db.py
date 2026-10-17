@@ -106,6 +106,13 @@ _SCHEMA = """
         data TEXT NOT NULL,
         PRIMARY KEY (user_id, id)
     );
+    -- Anonymous daily counts per app page: no profile, session, IP or browser details.
+    CREATE TABLE IF NOT EXISTS page_views (
+        day TEXT NOT NULL,
+        route TEXT NOT NULL,
+        views INTEGER NOT NULL,
+        PRIMARY KEY (day, route)
+    );
 """
 
 # Columns added to ``users`` after its first release; CREATE TABLE IF NOT EXISTS

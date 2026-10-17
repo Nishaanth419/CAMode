@@ -17,11 +17,13 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, privacy, sealing, snapshots, unlock, users, vault
+from . import backup, cas, chats, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, retrieve_context, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -664,6 +666,23 @@ async def get_privacy(request: Request):
     return privacy.privacy_state(user)
 
 
+@app.post("/api/page-views")
+async def count_page_view(body: page_views.PageViewInput, request: Request):
+    """Count one anonymous view of an app page.
+
+    ``counted`` is false when counting is off, or the profile has not accepted the current
+    notice or is in private mode; nothing is stored then. No Idempotency-Key: the client sends
+    each view once and never retries, and a duplicate only adds one to a daily count.
+    """
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    counted = page_views.is_enabled() and snapshots.snapshots_allowed(user)
+    if counted:
+        page_views.record(body.route, today=snapshots.local_now().date())
+    return {"counted": counted}
+
+
 @app.post("/api/privacy/consent")
 async def accept_privacy(body: privacy.ConsentRequest, request: Request):
     user = current_user(request)
@@ -1147,9 +1166,35 @@ async def chat(body: ChatRequest, request: Request):
     })
 
 
-@app.get("/")
-async def index():
-    return FileResponse(PUBLIC_DIR / "index.html")
+# ── Public pages: app shell, privacy policy, crawler files, 404 ───────────────
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
+async def index(request: Request) -> HTMLResponse:
+    return HTMLResponse(public_pages.app_shell(request_origin(request)))
+
+
+@app.get(public_pages.PRIVACY_PATH, response_class=HTMLResponse)
+async def privacy_policy() -> HTMLResponse:
+    return HTMLResponse(public_pages.privacy_page())
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots(request: Request) -> PlainTextResponse:
+    return PlainTextResponse(public_pages.robots_txt(request_origin(request)))
+
+
+@app.get("/sitemap.xml")
+async def sitemap(request: Request) -> Response:
+    return Response(public_pages.sitemap_xml(request_origin(request)), media_type="application/xml")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+    """Serve the HTML 404 page for unknown pages; API and OAuth paths keep FastAPI's JSON errors."""
+    if exc.status_code == 404 and request.method in {"GET", "HEAD"} and not public_pages.is_api_path(request.url.path):
+        return HTMLResponse(public_pages.not_found_page(), status_code=404)
+    return await http_exception_handler(request, exc)
 
 
 if PUBLIC_DIR.exists():

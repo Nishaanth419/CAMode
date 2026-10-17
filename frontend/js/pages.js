@@ -4,6 +4,21 @@
    (currentUser, isConnected, storageMode, chats) and helpers. */
 
 const ROUTES = ['home', 'chat', 'portfolio', 'investments', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
+// Tab title and meta description for each page; `not-found` is any hash that names no page.
+const ROUTE_META = {
+  home: ['Home', 'Where your money stands today: net worth, goals and recent chats.'],
+  chat: ['Ask AI', 'Ask finance questions or ask about your INDmoney portfolio.'],
+  portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
+  investments: ['Investments', 'Every holding from your latest snapshot, with CSV download and CAS upload.'],
+  planning: ['Planning tools', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
+  markets: ['Market insights', 'Mutual fund figures from INDmoney for your goals.'],
+  goals: ['Goals', 'Your savings goals, their plans and the investments assigned to them.'],
+  reports: ['Reports', 'Portfolio reports from your saved snapshots, ready to print.'],
+  activity: ['Activity', 'Portfolio change investigations you have run, with their evidence.'],
+  chats: ['All chats', 'Every saved conversation with CA Mode.'],
+  'not-found': ['Page not found', 'There is no page at this address in CA Mode.'],
+};
+const metaDescription = document.querySelector('meta[name="description"]');
 const pageView = document.getElementById('page-view');
 const inputArea = document.getElementById('input-area');
 let currentRoute = 'home';
@@ -200,7 +215,36 @@ function startRender(route) {
 /* ── Routing ────────────────────────────────────────────────────────── */
 function parseHash() {
   const [route = '', sub = ''] = location.hash.replace(/^#\/?/, '').split('/');
-  return { route: ROUTES.includes(route) ? route : 'home', sub: decodeURIComponent(sub) };
+  if (!route) return { route: 'home', sub: '' };
+  return ROUTES.includes(route) ? { route, sub: safeDecode(sub) } : { route: 'not-found', sub: '' };
+}
+
+function safeDecode(text) {
+  try { return decodeURIComponent(text); } catch { return text; }
+}
+
+function routeTitle(route, sub) {
+  const [title] = ROUTE_META[route] || ROUTE_META['not-found'];
+  if (route === 'planning' && CALCULATORS[sub]) return `${CALCULATORS[sub].title} · ${title}`;
+  if (route === 'activity' && sub) return `Investigation · ${title}`;
+  return title;
+}
+
+// One anonymous count per page opened (app/page_views.py stores only date, page and number).
+// The server decides whether to count; private mode is skipped here to save the request.
+let lastCountedRoute = null;
+function countPageView(route) {
+  if (!sessionReady() || route === lastCountedRoute) return;
+  lastCountedRoute = route;
+  if (storageMode === 'private') return;
+  fetch('/api/page-views', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route }), keepalive: true,
+  }).catch(() => {});
+}
+
+function updateRouteMeta(route, sub) {
+  document.title = `${routeTitle(route, sub)} · CA Mode`;
+  metaDescription?.setAttribute('content', (ROUTE_META[route] || ROUTE_META['not-found'])[1]);
 }
 
 function navigate(route, sub = '') {
@@ -219,6 +263,8 @@ function renderRoute() {
   inputArea.hidden = !isChat;
   pageView.hidden = isChat;
   pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
+  updateRouteMeta(route, sub);
+  countPageView(route);
   document.querySelectorAll('#sidebar [data-route]').forEach((link) => {
     if (link.dataset.route === route) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -249,6 +295,7 @@ document.addEventListener('ca:session', () => {
 // Another profile may sign in next, so drop this one's figures from the page.
 document.addEventListener('ca:session-ended', () => {
   pageCache.clear();
+  lastCountedRoute = null;
   latestHoldings = [];
   reportPoints = [];
   resetActivity();
