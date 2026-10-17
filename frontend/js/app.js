@@ -1294,9 +1294,10 @@ function renderMarkdown(text) {
   // Process inline elements
   text = esc(text);
 
-  // Mark list items and quote lines before emphasis runs, so a "* " bullet is
-  // not read as the start of italics. ">" is already escaped here.
+  // Mark list items, quote lines and rules before emphasis runs, so a "* " bullet
+  // is not read as the start of italics. ">" is already escaped here.
   text = text
+    .replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, '\x00HR\x00')
     .replace(/^[ \t]*[-*+][ \t]+(?=\S)/gm, '\x00UL\x00')
     .replace(/^[ \t]*\d{1,3}[.)][ \t]+(?=\S)/gm, '\x00OL\x00')
     .replace(/^[ \t]*&gt;[ \t]?/gm, '\x00QUOTE\x00');
@@ -1323,23 +1324,24 @@ function renderMarkdown(text) {
     return `@@CA_HEADING_${idx}@@`;
   });
 
-  // Consecutive marked lines become one list or quote, set apart as its own
-  // paragraph so it is restored outside any <p>.
+  // Consecutive marked lines become one list or quote (each rule stands alone),
+  // set apart as its own paragraph so it is restored outside any <p>.
   const listBlocks = [];
   const blockLines = text.split('\n');
   const groupedLines = [];
   for (let i = 0; i < blockLines.length;) {
-    const kind = blockLines[i].match(/^\x00(UL|OL|QUOTE)\x00/)?.[1];
+    const kind = blockLines[i].match(/^\x00(UL|OL|QUOTE|HR)\x00/)?.[1];
     if (!kind) {
       groupedLines.push(blockLines[i++]);
       continue;
     }
     const marker = `\x00${kind}\x00`;
     const items = [];
-    while (i < blockLines.length && blockLines[i].startsWith(marker)) items.push(blockLines[i++].slice(marker.length).trimEnd());
+    if (kind === 'HR') i++;
+    else while (i < blockLines.length && blockLines[i].startsWith(marker)) items.push(blockLines[i++].slice(marker.length).trimEnd());
     const tag = kind.toLowerCase();
-    const idx = listBlocks.push(kind === 'QUOTE'
-      ? `<blockquote>${items.join('<br>')}</blockquote>`
+    const idx = listBlocks.push(kind === 'HR' ? '<hr>'
+      : kind === 'QUOTE' ? `<blockquote>${items.join('<br>')}</blockquote>`
       : `<${tag}>${items.map(item => `<li>${item}</li>`).join('')}</${tag}>`) - 1;
     groupedLines.push(`@@CA_LIST_${idx}@@`);
   }

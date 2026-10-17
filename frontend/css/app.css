@@ -556,6 +556,7 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 .message-body a { color: var(--accent-3); text-decoration: underline; text-underline-offset: 2px; }
 .message-body ul, .message-body ol { margin: 8px 0 8px 20px; }
 .message-body li + li { margin-top: 4px; }
+.message-body hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border); }
 .message-body blockquote {
   margin: 12px 0 0;
   padding: 8px 12px;
