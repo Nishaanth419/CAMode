@@ -397,6 +397,23 @@ def test_plan_preview_returns_suitability_and_follow_ups_and_saves_nothing(clien
     assert raw("SELECT COUNT(*) FROM goal_allocations") == [(0,)]
 
 
+def test_the_editor_preview_counts_the_goals_assigned_holdings_like_the_saved_goal(client, signed_in):
+    store(signed_in["id"])
+    goal = add_goal(client)
+    assign(client, FLEXI, [(goal["id"], 40)])
+    inputs = {key: GOAL[key] for key in ("currency", "targetAmount", "targetDate", "savedAmount", "monthlyContribution", "assumedReturnPct")}
+
+    preview = client.post("/api/goals/plan", json={**inputs, "goalId": goal["id"]}).json()
+    saved = goal_view(client, goal["id"])["plan"]
+
+    assert preview["mappedAmount"] == saved["mappedAmount"] == 150_000
+    assert preview["startingAmount"] == saved["startingAmount"] and preview["scenarios"] == saved["scenarios"]
+    # Without the id (a new goal) nothing is assigned yet; a dollar preview never counts rupee holdings.
+    assert client.post("/api/goals/plan", json=inputs).json()["mappedAmount"] is None
+    assert client.post("/api/goals/plan", json={**inputs, "currency": "USD", "goalId": goal["id"]}).json()["mappedAmount"] is None
+    assert client.post("/api/goals/plan", json={**inputs, "goalId": "nope"}).status_code == 404
+
+
 def test_holding_keys_match_the_investigation_identity():
     snapshot = investigation_math.normalize_snapshot({
         "asOfDate": "2026-10-16", "capturedAt": 1_760_000_000_000, "networthInr": 1, "results": indmoney_sample.results(),
@@ -445,6 +462,7 @@ def test_get_goal_plans_with_and_without_holdings(client, signed_in):
     assert with_holdings["fundData"]["available"] is False and "shortlist" not in json.dumps(with_holdings)
     assert goal["id"] not in json.dumps(with_holdings) and "id" not in item
     assert "holdings" not in without["goals"][0] and without["goals"][0]["assignedHoldings"] == 1
+    assert "differ from the Goals page" in without["goals"][0]["assignedHoldingsNote"]
     assert without["goals"][0]["plan"]["mappedAmount"] is None
     assert "150000" not in json.dumps(without) and "Parag" not in json.dumps(without)
 
@@ -534,13 +552,14 @@ def test_an_unreadable_snapshot_leaves_the_goal_tools_working(client, signed_in,
 
 def test_the_goal_tool_descriptions_name_no_funds():
     tools = goal_portfolio.goal_tools({"id": "x", "keys": None}, include_holdings=False)
-    assert [tool.name for tool in tools] == ["get_goal_plans", "plan_goal_what_if"]
+    tools.append(goal_portfolio.goal_calculator_tool())
+    assert [tool.name for tool in tools] == ["get_goal_plans", "plan_goal_what_if", "calculate_goal_plan"]
     assert all(len(tool.description) < 500 for tool in tools)
 
 
 # ── Chat wiring ────────────────────────────────────────────────────────────────
 
-def _chat_with(client, agent_type, monkeypatch):
+def _chat_with(client, agent_type, monkeypatch, message="Can I reach my house goal?"):
     seen = []
 
     async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
@@ -549,7 +568,7 @@ def _chat_with(client, agent_type, monkeypatch):
 
     monkeypatch.setattr(main, "run_agent", fake_run_agent)
     chat = client.post("/api/chats", json={"agentType": agent_type}).json()
-    response = client.post("/api/chat", json={"message": "Can I reach my house goal?", "chatId": chat["id"], "agentType": agent_type})
+    response = client.post("/api/chat", json={"message": message, "chatId": chat["id"], "agentType": agent_type})
     assert response.status_code == 200, response.text
     return seen[0]
 
@@ -573,4 +592,101 @@ def test_profiles_without_goals_get_no_goal_tools(client, signed_in, monkeypatch
     context, _ = _chat_with(client, "portfolio", monkeypatch)
     assert not {"get_goal_plans", "plan_goal_what_if"} & {tool.name for tool in context.local_tools}
     finance_context, _ = _chat_with(client, "finance", monkeypatch)
-    assert finance_context is None
+    # Only the calculator, which reads nothing saved: a goal question without a saved goal can still be calculated.
+    assert [tool.name for tool in finance_context.local_tools] == ["calculate_goal_plan"]
+
+
+@pytest.mark.parametrize(("message", "offered"), [
+    ("I need 50 lakh for a house in 5 years and have 5 lakh saved. How much a month?", True),
+    ("How much should I save each month to have 20,00,000 by 2031?", True),
+    ("Is my retirement corpus enough?", True),
+    ("What is an ELSS fund?", False),
+    ("Explain how a sweep-in fixed deposit works", False),
+])
+def test_the_goal_calculator_is_offered_only_for_goal_arithmetic(client, signed_in, monkeypatch, message, offered):
+    context, _ = _chat_with(client, "finance", monkeypatch, message)
+    names = [tool.name for tool in context.local_tools] if context else []
+    assert names == (["calculate_goal_plan"] if offered else [])
+
+
+# ── Calculator for goals described in chat ─────────────────────────────────────
+
+CALC_TODAY = date(2026, 10, 16)
+
+
+def calculate(**arguments):
+    return goal_portfolio.calculate_goal(arguments, CALC_TODAY)
+
+
+def test_the_calculator_plans_a_goal_described_in_chat_and_saves_nothing(client, signed_in):
+    result = calculate(currency="INR", targetAmount=5_000_000.0, horizonYears=5, savedAmount=500_000, monthlyContribution=40_000)
+
+    assert result["saved"] is False and "Nothing is saved" in result["note"]
+    assert result["inputs"]["targetDate"] == "2031-10-16"
+    no_growth = result["plan"]["scenarios"][0]
+    assert no_growth["projectedAmount"] == 500_000 + 40_000 * 60
+    assert no_growth["requiredMonthly"] == 75_000 and no_growth["additionalMonthly"] == 35_000
+    assert result["plan"]["feasibility"]["status"] == "shortfall"
+    assert {item["kind"] for item in result["plan"]["alternatives"]} >= {"increase_monthly", "extend_deadline"}
+    assert result["fundData"] and len(json.dumps(result)) < goal_portfolio.MAX_TOOL_PAYLOAD_CHARS
+    assert memory.count_goals(signed_in["id"]) == 0
+
+
+def test_the_calculator_asks_for_missing_inputs_instead_of_guessing():
+    result = calculate(targetAmount=2_000_000)
+
+    assert result["plan"]["status"] == "insufficient_data"
+    assert set(result["plan"]["missing"]) == {"target date", "currency"}
+    assert result["plan"]["scenarios"] == []
+    assert result["followUps"][:2] == ["Which currency is this goal in?", "When do you need the money?"]
+
+
+def test_the_calculator_rules_out_equity_for_a_short_fixed_goal():
+    result = calculate(currency="INR", targetAmount=1_500_000, horizonYears=2, flexibility="fixed",
+                       riskTolerance="high", lossCapacity="low", liquidityNeed="low")
+
+    verdicts = {item["category"]: item["verdict"] for item in result["suitability"]["categories"]}
+    assert verdicts["Large-cap, flexi-cap and index equity"] == "unsuitable"
+    assert verdicts["Mid-cap and small-cap equity"] == "unsuitable"
+    assert verdicts["Liquid and overnight"] == "allowed"
+
+
+@pytest.mark.parametrize(("arguments", "message"), [
+    ({"currency": "INR", "targetAmount": 100, "targetDate": "2030-01-01", "horizonYears": 3}, "not both"),
+    ({"currency": "INR", "targetAmount": -5, "horizonYears": 3}, "targetAmount"),
+    ({"currency": "INR", "targetAmount": 100, "horizonYears": 3, "annualReturnPct": 45}, "annualReturnPct"),
+    ({"currency": "INR", "targetAmount": 100, "targetDate": "next year"}, "targetDate"),
+    ({"currency": "JPY", "targetAmount": 100, "horizonYears": 3}, "currency"),
+    ({"currency": "INR", "targetAmount": 100, "horizonYears": 2.5}, "horizonYears"),
+])
+def test_the_calculator_returns_an_error_the_model_can_fix(arguments, message):
+    result = calculate(**arguments)
+    assert set(result) == {"error"} and message in result["error"]
+
+
+def test_the_calculator_flags_a_high_return_assumption():
+    result = calculate(currency="INR", targetAmount=5_000_000, horizonYears=5, monthlyContribution=60_000, annualReturnPct=24)
+    assert any("high return to assume" in warning for warning in result["plan"]["warnings"])
+
+
+def test_what_if_cannot_move_a_date_the_goal_does_not_have(client, signed_in):
+    add_goal(client, name="Someday", status="draft", targetDate=None)
+    tool = tools_for(client, include_holdings=False)["plan_goal_what_if"]
+
+    result = json.loads(run(tool.handler({"goalName": "Someday", "extraMonths": 6})))
+
+    assert "no target date" in result["error"]
+
+
+def test_a_saved_goal_and_its_preview_question_a_return_its_categories_may_not_reach(client, signed_in):
+    goal = add_goal(client, targetDate=(date.today().replace(day=1) + timedelta(days=800)).isoformat(),
+                    assumedReturnPct=12, flexibility="fixed", lossCapacity="low")
+    body = {key: goal[key] for key in ("currency", "targetAmount", "targetDate", "savedAmount", "monthlyContribution",
+                                       "assumedReturnPct", "flexibility", "lossCapacity")}
+
+    for plan in (goal["plan"], client.post("/api/goals/plan", json=body).json()):
+        assert any("Equity is unsuitable for this goal" in warning for warning in plan["warnings"])
+    # A long, flexible goal that can take losses keeps equity, so there is nothing to question.
+    relaxed = add_goal(client, name="Retirement", kind="retirement", targetDate="2050-12-31", flexibility="flexible",
+                       lossCapacity="high", riskTolerance="high", liquidityNeed="low")
+    assert not any("Equity is unsuitable" in warning for warning in relaxed["plan"]["warnings"])

@@ -22,6 +22,8 @@ MAX_SCENARIOS: Final = 4
 # The lower and higher scenarios sit this many percentage points either side of the user's assumption.
 SCENARIO_STEP_PCT: Final = Decimal(2)
 
+# Assumptions above this get a warning: the plan then leans on a return no investment guarantees.
+HIGH_RETURN_PCT: Final = Decimal(12)
 MAX_INFLATION_PCT: Final = Decimal(15)
 # The longest extension the deadline alternative looks for, in months.
 MAX_EXTENSION_MONTHS: Final = 360
@@ -367,6 +369,11 @@ def plan_goal(
         warnings.append("No whole months are left before the target date, so monthly contributions cannot close the gap.")
     if assumed is None and return_rates is None:
         warnings.append("No return assumption is saved for this goal, so only the no-growth scenario is shown.")
+    if assumed is not None and assumed > HIGH_RETURN_PCT:
+        warnings.append(
+            f"{_pct(assumed):g}% a year is a high return to assume, and no investment guarantees it; "
+            "check the lower and no-growth scenarios too."
+        )
     feasibility = _feasibility(
         status=status, target=effective, saved=starting, monthly=monthly, months=months, assumed=assumed,
     )

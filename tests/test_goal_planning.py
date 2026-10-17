@@ -366,3 +366,20 @@ def test_follow_ups_ask_about_inflation_only_for_unknown_or_long_horizons():
     assert "inflationPct" not in [item["field"] for item in goal_planning.follow_ups(short, TODAY)]
     assert "inflationPct" in [item["field"] for item in goal_planning.follow_ups(GOAL, TODAY)]
     assert "inflationPct" in [item["field"] for item in goal_planning.follow_ups({}, TODAY)]
+
+
+@pytest.mark.parametrize(("assumed", "warned"), [(12, False), (12.5, True), (30, True)])
+def test_a_high_return_assumption_is_flagged_not_trusted(assumed, warned):
+    plan = plan_goal({**GOAL, "assumedReturnPct": assumed}, TODAY)
+    assert any("high return to assume" in warning for warning in plan["warnings"]) is warned
+    # The no-growth scenario is always shown beside it, so the plan never rests on the assumption alone.
+    assert plan["scenarios"][0]["name"] == "no_growth"
+
+
+def test_projections_are_nominal_and_compared_with_the_inflated_target():
+    plan = plan_goal({**GOAL, "inflationPct": 6, "assumedReturnPct": None}, TODAY)
+    no_growth = plan["scenarios"][0]
+    # Nominal money on the target date against the target raised by inflation, never against today's money.
+    assert no_growth["difference"] == no_growth["projectedAmount"] - plan["effectiveTarget"]
+    assert plan["effectiveTarget"] > plan["targetAmount"] == 5_000_000
+    assert plan["remainingGap"] == plan["effectiveTarget"] - plan["savedAmount"]

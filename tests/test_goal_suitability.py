@@ -160,3 +160,17 @@ def test_fund_data_says_unavailable_and_nothing_offers_a_shortlist():
     assert FUND_DATA["available"] is False
     assert "shortlist" not in FUND_DATA and "get_mf_by_category" in FUND_DATA["missingIntegration"]
     assert not hasattr(goal_suitability, "shortlist")
+
+
+def test_an_assumed_return_is_questioned_when_equity_is_ruled_out():
+    short = goal_suitability.evaluate({"targetDate": "2028-10-16", "flexibility": "fixed", "lossCapacity": "low"}, TODAY)
+    long = goal_suitability.evaluate({
+        "targetDate": "2040-10-16", "flexibility": "flexible", "lossCapacity": "high", "riskTolerance": "high",
+        "liquidityNeed": "low",
+    }, TODAY)
+
+    assert short["equitySuitable"] is False and long["equitySuitable"] is True
+    assert "12% a year assumption" in goal_suitability.assumption_warning(12, short)
+    assert goal_suitability.assumption_warning(12, long) is None
+    assert goal_suitability.assumption_warning(None, short) is None
+    assert goal_suitability.assumption_warning(0, short) is None

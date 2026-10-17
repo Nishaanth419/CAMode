@@ -101,7 +101,7 @@ def test_retrieved_context_separates_confirmed_entries_from_calculated_figures(c
     assert 'Decision recorded 2026-09-01 (goal "Home down payment"): "Put each bonus into this goal"' in confirmed
     assert "personal loan" not in text
     assert "not forecasts or promised returns" in calculated
-    assert "65 months left; INR 2100000 still to save today (16% saved)" in calculated
+    assert "65 months left; INR 2100000 between the amount counted so far and the target (16% counted)" in calculated
     assert ("No growth (0% a year): projected INR 2350000, short by INR 150000; "
             "needs INR 32308 a month (INR 2308 more than planned)") in calculated
     assert "Your assumption (9% a year)" in calculated
@@ -247,7 +247,22 @@ def test_holding_values_reach_portfolio_analyzer_but_the_finance_agent_only_sees
     assert "112500" not in finance and "Parag" not in finance
     assert "1 INDmoney holdings are assigned to this goal; their value is not shown here" in finance
     assert "Portfolio Analyzer can include it" in finance
+    # The Finance Agent's figures leave the holdings out, so it is told they differ from the Goals page.
+    assert "left out of the figures above, so they differ from the Goals page" in finance
 
 
 def test_no_saved_context_leaves_the_prompt_unchanged(client, signed_in):
     assert retrieve_context(current(client), "What is an ETF?", [], today=TODAY, include_holdings=True) is None
+
+
+def test_a_plan_that_needs_its_assumed_return_says_so_beside_on_track():
+    goal = {
+        "id": "g1", "name": "Car", "kind": "car", "currency": "INR", "targetAmount": 1_000_000, "targetDate": "2031-10-16",
+        "savedAmount": 0, "monthlyContribution": 14_000, "assumedReturnPct": 10, "updatedAt": 0,
+    }
+    view = context.with_plan(goal, date(2026, 10, 16))
+    assert view["plan"]["status"] == "on_track" and view["plan"]["feasibility"]["status"] == "depends_on_returns"
+
+    text = context.render(preferences=None, goals=[view], decisions=[], goal_names={}, today=date(2026, 10, 16))
+
+    assert '"Car": status on track only if the assumed return holds;' in text

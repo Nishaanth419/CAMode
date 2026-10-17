@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import httpx
 import pytest
@@ -1005,7 +1006,7 @@ async def test_finance_agent_with_only_account_tools_in_its_context_sends_none(m
 
 
 def test_finance_tool_allowlist_is_exactly_the_goal_tools():
-    assert agent.FINANCE_LOCAL_TOOL_NAMES == {"get_goal_plans", "plan_goal_what_if"}
+    assert agent.FINANCE_LOCAL_TOOL_NAMES == {"get_goal_plans", "plan_goal_what_if", "calculate_goal_plan"}
     assert agent._finance_context(None) is None
 
 
@@ -1023,3 +1024,117 @@ async def test_saved_context_rules_point_to_the_what_if_tool_and_forbid_naming_f
     system = captured[0]["payload"]["messages"][0]["content"]
     assert "plan_goal_what_if" in system and "never name, rank or describe specific funds" in system
     assert "Never save or change a goal yourself" in system
+
+
+# ── Goal arithmetic comes from code ───────────────────────────────────────────
+
+def _calculator_context():
+    from app import goal_portfolio
+    return agent.PortfolioContext(local_tools=(goal_portfolio.goal_calculator_tool(today=date(2026, 10, 16)),))
+
+
+def _calculator_call():
+    arguments = {"currency": "INR", "targetAmount": 5_000_000, "horizonYears": 5, "savedAmount": 500_000}
+    return {"id": "call-1", "function": {"name": "calculate_goal_plan", "arguments": json.dumps(arguments)}}
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_calculates_an_unsaved_goal_with_the_tool_and_its_figures_pass(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    replies = [_completion(tool_calls=[_calculator_call()]), _completion("You would need about ₹75,000 a month.")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, captured))
+
+    answer = await agent.run_agent(
+        "I need 50 lakh in 5 years and have 5 lakh. How much a month?", "https://unused", None, [], "finance", "openai",
+        context=_calculator_context(),
+    )
+
+    result = json.loads(captured[1]["payload"]["messages"][-1]["content"])
+    assert result["saved"] is False and result["plan"]["scenarios"][0]["requiredMonthly"] == 75_000
+    assert "couldn't match" not in answer
+    assert agent.GOAL_TOOL_RULES in captured[0]["payload"]["messages"][0]["content"]
+    assert [(step["name"], step["source"]) for step in answer.trace if step["kind"] == "tool"] == [("calculate_goal_plan", "local")]
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_figures_that_no_goal_tool_returned_are_flagged(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    replies = [_completion(tool_calls=[_calculator_call()]), _completion("You would need about ₹61,000 a month.")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, []))
+
+    answer = await agent.run_agent(
+        "I need 50 lakh in 5 years and have 5 lakh. How much a month?", "https://unused", None, [], "finance", "openai",
+        context=_calculator_context(),
+    )
+
+    assert "couldn't match these figures to CA Mode's goal calculations: ₹61,000" in answer
+    assert "INDmoney" not in answer
+
+
+@pytest.mark.asyncio
+async def test_finance_agent_without_tools_gets_no_goal_tool_rules_or_number_check(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion("Section 80C allows ₹1,50,000.")], captured))
+
+    answer = await agent.run_agent("What is the 80C tax deduction?", "https://unused", None, [], "finance", "openai")
+
+    assert agent.GOAL_TOOL_RULES not in captured[0]["payload"]["messages"][0]["content"]
+    assert answer == "Section 80C allows ₹1,50,000."
+
+
+@pytest.mark.parametrize("question", [
+    "I need 50 lakh in 5 years and have 5 lakh. How much a month?",
+    "Can I get to 2 crore by 2045?",
+])
+def test_amounts_in_lakh_or_crore_read_as_finance_in_the_keyword_fallback(question):
+    assert agent._keyword_category(question, []) == "general_finance"
+
+
+QUESTION = "I need 50 lakh in 5 years and have 5 lakh. How much a month?"
+
+
+@pytest.mark.asyncio
+async def test_a_goal_answer_worked_out_by_the_model_is_retried_with_the_calculator(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    replies = [
+        _completion("Without growth you need (50,00,000 - 5,00,000) / 60 = ₹75,000 a month."),
+        _completion(tool_calls=[_calculator_call()]),
+        _completion("With no growth you need ₹75,000 a month."),
+    ]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, captured))
+
+    answer = await agent.run_agent(QUESTION, "https://unused", None, [], "finance", "openai", context=_calculator_context())
+
+    sent = captured[-1]["payload"]["messages"]
+    assert sent[2:4] == [
+        {"role": "assistant", "content": "Without growth you need (50,00,000 - 5,00,000) / 60 = ₹75,000 a month."},
+        {"role": "user", "content": agent.GOAL_CALCULATOR_NUDGE},
+    ]
+    assert answer == "With no growth you need ₹75,000 a month."
+    assert [step["name"] for step in answer.trace if step["kind"] == "tool"] == ["calculate_goal_plan"]
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_still_skips_the_calculator_gets_its_figures_flagged(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    replies = [_completion("You need about ₹75,000 a month."), _completion("You need about ₹75,000 a month.")]
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient(replies, []))
+
+    answer = await agent.run_agent(QUESTION, "https://unused", None, [], "finance", "openai", context=_calculator_context())
+
+    assert "couldn't match these figures to CA Mode's goal calculations: ₹75,000" in answer
+
+
+@pytest.mark.asyncio
+async def test_a_clarifying_question_that_repeats_the_users_numbers_is_not_retried(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = []
+    reply = "Is the 50 lakh in today's money, and what yearly return do you want to assume?"
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient([_completion(reply)], captured))
+
+    answer = await agent.run_agent(QUESTION, "https://unused", None, [], "finance", "openai", context=_calculator_context())
+
+    assert answer == reply and len(captured) == 1

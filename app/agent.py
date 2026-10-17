@@ -50,7 +50,7 @@ _FINANCE_TOPIC_RE = re.compile(
     r"real\s+estate|margin|breakeven|risk.?reward|call\s+oi|put\s+oi|"
     r"parag\s+parikh|flexi.?cap|ifsc|swift|isin|bic|micr|hsn|cheque\w*|"
     # Savings goals, which the Goals page saves and both agents can use.
-    r"goals?|down\s?payment|corpus|earmark\w*)\b",
+    r"goals?|down\s?payment|corpus|earmark\w*|lakhs?|lacs?|crores?)\b",
     re.IGNORECASE,
 )
 _GREETING_RE = re.compile(r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!.?\s]*$", re.IGNORECASE)
@@ -330,22 +330,41 @@ def default_provider() -> str:
     return configured[0]["id"] if configured else "openai"
 
 
+def _unverified_numbers(
+    content: str, messages: list[dict[str, Any]], message: str, saved_context: SavedContext | None,
+) -> list[str]:
+    """Amounts and percentages in ``content`` that match no tool result, the user's message or the saved context."""
+    tool_results = [item["content"] for item in messages if item.get("role") == "tool" and isinstance(item.get("content"), str)]
+    sources = [*tool_results, message, *([saved_context.text] if saved_context else [])]
+    return number_check.unverified_numbers(content, sources)
+
+
 def _number_warning(
     content: str, messages: list[dict[str, Any]], agent_type: str, message: str, saved_context: SavedContext | None = None,
+    *, goal_maths: bool = False,
 ) -> str:
-    """A warning to append when a portfolio answer cites figures that no tool returned, else "".
+    """A warning to append when an answer cites figures that no tool returned, else "".
 
+    Answers are checked whenever a tool ran (for Finance Agent that is always a goal tool), and also when the
+    request was goal arithmetic (``goal_maths``: the goal calculator was offered) even if the model skipped it.
     Figures from the saved context (the user's goals and the plans computed from them) also count as sourced.
     """
-    tool_results = [item["content"] for item in messages if item.get("role") == "tool" and isinstance(item.get("content"), str)]
-    if agent_type != "portfolio" or not tool_results:
+    used_tools = any(item.get("role") == "tool" for item in messages)
+    if not (used_tools or goal_maths):
         return ""
-    sources = [*tool_results, message, *([saved_context.text] if saved_context else [])]
-    unverified = number_check.unverified_numbers(content, sources)
+    unverified = _unverified_numbers(content, messages, message, saved_context)
     if not unverified:
         return ""
-    logger.warning("portfolio_answer_unverified_numbers", extra={"count": len(unverified)})
+    logger.warning("answer_unverified_numbers", extra={"count": len(unverified), "agent_type": agent_type})
+    if agent_type != "portfolio" or (goal_maths and not used_tools):
+        return number_check.warning_note(unverified, number_check.GOAL_SOURCE)
     return number_check.warning_note(unverified)
+
+
+GOAL_CALCULATOR_NUDGE: Final = (
+    "Do not work out goal figures yourself. Call calculate_goal_plan (or get_goal_plans for a saved goal) with the "
+    "numbers I gave now, then answer my original question from its result only."
+)
 
 
 # ── Request routing ────────────────────────────────────────────────────────────
@@ -416,7 +435,18 @@ class PortfolioContext:
 
 
 # The only local tools the Finance Agent may be given: goal planning needs no account access.
-FINANCE_LOCAL_TOOL_NAMES: Final = frozenset({"get_goal_plans", "plan_goal_what_if"})
+FINANCE_LOCAL_TOOL_NAMES: Final = frozenset({"get_goal_plans", "plan_goal_what_if", "calculate_goal_plan"})
+GOAL_TOOL_RULES: Final = (
+    "Goal tools calculate in code. For any goal figure (the monthly amount a target needs, a projection, a "
+    "shortfall, an inflation-adjusted target) call get_goal_plans or plan_goal_what_if for a saved goal, or "
+    "calculate_goal_plan for a goal described only in this chat, and quote the figures as returned; never work them "
+    "out yourself. Call it as soon as the amount, the date or horizon and the currency are known: without a return "
+    "assumption it still gives the no-growth plan, so give that first and then ask about the return or inflation. "
+    "Projections are illustrations under the stated assumptions, never expected or promised returns. When a result "
+    "lists missing inputs or follow-up questions, ask the most important one instead of assuming an answer. Category "
+    "suitability comes from CA Mode's fixed rules: explain it and never override it. No fund data is available, so "
+    "never name, rank or compare specific funds for a goal. These tools save nothing."
+)
 
 
 def _finance_context(context: PortfolioContext | None) -> PortfolioContext | None:
@@ -662,6 +692,8 @@ async def stream_agent(
     else:
         prompt = FINANCE_SYSTEM_PROMPT
     prompt += _saved_context_block(saved_context, agent_type)
+    if FINANCE_LOCAL_TOOL_NAMES & local_tools.keys():
+        prompt += "\n\n" + GOAL_TOOL_RULES
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"],
                      "content": charts.strip_chart_blocks(item["content"]) if item["role"] == "assistant" else item["content"]}
@@ -671,6 +703,9 @@ async def stream_agent(
 
     retried_portfolio_tool_selection = False
     retried_failed_tool_use = False
+    # Goal arithmetic must come from the calculator: an answer with figures of its own gets one retry.
+    goal_maths = "calculate_goal_plan" in local_tools
+    retried_goal_calculation = False
     context_checked = provider != "ollama"
     portfolio_tool_called = False
     ohlc_results: list[str] = []
@@ -776,13 +811,24 @@ async def stream_agent(
                             yield event
                         return
 
+                    if (goal_maths and not retried_goal_calculation and content
+                            and not any(item.get("role") == "tool" for item in messages)
+                            and _unverified_numbers(content, messages, message, saved_context)):
+                        logger.warning("Goal answer computed figures without the calculator; retrying")
+                        retried_goal_calculation = True
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": GOAL_CALCULATOR_NUDGE})
+                        continue
+
                     if content and content.strip():
                         if _contains_code_output(content):
                             logger.warning("Blocked code-shaped model output for %s agent", agent_type)
                             content = FINANCE_ONLY_NOTICE
                         else:
                             content = charts.ground_candlestick_charts(content, ohlc_results)
-                            content += _number_warning(content, messages, agent_type, message, saved_context)
+                            content += _number_warning(
+                                content, messages, agent_type, message, saved_context, goal_maths=goal_maths,
+                            )
                             if choice_data.get("finish_reason") == "length":
                                 content += TRUNCATION_NOTICE
                         yield "content", {"text": content}

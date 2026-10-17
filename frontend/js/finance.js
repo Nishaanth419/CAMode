@@ -123,8 +123,12 @@
     insufficient_data: ['Missing details', 'is-behind'],
   };
 
-  // [label, pill class] for a plan status; unknown statuses show as missing details.
+  // [label, pill class] for a plan status; unknown statuses show as missing details. "On track" that holds only under
+  // the assumed return (it falls short with no growth) says so, so an assumption never reads as a certainty.
   function goalStatus(plan) {
+    if (plan && plan.status === 'on_track' && plan.feasibility && plan.feasibility.status === 'depends_on_returns') {
+      return ['On track if returns hold', 'is-behind'];
+    }
     return GOAL_STATUSES[plan && plan.status] || GOAL_STATUSES.insufficient_data;
   }
 

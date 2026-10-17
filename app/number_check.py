@@ -127,8 +127,17 @@ def unverified_numbers(answer: str, sources: list[str]) -> list[str]:
     return list(dict.fromkeys(unverified))
 
 
-def warning_note(numbers: list[str]) -> str:
+GOAL_SOURCE: Final = "goal"
+
+
+def warning_note(numbers: list[str], source: str = "indmoney") -> str:
+    """The note appended to an answer; ``source`` is ``indmoney`` or ``goal`` (CA Mode's goal calculations)."""
     shown = ", ".join(numbers[:6]) + (" and others" if len(numbers) > 6 else "")
+    if source == GOAL_SOURCE:
+        return (
+            f"\n\n> ⚠️ I couldn't match these figures to CA Mode's goal calculations: {shown}. "
+            "Treat them with caution and check the goal on the Goals page."
+        )
     return (
         f"\n\n> ⚠️ I couldn't match these figures to your INDmoney data: {shown}. "
         "Treat them with caution and check them in INDmoney."
