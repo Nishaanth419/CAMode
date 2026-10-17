@@ -64,6 +64,18 @@ def test_a_goal_question_may_end_with_a_clarifying_question_instead_of_the_calcu
     assert tasks.evaluate(contract, facts(answer="Save ₹10,000 a month."))["status"] == "unmet"
 
 
+@pytest.mark.parametrize(("answer", "asks"), [
+    ("When do you need the money?", True),
+    ("To work this out I'll need a few more details:\n1. Target date\n2. Expected return", True),
+    ("Let me know the target date and I will calculate it.", True),
+    ("Once I have the date, I can give you the monthly amount.", True),
+    ("Save ₹10,000 a month.", False),
+    ("You need ₹46,875 a month.", False),
+])
+def test_a_clarifying_question_is_recognised_without_a_question_mark(answer, asks):
+    assert tasks.asks_question(answer) is asks
+
+
 def test_number_warnings_and_budgets_are_reported_without_failing_the_contract():
     contract = tasks.contract_for("general_finance", "finance", ["calculate_goal_plan"])
     verdict = tasks.evaluate(contract, facts(tools=[("calculate_goal_plan", True)] * 5, model_calls=9, numbers="warning"))
