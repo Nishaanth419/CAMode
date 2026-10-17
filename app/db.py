@@ -85,6 +85,16 @@ _SCHEMA = """
         data TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS investigations_by_user ON investigations(user_id, created_at DESC);
+    -- One sealed row per chat answer (agent_runs.py): its events, task contract and verdict.
+    CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        chat_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        data TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS agent_runs_by_user ON agent_runs(user_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS financial_goals (
         id TEXT NOT NULL,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

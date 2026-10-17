@@ -408,7 +408,7 @@ def save_indmoney(user_id: str, values: dict[str, Any]) -> None:
 
 
 def clear_indmoney(user_id: str) -> None:
-    """Forget the INDmoney connection and everything derived from it (cached tools, snapshots, investigations)."""
+    """Forget the INDmoney connection and everything derived from it (cached tools, snapshots, investigations, answer runs)."""
     with connect_db() as connection:
         connection.execute(
             "UPDATE users SET indmoney = '{}', mcp_tools = NULL, mcp_tools_fetched_at = NULL, "
@@ -417,6 +417,8 @@ def clear_indmoney(user_id: str) -> None:
         )
         connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ?", (user_id,))
         connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
+        # Answer runs keep previews of INDmoney results, so they go too (chats stay).
+        connection.execute("DELETE FROM agent_runs WHERE user_id = ?", (user_id,))
         # Allocations name INDmoney holdings, so they go with the connection (goals themselves stay).
         connection.execute("DELETE FROM goal_allocations WHERE user_id = ?", (user_id,))
 
