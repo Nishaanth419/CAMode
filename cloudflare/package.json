@@ -1,0 +1,21 @@
+{
+  "name": "ca-mode-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CA Mode on Cloudflare: a Worker serving the frontend and one Container running the FastAPI app, with SQLite streamed to R2",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261019.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.151.2"
+  }
+}

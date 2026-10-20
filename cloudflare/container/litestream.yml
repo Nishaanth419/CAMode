@@ -1,0 +1,12 @@
+# SQLite → R2 for CA Mode on Cloudflare. Values come from the container's environment
+# (the Worker's vars and secrets; see ../src/shell.ts CONTAINER_ENV_KEYS).
+dbs:
+  - path: /data/codemode.sqlite3
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: camode
+      endpoint: ${LITESTREAM_ENDPOINT}
+      region: auto
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}

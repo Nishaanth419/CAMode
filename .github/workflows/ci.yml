@@ -46,3 +46,6 @@ jobs:
 
       - name: Run code runner unit tests
         run: node --test worker/test/*.test.ts
+
+      - name: Run Cloudflare Worker unit tests
+        run: node --test cloudflare/test/*.test.ts

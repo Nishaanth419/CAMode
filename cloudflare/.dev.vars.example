@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `npm run dev` (wrangler dev builds and runs the container with local Docker).
+# For production use `npx wrangler secret put <NAME>` for each of these instead.
+APP_MASTER_KEY=
+GROQ_API_KEY=
+LITESTREAM_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+LITESTREAM_ACCESS_KEY_ID=
+LITESTREAM_SECRET_ACCESS_KEY=

@@ -26,3 +26,9 @@ assets
 Dockerfile*
 docker-compose*.yml
 .dockerignore
+
+# Cloudflare deployment tooling (cloudflare/container/ is copied explicitly)
+cloudflare/node_modules
+cloudflare/.wrangler
+cloudflare/.dev.vars
+**/node_modules

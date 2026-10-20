@@ -1,0 +1,47 @@
+// CA Mode on Cloudflare (see ../README.md, "Deploy on Cloudflare").
+// The Worker serves frontend/ and sends every other request to ONE container running the FastAPI app.
+{
+  "name": "camode",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-25",
+
+  // frontend/ as static assets. "/" and "/index.html" go through the Worker so {{origin}} is filled in;
+  // anything that is not a file (/api/*, /auth/*, /privacy, ...) falls through to the Worker and the container.
+  "assets": {
+    "directory": "../frontend",
+    "binding": "ASSETS",
+    "run_worker_first": ["/", "/index.html"]
+  },
+
+  "containers": [
+    {
+      "class_name": "CaModeApp",
+      "image": "./container/Dockerfile",
+      "image_build_context": "..",
+      // 1/4 vCPU, 1 GiB memory, 4 GB disk. The app must stay a single instance: unlocked PIN keys,
+      // private chats, per-profile locks and the snapshot scheduler live in its memory.
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "APP", "class_name": "CaModeApp" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CaModeApp"] }],
+
+  // 03:30 UTC = 09:00 IST: wake the container so the daily snapshot job runs.
+  "triggers": { "crons": ["30 3 * * *"] },
+
+  // Non-secret settings. Secrets (APP_MASTER_KEY, GROQ_API_KEY, LITESTREAM_*) go in with `wrangler secret put`.
+  "vars": {
+    "APP_ORIGIN": "https://camode.knnishaanth.workers.dev",
+    "AI_PROVIDER": "groq",
+    "GROQ_MODEL": "openai/gpt-oss-120b",
+    "REQUEST_ROUTER": "keywords",
+    "TOOL_MODE": "direct",
+    "SLEEP_AFTER": "30m",
+    "LITESTREAM_BUCKET": "camode-db"
+  },
+
+  "observability": { "enabled": false }
+}
