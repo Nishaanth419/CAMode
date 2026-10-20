@@ -415,3 +415,34 @@ test('the saved-context step names what was shared, escaped and redacted', () =>
   assert.doesNotMatch(html, /ABCDE1234F/);
   assert.match(html, /2 steps/);
 });
+
+test('planned answers show their plan, a rejected plan and why gathering stopped', () => {
+  const plan = trace.chatStepView({ kind: 'plan', status: 'completed', stage: 'initial', steps: [
+    { id: 's1', tool: 'lookup_ind_keys' }, { id: 's2', tool: 'get_indian_stocks_details', after: ['s1'] }] });
+  assert.equal(plan.title, 'Plan the steps');
+  assert.equal(plan.tool, '2 steps');
+  assert.equal(plan.summary, 'lookup_ind_keys · get_indian_stocks_details (after s1)');
+  const rejected = trace.chatStepView({ kind: 'plan', status: 'warning', stage: 'initial', reason: 'no step reads the user\'s account data' });
+  assert.equal(rejected.status, 'warning');
+  assert.equal(rejected.summary, 'no step reads the user\'s account data; answered step by step instead');
+  assert.equal(trace.chatStepView({ kind: 'plan', status: 'warning', stage: 'added', reason: 'repeats' }).title, 'Add steps to the plan');
+  const stop = trace.chatStepView({ kind: 'plan_stop', reason: 'partial', missing: ['networth_snapshot (unavailable)'] });
+  assert.equal(stop.summary, 'Some data was missing · Missing: networth_snapshot (unavailable)');
+  assert.equal(stop.status, 'warning');
+  assert.equal(trace.chatStepView({ kind: 'plan_stop', reason: 'complete' }).status, 'completed');
+  const contract = trace.chatStepView({ kind: 'contract', task: 'multi_step', parts: [
+    { task: 'account_data', requiredTools: ['get_portfolio_snapshot'] },
+    { task: 'goal_calculation', requiredTools: ['calculate_goal_plan'], clarificationOk: true }] });
+  assert.equal(contract.tool, 'Several tasks, planned');
+  assert.equal(contract.summary, 'Account data: one of get_portfolio_snapshot · Goal calculation: one of calculate_goal_plan, or a question to you');
+});
+
+test('saved runs turn plan events into the same rows', () => {
+  const steps = trace.runSteps([
+    { seq: 1, kind: 'plan', stage: 'initial', outcome: 'accepted', steps: [{ id: 's1', tool: 'get_portfolio_snapshot' }] },
+    { seq: 2, kind: 'plan', stage: 'added', outcome: 'rejected', reason: 'repeats an earlier call' },
+    { seq: 3, kind: 'plan_stop', reason: 'deadline', missing: ['calculate_goal_plan (not run)'] },
+  ]);
+  assert.deepEqual(steps.map((step) => [step.kind, step.status]), [['plan', 'completed'], ['plan', 'warning'], ['plan_stop', 'warning']]);
+  assert.equal(trace.chatStepView(steps[2]).summary, 'Stopped at the time limit · Missing: calculate_goal_plan (not run)');
+});

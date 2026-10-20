@@ -132,7 +132,17 @@
 
   const TASK_LABELS = {
     refusal: 'Declined request', general_finance: 'General finance', goal_calculation: 'Goal calculation',
-    account_data: 'Account data',
+    account_data: 'Account data', multi_step: 'Several tasks, planned',
+  };
+
+  // Why a planned answer stopped gathering data (agent.py "plan_stop" events) and the row's status.
+  const PLAN_STOPS = {
+    complete: ['Every part had its data', 'completed'],
+    clarify: ['Needs more detail from you', 'completed'],
+    partial: ['Some data was missing', 'warning'],
+    budget: ['Stopped at the call limit', 'warning'],
+    deadline: ['Stopped at the time limit', 'warning'],
+    error: ['Stopped by an error', 'failed'],
   };
 
   const TERMINATIONS = {
@@ -210,10 +220,31 @@
       view.summary = item.detail ? String(item.detail) : '';
     } else if (item.kind === 'contract') {
       const required = Array.isArray(item.requiredTools) ? item.requiredTools.map(String) : [];
+      const parts = Array.isArray(item.parts) ? item.parts.filter((part) => part && typeof part === 'object') : [];
       view.title = 'Decide what the answer needs';
       view.tool = TASK_LABELS[item.task] || (item.task ? String(item.task) : '');
       view.purpose = 'Fixed rules from the request type and the data on offer, not the model';
-      view.summary = required.length ? `Needs one of: ${required.join(', ')}` : 'No account data needed';
+      view.summary = parts.length
+        ? parts.map((part) => `${TASK_LABELS[part.task] || String(part.task || '')}: one of ${(Array.isArray(part.requiredTools) ? part.requiredTools : []).map(String).join(', ')}${part.clarificationOk ? ', or a question to you' : ''}`).join(' · ')
+        : required.length ? `Needs one of: ${required.join(', ')}` : 'No account data needed';
+    } else if (item.kind === 'plan') {
+      const steps = Array.isArray(item.steps) ? item.steps.filter((entry) => entry && typeof entry === 'object') : [];
+      const accepted = item.status !== 'warning' && item.status !== 'failed';
+      view.title = item.stage === 'added' ? 'Add steps to the plan' : 'Plan the steps';
+      view.tool = accepted ? `${steps.length} step${steps.length === 1 ? '' : 's'}` : 'not used';
+      view.purpose = 'Checked in code: offered tools, valid arguments, order, no repeats';
+      view.summary = accepted
+        ? steps.map((entry) => `${entry.tool}${Array.isArray(entry.after) && entry.after.length ? ` (after ${entry.after.join(', ')})` : ''}`).join(' · ')
+        : `${item.reason ? String(item.reason) : 'The plan failed a check'}${item.stage === 'added' ? '' : '; answered step by step instead'}`;
+      if (!accepted) view.status = 'warning';
+    } else if (item.kind === 'plan_stop') {
+      const known = PLAN_STOPS[item.reason];
+      const missing = Array.isArray(item.missing) ? item.missing.map(String) : [];
+      view.title = 'Stop gathering data';
+      view.tool = item.reason ? String(item.reason) : '';
+      view.purpose = 'A planned answer has a limit on steps, model calls and time';
+      view.summary = [known ? known[0] : '', missing.length ? `Missing: ${missing.join(', ')}` : ''].filter(Boolean).join(' · ');
+      view.status = known ? known[1] : 'completed';
     } else if (item.kind === 'error') {
       view.title = 'Stopped with an error';
       view.tool = item.code ? String(item.code) : '';
@@ -665,7 +696,9 @@
       const kind = event.kind;
       if (kind === 'route') steps.push({ kind, status: 'completed', category: event.category, source: event.source, model: event.model, duration_ms: event.durationMs });
       else if (kind === 'context') steps.push({ kind, status: 'completed', items: event.items });
-      else if (kind === 'contract') steps.push({ kind, status: 'completed', task: event.task, requiredTools: event.requiredTools });
+      else if (kind === 'contract') steps.push({ kind, status: 'completed', task: event.task, requiredTools: event.requiredTools, parts: event.parts });
+      else if (kind === 'plan') steps.push({ kind, status: event.outcome === 'accepted' ? 'completed' : 'warning', stage: event.stage, steps: event.steps, reason: event.reason });
+      else if (kind === 'plan_stop') steps.push({ kind, status: (PLAN_STOPS[event.reason] || [])[1] || 'completed', reason: event.reason, missing: event.missing });
       else if (kind === 'model_call') {
         const step = { kind: 'model', provider: event.provider, model: event.model, attempt: event.attempt, status: 'running' };
         models.set(event.attempt, step);
