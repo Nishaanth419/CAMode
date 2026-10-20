@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -643,6 +644,136 @@ def _message_text(content: Any) -> str | None:
     return content if isinstance(content, str) else None
 
 
+@dataclass(slots=True)
+class _ToolRun:
+    """One finished tool call: its ``tool_result`` payload, the tool message the model reads, and an auth failure."""
+
+    result: dict[str, Any]
+    content: str
+    auth_error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return not self.result.get("error_kind")
+
+
+class _ToolRunner:
+    """Runs local and INDmoney tools for one answer, opening the INDmoney session lazily (once, even in parallel)."""
+
+    def __init__(
+        self, *, mcp_url: str, token: str | None, local_tools: dict[str, LocalTool],
+        tool_schemas: dict[str, Any], offers_live_tools: bool, context: PortfolioContext | None,
+        session: dict[str, Any] | None, mcp_client: httpx.AsyncClient,
+    ) -> None:
+        self._mcp_url, self._token, self._context, self._mcp_client = mcp_url, token, context, mcp_client
+        self.local_tools, self.tool_schemas, self.offers_live_tools = local_tools, tool_schemas, offers_live_tools
+        self.session = session
+        # Set when the lazily opened INDmoney session failed; later INDmoney calls in this answer fail fast.
+        self.session_error: str | None = None
+        self.ohlc_results: list[str] = []
+        self._session_lock = asyncio.Lock()
+
+    def __repr__(self) -> str:
+        return f"_ToolRunner(local={sorted(self.local_tools)}, session={'open' if self.session else 'closed'})"
+
+    async def run(self, name: str, arguments: dict[str, Any]) -> _ToolRun:
+        if name in self.local_tools:
+            return await self._run_local(name, arguments)
+        return await self._run_indmoney(name, arguments)
+
+    async def _run_local(self, name: str, arguments: dict[str, Any]) -> _ToolRun:
+        try:
+            result_str = await self.local_tools[name].handler(arguments)
+        except Exception as exc:
+            logger.warning("Local tool %s failed", name, exc_info=True)
+            # Point to live tools only when this request offers them.
+            fallback = "use the live INDmoney tools instead." if self.offers_live_tools else "tell the user this data is unavailable right now."
+            return _ToolRun({"name": name, "error": _error_text(exc), "error_kind": "failed"},
+                            tool_results.error_payload("failed", f"{name} failed; {fallback}"))
+        refusal = tool_results.reported_error(result_str)
+        return _ToolRun({
+            "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
+            **({"error": refusal, "error_kind": "rejected"} if refusal else {}),
+            **_evidence_reference(result_str),
+        }, result_str)
+
+    async def _open_session(self, name: str) -> _ToolRun | None:
+        """Open the INDmoney session if needed; an auth failure comes back as a finished run."""
+        async with self._session_lock:
+            if self.session is not None or self.session_error is not None:
+                return None
+            try:
+                self.session = await fetch_mcp_session(self._mcp_url, self._token)
+            except McpAuthError as exc:
+                return _ToolRun({"name": name, "error": _error_text(exc), "error_kind": "auth"}, "",
+                                auth_error=f"Could not connect to INDmoney: {_error_text(exc)}")
+            except Exception as exc:
+                self.session_error = f"Could not connect to INDmoney: {_error_text(exc)}"
+                logger.warning("mcp_session_unavailable", extra={"tool": name})
+            else:
+                if self._context and self._context.on_mcp_tools:
+                    self._context.on_mcp_tools(self.session["tools"])
+        return None
+
+    async def _run_indmoney(self, name: str, arguments: dict[str, Any]) -> _ToolRun:
+        problems = tool_results.argument_problems(self.tool_schemas.get(name), arguments)
+        if problems:
+            # The tool would reject these; say so without a round trip to INDmoney.
+            detail = "; ".join(problems)
+            return _ToolRun({"name": name, "error": detail, "error_kind": "invalid_arguments"},
+                            tool_results.error_payload("invalid_arguments", f"{name} was not called: {detail}"))
+        failed = await self._open_session(name)
+        if failed:
+            return failed
+        if self.session is None:
+            error = self.session_error or "INDmoney is unavailable."
+            return _ToolRun({"name": name, "error": error, "error_kind": "unavailable"},
+                            tool_results.error_payload("unavailable", error))
+        try:
+            result = await call_mcp_tool(
+                self._mcp_url, self._token, self.session["protocolVersion"], self.session["sessionId"], name, arguments,
+                client=self._mcp_client,
+            )
+        except McpToolError as exc:
+            # The tool rejected this call (e.g. an argument outside its enum): let the model fix it.
+            return _ToolRun({"name": name, "error": str(exc), "error_kind": "rejected"},
+                            tool_results.error_payload("rejected", str(exc)))
+        except McpAuthError as exc:
+            # End the request so main.chat can refresh the token and try again.
+            return _ToolRun({"name": name, "error": _error_text(exc), "error_kind": "auth"}, "",
+                            auth_error=f"INDmoney data request failed: {_error_text(exc)}")
+        except Exception as exc:
+            # INDmoney could not be reached or failed: report it so the model can answer without this data.
+            logger.warning("mcp_tool_unavailable", extra={"tool": name})
+            return _ToolRun({"name": name, "error": _error_text(exc), "error_kind": "unavailable"},
+                            tool_results.error_payload("unavailable", f"INDmoney could not provide {name}: {_error_text(exc)}"))
+        result_str = str(result)
+        if name == charts.OHLC_TOOL_NAME:
+            self.ohlc_results.append(result_str)
+        return _ToolRun({"name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else "")}, result_str)
+
+
+def _guarded_answer(
+    content: str, messages: list[dict[str, Any]], *, agent_type: str, message: str,
+    saved_context: SavedContext | None, goal_maths: bool, ohlc_results: list[str], finish_reason: Any,
+) -> tuple[str, list[AgentEvent]]:
+    """The answer after the output checks (code output, charts, figures, length), with their validation events."""
+    if _contains_code_output(content):
+        logger.warning("Blocked code-shaped model output for %s agent", agent_type)
+        return FINANCE_ONLY_NOTICE, [("validation", {"check": "code_output", "outcome": "failed",
+                                                     "detail": "replaced with the finance-only notice"})]
+    events: list[AgentEvent] = []
+    content = charts.ground_candlestick_charts(content, ohlc_results)
+    warning, number_result = _number_check(content, messages, agent_type, message, saved_context, goal_maths=goal_maths)
+    if number_result:
+        events.append(("validation", number_result))
+    content += warning
+    if finish_reason == "length":
+        events.append(("validation", {"check": "length", "outcome": "warning", "detail": "cut off at the model's length limit"}))
+        content += TRUNCATION_NOTICE
+    return content, events
+
+
 async def stream_agent(
     message: str,
     mcp_url: str,
@@ -755,13 +886,14 @@ async def stream_agent(
     context_checked = provider != "ollama"
     # An account-data request is satisfied only by a tool that reads account or market data (tasks.is_account_tool).
     account_tool_called = False
-    # Set when the lazily opened INDmoney session failed; later INDmoney calls in this answer fail fast.
-    session_error: str | None = None
-    ohlc_results: list[str] = []
     known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
     try:
         async with httpx.AsyncClient(timeout=config["timeout"]) as client, httpx.AsyncClient(timeout=90) as mcp_client:
+            runner = _ToolRunner(
+                mcp_url=mcp_url, token=token, local_tools=local_tools, tool_schemas=tool_schemas,
+                offers_live_tools=bool(tools), context=context, session=session, mcp_client=mcp_client,
+            )
             for attempt in range(1, 13):
                 try:
                     request_messages = (
@@ -886,21 +1018,13 @@ async def stream_agent(
                         continue
 
                     if content and content.strip():
-                        if _contains_code_output(content):
-                            logger.warning("Blocked code-shaped model output for %s agent", agent_type)
-                            yield "validation", {"check": "code_output", "outcome": "failed", "detail": "replaced with the finance-only notice"}
-                            content = FINANCE_ONLY_NOTICE
-                        else:
-                            content = charts.ground_candlestick_charts(content, ohlc_results)
-                            warning, number_result = _number_check(
-                                content, messages, agent_type, message, saved_context, goal_maths=goal_maths,
-                            )
-                            if number_result:
-                                yield "validation", number_result
-                            content += warning
-                            if choice_data.get("finish_reason") == "length":
-                                yield "validation", {"check": "length", "outcome": "warning", "detail": "cut off at the model's length limit"}
-                                content += TRUNCATION_NOTICE
+                        content, checks = _guarded_answer(
+                            content, messages, agent_type=agent_type, message=message, saved_context=saved_context,
+                            goal_maths=goal_maths, ohlc_results=runner.ohlc_results,
+                            finish_reason=choice_data.get("finish_reason"),
+                        )
+                        for event in checks:
+                            yield event
                         yield "content", {"text": content}
                         yield "done", {}
                         return
@@ -933,92 +1057,16 @@ async def stream_agent(
                         continue
 
                     yield "tool_call", {"name": name, "arguments": arguments, "source": source}
-
-                    if name in local_tools:
-                        if tasks.is_account_tool(name, local_tools):
-                            account_tool_called = True
-                        try:
-                            result_str = await local_tools[name].handler(arguments)
-                        except Exception as exc:
-                            logger.warning("Local tool %s failed", name, exc_info=True)
-                            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "failed"}
-                            # Point to live tools only when this request offers them.
-                            fallback = "use the live INDmoney tools instead." if tools else "tell the user this data is unavailable right now."
-                            messages.append(_tool_error_message(call, "failed", f"{name} failed; {fallback}"))
-                            continue
-                        refusal = tool_results.reported_error(result_str)
-                        yield "tool_result", {
-                            "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
-                            **({"error": refusal, "error_kind": "rejected"} if refusal else {}),
-                            **_evidence_reference(result_str),
-                        }
-                        messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
-                        continue
-
                     # INDmoney tools read account or market data, so even a refused call counts as trying one.
-                    account_tool_called = True
-                    problems = tool_results.argument_problems(tool_schemas.get(name), arguments)
-                    if problems:
-                        # The tool would reject these; say so without a round trip to INDmoney.
-                        detail = "; ".join(problems)
-                        yield "tool_result", {"name": name, "error": detail, "error_kind": "invalid_arguments"}
-                        messages.append(_tool_error_message(call, "invalid_arguments", f"{name} was not called: {detail}"))
-                        continue
-
-                    if session is None and session_error is None:
-                        try:
-                            session = await fetch_mcp_session(mcp_url, token)
-                        except McpAuthError as exc:
-                            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
-                            yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}",
-                                            "code": "indmoney_auth", "auth_failed": True}
-                            yield "done", {}
-                            return
-                        except Exception as exc:
-                            session_error = f"Could not connect to INDmoney: {_error_text(exc)}"
-                            logger.warning("mcp_session_unavailable", extra={"tool": name})
-                        else:
-                            if context and context.on_mcp_tools:
-                                context.on_mcp_tools(session["tools"])
-                    if session is None:
-                        error = session_error or "INDmoney is unavailable."
-                        yield "tool_result", {"name": name, "error": error, "error_kind": "unavailable"}
-                        messages.append(_tool_error_message(call, "unavailable", error))
-                        continue
-
-                    try:
-                        result = await call_mcp_tool(
-                            mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
-                            client=mcp_client,
-                        )
-                    except McpToolError as exc:
-                        # The tool rejected this call (e.g. an argument outside its enum): let the model fix it.
-                        yield "tool_result", {"name": name, "error": str(exc), "error_kind": "rejected"}
-                        messages.append(_tool_error_message(call, "rejected", str(exc)))
-                        continue
-                    except McpAuthError as exc:
-                        # End the request so main.chat can refresh the token and try again.
-                        yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
-                        yield "error", {"message": f"INDmoney data request failed: {_error_text(exc)}",
-                                        "code": "indmoney_auth", "auth_failed": True}
+                    if tasks.is_account_tool(name, local_tools):
+                        account_tool_called = True
+                    run = await runner.run(name, arguments)
+                    yield "tool_result", run.result
+                    if run.auth_error:
+                        yield "error", {"message": run.auth_error, "code": "indmoney_auth", "auth_failed": True}
                         yield "done", {}
                         return
-                    except Exception as exc:
-                        # INDmoney could not be reached or failed: report it so the model can answer without this data.
-                        logger.warning("mcp_tool_unavailable", extra={"tool": name})
-                        yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "unavailable"}
-                        messages.append(_tool_error_message(
-                            call, "unavailable", f"INDmoney could not provide {name}: {_error_text(exc)}",
-                        ))
-                        continue
-                    result_str = str(result)
-                    if name == charts.OHLC_TOOL_NAME:
-                        ohlc_results.append(result_str)
-                    yield "tool_result", {
-                        "name": name,
-                        "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
-                    }
-                    messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
+                    messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": run.content})
 
     except Exception as exc:
         logger.error("agent_run_failed", exc_info=True)
