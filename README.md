@@ -325,6 +325,37 @@ The scripted cases check CA Mode's own handling: the contract and verdict, how t
 | **Cases passed** | **18/24** |
 | Latency | p50 8.6 s, max 57.8 s; 1.5 model and 0.6 tool calls, about 3,400 tokens per case |
 
+## Questions with several parts
+
+A Portfolio Analyzer question that asks for account data and a goal calculation at once ("What is my net worth and how much must I invest monthly to reach ₹50 lakh in 8 years?") is answered from a plan instead of the usual one-call-at-a-time loop:
+
+1. The model proposes up to 4 tool calls in one `submit_plan` call. CA Mode checks the plan in code: only offered tools, arguments that fit each tool (required fields, allowed values), each step waiting only for earlier steps, no repeated call, and at least one step that reads account data. A plan that fails a check is set aside and the usual loop answers instead.
+2. Steps that don't depend on each other run at the same time, each with a time limit (`PLAN_STEP_TIMEOUT_SECONDS`, 60).
+3. The model then answers, or adds up to 2 more calls (at most twice). A call the tool rejected for its arguments may be fixed once; a call that was unavailable is never repeated; an expired INDmoney sign-in ends the answer so the token can be refreshed.
+4. At most 8 tool calls, 6 model calls and `PLAN_DEADLINE_SECONDS` (240). When a limit is reached, the answer says which part it could not complete.
+
+The answer goes through the same checks as any other (figures traced to a tool, no code, charts from tool data), and the trace shows the plan, any rejected plan and why it stopped gathering data (complete, clarify, partial, budget, deadline or error). Every other question is answered exactly as before.
+
+```bash
+python -m scripts.eval_tasks --dataset evals/multi_step.jsonl                              # 15 scripted cases, offline (also in the test suite)
+python -m scripts.eval_tasks --dataset evals/multi_step.jsonl --provider ollama --runs 3   # the 4 live cases on the real model
+```
+
+**Live results** (`ca-mode`, gpt-oss-20b, 3 runs × 4 cases, 2026-10-20, final code):
+
+| Metric | Score |
+| --- | --- |
+| Plan accepted (not set aside) | 11/12 |
+| Contract met | 9/9 |
+| Expected figures stated | 9/9 |
+| Clarifying question when the goal date is missing | 3/3 |
+| A lookup ran before the call that needs its key | 3/3 |
+| No repeated call; within 6 model and 8 tool calls | 12/12 |
+| **Cases passed** | **11/12** |
+| Latency | p50 15.1 s, max 33.0 s; 2.2 model and 2.0 tool calls, about 6,500 tokens per case |
+
+The first live run passed 3/12: the local model writes `name` for `tool`, refers to steps as "step1", "0" or by tool name, and sometimes ends a plan one character wrong, which Ollama rejects with HTTP 500. These are now accepted or repaired in code, and the plan is still checked in full. The one miss above was a 500 that could not be repaired; the usual loop then answered. Two intermediate runs scored 8/12 and 7/12 on the way, so treat single runs as noisy.
+
 ## Local data and privacy
 
 The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no third-party analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.

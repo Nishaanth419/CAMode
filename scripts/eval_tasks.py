@@ -12,6 +12,11 @@ rejected, model calls. Latency and tokens are reported per case.
 
     python -m scripts.eval_tasks                          # scripted, offline
     python -m scripts.eval_tasks --provider ollama --runs 3
+    python -m scripts.eval_tasks --dataset evals/multi_step.jsonl [--provider ollama --runs 3]
+
+evals/multi_step.jsonl holds messages with several kinds of task, answered with a plan
+(``app.planner``): its cases also check the plan events, how the plan stopped, which tools ran in
+which order, repeated calls and the planner's budgets.
 
 Exit status is 1 when a scripted case fails, or a live run passes fewer than ``--min-pass`` cases.
 Nothing touches .data/ or the real master key.
@@ -48,12 +53,13 @@ import httpx  # noqa: E402
 
 from app import agent, goal_portfolio, mcp_client, snapshots, tasks  # noqa: E402
 from app.agent_events import summarize  # noqa: E402
-from app.context import wants_goal_calculator  # noqa: E402
+from app.context import task_parts, wants_goal_calculator  # noqa: E402
 from scripts.eval_numbers import mentions  # noqa: E402
 from tests.fixtures import indmoney_sample  # noqa: E402
 
 EVAL_VERSION: Final = "agent_tasks.v1"
 DATASET: Final = Path(__file__).resolve().parent.parent / "evals" / "agent_tasks.jsonl"
+MULTI_STEP_DATASET: Final = DATASET.with_name("multi_step.jsonl")
 TODAY: Final = date(2026, 10, 16)
 SCRIPTED_PROVIDER: Final = "openai"
 
@@ -72,8 +78,8 @@ MCP_RESULT: Final = json.dumps({"ind_key": "INFY", "name": "Infosys", "candles":
 _AMOUNT: Final = re.compile(r"(?:₹|rs\.?\s?|inr\s?)\s?\d|\d\s?(?:lakh|lac|crore|cr)\b", re.IGNORECASE)
 
 
-def load_cases() -> list[dict[str, Any]]:
-    return [json.loads(line) for line in DATASET.read_text().splitlines() if line.strip()]
+def load_cases(dataset: Path = DATASET) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in dataset.read_text().splitlines() if line.strip()]
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────────
@@ -152,7 +158,12 @@ def scripted_replies(script: list[dict[str, Any]]) -> list[dict[str, Any] | Exce
     replies: list[dict[str, Any] | Exception] = []
     for step in script:
         for _ in range(int(step.get("repeat", 1))):
-            replies.append(httpx.ReadTimeout("") if step.get("raise") == "timeout" else _completion(step, len(replies)))
+            if step.get("raise") == "timeout":
+                replies.append(httpx.ReadTimeout(""))
+            elif "error" in step:  # A provider error body, answered with HTTP 500 (e.g. Ollama's tool-call parse error).
+                replies.append({"_status": 500, "error": {"message": step["error"], "type": "api_error"}})
+            else:
+                replies.append(_completion(step, len(replies)))
     return replies
 
 
@@ -177,7 +188,8 @@ def scripted_provider(script: list[dict[str, Any]]) -> Iterator[None]:
             reply = replies.pop(0)
             if isinstance(reply, Exception):
                 raise reply
-            return httpx.Response(200, json=reply, request=httpx.Request("POST", url))
+            status = reply.pop("_status", 200)
+            return httpx.Response(status, json=reply, request=httpx.Request("POST", url))
 
     agent.httpx.AsyncClient = Client
     try:
@@ -196,13 +208,14 @@ async def run_case(case: dict[str, Any], provider: str) -> dict[str, Any]:
     with stubbed_indmoney(case.get("mcp", {})):
         try:
             result = await agent.run_agent(case["message"], "https://mcp.invalid/eval", "eval-token", case.get("history", []),
-                                           case["agent"], provider, context=context)
+                                           case["agent"], provider, context=context, plan_parts=task_parts(case["message"]))
             answer, events, verdict = str(result), result.events, result.verdict
         except agent.AgentRunError as exc:
             error, events, verdict = str(exc), exc.events, exc.verdict
     termination = next((event for event in reversed(events) if event["kind"] == "termination"), {})
     number_event = next((event for event in reversed(events) if event["kind"] == "validation" and event.get("check") == "numbers"), None)
     tool_results = [event for event in events if event["kind"] == "tool_result"]
+    plan_stop = next((event for event in reversed(events) if event["kind"] == "plan_stop"), {})
     return {
         "id": case["id"], "answer": answer, "error": error, "latency": time.perf_counter() - started,
         "termination": termination.get("reason"), "code": termination.get("code"),
@@ -212,6 +225,10 @@ async def run_case(case: dict[str, Any], provider: str) -> dict[str, Any]:
         "numbers": number_event.get("outcome") if number_event else None,
         "numberDetail": number_event.get("detail") if number_event else None,
         "tools": [event["name"] for event in tool_results], "summary": summarize(events),
+        "calls": [[event["name"], event.get("arguments", "")] for event in events if event["kind"] == "tool_call"],
+        "plans": [[event.get("stage"), event.get("outcome")] for event in events if event["kind"] == "plan"],
+        "planReasons": [event["reason"] for event in events if event["kind"] == "plan" and event.get("reason")],
+        "planStop": plan_stop.get("reason"),
     }
 
 
@@ -222,7 +239,9 @@ def grade_scripted(case: dict[str, Any], outcome: dict[str, Any]) -> list[str]:
     for key in ("termination", "code", "task", "verdict", "numbers"):
         if key in expect and outcome[key] != expect[key]:
             problems.append(f"{key} {outcome[key]!r}, expected {expect[key]!r}")
-    for key in ("retries", "errorKinds"):
+    if "planStop" in expect and outcome["planStop"] != expect["planStop"]:
+        problems.append(f"planStop {outcome['planStop']!r}, expected {expect['planStop']!r}")
+    for key in ("retries", "errorKinds", "plans", "tools"):
         if key in expect and outcome[key] != expect[key]:
             problems.append(f"{key} {outcome[key]}, expected {expect[key]}")
     if "modelCalls" in expect and outcome["summary"]["modelCalls"] != expect["modelCalls"]:
@@ -253,7 +272,23 @@ def grade_live(case: dict[str, Any], outcome: dict[str, Any]) -> dict[str, bool]
         scores["valid_arguments"] = rejected <= grade["tool_rejections"]
     if "max_model_calls" in grade:
         scores["model_calls"] = outcome["summary"]["modelCalls"] <= grade["max_model_calls"]
+    if "max_tool_calls" in grade:
+        scores["tool_calls"] = outcome["summary"]["toolCalls"] <= grade["max_tool_calls"]
+    if grade.get("planned"):
+        scores["planned"] = ["initial", "accepted"] in outcome["plans"]
+    if "plan_stop" in grade:
+        scores["plan_stop"] = outcome["planStop"] in grade["plan_stop"]
+    if grade.get("no_repeats"):
+        keys = [json.dumps(call) for call in outcome["calls"]]
+        scores["no_repeats"] = len(keys) == len(set(keys))
+    if grade.get("order"):
+        scores["order"] = all(_runs_before(outcome["tools"], first, then) for first, then in grade["order"])
     return scores
+
+
+def _runs_before(tools: list[str], first: str, then: str) -> bool:
+    """``then`` never runs before ``first`` has run (vacuously true when ``then`` never runs)."""
+    return then not in tools or (first in tools and tools.index(first) < tools.index(then))
 
 
 async def run_scripted(cases: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any], list[str]]]:
@@ -294,7 +329,8 @@ async def run_live(cases: list[dict[str, Any]], provider: str, runs: int, delay:
             failed = [key for key, ok in scores.items() if not ok]
             print(f"{'PASS' if passed else 'FAIL'}  run {run}  {case['id']:36} {outcome['latency']:5.1f} s  "
                   f"{','.join(outcome['tools']) or 'no tools':40} {'; '.join(failed) or 'ok'}"
-                  f"{'  [' + outcome['numberDetail'] + ']' if outcome.get('numberDetail') else ''}", flush=True)
+                  f"{'  [' + outcome['numberDetail'] + ']' if outcome.get('numberDetail') else ''}"
+                  f"{'  [plan: ' + '; '.join(outcome['planReasons']) + ']' if outcome.get('planReasons') else ''}", flush=True)
             await asyncio.sleep(delay)
     return results
 
@@ -306,15 +342,16 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=0.0, help="seconds between live cases (rate limits)")
     parser.add_argument("--min-pass", type=int, default=0, help="live cases each run must pass")
     parser.add_argument("--case", action="append", help="run only this case id (repeatable)")
+    parser.add_argument("--dataset", type=Path, default=DATASET, help="cases to run (default evals/agent_tasks.jsonl)")
     parser.add_argument("--out", help="write each live result to this JSONL file")
     args = parser.parse_args()
-    cases = [case for case in load_cases() if not args.case or case["id"] in args.case]
+    cases = [case for case in load_cases(args.dataset) if not args.case or case["id"] in args.case]
     if not args.provider:
         failures = 0
         for case, outcome, problems in asyncio.run(run_scripted(cases)):
             failures += bool(problems)
             print(f"{'FAIL' if problems else 'ok  '}  {case['id']:40} {'; '.join(problems)}")
-        print(f"\n{EVAL_VERSION} scripted: {len(cases) - failures}/{len(cases)} cases behave as expected")
+        print(f"\n{EVAL_VERSION} scripted ({args.dataset.name}): {len(cases) - failures}/{len(cases)} cases behave as expected")
         return 1 if failures else 0
     live = [case for case in cases if "live" in case]
     results = asyncio.run(run_live(live, args.provider, args.runs, args.delay))

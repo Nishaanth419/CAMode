@@ -24,7 +24,7 @@ from datetime import date, datetime
 from typing import Any, Final
 
 from . import cas, goal_planning, goal_portfolio, memory, snapshots, users
-from .agent import SavedContext
+from .agent import SavedContext, _requires_indmoney_data
 from .sealing import ProfileKeys
 
 MAX_CONTEXT_CHARS: Final = 6000
@@ -137,6 +137,34 @@ def wants_goal_calculator(message: str, history: Sequence[dict[str, str]]) -> bo
     """
     texts = [message, request_text(message, history)] if history and is_follow_up(message) else [message]
     return any(_GOAL_TERMS.search(text) or (_AMOUNT.search(text) and _SPAN.search(text)) for text in texts)
+
+
+# Clause boundaries: sentence ends, semicolons, "also", and an "and" that starts a new question.
+_CLAUSE_BREAK: Final = re.compile(
+    r"[?;]|\.\s|\balso\b|\band\s+(?=(?:is|are|am|will|would|can|could|should|how|what|when|why|which|do|does|did|"
+    r"tell|show|give|plan|calculate|check|compare|list)\b)",
+    re.IGNORECASE,
+)
+
+
+def task_parts(message: str) -> tuple[str, ...]:
+    """The kinds of tool-backed task in a message that has more than one, in order; ``()`` otherwise.
+
+    Each clause is either a goal calculation (goal words, or an amount with a time span) or account data
+    (``agent._requires_indmoney_data``); clauses that are neither (concepts, greetings) do not count. A message
+    with both kinds is answered with a plan (``planner``) by Portfolio Analyzer.
+    """
+    kinds: list[str] = []
+    for clause in _CLAUSE_BREAK.split(message):
+        if _GOAL_TERMS.search(clause) or (_AMOUNT.search(clause) and _SPAN.search(clause)):
+            kind = "goal_calculation"
+        elif _requires_indmoney_data(clause, []):
+            kind = "account_data"
+        else:
+            continue
+        if kind not in kinds:
+            kinds.append(kind)
+    return tuple(kinds) if len(kinds) > 1 else ()
 
 
 def is_follow_up(message: str) -> bool:
