@@ -562,7 +562,7 @@ def test_the_goal_tool_descriptions_name_no_funds():
 def _chat_with(client, agent_type, monkeypatch, message="Can I reach my house goal?"):
     seen = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         seen.append((context, saved_context))
         return "ok"
 

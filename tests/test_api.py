@@ -129,7 +129,7 @@ def test_create_chat_rejects_invalid_agent_type(client, signed_in):
 def test_chat_message_is_saved_and_agent_type_is_enforced(client, signed_in, monkeypatch):
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         assert message == "What is diversification?"
         assert history == []
         assert agent_type == "finance"
@@ -166,7 +166,7 @@ def test_chat_refreshes_indmoney_token_once_after_mcp_401(client, signed_in, mon
 
     calls = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         calls.append(token)
         assert context is not None
         if token == "stale-token":
@@ -220,7 +220,7 @@ def test_portfolio_chat_passes_snapshot_context_and_only_relevant_saved_context(
     chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
     seen = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         seen.append((context, saved_context))
         return "ok"
 
@@ -254,7 +254,7 @@ def test_chat_history_is_passed_to_agent_and_trimmed_to_limit(client, signed_in,
     with main.connect_db() as connection:
         connection.execute("UPDATE chats SET messages = ? WHERE id = ?", (json.dumps(history), chat["id"]))
 
-    async def fake_run_agent(message, mcp_url, token, previous, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, previous, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         assert previous == history
         return "answer"
 
@@ -301,7 +301,7 @@ def test_chat_uses_the_local_provider(client, signed_in, monkeypatch, sent, expe
     chat = client.post("/api/chats", json={"agentType": "finance"}).json()
     used = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         used.append(provider)
         return "A budget tracks income and spending."
 

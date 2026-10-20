@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Final
 
 import httpx
 
-from . import charts, number_check, router, tasks, tool_results
+from . import charts, number_check, planner, router, tasks, tool_results
 from .agent_events import REDACTED, RunRecorder, redact_trace_text, summarize  # noqa: F401 (re-exported)
 from .mcp_client import (
     IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
@@ -774,6 +774,286 @@ def _guarded_answer(
     return content, events
 
 
+# ── Planned runs (several kinds of task in one message) ───────────────────────
+
+@dataclass(slots=True)
+class _PlannedRun:
+    """What a planned run shares with ``stream_agent``: counts, and whether it handed over to the ordinary loop."""
+
+    context_checked: bool
+    attempts: int = 0
+    tool_calls: int = 0
+    fell_back: bool = False
+    stopped: bool = False  # An error ended the answer (already yielded).
+    completion: dict[str, Any] | None = None
+    repaired: bool = False  # The last completion was rebuilt from a provider parse error.
+
+
+async def _run_step(runner: _ToolRunner, step: planner.PlanStep) -> _ToolRun:
+    try:
+        return await asyncio.wait_for(runner.run(step.tool, step.arguments), planner.STEP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        error = f"{step.tool} did not finish within {planner.STEP_TIMEOUT_SECONDS} seconds."
+        logger.warning("plan_step_timeout", extra={"tool": step.tool})
+        return _ToolRun({"name": step.tool, "error": error, "error_kind": "unavailable"},
+                        tool_results.error_payload("unavailable", error))
+
+
+def _plan_call_message(steps: Sequence[planner.PlanStep]) -> dict[str, Any]:
+    return {"role": "assistant", "content": None, "tool_calls": [
+        {"id": f"plan-{step.id}", "type": "function",
+         "function": {"name": step.tool, "arguments": json.dumps(step.arguments, ensure_ascii=False)}}
+        for step in steps
+    ]}
+
+
+async def _plan_model_call(
+    run: _PlannedRun, client: httpx.AsyncClient, config: dict[str, Any], provider: str,
+    request_messages: list[dict[str, Any]], tools: list[dict[str, Any]], tool_choice: Any, *, current_user_index: int,
+) -> AsyncIterator[AgentEvent]:
+    """One model call of a planned run; sets ``run.completion``, or yields the error and sets ``run.stopped``.
+
+    A failed planner call (the first) is not an error: the run falls back to the ordinary loop instead. A steps
+    call Ollama could not parse is repaired when only its ending was wrong (``planner.repaired_call``).
+    """
+    run.attempts += 1
+    run.completion = None
+    run.repaired = False
+    first = run.attempts == 1
+    try:
+        fitted = (_fit_groq_context(request_messages, tools, current_user_index=current_user_index)
+                  if provider == "groq" else request_messages)
+    except RuntimeError as exc:
+        if first:  # The tool list in the planner prompt is what did not fit; the ordinary loop may still.
+            run.attempts -= 1
+            yield "plan", {"stage": "initial", "outcome": "rejected", "reason": f"the planner request is too large: {exc}"}
+            run.fell_back = True
+            return
+        yield "error", {"message": str(exc), "code": "request_too_large"}
+        run.stopped = True
+        return
+    payload: dict[str, Any] = {"model": config["model"], "messages": fitted}
+    if provider == "groq":
+        payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
+    yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": run.attempts}
+    try:
+        response = await client.post(
+            f"{config['base_url']}/chat/completions",
+            headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
+            json=payload,
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        yield "error", {"message": f"Could not connect to {config['label']}: {_error_text(exc)}", "code": "provider_unreachable"}
+        run.stopped = True
+        return
+    except httpx.TimeoutException:
+        logger.warning("provider_timeout", extra={"provider": provider, "timeout_seconds": config["timeout"]})
+        yield "error", {"message": (
+            f"{config['label']} did not finish answering within {config['timeout']} seconds. "
+            "Try again, or ask a shorter question."
+        ), "code": "provider_timeout"}
+        run.stopped = True
+        return
+    yield "model_result", _completion_summary(response, run.attempts)
+    if response.is_success and not run.context_checked:
+        run.context_checked = True
+        problem = await _ollama_context_problem(client, config)
+        if problem:
+            yield "error", {"message": problem, "code": "context_too_small"}
+            run.stopped = True
+            return
+    steps_tool = tools[0]["function"]["name"] if len(tools) == 1 else None
+    repaired = planner.repaired_call(response.text, steps_tool) if not response.is_success and steps_tool else None
+    if repaired is not None:
+        logger.warning("plan_tool_call_repaired", extra={"tool": steps_tool})
+        run.completion, run.repaired = repaired, True
+        return
+    if not response.is_success:
+        if first:
+            yield "plan", {"stage": "initial", "outcome": "rejected",
+                           "reason": f"the planner call failed: HTTP {response.status_code} {response.text[:200]}"}
+            run.fell_back = True
+            return
+        yield "error", {"message": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}",
+                        "code": "provider_error"}
+        run.stopped = True
+        return
+    try:
+        completion = response.json()
+    except ValueError:
+        completion = None
+    run.completion = completion if isinstance(completion, dict) else {}
+
+
+def _completion_message(completion: dict[str, Any] | None) -> tuple[dict[str, Any], Any]:
+    choices = (completion or {}).get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message")
+    return (message if isinstance(message, dict) else {}), choice.get("finish_reason")
+
+
+async def _planned_answer(
+    run: _PlannedRun, *, parts: Sequence[str], message: str, messages: list[dict[str, Any]], current_user_index: int,
+    model_tools: list[dict[str, Any]], runner: _ToolRunner, client: httpx.AsyncClient, config: dict[str, Any],
+    provider: str, agent_type: str, saved_context: SavedContext | None,
+) -> AsyncIterator[AgentEvent]:
+    """Answer a message with several kinds of task from a checked plan of tool calls (see ``planner``).
+
+    Yields the run's events and ends with ``content`` or ``error``, then ``done``; or sets ``run.fell_back``
+    (after a ``plan`` event saying why) so the ordinary loop answers instead, with nothing else yielded.
+    """
+    started = time.monotonic()
+    local_tools = runner.local_tools
+    offered = {name: runner.tool_schemas.get(name) for name in (item["function"]["name"] for item in model_tools)}
+    offered |= {name: tool.input_schema for name, tool in local_tools.items()}
+
+    def account_tool(name: str) -> bool:
+        return tasks.is_account_tool(name, local_tools)
+
+    def over_deadline() -> bool:
+        return time.monotonic() - started > planner.DEADLINE_SECONDS
+
+    system = {"role": "system", "content": messages[0]["content"] + "\n\n" + planner.planner_rules(
+        parts, planner.tool_catalogue(model_tools))}
+    async for event in _plan_model_call(
+        run, client, config, provider, [system, *messages[1:]], [planner.SUBMIT_PLAN_TOOL],
+        {"type": "function", "function": {"name": planner.SUBMIT_PLAN}}, current_user_index=current_user_index,
+    ):
+        yield event
+    if run.stopped or run.fell_back:
+        if run.stopped:
+            yield "done", {}
+        return
+    try:
+        raw_steps = planner.steps_from_completion(run.completion, planner.SUBMIT_PLAN)
+        if raw_steps is None:
+            raise planner.PlanError(f"the model did not call {planner.SUBMIT_PLAN}")
+        steps = planner.check_plan(raw_steps, offered=offered, account_tool=account_tool)
+    except planner.PlanError as exc:
+        logger.warning("plan_rejected", extra={"reason": str(exc)[:200]})
+        yield "plan", {"stage": "initial", "outcome": "rejected", "reason": str(exc)}
+        run.fell_back = True
+        return
+    state = planner.PlanState(steps=list(steps))
+    yield "plan", {"stage": "initial", "outcome": "accepted", "steps": [step.describe() for step in steps],
+                   **({"reason": "repaired the end of the model's tool call"} if run.repaired else {})}
+
+    work = list(messages)
+    stop_reason: str | None = None
+    replans = 0
+    while True:
+        # Run every step whose earlier steps have finished, in parallel, until none is left or a limit is reached.
+        while ready := state.ready():
+            if over_deadline():
+                stop_reason = "deadline"
+                break
+            room = planner.MAX_TOOL_CALLS - run.tool_calls
+            if room <= 0:
+                stop_reason = "budget"
+                break
+            batch = ready[:room]
+            for step in batch:
+                yield "tool_call", {"name": step.tool, "arguments": step.arguments,
+                                    "source": "local" if step.tool in local_tools else "indmoney", "step": step.id}
+            results = await asyncio.gather(*(_run_step(runner, step) for step in batch))
+            run.tool_calls += len(batch)
+            work.append(_plan_call_message(batch))
+            for step, result in zip(batch, results, strict=True):
+                yield "tool_result", {**result.result, "step": step.id}
+                state.outcomes[step.id] = planner.StepOutcome(step, result.ok, result.result.get("error_kind"))
+                work.append({"role": "tool", "tool_call_id": f"plan-{step.id}", "content": result.content})
+            auth_error = next((result.auth_error for result in results if result.auth_error), None)
+            if auth_error:
+                yield "plan_stop", {"reason": "error", "missing": state.missing()}
+                yield "error", {"message": auth_error, "code": "indmoney_auth", "auth_failed": True}
+                yield "done", {}
+                return
+        if stop_reason or replans >= planner.MAX_REPLANS or run.attempts >= planner.MAX_MODEL_CALLS - 1 or over_deadline():
+            stop_reason = stop_reason or ("deadline" if over_deadline() else None)
+            break
+        # Observe and decide: answer now, or add steps.
+        async for event in _plan_model_call(
+            run, client, config, provider, [*work, {"role": "user", "content": planner.decide_prompt(state.missing())}],
+            [planner.ADD_PLAN_STEPS_TOOL], "auto", current_user_index=current_user_index,
+        ):
+            yield event
+        if run.stopped:
+            yield "done", {}
+            return
+        reply, finish_reason = _completion_message(run.completion)
+        try:
+            raw_steps = planner.steps_from_completion(run.completion, planner.ADD_PLAN_STEPS)
+        except planner.PlanError as exc:
+            yield "plan", {"stage": "added", "outcome": "rejected", "reason": str(exc)}
+            break
+        if raw_steps is None:
+            content = _message_text(reply.get("content"))
+            if reply.get("tool_calls") or not (content and content.strip()):
+                break  # Another tool, or nothing: ask once more for the answer itself.
+            async for event in _finish_plan(
+                state, stop_reason, content, finish_reason, parts=parts, work=work, message=message,
+                agent_type=agent_type, saved_context=saved_context, runner=runner, account_tool=account_tool,
+            ):
+                yield event
+            return
+        replans += 1
+        try:
+            added = planner.check_steps(raw_steps, offered=offered, state=state, limit=planner.MAX_ADDED_STEPS,
+                                        prefix=f"r{replans}-")
+        except planner.PlanError as exc:
+            yield "plan", {"stage": "added", "outcome": "rejected", "reason": str(exc)}
+            break
+        state.steps.extend(added)
+        yield "plan", {"stage": "added", "outcome": "accepted", "steps": [step.describe() for step in added],
+                       **({"reason": "repaired the end of the model's tool call"} if run.repaired else {})}
+
+    # Limits reached, or the decision was unusable: answer from what was gathered, with no more tools.
+    async for event in _plan_model_call(
+        run, client, config, provider, [*work, {"role": "user", "content": planner.final_prompt(state.missing())}],
+        [], None, current_user_index=current_user_index,
+    ):
+        yield event
+    if run.stopped:
+        yield "done", {}
+        return
+    reply, finish_reason = _completion_message(run.completion)
+    content = _message_text(reply.get("content"))
+    if not (content and content.strip()):
+        yield "plan_stop", {"reason": "error", "missing": state.missing()}
+        yield "error", {"message": f"{config['label']} returned an empty response. Check that the selected model is available and try again.",
+                        "code": "empty_response"}
+        yield "done", {}
+        return
+    async for event in _finish_plan(
+        state, stop_reason, content, finish_reason, parts=parts, work=work, message=message,
+        agent_type=agent_type, saved_context=saved_context, runner=runner, account_tool=account_tool,
+    ):
+        yield event
+
+
+async def _finish_plan(
+    state: planner.PlanState, stop_reason: str | None, content: str, finish_reason: Any, *, parts: Sequence[str],
+    work: list[dict[str, Any]], message: str, agent_type: str, saved_context: SavedContext | None,
+    runner: _ToolRunner, account_tool: Callable[[str], bool],
+) -> AsyncIterator[AgentEvent]:
+    """The planned run's answer through the usual output checks, and how the plan ended."""
+    content, checks = _guarded_answer(
+        content, work, agent_type=agent_type, message=message, saved_context=saved_context, goal_maths=True,
+        ohlc_results=runner.ohlc_results, finish_reason=finish_reason,
+    )
+    for event in checks:
+        yield event
+    if stop_reason is None:
+        covered = planner.parts_covered(parts, state.outcomes.values(), account_tool, tasks.GOAL_TOOLS)
+        stop_reason = "complete" if covered else ("clarify" if tasks.asks_question(content) else "partial")
+    yield "plan_stop", {"reason": stop_reason, "missing": state.missing()}
+    yield "content", {"text": content}
+    yield "done", {}
+
+
 async def stream_agent(
     message: str,
     mcp_url: str,
@@ -785,6 +1065,7 @@ async def stream_agent(
     context: PortfolioContext | None = None,
     saved_context: SavedContext | None = None,
     force_account_data: bool = False,
+    plan_parts: Sequence[str] = (),
 ) -> AsyncIterator[AgentEvent]:
     """
     Async generator that yields ``(event, data)`` tuples.
@@ -793,6 +1074,9 @@ async def stream_agent(
     tools; it is set internally when the model, offered only the snapshot tools,
     answers with a tool call written as text. ``saved_context`` (either agent) adds
     the user's relevant saved goals, decisions and preferences to the system prompt.
+    ``plan_parts`` (``context.task_parts()``) names the kinds of task in a message with several; when
+    Portfolio Analyzer gets an account question with a goal tool offered, the answer is planned
+    (``planner``) and falls back to the ordinary loop when the plan fails its checks.
 
     Event types (``agent_events.RunRecorder`` records them):
       • route        – { category, source, model?, duration_ms }  how the request was classified
@@ -804,6 +1088,8 @@ async def stream_agent(
       • tool_result  – { name, result?, error?, error_kind?, investigation_id? }  tool returned
       • retry        – { reason, detail? }           the model is asked again
       • validation   – { check, outcome, detail? }   a check on the answer
+      • plan         – { stage, outcome, steps?, reason? }  a proposed plan, accepted or rejected (planned runs)
+      • plan_stop    – { reason, missing }            why a planned run stopped gathering data
       • content      – { text }                      final answer text
       • error        – { message, code, auth_failed? }  fatal error
       • done         – {}                            stream finished
@@ -861,7 +1147,10 @@ async def stream_agent(
         + [tool for tool in tools if tool["name"] not in local_tools],
         provider,
     )
-    yield "contract", {"contract": tasks.contract_for(category, agent_type, [*local_tools, *tool_names])}
+    contract = tasks.contract_for(category, agent_type, [*local_tools, *tool_names])
+    planned = (requires_indmoney_data and not force_account_data and len(plan_parts) > 1
+               and bool(tasks.GOAL_TOOLS & local_tools.keys()))
+    yield "contract", {"contract": tasks.plan_contract(plan_parts, [*local_tools, *tool_names]) if planned else contract}
 
     if agent_type == "portfolio":
         prompt = _portfolio_prompt(context.profile_context if context else None)
@@ -894,7 +1183,22 @@ async def stream_agent(
                 mcp_url=mcp_url, token=token, local_tools=local_tools, tool_schemas=tool_schemas,
                 offers_live_tools=bool(tools), context=context, session=session, mcp_client=mcp_client,
             )
-            for attempt in range(1, 13):
+            first_attempt = 1
+            if planned:
+                plan_run = _PlannedRun(context_checked=context_checked)
+                async for event in _planned_answer(
+                    plan_run, parts=plan_parts, message=message, messages=messages,
+                    current_user_index=current_user_index, model_tools=model_tools, runner=runner, client=client,
+                    config=config, provider=provider, agent_type=agent_type, saved_context=saved_context,
+                ):
+                    yield event
+                if not plan_run.fell_back:
+                    return
+                # The plan failed its checks: the ordinary loop answers, under the ordinary contract.
+                context_checked = plan_run.context_checked
+                first_attempt = plan_run.attempts + 1
+                yield "contract", {"contract": contract}
+            for attempt in range(first_attempt, first_attempt + 12):
                 try:
                     request_messages = (
                         _fit_groq_context(messages, model_tools, current_user_index=current_user_index)
@@ -1126,6 +1430,7 @@ def bounded_trace(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _CHECK_STATUS: Final = {"passed": "passed", "warning": "warning", "failed": "failed"}
+_PLAN_STOP_STATUS: Final = {"partial": "warning", "budget": "warning", "deadline": "warning", "error": "failed"}
 
 
 class _TraceBuilder:
@@ -1174,6 +1479,15 @@ class _TraceBuilder:
                                **({"detail": recorded["detail"]} if recorded and recorded.get("detail") else {})})
         elif event_type == "validation" and recorded:
             self.add_check(recorded)
+        elif event_type == "plan" and recorded:
+            self.finish_model_step("completed")
+            # A rejected plan is not a failed answer: the ordinary loop (or the final answer) takes over.
+            self.steps.append({"kind": "plan", "status": "completed" if recorded.get("outcome") == "accepted" else "warning",
+                               **{key: recorded[key] for key in ("stage", "steps", "reason") if recorded.get(key)}})
+        elif event_type == "plan_stop" and recorded:
+            self.steps.append({"kind": "plan_stop", "status": _PLAN_STOP_STATUS.get(recorded.get("reason", ""), "completed"),
+                               "reason": recorded.get("reason", ""),
+                               **({"missing": recorded["missing"]} if recorded.get("missing") else {})})
         elif event_type == "content":
             self.finish_model_step("completed")
         elif event_type == "error":
@@ -1225,6 +1539,7 @@ async def run_agent(
     *,
     context: PortfolioContext | None = None,
     saved_context: SavedContext | None = None,
+    plan_parts: Sequence[str] = (),
 ) -> AgentResult:
     """Collect the answer, the trace, the recorded events and the contract verdict from the agent event stream."""
     answer_parts: list[str] = []
@@ -1235,6 +1550,7 @@ async def run_agent(
 
     async for event_type, payload in stream_agent(
         message, mcp_url, token, history, agent_type, provider, context=context, saved_context=saved_context,
+        plan_parts=plan_parts,
     ):
         if event_type == "contract":
             contract = payload["contract"]

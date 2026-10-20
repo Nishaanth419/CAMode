@@ -504,7 +504,7 @@ def test_portfolio_chat_links_investigations_to_its_conversation(client, signed_
     _store_pair(signed_in["id"])
     chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         tool = next(item for item in context.local_tools if item.name == "investigate_portfolio_change")
         await tool.handler({})
         return "ok"

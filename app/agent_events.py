@@ -12,7 +12,12 @@ Event kinds (camelCase keys, ``seq`` and ``atMs`` on every event):
 - ``model_call`` / ``model_result``: ``attempt``; the result adds ``status``, ``httpStatus``,
   ``finishReason``, ``toolCalls``, ``promptTokens``, ``completionTokens``, ``durationMs``
 - ``tool_call`` / ``tool_result``: ``name``, ``source``, ``arguments``; the result adds ``errorKind``
-  (``tool_results.ToolErrorKind``) and ``error``, or ``resultPreview``, plus ``durationMs``
+  (``tool_results.ToolErrorKind``) and ``error``, or ``resultPreview``, plus ``durationMs``; in a planned
+  run both carry the plan ``step`` id
+- ``plan``: ``stage`` (``initial``, ``added``), ``outcome`` (``accepted``, ``rejected``), ``steps``
+  (``id``, ``tool``, ``after``) or the ``reason`` it was rejected
+- ``plan_stop``: ``reason`` (``complete``, ``clarify``, ``partial``, ``budget``, ``deadline``, ``error``) and
+  the planned calls still ``missing``
 - ``retry``: ``reason`` (``no_account_tool``, ``goal_calculator``, ``invalid_tool_call``,
   ``rerun_with_live_tools``) and ``detail``
 - ``validation``: ``check`` (``code_output``, ``numbers``, ``length``, ``task_contract``), ``outcome``
@@ -132,7 +137,7 @@ class RunRecorder:
 
     def _on_tool_call(self, p: dict[str, Any]) -> dict[str, Any]:
         event = self._append("tool_call", name=str(p.get("name", ""))[:100], source=p.get("source"),
-                             arguments=arguments_text(p.get("arguments", {})))
+                             arguments=arguments_text(p.get("arguments", {})), step=p.get("step"))
         self._open_calls.setdefault(event["name"], []).append(event)
         return event
 
@@ -146,7 +151,7 @@ class RunRecorder:
             errorKind=p.get("error_kind") or ("failed" if failed else None),
             error=_clean(p["error"], MAX_ERROR_CHARS) if failed else None,
             resultPreview=_clean(p["result"], MAX_PREVIEW_CHARS) if p.get("result") else None,
-            investigationId=p.get("investigation_id"),
+            investigationId=p.get("investigation_id"), step=p.get("step"),
             durationMs=self._now_ms() - call["atMs"] if call else None,
         )
 
@@ -156,6 +161,16 @@ class RunRecorder:
     def _on_validation(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._append("validation", check=p.get("check"), outcome=p.get("outcome"),
                             detail=_clean(p.get("detail", ""), 300) or None)
+
+    def _on_plan(self, p: dict[str, Any]) -> dict[str, Any]:
+        steps = [{key: (str(value)[:100] if key != "after" else [str(item)[:20] for item in value][:8])
+                  for key, value in step.items() if key in ("id", "tool", "after")} for step in p.get("steps", [])[:8]]
+        return self._append("plan", stage=p.get("stage"), outcome=p.get("outcome"), steps=steps or None,
+                            reason=_clean(p.get("reason", ""), 300) or None)
+
+    def _on_plan_stop(self, p: dict[str, Any]) -> dict[str, Any]:
+        return self._append("plan_stop", reason=p.get("reason"),
+                            missing=[_clean(item, 120) for item in p.get("missing", [])[:8]] or None)
 
     def _on_content(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._append("answer", chars=len(p.get("text", "")))

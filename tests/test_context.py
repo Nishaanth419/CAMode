@@ -154,7 +154,7 @@ def test_finance_agent_chat_receives_relevant_saved_context(client, signed_in, m
     client.post("/api/goals", json=GOAL_BODY)
     seen = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         seen.append((agent_type, context, saved_context))
         return "ok"
 
@@ -173,7 +173,7 @@ def test_finance_agent_chat_receives_relevant_saved_context(client, signed_in, m
 def test_finance_agent_chat_without_goals_gets_no_context(client, signed_in, monkeypatch):
     seen = []
 
-    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None):
+    async def fake_run_agent(message, mcp_url, token, history, agent_type, provider, *, context=None, saved_context=None, plan_parts=()):
         seen.append(context)
         return "ok"
 

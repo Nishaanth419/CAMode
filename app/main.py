@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
-from .context import observed_sources, request_text, retrieve_context, wants_goal_calculator
+from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
 from .mcp_client import McpAuthError, fetch_mcp_session, filter_portfolio_tools
@@ -1190,6 +1190,7 @@ async def chat(body: ChatRequest, request: Request):
     try:
         answer = await run_agent(
             message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
+            plan_parts=task_parts(message),
         )
     except Exception as exc:
         if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
@@ -1199,7 +1200,7 @@ async def chat(body: ChatRequest, request: Request):
             try:
                 answer = await run_agent(
                     message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
-                    context=context, saved_context=saved_context,
+                    context=context, saved_context=saved_context, plan_parts=task_parts(message),
                 )
             except Exception as retry_exc:
                 if is_indmoney_auth_error(retry_exc):
