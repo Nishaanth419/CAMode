@@ -1,0 +1,119 @@
+# Team deployment: one Linux VM, reached only through Cloudflare Tunnel + Access.
+# See README, "Host it for a team". Nothing is published on the host: cloudflared
+# makes an outbound connection to Cloudflare and forwards requests to http://app:8080.
+#
+#   docker compose -f docker-compose.prod.yml up --build -d
+#   docker compose -f docker-compose.prod.yml --profile offsite up -d   # also copy backups to R2/S3
+#
+# Never scale the app service: unlocked PIN keys, private-mode chats, per-profile locks
+# and the snapshot scheduler live in one process's memory (container_name blocks --scale).
+
+name: ca-mode
+
+services:
+  app:
+    build: .
+    image: ca-mode:${CA_MODE_TAG:-local}
+    container_name: ca-mode-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:?set APP_ORIGIN to the public https origin, e.g. https://ca-mode.example.com}
+      APP_DATA_DIR: /data
+      BACKUP_DIR: /backups
+      APP_MASTER_KEY_FILE: /run/secrets/master_key
+      PORT: "8080"
+    secrets:
+      - master_key
+    volumes:
+      # Host paths on the persistent disk, owned by uid/gid 10001 (see README).
+      - ${CA_MODE_DATA_DIR:-/srv/ca-mode/data}:/data
+      - ${CA_MODE_BACKUP_DIR:-/srv/ca-mode/backups}:/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 30s
+    networks:
+      - ca-mode
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
+    container_name: ca-mode-cloudflared
+    restart: unless-stopped
+    # The tunnel's public hostname must point at http://app:8080 (Zero Trust dashboard).
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN to the tunnel token from the Zero Trust dashboard}
+    depends_on:
+      app:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    networks:
+      - ca-mode
+
+  # Optional: copy the verified daily backups to an R2/S3 bucket every 6 hours.
+  # Enable with --profile offsite. It mounts only /backups: never the master key.
+  backup-offsite:
+    profiles: ["offsite"]
+    image: rclone/rclone:1.75.1@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5
+    container_name: ca-mode-backup-offsite
+    restart: unless-stopped
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "-c"]
+    # `copy`, not `sync`: local pruning never deletes off-site copies; expire them with a bucket lifecycle rule.
+    command:
+      - |
+        while true; do
+          rclone copy /backups "offsite:$${OFFSITE_BUCKET}/$${OFFSITE_PREFIX:-ca-mode}" --include "codemode-*.sqlite3" --immutable --s3-no-check-bucket --log-level NOTICE
+          sleep "$${OFFSITE_INTERVAL_SECONDS:-21600}"
+        done
+    environment:
+      RCLONE_CONFIG_OFFSITE_TYPE: s3
+      RCLONE_CONFIG_OFFSITE_PROVIDER: ${OFFSITE_PROVIDER:-Cloudflare}
+      RCLONE_CONFIG_OFFSITE_ENDPOINT: ${OFFSITE_ENDPOINT:-}
+      RCLONE_CONFIG_OFFSITE_REGION: ${OFFSITE_REGION:-auto}
+      RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: ${OFFSITE_ACCESS_KEY_ID:-}
+      RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: ${OFFSITE_SECRET_ACCESS_KEY:-}
+      OFFSITE_BUCKET: ${OFFSITE_BUCKET:-}
+      OFFSITE_PREFIX: ${OFFSITE_PREFIX:-ca-mode}
+      OFFSITE_INTERVAL_SECONDS: ${OFFSITE_INTERVAL_SECONDS:-21600}
+    volumes:
+      - ${CA_MODE_BACKUP_DIR:-/srv/ca-mode/backups}:/backups:ro
+    tmpfs:
+      - /tmp:size=16m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    networks:
+      - ca-mode
+
+secrets:
+  master_key:
+    # Root-only directory on the host; the file itself owned by 10001 with mode 0400.
+    file: ${CA_MODE_MASTER_KEY_FILE:-/etc/ca-mode/master.key}
+
+networks:
+  ca-mode: {}

@@ -1,0 +1,130 @@
+name: Deploy
+
+# Deploys main to the team VM (README, "Deploy from GitHub"): runs CI, then over SSH checks out
+# the exact commit in the VM's deploy checkout and runs deploy/vm-deploy.sh, which backs up the
+# running app, builds the image on the VM (arm64) and waits until the app is healthy. The VM's
+# .env and master key stay on the VM; this workflow never writes them.
+#
+# Secrets of the `production` environment: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+# DEPLOY_KNOWN_HOSTS (the VM's host key, pinned), and CLOUDFLARE_API_TOKEN /
+# CLOUDFLARE_ACCOUNT_ID for the optional code runner. Variables: DEPLOY_DIR (default
+# /srv/ca-mode/app) and the repository variable DEPLOY_CODE_RUNNER ('true' to deploy worker/).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, never cancelled midway: a newer run waits, and only the newest waiting
+# run is kept. The whole run is serialised so an older commit can never deploy after a newer one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  deploy-vm:
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions: {}
+    env:
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/srv/ca-mode/app' }}
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Secret $name is not set in the production environment"
+              exit 1
+            fi
+          done
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host ca-mode-vm
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/deploy_known_hosts
+            GlobalKnownHostsFile /dev/null
+            BatchMode yes
+            ConnectTimeout 20
+            ServerAliveInterval 30
+          EOF
+
+      - name: Check out ${{ github.sha }} on the VM and deploy
+        run: |
+          # The commit must be on main, so a re-run of an older run (a rollback) works and
+          # nothing else can be deployed. The arguments are expanded here on purpose.
+          # shellcheck disable=SC2029
+          ssh ca-mode-vm "bash -s -- $(printf '%q ' "$DEPLOY_DIR" "$GITHUB_SHA")" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$2" refs/remotes/origin/main; then
+            echo "::error::$2 is not on main"
+            exit 1
+          fi
+          git -c advice.detachedHead=false checkout --quiet --detach "$2"
+          echo "Checked out $(git log -1 --format='%h %s')"
+          exec bash deploy/vm-deploy.sh </dev/null
+          REMOTE
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/config
+
+  # Optional: the code runner Worker (README, "Code mode"). Needs Cloudflare Workers Paid for
+  # Dynamic Workers, so it runs only when the repository variable DEPLOY_CODE_RUNNER is 'true'.
+  # Set CODE_RUNNER_SECRET once with `npx wrangler secret put`; `wrangler deploy` keeps it.
+  deploy-code-runner:
+    needs: ci
+    if: vars.DEPLOY_CODE_RUNNER == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy the Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
