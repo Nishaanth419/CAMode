@@ -33,10 +33,13 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Check frontend scripts
         run: for file in frontend/js/*.js frontend/sw.js; do node --check "$file"; done
 
       - name: Run frontend unit tests
         run: node --test tests/js/*.test.js
+
+      - name: Run code runner unit tests
+        run: node --test worker/test/*.test.ts

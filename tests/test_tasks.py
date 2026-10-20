@@ -157,7 +157,7 @@ def test_the_recorder_numbers_times_and_redacts_events_and_never_keeps_the_answe
     assert "secret-value" not in events[2]["arguments"] and "ABCDE1234F" not in events[2]["arguments"]
     assert events[3]["errorKind"] == "unavailable" and events[3]["durationMs"] == 500 and "abc.def" not in events[3]["error"]
     assert events[4] == {"seq": 5, "atMs": 2000, "kind": "answer", "chars": 27}
-    assert summarize(events) == {"modelCalls": 1, "toolCalls": 1, "failedToolCalls": 1, "retries": 0,
+    assert summarize(events) == {"modelCalls": 1, "codeRuns": 0, "toolCalls": 1, "failedToolCalls": 1, "retries": 0,
                                  "promptTokens": 100, "completionTokens": 20, "durationMs": 2000, "termination": "answered"}
 
 

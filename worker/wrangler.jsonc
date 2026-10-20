@@ -1,0 +1,11 @@
+// The code runner for CA Mode's TOOL_MODE=code (see ../README.md, "Code mode").
+// Set the shared secret with `npx wrangler secret put CODE_RUNNER_SECRET` (and in .dev.vars for `wrangler dev`).
+{
+  "name": "ca-mode-code-runner",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-25",
+  // Dynamic Workers: each snippet runs in its own isolate, with no network access (globalOutbound: null).
+  "worker_loaders": [{ "binding": "LOADER" }],
+  // Off so Cloudflare keeps no request logs (the privacy notice says the runner saves nothing).
+  "observability": { "enabled": false }
+}

@@ -234,6 +234,34 @@ test('a saved run becomes the same step rows as the answer trace, every step kep
   assert.deepEqual(trace.runSteps([null, 'x', { kind: 'tool_result', name: 'nope' }, { kind: 'model_result', attempt: 9 }]), []);
 });
 
+test('a code run is one step with its snippet, and the data calls it made follow it', () => {
+  const events = [
+    { seq: 1, atMs: 0, kind: 'model_call', provider: 'Ollama', model: 'ca-mode', attempt: 1 },
+    { seq: 2, atMs: 900, kind: 'model_result', attempt: 1, status: 'completed' },
+    { seq: 3, atMs: 901, kind: 'code_run', code: 'const s = await api.networth_snapshot({token: "x"});\nreturn s.total;', apiCount: 12 },
+    { seq: 4, atMs: 902, kind: 'tool_call', name: 'networth_snapshot', source: 'indmoney', arguments: '{}' },
+    { seq: 5, atMs: 1400, kind: 'tool_result', name: 'networth_snapshot', resultPreview: '{"total":1}', durationMs: 498 },
+    { seq: 6, atMs: 1500, kind: 'code_result', status: 'completed', calls: 1, resultPreview: '{"result":1}', durationMs: 599 },
+    { seq: 7, atMs: 1501, kind: 'code_run', code: 'return (;' },
+    { seq: 8, atMs: 1600, kind: 'code_result', status: 'failed', calls: 0, error: 'The code failed: SyntaxError', durationMs: 99 },
+  ];
+  const steps = trace.runSteps(events);
+  assert.deepEqual(steps.map((step) => step.kind), ['model', 'code', 'tool', 'code']);
+  const view = trace.chatStepView(steps[1], true);
+  assert.equal(view.title, 'Run the model’s code');
+  assert.equal(view.summary, '1 data call');
+  assert.equal(view.durationMs, 599);
+  assert.ok(view.details.some((item) => item.label === 'Code' && item.code.includes('api.networth_snapshot')));
+  const failed = trace.chatStepView(steps[3], true);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.summary, 'No data calls');
+  assert.match(failed.error, /SyntaxError/);
+  // A snippet that never reported back is not shown as still running.
+  assert.equal(trace.chatStepView({ kind: 'code', status: 'running', code: 'x' }, true).status, 'unfinished');
+  assert.deepEqual(trace.runFacts({ modelCalls: 2, codeRuns: 1, toolCalls: 3, failedToolCalls: 0 }), ['2 model calls', '1 code run', '3 tool calls']);
+  assert.match(trace.chatStepView({ kind: 'retry', reason: 'direct_tools_fallback' }, true).purpose, /code runner could not be reached/);
+});
+
 test('the run card shows the question, verdict checks, counts and every step', () => {
   const html = trace.renderRunCard(savedRun());
   for (const part of ['How much a month for ₹50 lakh?', 'Goal calculation', 'Complete', 'Checks on this answer', 'Check the figures',

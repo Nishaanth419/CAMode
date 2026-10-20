@@ -120,6 +120,7 @@
     goal_calculator: 'It worked out goal figures itself instead of using the calculator',
     invalid_tool_call: 'The AI provider rejected a malformed tool call',
     rerun_with_live_tools: 'Run again with the live INDmoney tools',
+    direct_tools_fallback: 'The code runner could not be reached, so the tools were called directly',
   };
 
   // Checks on the answer (agent.py "validation" events).
@@ -197,6 +198,17 @@
       }
       if (item.investigation_id) view.links.push({ label: 'Open investigation', href: `#/activity/${encodeURIComponent(item.investigation_id)}` });
       if (item.error_kind && TOOL_ERROR_KINDS[item.error_kind]) view.summary = TOOL_ERROR_KINDS[item.error_kind];
+    } else if (item.kind === 'code') {
+      // Code mode: the model's snippet ran on the Cloudflare Worker; the data calls it made follow as tool steps.
+      const calls = Number(item.calls) || 0;
+      view.title = 'Run the model’s code';
+      view.tool = 'Cloudflare Worker sandbox';
+      view.purpose = 'An isolated sandbox with no network access; each data call it made is listed after it';
+      view.summary = status === 'running' ? '' : calls ? `${plural(calls, 'data call')}` : 'No data calls';
+      if (typeof item.code === 'string' && item.code.trim()) view.details.push({ label: 'Code', code: redactText(item.code) });
+      if (typeof item.result_preview === 'string' && item.result_preview) {
+        view.details.push({ label: 'Output preview (first 1,000 characters)', code: prettyJson(redactText(item.result_preview)) });
+      }
     } else if (item.kind === 'retry') {
       view.title = 'Ask the model again';
       view.tool = item.reason ? String(item.reason) : '';
@@ -607,6 +619,7 @@
     const facts = [];
     if (!summary || typeof summary !== 'object') return facts;
     if (isNumber(summary.modelCalls) && summary.modelCalls > 0) facts.push(plural(summary.modelCalls, 'model call'));
+    if (isNumber(summary.codeRuns) && summary.codeRuns > 0) facts.push(plural(summary.codeRuns, 'code run'));
     if (isNumber(summary.toolCalls) && summary.toolCalls > 0) {
       facts.push(plural(summary.toolCalls, 'tool call') + (summary.failedToolCalls ? ` (${summary.failedToolCalls} failed)` : ''));
     }
@@ -660,6 +673,7 @@
     const steps = [];
     const models = new Map();
     const tools = new Map();
+    let codeStep = null;
     for (const event of Array.isArray(events) ? events : []) {
       if (!event || typeof event !== 'object') continue;
       const kind = event.kind;
@@ -689,6 +703,16 @@
           status: event.errorKind ? 'failed' : 'completed', duration_ms: event.durationMs, result_preview: event.resultPreview,
           error: event.error, error_kind: event.errorKind, investigation_id: event.investigationId,
         });
+      } else if (kind === 'code_run') {
+        codeStep = { kind: 'code', code: event.code, status: 'running' };
+        steps.push(codeStep);
+      } else if (kind === 'code_result') {
+        if (!codeStep) continue;
+        Object.assign(codeStep, {
+          status: event.status === 'completed' ? 'completed' : 'failed', duration_ms: event.durationMs,
+          calls: event.calls, result_preview: event.resultPreview, error: event.error,
+        });
+        codeStep = null;
       } else if (kind === 'retry') steps.push({ kind, status: 'completed', reason: event.reason, detail: event.detail });
       else if (kind === 'validation') steps.push({ kind: 'check', check: event.check, status: CHECK_OUTCOMES[event.outcome] || 'failed', detail: event.detail });
       else if (kind === 'error') steps.push({ kind, status: 'failed', message: event.message, code: event.code });

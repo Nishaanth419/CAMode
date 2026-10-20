@@ -1,0 +1,21 @@
+{
+  "name": "ca-mode-code-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs CA Mode's model-written snippets in Dynamic Worker isolates; every api call goes back to the app over a WebSocket",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/codemode": "0.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261019.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.151.2"
+  }
+}

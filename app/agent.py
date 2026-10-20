@@ -14,11 +14,12 @@ from typing import Any, AsyncIterator, Final
 
 import httpx
 
-from . import charts, number_check, router, tasks, tool_results
+from . import charts, code_runner, number_check, router, tasks, tool_results
 from .agent_events import REDACTED, RunRecorder, redact_trace_text, summarize  # noqa: F401 (re-exported)
 from .mcp_client import (
     IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
 )
+from .tool_results import ToolOutcome
 
 logger = logging.getLogger("ca_mode.agent")
 
@@ -335,16 +336,21 @@ def default_provider() -> str:
 
 def _unverified_numbers(
     content: str, messages: list[dict[str, Any]], message: str, saved_context: SavedContext | None,
+    tool_data: Sequence[str] = (),
 ) -> list[str]:
-    """Amounts and percentages in ``content`` that match no tool result, the user's message or the saved context."""
+    """Amounts and percentages in ``content`` that match no tool result, the user's message or the saved context.
+
+    ``tool_data`` adds results the model's code read in code mode: a snippet may return only some fields of a
+    result, and a figure from the rest (a goal's gap, say) is still tool data rather than invented.
+    """
     tool_results = [item["content"] for item in messages if item.get("role") == "tool" and isinstance(item.get("content"), str)]
-    sources = [*tool_results, message, *([saved_context.text] if saved_context else [])]
+    sources = [*tool_results, *tool_data, message, *([saved_context.text] if saved_context else [])]
     return number_check.unverified_numbers(content, sources)
 
 
 def _number_check(
     content: str, messages: list[dict[str, Any]], agent_type: str, message: str, saved_context: SavedContext | None = None,
-    *, goal_maths: bool = False,
+    *, goal_maths: bool = False, tool_data: Sequence[str] = (),
 ) -> tuple[str, dict[str, Any] | None]:
     """The warning to append when an answer cites figures that no tool returned, and the check as a validation event.
 
@@ -356,7 +362,7 @@ def _number_check(
     used_tools = any(item.get("role") == "tool" for item in messages)
     if not (used_tools or goal_maths):
         return "", None
-    unverified = _unverified_numbers(content, messages, message, saved_context)
+    unverified = _unverified_numbers(content, messages, message, saved_context, tool_data)
     if not unverified:
         return "", {"check": "numbers", "outcome": "passed"}
     logger.warning("answer_unverified_numbers", extra={"count": len(unverified), "agent_type": agent_type})
@@ -602,11 +608,150 @@ def _tool_arguments(raw: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _tool_error_message(
-    call: dict[str, Any], kind: tool_results.ToolErrorKind, error: str, next_step: str | None = None,
-) -> dict[str, Any]:
-    """A tool result telling the model a call failed, how (``errorKind``) and what to do instead."""
-    return {"role": "tool", "tool_call_id": call.get("id", ""), "content": tool_results.error_payload(kind, error, next_step)}
+def _tool_message(call: dict[str, Any], content: str) -> dict[str, Any]:
+    return {"role": "tool", "tool_call_id": call.get("id", ""), "content": content}
+
+
+def _outcome(outcome: ToolOutcome) -> AgentEvent:
+    return code_runner.OUTCOME_EVENT, {"outcome": outcome}
+
+
+def _capped(result: str) -> str:
+    return result[:4000] + ("…" if len(result) > 4000 else "")
+
+
+class _ToolDispatch:
+    """Runs one tool call, made by the model (direct mode) or by the model's code (code mode).
+
+    Both get the same argument checks, error kinds and ``tool_call`` / ``tool_result`` events. ``call()``
+    yields those events, then ``(code_runner.OUTCOME_EVENT, {"outcome": ToolOutcome})``, which is never
+    forwarded as an agent event.
+    """
+
+    def __init__(
+        self, *, mcp_url: str, token: str | None, context: PortfolioContext | None, local_tools: dict[str, LocalTool],
+        tools: list[dict[str, Any]], session: dict[str, Any] | None, mcp_client: httpx.AsyncClient,
+    ) -> None:
+        self.mcp_url = mcp_url
+        self.token = token
+        self.context = context
+        self.local_tools = local_tools
+        self.tool_schemas = {tool["name"]: tool.get("inputSchema") for tool in tools}
+        self.offers_live_tools = bool(tools)
+        self.session = session
+        # Set when the lazily opened INDmoney session failed; later INDmoney calls in this answer fail fast.
+        self.session_error: str | None = None
+        self.mcp_client = mcp_client
+        # An account-data request is satisfied only by a tool that reads account or market data (tasks.is_account_tool).
+        self.account_tool_called = False
+        self.ohlc_results: list[str] = []
+        # Every successful result, for the number check (in code mode the model sees only what its snippet returned).
+        self.results: list[str] = []
+
+    async def call(self, name: str, raw_arguments: Any) -> AsyncIterator[AgentEvent]:
+        source = "local" if name in self.local_tools else "indmoney"
+        arguments = _tool_arguments(raw_arguments)
+        if arguments is None:
+            # Never run a tool on arguments the model did not send: report it so the model can resend them.
+            error = "The arguments were not a valid JSON object; the tool was not called."
+            yield "tool_call", {"name": name, "arguments": str(raw_arguments)[:600], "source": source}
+            yield "tool_result", {"name": name, "error_kind": "invalid_arguments", "error": error}
+            yield _outcome(tool_results.failure(
+                "invalid_arguments", f"The arguments for {name} were not a valid JSON object, so it was not called.", error=error,
+            ))
+            return
+
+        yield "tool_call", {"name": name, "arguments": arguments, "source": source}
+        if name in self.local_tools:
+            async for event in self._call_local(name, arguments):
+                yield event
+            return
+
+        # INDmoney tools read account or market data, so even a refused call counts as trying one.
+        self.account_tool_called = True
+        problems = tool_results.argument_problems(self.tool_schemas.get(name), arguments)
+        if problems:
+            # The tool would reject these; say so without a round trip to INDmoney.
+            detail = "; ".join(problems)
+            yield "tool_result", {"name": name, "error": detail, "error_kind": "invalid_arguments"}
+            yield _outcome(tool_results.failure("invalid_arguments", f"{name} was not called: {detail}", error=detail))
+            return
+
+        if self.session is None and self.session_error is None:
+            try:
+                self.session = await fetch_mcp_session(self.mcp_url, self.token)
+            except McpAuthError as exc:
+                yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
+                yield _outcome(ToolOutcome("", "auth", _error_text(exc), fatal={
+                    "message": f"Could not connect to INDmoney: {_error_text(exc)}", "code": "indmoney_auth", "auth_failed": True,
+                }))
+                return
+            except Exception as exc:
+                self.session_error = f"Could not connect to INDmoney: {_error_text(exc)}"
+                logger.warning("mcp_session_unavailable", extra={"tool": name})
+            else:
+                if self.context and self.context.on_mcp_tools:
+                    self.context.on_mcp_tools(self.session["tools"])
+        if self.session is None:
+            error = self.session_error or "INDmoney is unavailable."
+            yield "tool_result", {"name": name, "error": error, "error_kind": "unavailable"}
+            yield _outcome(tool_results.failure("unavailable", error))
+            return
+
+        try:
+            result = await call_mcp_tool(
+                self.mcp_url, self.token, self.session["protocolVersion"], self.session["sessionId"], name, arguments,
+                client=self.mcp_client,
+            )
+        except McpToolError as exc:
+            # The tool rejected this call (e.g. an argument outside its enum): let the model fix it.
+            yield "tool_result", {"name": name, "error": str(exc), "error_kind": "rejected"}
+            yield _outcome(tool_results.failure("rejected", str(exc)))
+            return
+        except McpAuthError as exc:
+            # End the request so main.chat can refresh the token and try again.
+            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
+            yield _outcome(ToolOutcome("", "auth", _error_text(exc), fatal={
+                "message": f"INDmoney data request failed: {_error_text(exc)}", "code": "indmoney_auth", "auth_failed": True,
+            }))
+            return
+        except Exception as exc:
+            # INDmoney could not be reached or failed: report it so the model can answer without this data.
+            logger.warning("mcp_tool_unavailable", extra={"tool": name})
+            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "unavailable"}
+            yield _outcome(tool_results.failure(
+                "unavailable", f"INDmoney could not provide {name}: {_error_text(exc)}", error=_error_text(exc),
+            ))
+            return
+        result_str = str(result)
+        if name == charts.OHLC_TOOL_NAME:
+            self.ohlc_results.append(result_str)
+        self.results.append(result_str)
+        yield "tool_result", {"name": name, "result": _capped(result_str)}
+        yield _outcome(ToolOutcome(result_str))
+
+    async def _call_local(self, name: str, arguments: dict[str, Any]) -> AsyncIterator[AgentEvent]:
+        if tasks.is_account_tool(name, self.local_tools):
+            self.account_tool_called = True
+        try:
+            result_str = await self.local_tools[name].handler(arguments)
+        except Exception as exc:
+            logger.warning("Local tool %s failed", name, exc_info=True)
+            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "failed"}
+            # Point to live tools only when this request offers them.
+            fallback = ("use the live INDmoney tools instead." if self.offers_live_tools
+                        else "tell the user this data is unavailable right now.")
+            yield _outcome(tool_results.failure("failed", f"{name} failed; {fallback}", error=_error_text(exc)))
+            return
+        refusal = tool_results.reported_error(result_str)
+        if not refusal:
+            self.results.append(result_str)
+        yield "tool_result", {
+            "name": name, "result": _capped(result_str),
+            **({"error": refusal, "error_kind": "rejected"} if refusal else {}),
+            **_evidence_reference(result_str),
+        }
+        yield _outcome(ToolOutcome(result_str, "rejected", refusal) if refusal else ToolOutcome(result_str))
 
 
 def _completion_summary(response: httpx.Response, attempt: int) -> dict[str, Any]:
@@ -643,6 +788,36 @@ def _message_text(content: Any) -> str | None:
     return content if isinstance(content, str) else None
 
 
+async def _run_code(
+    raw_arguments: Any, api_tools: list[dict[str, Any]], dispatch: _ToolDispatch, config: code_runner.RunnerConfig,
+) -> AsyncIterator[AgentEvent]:
+    """One run_code call: ``code_run``, the dispatched ``tool_call`` / ``tool_result`` events, ``code_result``,
+    then ``(code_runner.OUTCOME_EVENT, {"outcome": CodeOutcome})``."""
+    code = code_runner.code_argument(raw_arguments)
+    problem = (
+        "run_code needs a `code` string argument." if code is None
+        else f"The code is longer than {code_runner.MAX_CODE_CHARS:,} characters." if len(code) > code_runner.MAX_CODE_CHARS
+        else None
+    )
+    yield "code_run", {"code": code if code is not None else str(raw_arguments)[:600], "api": len(api_tools)}
+    if problem:
+        outcome = code_runner.CodeOutcome(
+            "failed", tool_results.error_payload("invalid_arguments", problem, "Call run_code again with a shorter `code` string."),
+            error=problem,
+        )
+    else:
+        outcome = None
+        async for event in code_runner.execute(code, [tool["name"] for tool in api_tools], dispatch.call, config):
+            if event[0] == code_runner.OUTCOME_EVENT:
+                outcome = event[1]["outcome"]
+            else:
+                yield event
+        assert outcome is not None
+    yield "code_result", {"status": outcome.status, "error": outcome.error, "result": outcome.result_preview,
+                          "calls": outcome.calls, "log_lines": len(outcome.logs)}
+    yield code_runner.OUTCOME_EVENT, {"outcome": outcome}
+
+
 async def stream_agent(
     message: str,
     mcp_url: str,
@@ -654,6 +829,8 @@ async def stream_agent(
     context: PortfolioContext | None = None,
     saved_context: SavedContext | None = None,
     force_account_data: bool = False,
+    direct_tools: bool = False,
+    routed: router.Category | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """
     Async generator that yields ``(event, data)`` tuples.
@@ -663,12 +840,19 @@ async def stream_agent(
     answers with a tool call written as text. ``saved_context`` (either agent) adds
     the user's relevant saved goals, decisions and preferences to the system prompt.
 
+    With ``TOOL_MODE=code`` (``code_runner``) the model gets one ``run_code`` tool and reaches the
+    same tools as ``api.<name>()`` from a snippet that a Cloudflare Worker runs. ``direct_tools`` and
+    ``routed`` are set internally when the Worker cannot be reached and the answer is rerun with
+    direct tool calls under the same route.
+
     Event types (``agent_events.RunRecorder`` records them):
       • route        – { category, source, model?, duration_ms }  how the request was classified
       • context      – { items }                     saved context added to the prompt
       • contract     – { contract }                  the task contract (``tasks.TaskContract``)
       • model_call   – { provider, model, attempt }  model endpoint called
       • model_result – { attempt, status, http_status, finish_reason?, tool_calls?, prompt_tokens?, completion_tokens? }
+      • code_run     – { code, api }                 a run_code snippet is sent to the Worker (code mode)
+      • code_result  – { status, error?, result?, calls, log_lines }  the snippet finished
       • tool_call    – { name, arguments, source }  tool is about to be called (source: local | indmoney)
       • tool_result  – { name, result?, error?, error_kind?, investigation_id? }  tool returned
       • retry        – { reason, detail? }           the model is asked again
@@ -679,6 +863,8 @@ async def stream_agent(
     """
     if force_account_data:
         category: router.Category = "account_data"
+    elif routed:
+        category = routed
     else:
         category, route_info = await _route_request(message, history, provider)
         yield "route", route_info
@@ -724,12 +910,12 @@ async def stream_agent(
             return
 
     tool_names = {tool["name"] for tool in tools}
-    tool_schemas = {tool["name"]: tool.get("inputSchema") for tool in tools}
-    model_tools = _model_tools(
+    api_tools = (
         [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema} for tool in local_tools.values()]
-        + [tool for tool in tools if tool["name"] not in local_tools],
-        provider,
+        + [tool for tool in tools if tool["name"] not in local_tools]
     )
+    code_config = None if direct_tools or not api_tools else code_runner.runner_config()
+    model_tools = [code_runner.model_tool()] if code_config else _model_tools(api_tools, provider)
     yield "contract", {"contract": tasks.contract_for(category, agent_type, [*local_tools, *tool_names])}
 
     if agent_type == "portfolio":
@@ -740,6 +926,8 @@ async def stream_agent(
     if FINANCE_LOCAL_TOOL_NAMES & local_tools.keys():
         funds = "get_goal_fund_comparison" in local_tools
         prompt += "\n\n" + GOAL_TOOL_RULES + " " + (FUND_COMPARISON_RULES if funds else NO_FUND_DATA_RULE)
+    if code_config:
+        prompt += "\n\n" + code_runner.system_prompt_section(api_tools)
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"],
                      "content": charts.strip_chart_blocks(item["content"]) if item["role"] == "assistant" else item["content"]}
@@ -753,15 +941,14 @@ async def stream_agent(
     goal_maths = "calculate_goal_plan" in local_tools
     retried_goal_calculation = False
     context_checked = provider != "ollama"
-    # An account-data request is satisfied only by a tool that reads account or market data (tasks.is_account_tool).
-    account_tool_called = False
-    # Set when the lazily opened INDmoney session failed; later INDmoney calls in this answer fail fast.
-    session_error: str | None = None
-    ohlc_results: list[str] = []
+    # Set once a snippet has reached the Worker; until then an unreachable Worker reruns the answer with direct tools.
+    code_reached_runner = False
     known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
     try:
         async with httpx.AsyncClient(timeout=config["timeout"]) as client, httpx.AsyncClient(timeout=90) as mcp_client:
+            dispatch = _ToolDispatch(mcp_url=mcp_url, token=token, context=context, local_tools=local_tools, tools=tools,
+                                     session=session, mcp_client=mcp_client)
             for attempt in range(1, 13):
                 try:
                     request_messages = (
@@ -813,6 +1000,7 @@ async def stream_agent(
                         async for event in stream_agent(
                             message, mcp_url, token, history, agent_type, provider,
                             context=context, saved_context=saved_context, force_account_data=True,
+                            direct_tools=direct_tools,
                         ):
                             yield event
                         return
@@ -848,7 +1036,7 @@ async def stream_agent(
                 if not calls:
                     content = _message_text(choice.get("content"))
 
-                    if requires_indmoney_data and not account_tool_called:
+                    if requires_indmoney_data and not dispatch.account_tool_called:
                         if not retried_portfolio_tool_selection:
                             logger.warning("Portfolio model returned no INDmoney tool call; retrying")
                             retried_portfolio_tool_selection = True
@@ -871,13 +1059,14 @@ async def stream_agent(
                         async for event in stream_agent(
                             message, mcp_url, token, history, agent_type, provider,
                             context=context, saved_context=saved_context, force_account_data=True,
+                            direct_tools=direct_tools,
                         ):
                             yield event
                         return
 
                     if (goal_maths and not retried_goal_calculation and content
                             and not any(item.get("role") == "tool" for item in messages)
-                            and _unverified_numbers(content, messages, message, saved_context)):
+                            and _unverified_numbers(content, messages, message, saved_context, dispatch.results)):
                         logger.warning("Goal answer computed figures without the calculator; retrying")
                         retried_goal_calculation = True
                         yield "retry", {"reason": "goal_calculator", "detail": "goal figures written without the calculator"}
@@ -891,9 +1080,10 @@ async def stream_agent(
                             yield "validation", {"check": "code_output", "outcome": "failed", "detail": "replaced with the finance-only notice"}
                             content = FINANCE_ONLY_NOTICE
                         else:
-                            content = charts.ground_candlestick_charts(content, ohlc_results)
+                            content = charts.ground_candlestick_charts(content, dispatch.ohlc_results)
                             warning, number_result = _number_check(
                                 content, messages, agent_type, message, saved_context, goal_maths=goal_maths,
+                                tool_data=dispatch.results,
                             )
                             if number_result:
                                 yield "validation", number_result
@@ -915,110 +1105,58 @@ async def stream_agent(
                 for call in calls:
                     function = call.get("function", {})
                     name = function.get("name", "")
+                    if code_config:
+                        if name != code_runner.RUN_CODE_TOOL:
+                            # The model named an api function as a tool of its own; point it back to run_code.
+                            yield "retry", {"reason": "invalid_tool_call", "detail": f"called {name[:60]} outside run_code"}
+                            messages.append(_tool_message(call, tool_results.error_payload(
+                                "invalid_arguments", f"{name} is not a tool here.",
+                                f"Call run_code with code that calls api.{name}(args) instead.",
+                            )))
+                            continue
+                        outcome = None
+                        async for event in _run_code(function.get("arguments"), api_tools, dispatch, code_config):
+                            if event[0] == code_runner.OUTCOME_EVENT:
+                                outcome = event[1]["outcome"]
+                            else:
+                                yield event
+                        assert outcome is not None
+                        if outcome.fatal:
+                            yield "error", outcome.fatal
+                            yield "done", {}
+                            return
+                        if outcome.unreachable and not code_reached_runner:
+                            logger.warning("code_runner_unreachable; answering with direct tool calls")
+                            yield "retry", {"reason": "direct_tools_fallback", "detail": outcome.error or "the code runner could not be reached"}
+                            async for event in stream_agent(
+                                message, mcp_url, token, history, agent_type, provider, context=context,
+                                saved_context=saved_context, force_account_data=force_account_data, direct_tools=True,
+                                routed=category,
+                            ):
+                                if event[0] not in ("context", "route"):
+                                    yield event
+                            return
+                        code_reached_runner = code_reached_runner or not outcome.unreachable
+                        messages.append(_tool_message(call, outcome.content))
+                        continue
+
                     if name not in tool_names and name not in local_tools:
                         yield "error", {"message": f"Model requested an unknown INDmoney tool: {name}", "code": "unknown_tool"}
                         yield "done", {}
                         return
 
-                    source = "local" if name in local_tools else "indmoney"
-                    arguments = _tool_arguments(function.get("arguments"))
-                    if arguments is None:
-                        # Never run a tool on arguments the model did not send: report it so the model can resend them.
-                        yield "tool_call", {"name": name, "arguments": str(function.get("arguments"))[:600], "source": source}
-                        yield "tool_result", {"name": name, "error_kind": "invalid_arguments",
-                                              "error": "The arguments were not a valid JSON object; the tool was not called."}
-                        messages.append(_tool_error_message(
-                            call, "invalid_arguments", f"The arguments for {name} were not a valid JSON object, so it was not called.",
-                        ))
-                        continue
-
-                    yield "tool_call", {"name": name, "arguments": arguments, "source": source}
-
-                    if name in local_tools:
-                        if tasks.is_account_tool(name, local_tools):
-                            account_tool_called = True
-                        try:
-                            result_str = await local_tools[name].handler(arguments)
-                        except Exception as exc:
-                            logger.warning("Local tool %s failed", name, exc_info=True)
-                            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "failed"}
-                            # Point to live tools only when this request offers them.
-                            fallback = "use the live INDmoney tools instead." if tools else "tell the user this data is unavailable right now."
-                            messages.append(_tool_error_message(call, "failed", f"{name} failed; {fallback}"))
-                            continue
-                        refusal = tool_results.reported_error(result_str)
-                        yield "tool_result", {
-                            "name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
-                            **({"error": refusal, "error_kind": "rejected"} if refusal else {}),
-                            **_evidence_reference(result_str),
-                        }
-                        messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
-                        continue
-
-                    # INDmoney tools read account or market data, so even a refused call counts as trying one.
-                    account_tool_called = True
-                    problems = tool_results.argument_problems(tool_schemas.get(name), arguments)
-                    if problems:
-                        # The tool would reject these; say so without a round trip to INDmoney.
-                        detail = "; ".join(problems)
-                        yield "tool_result", {"name": name, "error": detail, "error_kind": "invalid_arguments"}
-                        messages.append(_tool_error_message(call, "invalid_arguments", f"{name} was not called: {detail}"))
-                        continue
-
-                    if session is None and session_error is None:
-                        try:
-                            session = await fetch_mcp_session(mcp_url, token)
-                        except McpAuthError as exc:
-                            yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
-                            yield "error", {"message": f"Could not connect to INDmoney: {_error_text(exc)}",
-                                            "code": "indmoney_auth", "auth_failed": True}
-                            yield "done", {}
-                            return
-                        except Exception as exc:
-                            session_error = f"Could not connect to INDmoney: {_error_text(exc)}"
-                            logger.warning("mcp_session_unavailable", extra={"tool": name})
+                    tool_outcome: ToolOutcome | None = None
+                    async for event in dispatch.call(name, function.get("arguments")):
+                        if event[0] == code_runner.OUTCOME_EVENT:
+                            tool_outcome = event[1]["outcome"]
                         else:
-                            if context and context.on_mcp_tools:
-                                context.on_mcp_tools(session["tools"])
-                    if session is None:
-                        error = session_error or "INDmoney is unavailable."
-                        yield "tool_result", {"name": name, "error": error, "error_kind": "unavailable"}
-                        messages.append(_tool_error_message(call, "unavailable", error))
-                        continue
-
-                    try:
-                        result = await call_mcp_tool(
-                            mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments,
-                            client=mcp_client,
-                        )
-                    except McpToolError as exc:
-                        # The tool rejected this call (e.g. an argument outside its enum): let the model fix it.
-                        yield "tool_result", {"name": name, "error": str(exc), "error_kind": "rejected"}
-                        messages.append(_tool_error_message(call, "rejected", str(exc)))
-                        continue
-                    except McpAuthError as exc:
-                        # End the request so main.chat can refresh the token and try again.
-                        yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "auth"}
-                        yield "error", {"message": f"INDmoney data request failed: {_error_text(exc)}",
-                                        "code": "indmoney_auth", "auth_failed": True}
+                            yield event
+                    assert tool_outcome is not None
+                    if tool_outcome.fatal:
+                        yield "error", tool_outcome.fatal
                         yield "done", {}
                         return
-                    except Exception as exc:
-                        # INDmoney could not be reached or failed: report it so the model can answer without this data.
-                        logger.warning("mcp_tool_unavailable", extra={"tool": name})
-                        yield "tool_result", {"name": name, "error": _error_text(exc), "error_kind": "unavailable"}
-                        messages.append(_tool_error_message(
-                            call, "unavailable", f"INDmoney could not provide {name}: {_error_text(exc)}",
-                        ))
-                        continue
-                    result_str = str(result)
-                    if name == charts.OHLC_TOOL_NAME:
-                        ohlc_results.append(result_str)
-                    yield "tool_result", {
-                        "name": name,
-                        "result": result_str[:4000] + ("…" if len(result_str) > 4000 else ""),
-                    }
-                    messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result_str})
+                    messages.append(_tool_message(call, tool_outcome.content))
 
     except Exception as exc:
         logger.error("agent_run_failed", exc_info=True)
@@ -1120,6 +1258,11 @@ class _TraceBuilder:
                                "arguments": recorded["arguments"], "status": "running", "_started": time.perf_counter()})
         elif event_type == "tool_result" and recorded:
             self._finish_tool(recorded)
+        elif event_type == "code_run" and recorded:
+            self.finish_model_step("completed")
+            self.steps.append({"kind": "code", "status": "running", "code": recorded["code"], "_started": time.perf_counter()})
+        elif event_type == "code_result" and recorded:
+            self._finish_code(recorded)
         elif event_type == "retry":
             self.finish_model_step("completed")
             self.steps.append({"kind": "retry", "status": "completed", "reason": payload.get("reason", ""),
@@ -1141,6 +1284,19 @@ class _TraceBuilder:
         step["duration_ms"] = recorded.get("durationMs")
         for source, target in (("resultPreview", "result_preview"), ("error", "error"), ("errorKind", "error_kind"),
                                ("investigationId", "investigation_id")):
+            if recorded.get(source):
+                step[target] = recorded[source]
+
+    def _finish_code(self, recorded: dict[str, Any]) -> None:
+        step = next((item for item in reversed(self.steps)
+                     if item.get("kind") == "code" and item.get("status") == "running"), None)
+        if not step:
+            return
+        step.pop("_started", None)
+        step["status"] = "completed" if recorded.get("status") == "completed" else "failed"
+        step["duration_ms"] = recorded.get("durationMs")
+        step["calls"] = recorded.get("calls") or 0
+        for source, target in (("resultPreview", "result_preview"), ("error", "error")):
             if recorded.get(source):
                 step[target] = recorded[source]
 

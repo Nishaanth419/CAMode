@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 ToolErrorKind = Literal["invalid_arguments", "rejected", "unavailable", "auth", "failed"]
@@ -33,6 +34,25 @@ NEXT_STEPS: Final[dict[str, str]] = {
     ),
     "failed": "Do not call it again for this answer; tell the user this data is unavailable right now.",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolOutcome:
+    """How one tool call ended, whoever made it (the model directly, or the model's code in code mode).
+
+    ``content`` is what the caller reads: the tool's result, or ``error_payload()`` for a failure.
+    ``fatal`` is an ``error`` event that ends the whole answer (INDmoney rejecting the token).
+    """
+
+    content: str
+    error_kind: ToolErrorKind | None = None
+    error: str | None = None
+    fatal: dict[str, Any] | None = None
+
+
+def failure(kind: ToolErrorKind, message: str, next_step: str | None = None, *, error: str | None = None) -> ToolOutcome:
+    """A failed call: the model reads ``error_payload()``; ``error`` is the short form for code callers and events."""
+    return ToolOutcome(error_payload(kind, message, next_step), kind, error or message)
 
 
 def error_payload(kind: ToolErrorKind, message: str, next_step: str | None = None) -> str:

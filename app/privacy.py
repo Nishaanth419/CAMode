@@ -21,7 +21,8 @@ from .db import connect_db
 
 # 2026-10-17.1: anonymous daily counts of which app pages are opened, kept on this computer.
 # 2026-10-17.2: a record of the steps behind each chat answer (agent_runs), for the Activity page.
-POLICY_VERSION: Final = "2026-10-17.2"
+# 2026-10-20: code mode (TOOL_MODE=code) sends the model's code and the data it reads through a Cloudflare Worker.
+POLICY_VERSION: Final = "2026-10-20"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -57,7 +58,11 @@ NOTICE: Final = (
             "along with any INDmoney or snapshot data Portfolio Analyzer reads for that answer. With Ollama (on this "
             "device) the model runs on this computer and none of it leaves. With OpenAI or Groq it is sent to that "
             "company and handled under its own data policy. Portfolio Analyzer reads from INDmoney with read-only "
-            "access and cannot trade or move money."
+            "access and cannot trade or move money. When code mode is turned on for this installation, the assistant "
+            "reads data by writing short programs that run on CA Mode's code runner on Cloudflare Workers, set up by "
+            "whoever runs this installation: each program, and the data it reads for that answer (INDmoney, snapshot, "
+            "goal and CAS figures), pass through Cloudflare while the answer is worked out. Your INDmoney tokens and PIN "
+            "never leave this computer, and the code runner saves nothing."
         ),
     },
     {

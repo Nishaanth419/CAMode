@@ -11,10 +11,14 @@ Event kinds (camelCase keys, ``seq`` and ``atMs`` on every event):
 - ``contract``: the task contract (``tasks.TaskContract.describe()``)
 - ``model_call`` / ``model_result``: ``attempt``; the result adds ``status``, ``httpStatus``,
   ``finishReason``, ``toolCalls``, ``promptTokens``, ``completionTokens``, ``durationMs``
+- ``code_run`` / ``code_result`` (code mode): the snippet sent to the Worker as ``code`` (redacted, capped)
+  and ``apiCount``; the result adds ``status`` (``completed``, ``failed``, ``unavailable``, ``stopped``),
+  ``error``, ``resultPreview``, ``calls`` (api calls the snippet made), ``logLines`` and ``durationMs``.
+  The snippet's api calls are recorded as ordinary ``tool_call`` / ``tool_result`` events between them
 - ``tool_call`` / ``tool_result``: ``name``, ``source``, ``arguments``; the result adds ``errorKind``
   (``tool_results.ToolErrorKind``) and ``error``, or ``resultPreview``, plus ``durationMs``
 - ``retry``: ``reason`` (``no_account_tool``, ``goal_calculator``, ``invalid_tool_call``,
-  ``rerun_with_live_tools``) and ``detail``
+  ``rerun_with_live_tools``, ``direct_tools_fallback``) and ``detail``
 - ``validation``: ``check`` (``code_output``, ``numbers``, ``length``, ``task_contract``), ``outcome``
   and ``detail``
 - ``answer``: ``chars``
@@ -47,6 +51,7 @@ REDACTED = "[redacted]"
 MAX_ARGUMENT_CHARS: Final = 600
 MAX_PREVIEW_CHARS: Final = 1000
 MAX_ERROR_CHARS: Final = 300
+MAX_CODE_CHARS: Final = 2000
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -86,6 +91,7 @@ class RunRecorder:
         self.events: list[dict[str, Any]] = []
         self._open_calls: dict[str, list[dict[str, Any]]] = {}
         self._model_started: dict[int, int] = {}
+        self._code_started: int | None = None
 
     def __repr__(self) -> str:
         return f"RunRecorder(events={len(self.events)})"
@@ -150,6 +156,20 @@ class RunRecorder:
             durationMs=self._now_ms() - call["atMs"] if call else None,
         )
 
+    def _on_code_run(self, p: dict[str, Any]) -> dict[str, Any]:
+        event = self._append("code_run", code=_clean(p.get("code", ""), MAX_CODE_CHARS), apiCount=p.get("api"))
+        self._code_started = event["atMs"]
+        return event
+
+    def _on_code_result(self, p: dict[str, Any]) -> dict[str, Any]:
+        started, self._code_started = self._code_started, None
+        return self._append(
+            "code_result", status=p.get("status"), error=_clean(p["error"], MAX_ERROR_CHARS) if p.get("error") else None,
+            resultPreview=_clean(p["result"], MAX_PREVIEW_CHARS) if p.get("result") else None,
+            calls=p.get("calls"), logLines=p.get("log_lines"),
+            durationMs=self._now_ms() - started if started is not None else None,
+        )
+
     def _on_retry(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._append("retry", reason=p.get("reason"), detail=_clean(p.get("detail", ""), 200) or None)
 
@@ -180,6 +200,7 @@ def summarize(events: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "modelCalls": sum(1 for event in events if event.get("kind") == "model_call"),
+        "codeRuns": sum(1 for event in events if event.get("kind") == "code_run"),
         "toolCalls": len(tools),
         "failedToolCalls": sum(1 for event in tools if event.get("errorKind")),
         "retries": sum(1 for event in events if event.get("kind") == "retry"),
