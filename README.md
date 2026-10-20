@@ -122,6 +122,85 @@ The model loads on the first question (a few seconds) and stays in memory for fi
 
 gpt-oss-20b gets the numbers right most often and answers fastest, which matters most for a finance assistant. The routing set has since grown to 64 cases (price-history and candlestick requests, and the concepts behind them); with the classifier call at temperature 0, gpt-oss-20b scores 60/64 on every run (59–61 at the model's default temperature, which once sent a candlestick request to the general-finance path). Its routing misses are mostly prompt-injection test cases sent to Finance Agent, which then declines anything that isn't finance, and a routing call that fails falls back to the keyword rules. On a Mac with 8–16 GB of memory, use `FROM qwen3.5:9b` in the Modelfile instead. `gemma4:26b` was shortlisted but not scored.
 
+## Code mode (Cloudflare Worker)
+
+By default the model calls each tool directly (one function call per INDmoney or local tool). With `TOOL_MODE=code` it gets a single `run_code` tool instead and writes a short JavaScript snippet against a typed `api` object, so one step can fetch several things and keep only the fields it needs:
+
+```javascript
+const snap = await api.networth_snapshot({});
+const funds = await api.networth_holdings({ asset_type: "MF" });
+return { total: snap.total_current_value, top: funds.holdings.slice(0, 3).map((h) => h.name) };
+```
+
+The snippet runs on the code runner in `worker/`, a Cloudflare Worker that starts a fresh [Dynamic Worker](https://developers.cloudflare.com/dynamic-workers/) isolate for each snippet with no network access (`globalOutbound: null`). Each `api.<tool>()` call goes back to CA Mode over a WebSocket that CA Mode opened, and CA Mode runs it exactly as a direct call: the same allowlist, argument checks, error kinds, trace steps, task contract and number check. So the INDmoney token and the MCP session never leave this computer, and no tunnel is needed. What passes through Cloudflare is the snippet, its arguments and the results it reads. That is why turning it on changes the privacy notice (policy `2026-10-20`).
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant App as CA Mode (app/agent.py)
+    participant Worker as Code runner (worker/)
+    participant Tools as INDmoney MCP / local tools
+    Model->>App: run_code({code})
+    App->>Worker: WebSocket: run {code, api names}
+    Worker->>Worker: new isolate, no network
+    Worker->>App: call api.networth_snapshot(args)
+    App->>Tools: same dispatch as a direct call
+    Tools-->>App: result
+    App-->>Worker: result
+    Worker-->>App: done {result, logs}
+    App-->>Model: {result, logs}
+```
+
+**Deploy the runner** (needs a Cloudflare account with Dynamic Workers):
+
+```bash
+cd worker
+npm install
+npx wrangler secret put CODE_RUNNER_SECRET   # a long random string, e.g. openssl rand -hex 32
+npx wrangler deploy
+```
+
+Then in `.env`:
+
+```bash
+TOOL_MODE=code
+CODE_RUNNER_URL=https://ca-mode-code-runner.<your-subdomain>.workers.dev
+CODE_RUNNER_SECRET=<the same secret>
+```
+
+To try it without deploying, put `CODE_RUNNER_SECRET=...` in `worker/.dev.vars`, run `npm run dev` in `worker/` (workerd runs Dynamic Workers locally) and set `CODE_RUNNER_URL=http://127.0.0.1:8787`.
+
+**Limits and failures.** A snippet may make 12 `api` calls, may be 8,000 characters long, and runs for at most `CODE_RUNNER_TIMEOUT_SECONDS` (60). Its result is cut to 5,500 characters (Groq's tool-result limit). A failed call throws an `Error` naming the error kind and what to do next, so the code can catch it; code that throws or doesn't compile comes back to the model as a `rejected` error it can fix. If the runner can't be reached on the first snippet of an answer (wrong URL or secret, Cloudflare down), the answer is rerun with direct tool calls, with a `direct_tools_fallback` retry step in the trace. INDmoney rejecting the token stops the snippet and the answer, as in direct mode. The answer trace shows each snippet as a "Run the model's code" step, followed by the calls it made.
+
+The runner's protocol is in `worker/src/bridge.ts` (unit tests: `cd worker && npm test`). Before making code mode the default, run the evals in both modes on the local model (see "Measuring the answers") and compare.
+
+## Deploy on Cloudflare
+
+`cloudflare/` runs the whole app on Cloudflare: a Worker named `camode` serves `frontend/` and sends every other request (`/api/*`, `/auth/*`, `/privacy`, ...) to one [Cloudflare Container](https://developers.cloudflare.com/containers/) running the FastAPI app. Container disks are erased on every restart, so [Litestream](https://litestream.io) restores SQLite from an R2 bucket when the container starts and streams every write back to it. A cron at 09:00 IST wakes the container for the daily snapshot.
+
+It needs the **Workers Paid** plan ($5/month; with `SLEEP_AFTER=30m` a small team mostly stays inside its included container usage). Because unlocked PIN keys live in the app's memory, everyone enters their PIN again after the container sleeps or Cloudflare restarts it, and the first request after a sleep takes about 10 to 20 seconds.
+
+```bash
+cd cloudflare
+npm install
+npx wrangler login
+npx wrangler r2 bucket create camode-db
+# R2 → Manage API tokens: Object Read & Write, limited to camode-db. It gives the access key id and secret.
+python3 -c "import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"   # master key: save it in a password manager
+npx wrangler secret put APP_MASTER_KEY
+npx wrangler secret put GROQ_API_KEY
+npx wrangler secret put LITESTREAM_ENDPOINT          # https://<account-id>.r2.cloudflarestorage.com
+npx wrangler secret put LITESTREAM_ACCESS_KEY_ID
+npx wrangler secret put LITESTREAM_SECRET_ACCESS_KEY
+npx wrangler deploy
+```
+
+Non-secret settings (`APP_ORIGIN`, `AI_PROVIDER`, `GROQ_MODEL`, `REQUEST_ROUTER`, `TOOL_MODE`, `SLEEP_AFTER`, `LITESTREAM_BUCKET`) are `vars` in `cloudflare/wrangler.jsonc`; `src/shell.ts` lists every setting passed into the container. Until the secrets are set, API requests return `503` with the list of missing settings instead of starting an app that would lose its writes.
+
+**Before sharing the address,** turn on Cloudflare Access for it (Worker → Settings → Domains & Routes → `workers.dev` → enable Cloudflare Access, then limit the policy to your team's emails). The PIN is only a local lock and the sign-in screen lists every profile name. Also update the privacy notice: data is now stored in your Cloudflare account and answers go to Groq.
+
+Losing the master key means every profile reconnects INDmoney; losing the R2 bucket loses all data. Locally, `npm run dev` builds and runs the container with Docker (put the secrets in `cloudflare/.dev.vars`, see `.dev.vars.example`), and `npm test` checks the Worker's routing helpers.
+
 ## Run with Docker
 
 After configuring `.env`, build and start the app:
@@ -131,6 +210,8 @@ docker compose up --build -d
 ```
 
 Open [http://localhost:8003](http://localhost:8003) and keep using this address for INDmoney sign-in (the OAuth callback is `http://localhost:8003/auth/indmoney/callback`). The database lives in `./.data` on your computer, and the snapshot job runs inside the container, so keep the container running for the daily 09:00 capture. The container also mounts `~/.config/ca-mode`, so it uses the same token encryption key as running with Python.
+
+The image runs as a non-root user (uid 10001) with one uvicorn worker. Docker Desktop on a Mac lets it write to `./.data` as it is; on Linux, give uid 10001 the bind-mounted folders (`sudo chown -R 10001:10001 .data ~/.config/ca-mode ~/ca-mode-backups`), or use the team setup below.
 
 ```bash
 docker compose logs -f   # view logs
@@ -149,6 +230,138 @@ uvicorn --env-file .env app.main:app --host 127.0.0.1 --port 8003
 Run `uvicorn` from the activated virtual environment (or call `.venv/bin/uvicorn` directly). A globally installed `uvicorn`, such as Homebrew's, does not have the project's packages. The server does not reload code changes on its own: restart it after pulling an update.
 
 Open [http://localhost:8003](http://localhost:8003) and keep using this address during INDmoney sign-in.
+
+## Host it for a team
+
+`docker-compose.prod.yml` runs CA Mode for a small team on one always-on Linux VM, reachable only through [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) with [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front. It publishes no host ports: `cloudflared` connects out to Cloudflare and forwards requests to the app container.
+
+**Constraints that shape the setup**
+
+- **One instance, one worker.** Unlocked PIN keys, private-mode chats, per-profile locks and the snapshot scheduler live in the app process's memory. Run exactly one container with one uvicorn worker (the image does); never put two instances behind a load balancer, run `--scale`, or use a serverless or scale-to-zero platform. A restart is safe but locks everyone's history until they enter their PIN again.
+- **Persistent disk.** SQLite (`/data`) and its daily backups (`/backups`) are bind mounts from the VM's persistent disk (`CA_MODE_DATA_DIR`, default `/srv/ca-mode/data`; `CA_MODE_BACKUP_DIR`, default `/srv/ca-mode/backups`). Don't use a network file system for `/data`: SQLite's WAL locking needs a local disk.
+- **Always on.** The 09:00 IST snapshot job runs inside the app, so the VM must not sleep or stop overnight.
+- **The master key stays outside the data.** It is mounted read-only from a root-only directory as a Compose secret (`CA_MODE_MASTER_KEY_FILE`, default `/etc/ca-mode/master.key`). It is never in `/data`, `/backups`, the image, or the off-site copies.
+- **Cloudflare Access is the real authentication.** The PIN is only a local lock, and the sign-in screen lists every profile name, so nobody may reach the app without passing Access first.
+
+**One-time VM setup** (Docker Engine with the Compose plugin):
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 700 /srv/ca-mode/data /srv/ca-mode/backups
+sudo install -d -o root -g root -m 700 /etc/ca-mode
+docker build -t ca-mode:local .
+docker run --rm --entrypoint python ca-mode:local -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" | sudo tee /etc/ca-mode/master.key >/dev/null
+sudo chown 10001:10001 /etc/ca-mode/master.key && sudo chmod 400 /etc/ca-mode/master.key
+```
+
+Keep a copy of the key in your team's password manager. Moving an existing database here? Copy its key file too (default `~/.config/ca-mode/master.key`), or every profile has to reconnect INDmoney.
+
+**Cloudflare** (Zero Trust dashboard):
+
+1. Create a tunnel (Networks → Tunnels, connector type `cloudflared`), copy its token, and add a public hostname, e.g. `ca-mode.example.com`, with service `http://app:8080`.
+2. Create an Access self-hosted application for the same hostname, with Google as the identity provider and an Allow policy limited to your team's email domain. Keep the session short (e.g. 24 h).
+3. Don't add any route that bypasses Access. `/healthz` is checked inside the container and needs no public route.
+
+**Configure and start.** Fill in `.env` next to the compose file (see the "Team hosting" block in `.env.example`): `APP_ORIGIN=https://ca-mode.example.com` (INDmoney's OAuth callback goes to `APP_ORIGIN/auth/indmoney/callback`), `CLOUDFLARE_TUNNEL_TOKEN`, the model provider, and `CA_MODE_TAG` (e.g. the git commit) so each release is a distinct image tag you can roll back to (leave it out when you [deploy from GitHub](#deploy-from-github), which sets it).
+
+```bash
+docker compose -f docker-compose.prod.yml config -q   # fails early if APP_ORIGIN or the tunnel token is missing
+docker compose -f docker-compose.prod.yml up --build -d
+docker compose -f docker-compose.prod.yml ps          # app should be "healthy", cloudflared running
+docker compose -f docker-compose.prod.yml logs -f app
+```
+
+The app container runs as uid 10001 with a read-only root file system, all Linux capabilities dropped, `no-new-privileges`, a 1 GB memory limit and a process limit. `docker compose stop` gives uvicorn 30 seconds to finish requests and stop the scheduler. To roll back, set `CA_MODE_TAG` to the previous tag and run `up -d` again; take a backup before each upgrade (`docker compose -f docker-compose.prod.yml exec app python -m scripts.backup now`), because the new release may migrate the database at startup, and restore it if you roll back across such a change. The backup CLI works inside the container (`docker compose -f docker-compose.prod.yml exec app python -m scripts.backup list`); stop the app before `restore` and run it with `docker compose -f docker-compose.prod.yml run --rm app python -m scripts.backup restore /backups/FILE`.
+
+Before people start using it, update the privacy notice: it still says data stays "on this computer", which isn't true for a shared server (`NOTICE` in `app/privacy.py`; changing it needs a `POLICY_VERSION` bump so everyone accepts the new wording).
+
+**Choosing the model.** A server usually has no GPU, so pick one of:
+
+- **Groq** (`GROQ_API_KEY`, `GROQ_MODEL=openai/gpt-oss-120b`, `AI_PROVIDER=groq`) or **OpenAI** (`OPENAI_API_KEY`, `AI_PROVIDER=openai`). Messages and the portfolio data each answer reads are sent to that company. One key serves the whole team, so watch the provider's rate limits (`GROQ_INPUT_TOKEN_BUDGET` keeps each request small).
+- **Ollama on a separate GPU VM**: build the `ca-mode` model there (see [Use the local model](#use-the-local-model)), then set `OLLAMA_MODEL=ca-mode`, `OLLAMA_BASE_URL=http://<gpu-vm-private-address>:11434/v1` and `AI_PROVIDER=ollama`. Ollama has no authentication: expose it only on a private network or VPN between the two VMs, never the internet. Leave the cloud keys empty to make sending data to an AI company impossible.
+
+Whatever you pick, measure it before the team relies on it, from a checkout with the same `.env` values (the evals are not in the image):
+
+```bash
+set -a; source .env; set +a
+python -m scripts.eval_router --provider groq              # or openai, ollama
+python -m scripts.eval_tasks --provider groq --runs 3
+```
+
+Compare with the scores in [Use the local model](#use-the-local-model) and [Answer records and task checks](#answer-records-and-task-checks).
+
+**Code mode (optional).** The code runner Worker in `worker/` is deployed separately to Cloudflare (see [Code mode](#code-mode-cloudflare-worker)); set `TOOL_MODE=code`, `CODE_RUNNER_URL` and `CODE_RUNNER_SECRET` in `.env`. The app opens the WebSocket to the Worker, so the Worker needs no route to the VM, and Cloudflare Access doesn't need to cover it (the Worker checks the shared secret).
+
+**Off-site backups.** The daily backups in `/backups` hold the whole database. Chats, snapshots, goals and profile details in them are sealed with each profile's PIN, and INDmoney tokens are encrypted with the master key, which is never copied with them. To keep copies off the VM, enable the optional `backup-offsite` service: it runs `rclone copy` every 6 hours from `/backups` (mounted read-only; it never sees the master key) to an R2 or S3 bucket.
+
+```bash
+# In .env: OFFSITE_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com, OFFSITE_BUCKET,
+# OFFSITE_ACCESS_KEY_ID, OFFSITE_SECRET_ACCESS_KEY (an R2 token limited to that bucket)
+docker compose -f docker-compose.prod.yml --profile offsite up -d
+```
+
+It uses `copy`, not `sync`, so pruning on the VM never deletes off-site copies: add a lifecycle rule on the bucket (e.g. delete after 30 days) instead. For S3, set `OFFSITE_PROVIDER=AWS`, `OFFSITE_REGION` and leave `OFFSITE_ENDPOINT` empty. To restore, download a file into `/srv/ca-mode/backups` and use `scripts.backup restore` as above, with the original master key in place.
+
+[Litestream](https://litestream.io) is an alternative when losing up to a day of data is too much: it streams the WAL of `/data/codemode.sqlite3` to the bucket continuously. It needs write access to `/data` (run it as uid 10001 beside the app), and a Litestream restore replaces the database outside `scripts.backup`, so stop the app first. Keep the daily backups either way; they are the integrity-checked copies.
+
+### Deploy from GitHub
+
+`.github/workflows/deploy.yml` deploys each push to `main` (or a manual run from the Actions tab, on `main`) to the VM. It costs nothing on a public repository: it runs on GitHub's standard runners and builds on the VM. It runs the CI checks first, then connects over SSH, checks out that exact commit in the deploy checkout (`/srv/ca-mode/app`; it refuses a commit that is not on `main`) and runs `deploy/vm-deploy.sh` there, which:
+
+1. backs up the running app (`scripts.backup now`; skipped on the first deploy, when nothing is running),
+2. builds `ca-mode:<first 12 characters of the commit>` on the VM (arm64 on an Ampere VM; Actions builds nothing),
+3. starts it with `up -d`, waits up to 5 minutes for the app to report healthy and checks that `cloudflared` is running; otherwise the job fails and prints the last 200 lines of the app's logs,
+4. keeps the 5 newest `ca-mode` images for rollback and removes older ones.
+
+The VM's `.env` and master key stay on the VM; the workflow never writes them. Only one deploy runs at a time: a push during a deploy waits, and of several waiting pushes only the newest is deployed. If `.env` sets `COMPOSE_PROFILES=offsite`, every deploy also keeps the off-site backup service running.
+
+**One-time setup on the VM**, after the setup above. The deploy user is in the `docker` group, which is as powerful as root on this VM, so its key is used for nothing else:
+
+```bash
+sudo adduser --disabled-password --gecos "" deploy
+sudo usermod -aG docker deploy
+sudo install -d -o deploy -g deploy -m 750 /srv/ca-mode/app
+sudo -u deploy git clone https://github.com/Nishaanth419/CAMode.git /srv/ca-mode/app
+sudo install -o deploy -g deploy -m 600 .env /srv/ca-mode/app/.env   # the .env from "Configure and start"
+```
+
+Leave `CA_MODE_TAG` out of that `.env`: each deploy sets it to the commit. For commands you run by hand in `/srv/ca-mode/app`, set it first with `export CA_MODE_TAG=$(git rev-parse --short=12 HEAD)`, or Compose looks for (and builds) `ca-mode:local`.
+
+Create a key pair for GitHub on your computer and allow it on the VM. `restrict` turns off port forwarding and terminals for this key:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "ca-mode-deploy" -f ca-mode-deploy
+# Copy ca-mode-deploy.pub to the VM, then on the VM:
+sudo install -d -o deploy -g deploy -m 700 /home/deploy/.ssh
+echo "restrict $(cat ca-mode-deploy.pub)" | sudo -u deploy tee -a /home/deploy/.ssh/authorized_keys >/dev/null
+```
+
+GitHub's runners have no fixed addresses, so the VM's SSH port has to accept connections from the internet: keep password login off (`PasswordAuthentication no`, the default on Ubuntu cloud images).
+
+Read the VM's host key on the VM itself (not over the network), with the address GitHub will connect to:
+
+```bash
+awk -v host=<vm-public-address> '{print host, $1, $2}' /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+**GitHub settings.** Under Settings → Environments, create an environment named `production`:
+
+- Deployment branches and tags: selected branches, `main` only.
+- Required reviewers (optional): add yourself if each deploy should wait for your approval.
+- Environment secrets: `DEPLOY_HOST` (the VM's public address, as in the host key line), `DEPLOY_USER` (`deploy`), `DEPLOY_SSH_KEY` (the whole private key file `ca-mode-deploy`), `DEPLOY_KNOWN_HOSTS` (the line printed by `awk` above). The workflow pins that host key and never turns host key checking off, so a reinstalled VM needs this secret updated.
+- Environment variable `DEPLOY_DIR`, only if the deploy checkout is not `/srv/ca-mode/app`.
+
+Then delete the private key from your computer. To deploy the code runner Worker as well (it needs Cloudflare Workers Paid, so it is off by default), set the repository variable `DEPLOY_CODE_RUNNER` to `true` (Settings → Secrets and variables → Actions → Variables) and add the environment secrets `CLOUDFLARE_API_TOKEN` (an API token from the "Edit Cloudflare Workers" template) and `CLOUDFLARE_ACCOUNT_ID`. The job runs `npm ci` and `npx wrangler deploy` in `worker/`; set `CODE_RUNNER_SECRET` once yourself with `npx wrangler secret put` (see [Code mode](#code-mode-cloudflare-worker)), and deploys keep it.
+
+**Rolling back.** Re-run an older successful Deploy run (Actions → Deploy → the run → Re-run all jobs; GitHub allows re-runs for 30 days). It checks out that commit again, backs up, rebuilds (quickly, from cached layers) and waits for the app to be healthy. Without GitHub, on the VM:
+
+```bash
+cd /srv/ca-mode/app
+docker image ls ca-mode                     # the kept releases, tagged by commit
+git checkout --detach <commit>
+CA_MODE_TAG=$(git rev-parse --short=12 HEAD) docker compose -f docker-compose.prod.yml up -d
+```
+
+This uses the kept image for that commit, or builds it if it was removed. If the newer release changed the database at startup, restore the backup taken before it (see "Configure and start" above). The next push to `main` deploys again; to pause deploys while you look into a problem, disable the Deploy workflow in the Actions tab.
 
 ## First run
 
@@ -352,7 +565,7 @@ Under **Your data and privacy** in the profile dialog you can change these choic
 
 In both modes, your messages, recent chat history, the profile details, goals and decisions relevant to the question (with figures calculated from them), and any INDmoney data Portfolio Analyzer reads go to the AI model you select: they stay on this computer with the local model and are sent to OpenAI or Groq if you pick one of those.
 
-The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Add real authentication before exposing CA Mode to a network.
+The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Add real authentication before exposing CA Mode to a network, such as Cloudflare Access in [Host it for a team](#host-it-for-a-team).
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
@@ -439,6 +652,7 @@ python -m compileall -q app tests
 for file in frontend/js/*.js; do node --check "$file"; done
 python -m pytest -q
 node --test tests/js/*.test.js   # finance math, tax rules, rail insights, trace and Activity rendering (Node 18+)
+(cd worker && npm test)          # code runner protocol (Node 23.6+, runs the TypeScript directly)
 ```
 
 The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls.
@@ -450,7 +664,7 @@ set -a; source .env; set +a
 python -m scripts.eval_router --provider ollama   # or openai, groq; omit --provider to score only the keyword rules
 ```
 
-GitHub Actions runs the compile, pytest, script syntax and frontend unit test checks on pushes and pull requests.
+GitHub Actions runs the compile, pytest, script syntax and frontend unit test checks on pushes and pull requests, and again before each deploy from `main` (see [Deploy from GitHub](#deploy-from-github)).
 
 ## Project structure
 
@@ -469,6 +683,7 @@ app/
   agent_runs.py    Saved answer runs (sealed) for the Activity page
   tasks.py         Task contracts: what each kind of request must do, and the check on each answer
   tool_results.py  Tool failure kinds and the argument check before INDmoney calls
+  code_runner.py   Code mode: the run_code tool, api declarations, and the WebSocket client for the Worker
   charts.py        Candlestick charts rebuilt from the OHLC tool result, never from the model's copy
   mcp_client.py    INDmoney MCP session, tool calls, and the read-only tool allowlist
   vault.py         Master key and encryption for stored INDmoney tokens
@@ -504,12 +719,22 @@ tests/
   test_page_views.py   Page-view counting, retention and gates
   test_public_pages.py Meta tags, privacy page, robots/sitemap, HTML vs JSON 404s, icons and manifest
   test_mcp_client.py MCP protocol handling and tool filtering
+  test_code_runner.py  Code mode: the Worker protocol against a fake runner, fallback, auth, agent wiring
   test_vault.py      Master key handling, token encryption, startup migration
   test_unlock.py     PIN-locked history, restart locking, recovery codes, upgrading old profiles
   test_investigation_math.py, test_investigation_checks.py, test_investigations.py
                      Change maths, consistency checks, and the investigation API, storage and agent tool
   test_goal_planning.py, test_goal_suitability.py, test_goal_portfolio.py, test_memory.py, test_context.py
                      Goal maths, the goals/decisions/context API and its access rules, context selection
-.github/workflows/ GitHub Actions CI
+cloudflare/
+  wrangler.jsonc   The camode Worker: frontend assets, one Container, the daily cron
+  src/index.ts     Serves the app shell and forwards everything else to the container
+  container/       Image for Cloudflare Containers (the app plus Litestream to R2) and its entrypoint
+worker/
+  src/index.ts     Code runner Worker: one Dynamic Worker isolate per snippet, api calls sent back over the WebSocket
+  src/bridge.ts    The WebSocket protocol, call limits and the secret check (runs under node --test too)
+  wrangler.jsonc   Worker config with the LOADER (Dynamic Workers) binding
+.github/workflows/ GitHub Actions: ci.yml (checks) and deploy.yml (deploys main to the team VM)
+deploy/vm-deploy.sh  Runs on the VM for each deploy: backup, build, start, health check
 Dockerfile, docker-compose.yml  Container image and local Docker setup
 ```

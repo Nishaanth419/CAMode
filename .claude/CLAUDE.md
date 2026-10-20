@@ -21,7 +21,10 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - **`app/snapshots.py`**: Daily capture of net worth/allocation/holdings, history queries, the polling scheduler, profile prompt text, and the agent's local snapshot tools.
 - **`app/agent.py`**: Provider selection (Ollama/OpenAI/Groq), request filtering, and the tool-calling loop (`stream_agent` yields `(event, data)` tuples; `run_agent` collects them into an answer, its trace, its recorded events and its task-contract verdict).
 - **`app/agent_events.py`**: `RunRecorder` (turns stream events into the run's event log: `seq`, `atMs`, camelCase keys, tool arguments/results/errors redacted and capped, the answer reduced to its length), `summarize()` (call counts, failed tool calls, retries, token totals, termination) and `redact_trace_text()` (re-exported by `agent`).
-- **`app/tool_results.py`**: Tool failure kinds (`invalid_arguments`, `rejected`, `unavailable`, `auth`, `failed`), `error_payload()` (`{error, errorKind, next_step}` for the model), `reported_error()` (a local tool's top-level `{"error"}`) and `argument_problems()` (missing required arguments and values outside an `enum`; types are deliberately not checked).
+- **`app/code_runner.py`**: Code mode (`TOOL_MODE=code`): `runner_config()` (`CODE_RUNNER_URL`, `CODE_RUNNER_SECRET`, `CODE_RUNNER_TIMEOUT_SECONDS`; `None` when off or unconfigured), `api_declarations()` (MCP-style schemas → `api.<tool>(args)` TypeScript for the prompt), `model_tool()` (`run_code`), `execute()` (the WebSocket client: dispatches each `call` frame, yields its events, ends with `(OUTCOME_EVENT, {"outcome": CodeOutcome})`)
+- **`cloudflare/`**: Cloudflare deployment: the `camode` Worker serves `frontend/` (fills `{{origin}}` in the app shell itself) and forwards everything else to one Container (`getContainer(env.APP, "main")`, `max_instances` 1) built from `container/Dockerfile` (the app + Litestream). Container disks are ephemeral: `container/entrypoint.sh` restores SQLite from R2 and runs uvicorn under `litestream replicate -exec`; `BACKUP_ENABLED=false`. `src/shell.ts` lists the settings passed to the container (`CONTAINER_ENV_KEYS`); missing secrets give `503` with the list. Cron `30 3 * * *` wakes it for snapshots. Needs Workers Paid
+- **`worker/`**: The code runner Cloudflare Worker (TypeScript, `@cloudflare/codemode` `DynamicWorkerExecutor`, `LOADER` worker_loaders binding). `src/bridge.ts` holds the protocol (`parseRun`, `CallBridge`, `secretMatches`) with no Workers APIs so `node --test worker/test/*.test.ts` runs it
+- **`app/tool_results.py`**: Tool failure kinds (`invalid_arguments`, `rejected`, `unavailable`, `auth`, `failed`), `error_payload()` (`{error, errorKind, next_step}` for the model), `ToolOutcome` / `failure()` (how one dispatched call ended: `content`, `error_kind`, `error`, `fatal`), `reported_error()` (a local tool's top-level `{"error"}`) and `argument_problems()` (missing required arguments and values outside an `enum`; types are deliberately not checked).
 - **`app/agent_runs.py`**: Saved answer runs: `save_run()` (one sealed row per chat answer or failed attempt in `device` mode: question start, contract verdict, events, summary; never fails the answer), `list_runs()`, `get_run()`, `all_runs()` (export), `delete_run()`, `delete_chat_runs()`. Newest `KEEP_RUNS` (200), none older than the chat lifetime
 - **`app/tasks.py`**: Task contracts: `contract_for(category, agent_type, offered_tools)` (`refusal`, `general_finance`, `goal_calculation`, `account_data`: required and allowed tools, whether a clarifying question counts, observed call budgets), `evaluate()`, `facts_from_events()`, `is_account_tool()`.
 - **`app/sealing.py`**: Per-profile X25519 keypairs, wrapping the private key with a PIN or recovery code (scrypt + SecretBox), recovery codes, and `ProfileKeys` (`seal()` / `open()`).
@@ -68,7 +71,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 **Encrypted secrets** (`vault.py`, `users.py`):
 - `users.indmoney` and `oauth_sessions.data` are stored as `enc:v1:<Fernet token>` via `_encode_secret()` / `_decode_secret()`; an empty dict stays a plain `{}`, so SQL can test "connected" with `indmoney <> '{}'` (never `json_extract` on these columns)
 - `main.py` runs `vault.check_key()` and `users.encrypt_stored_secrets()` at startup: plaintext rows are encrypted, rows under another key are counted, logged as `stored_secrets_unreadable` and left untouched (they read as `{}`, so the profile shows as disconnected)
-- The key lives outside `.data/`; Docker mounts `~/.config/ca-mode` so both run modes share it. Tests set a generated `APP_MASTER_KEY` in `conftest.py` and must never touch the real key file
+- The key lives outside `.data/`; the dev `docker-compose.yml` mounts `~/.config/ca-mode` so both run modes share it, and `docker-compose.prod.yml` mounts it read-only as the Compose secret `master_key` (`/run/secrets/master_key`), never inside `/data` or `/backups`. Tests set a generated `APP_MASTER_KEY` in `conftest.py` and must never touch the real key file
 
 **Consent and storage modes** (`privacy.py`, `chats.py`):
 - A profile must accept the current `POLICY_VERSION` before `POST /api/chats`, `POST /api/chat`, `POST`/`PUT` on goals and decisions, `GET /api/tools`, `POST /api/snapshots/refresh` or `/auth/indmoney/connect`; otherwise `403 {"consentRequired": true}` (connect redirects home). Reading, deleting and exporting existing data stays allowed
@@ -157,10 +160,25 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `scripts/eval_tasks.py` grades task handling from the recorded events on `evals/agent_tasks.jsonl` (21 cases). Scripted mode (default, offline, also run by `tests/test_eval_tasks.py`) replays each case's model replies and checks the contract, verdict, termination and code, retries, tool error kinds and number check; `--provider ollama --runs 3` runs the 8 `live` cases on the real model with the real calculator, the synthetic snapshot and stubbed INDmoney behaviours, graded on contract, traced figures, expected figures, clarifying questions, invented amounts, rejected calls and model calls. Re-run it before changing the agent loop, the goal tools or the contracts; a new case needs `expect` (and optionally `live.grade`)
 - No streaming: the trace arrives with the finished answer. "Run again" (failed/cancelled only) re-POSTs the same `baselineDate` on a click, never automatically
 
+**Code mode** (`code_runner.py`, `worker/`, `agent._ToolDispatch`):
+- Off by default (`TOOL_MODE=direct`; `conftest.py` pins it). With `TOOL_MODE=code` and a configured runner, any request that offers tools gets only `run_code`, and the system prompt gets `CODE_MODE_RULES` plus the `api` declarations of every offered tool (local and INDmoney); without tools nothing changes
+- CA Mode opens the WebSocket to the Worker (`Authorization: Bearer CODE_RUNNER_SECRET`); the Worker runs the snippet in a fresh Dynamic Worker isolate with `globalOutbound: null` and sends each `api` call back. Tokens, the MCP session and local data never leave the app; the code, arguments and results pass through Cloudflare (privacy notice, `POLICY_VERSION` 2026-10-20). Worker observability is off
+- Every call, direct or from code, goes through `_ToolDispatch.call()`: same allowlist, `argument_problems()`, error kinds and `tool_call`/`tool_result` events, so contracts, `account_tool_called`, OHLC grounding and the number check are unchanged. The snippet's calls sit between `code_run` and `code_result` events; the trace shows a `code` step. A failed call throws in the snippet as `"<errorKind>: <error>. <next_step>"`; a `fatal` outcome (INDmoney auth) sends `abort` and ends the answer
+- Limits: `MAX_CALLS_PER_RUN` 12, `MAX_CODE_CHARS` 8,000, result cut to `MAX_RESULT_CHARS` 5,500 (Groq). A runner that cannot be reached (`unreachable`: no connection was opened) on the first snippet of an answer reruns it with `direct_tools=True, routed=<category>` (`retry` reason `direct_tools_fallback`); a timeout after connecting is not unreachable
+- A tool called by name outside `run_code` gets an error tool result pointing to `api.<name>` (`retry` reason `invalid_tool_call`). Re-run the evals in both modes before making code mode the default
+
 **Charts from tool data** (`charts.py`):
 - `ground_candlestick_charts()` (run on every answer in `stream_agent`) replaces each candlestick block with the latest `get_indian_stocks_ohlc` result as compact `ohlc` rows `[label, open, high, low, close]`, titled with the tool's instrument name. Candles the model wrote (or elided) are always replaced; with no OHLC candles the block becomes `CANDLES_UNAVAILABLE_NOTE`. The prompt still asks the model for full candles: telling it to write a title-only block instead raised unsupported claims in the investigation eval (9/60 vs 4/60 answers), so that change was dropped
 - `ohlc_candles()` searches the parsed result (including a JSON string under `result`) for rows with open/high/low/close and a date, dropping impossible rows
 - `strip_chart_blocks()` replaces chart blocks in assistant history before it reaches the model; `app.js` `chartCandles()` reads both `candles` and `ohlc`, and an undrawable chart block shows a note instead of a blank space
+
+**Docker and team deployment** (`Dockerfile`, `.dockerignore`, `docker-compose.yml`, `docker-compose.prod.yml`):
+- The image is multi-stage on a digest-pinned `python:3.12-slim`, runs as uid/gid 10001 with `exec uvicorn ... --workers 1` (PID 1, graceful SIGTERM) and a `HEALTHCHECK` on `/healthz`; defaults `APP_DATA_DIR=/data`, `BACKUP_DIR=/backups`. It contains only `app/`, `frontend/` and `scripts/` (for `scripts.backup` / `scripts.page_views`); `.dockerignore` keeps `.data`, `.env`, `worker/`, `tests/`, `evals/` out
+- Never more than one instance or worker: unlocked keys, private chats, per-profile locks and the scheduler are process memory (`container_name` in the prod file blocks `--scale`)
+- `docker-compose.yml` is the Mac dev setup (port 8003, `host.docker.internal` for Ollama, `./.data` bind mount). `docker-compose.prod.yml` is one Linux VM behind Cloudflare Tunnel + Access: no published ports, `app` (read-only root, `/tmp` tmpfs, `cap_drop: ALL`, `no-new-privileges`, memory/pids limits, host bind mounts `CA_MODE_DATA_DIR`/`CA_MODE_BACKUP_DIR` owned by 10001), `cloudflared` (`TUNNEL_TOKEN` from `CLOUDFLARE_TUNNEL_TOKEN`, hostname service `http://app:8080`), and the optional `backup-offsite` (`--profile offsite`, rclone `copy` of `/backups` read-only to R2/S3 every 6 h). `APP_ORIGIN` and `CLOUDFLARE_TUNNEL_TOKEN` are required (`:?`), so `config` fails without them
+- Cloudflare Access is the authentication for a hosted install (the PIN is a local lock and the sign-in screen lists profile names); the `NOTICE` still says "on this computer" and needs hosted wording plus a `POLICY_VERSION` bump before a team launch
+- After changing either compose file: `docker compose -f docker-compose.prod.yml config -q` (with the required variables set), `docker build --check .`, and run the image with `--read-only --tmpfs /tmp --cap-drop ALL` to confirm `/healthz`
+- `.github/workflows/deploy.yml` (push to `main` or `workflow_dispatch` on `main`; whole run in the `deploy-production` concurrency group, never cancelled): reuses `ci.yml` (`workflow_call`), then the `production` environment job SSHes to the VM (secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` pinned with `StrictHostKeyChecking yes`; var `DEPLOY_DIR`, default `/srv/ca-mode/app`), fetches `main`, refuses a SHA not on it, checks it out detached and runs `deploy/vm-deploy.sh`: backup via `exec -T app python -m scripts.backup now` only if the app is running, `build app` on the VM (arm64), `up -d` with `CA_MODE_TAG` = 12-char SHA (overrides `.env`), waits for the container's health (`DEPLOY_HEALTH_TIMEOUT_SECONDS` 300, fails on unhealthy/restarts/wrong image and prints 200 log lines), checks `cloudflared` runs, keeps `DEPLOY_KEEP_IMAGES` (5) `ca-mode` images. Never writes `.env` or the master key. Optional `deploy-code-runner` job (`npm ci` + `npx wrangler deploy` in `worker/`, `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`) only when the repo variable `DEPLOY_CODE_RUNNER == 'true'`. Actions are pinned by commit SHA with the version in a comment (also in `ci.yml`). After editing either workflow run `actionlint`; after editing the script run `shellcheck deploy/vm-deploy.sh`
 
 **Tool allowlist** (`mcp_client.py`):
 - `IMPORTANT_PORTFOLIO_TOOL_NAMES`: 15 documented read-only INDmoney tools
@@ -209,10 +227,15 @@ cp .env.example .env   # add OPENAI_API_KEY or GROQ_API_KEY
 # With Python (use the venv's uvicorn; restart after code changes)
 uvicorn --env-file .env app.main:app --host 127.0.0.1 --port 8003
 
-# With Docker
+# With Docker (local, Mac)
 docker compose up --build -d
 docker compose logs -f
 docker compose down
+
+# Team deployment (Linux VM behind Cloudflare Tunnel + Access; README "Host it for a team")
+docker compose -f docker-compose.prod.yml config -q
+docker compose -f docker-compose.prod.yml up --build -d
+docker compose -f docker-compose.prod.yml --profile offsite up -d   # with off-site backup copies
 ```
 
 ### Testing & Code Checks
@@ -226,9 +249,10 @@ python -m pytest tests/test_agent.py::test_finance_agent_blocks_net_worth_code_r
 python -m compileall -q app tests
 for file in frontend/js/*.js; do node --check "$file"; done
 node --test tests/js/*.test.js
+node --test worker/test/*.test.ts   # code runner protocol (Node 23.6+)
 python -m scripts.eval_tasks   # task contracts on scripted replies, offline
 
-# GitHub Actions runs all of these
+# GitHub Actions runs all of these (ci.yml), and deploy.yml reuses them before deploying main
 python -m compileall -q app tests && python -m pytest -q
 ```
 
@@ -289,11 +313,12 @@ python -m compileall -q app tests && python -m pytest -q
 - `McpToolError` (the tool reported an error the model can fix) and `McpAuthError` (HTTP 401 or auth-failure text: refresh the token)
 
 ### Environment Variables
-- `OLLAMA_MODEL` (enables the local provider; `ca-mode`), `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`; Compose sets `host.docker.internal`), `OLLAMA_TIMEOUT_SECONDS`, `OLLAMA_ROUTER_MODEL`
+- `OLLAMA_MODEL` (enables the local provider; `ca-mode`), `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`; the dev Compose file sets `host.docker.internal`; hosted: a GPU VM's private address), `OLLAMA_TIMEOUT_SECONDS`, `OLLAMA_ROUTER_MODEL`
 - `OPENAI_API_KEY` / `GROQ_API_KEY`: enable providers; `OPENAI_MODEL` / `GROQ_MODEL`, `OPENAI_BASE_URL` / `GROQ_BASE_URL`: overrides
 - `AI_PROVIDER`: default provider (`ollama` by default, `openai` or `groq`); users can switch in the app
 - `GROQ_INPUT_TOKEN_BUDGET`, `GROQ_COMPLETION_TOKEN_LIMIT`: Groq limits
 - `REQUEST_ROUTER` (`model` default, or `keywords`), `OPENAI_ROUTER_MODEL` / `GROQ_ROUTER_MODEL`: request classifier
+- `TOOL_MODE` (`direct` default, or `code`), `CODE_RUNNER_URL` (http(s) is converted to ws(s)), `CODE_RUNNER_SECRET`, `CODE_RUNNER_TIMEOUT_SECONDS` (60): code mode
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default `https://mcp.indmoney.com/mcp`)
 - `APP_ORIGIN`: public origin for the OAuth callback
 - `FUND_STALE_DAYS` (5): days after a NAV date before fund returns are marked old
@@ -302,7 +327,8 @@ python -m compileall -q app tests && python -m pytest -q
 - `APP_MASTER_KEY_FILE` / `APP_MASTER_KEY`: token encryption key (default file `~/.config/ca-mode/master.key`, created on first start)
 - `BACKUP_DIR` (default `~/ca-mode-backups`), `BACKUP_KEEP` (14), `BACKUP_ENABLED` (true): daily backups; `conftest.py` points `BACKUP_DIR` at a temp folder
 - `PAGE_VIEWS_ENABLED` (true): anonymous local page-view counts
-- `APP_DATA_DIR`: SQLite directory (default `.data/`); `LOG_LEVEL` (default `INFO`); `PORT` (Docker, default `8080`)
+- `APP_DATA_DIR`: SQLite directory (default `.data/`, `/data` in the image); `LOG_LEVEL` (default `INFO`); `PORT` (Docker, default `8080`)
+- `docker-compose.prod.yml` only (interpolated, not read by the app): `CLOUDFLARE_TUNNEL_TOKEN`, `CA_MODE_TAG` (image tag), `CA_MODE_DATA_DIR` / `CA_MODE_BACKUP_DIR` (host paths, default `/srv/ca-mode/data` / `backups`), `CA_MODE_MASTER_KEY_FILE` (default `/etc/ca-mode/master.key`), `OFFSITE_*` (rclone target for `--profile offsite`)
 
 ## Testing Strategy
 
@@ -336,6 +362,8 @@ Test coverage:
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers
 - `test_charts.py`: reading OHLC results in any nesting, replacing model-written and elided candles with tool candles, the no-data note, other charts untouched, a year of candles fitting a saved answer, chart data left out of model history
 - `test_router.py`: classifier routing in model mode, forced tool call and request shape, router model override, fallbacks to keywords
+- `test_code_runner.py`: code mode config, `api` declarations, the protocol against a fake Worker server (dispatch, parsed results, thrown failures, unknown names, call limit, abort, code errors, truncation, refused/down/timed-out runners) and the agent in code mode (one `run_code` tool, events and trace, contract, direct-tools fallback, auth, tools called outside `run_code`, Finance Agent goal tools)
+- `worker/test/bridge.test.ts` (`node --test`): run request validation and clamping, call frames and results, limits, abort, the secret check
 - `test_mcp_client.py`: MCP session init, event-stream parsing, tool calls, tool filtering, retryable vs auth tool errors
 - `tests/js/trace.test.js` (`node --test`): status labels and tones, step ordering and investigation links, details disclosure, missing fields and unknown kinds, evidence card sections, Activity filters, retry rules, reconciliation of duplicate/out-of-order/refreshed lists, redaction and escaping
 - `tests/js/finance.test.js` (`node --test`): formatting, growth and goal math, goal icons, history change, snapshot insights, income tax for both regimes including rebates, surcharge and marginal relief
