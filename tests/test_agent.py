@@ -1465,3 +1465,53 @@ async def test_a_refusal_records_its_contract_without_a_model_call(monkeypatch):
     assert _kinds(answer.events) == ["route", "contract", "answer", "validation", "termination"]
     assert answer.verdict == {**answer.verdict, "task": "refusal", "status": "met"}
     assert answer.events[-1]["reason"] == "refused"
+
+
+@pytest.mark.asyncio
+async def test_groq_gets_the_live_tools_that_fit_most_relevant_first(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    padding = "Detailed usage notes. " * 250  # each schema is far too large to send them all on Groq
+
+    def mcp_tool(name, description):
+        # Descriptions are cut to 500 characters for Groq; schemas are not, and they are what makes INDmoney's tools large.
+        schema = {"type": "object", "properties": {"options": {"type": "string", "description": padding}}}
+        return {"name": name, "description": description, "inputSchema": schema}
+
+    source_tools = [
+        mcp_tool("get_indian_stocks_ohlc", "Fetch OHLC candle data for price history and candle charting."),
+        mcp_tool("networth_holdings", "Holdings of each asset type, including fixed deposits."),
+        mcp_tool("get_mf_by_category", "Mutual funds in a category."),
+        mcp_tool("networth_snapshot", "Net worth summary."),
+    ]
+
+    async def fake_fetch(url, token):
+        return {"tools": source_tools, "protocolVersion": "v", "sessionId": "sid"}
+
+    async def snapshot(arguments):
+        return '{"figures": {"total": 100}}'
+
+    monkeypatch.setattr(agent, "fetch_mcp_session", fake_fetch)
+    captured = []
+    fake_client = FakeAsyncClient([_completion(tool_calls=[{"id": "c1", "function": {"name": "get_portfolio_snapshot", "arguments": "{}"}}]),
+                                   _completion("Your fixed deposits are worth ₹100.")], captured)
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: fake_client)
+    context = agent.PortfolioContext(local_tools=(agent.LocalTool("get_portfolio_snapshot", "Saved snapshot", {"type": "object", "properties": {}}, snapshot),))
+
+    answer = await agent.run_agent("Tell me about my fixed deposits holdings", "https://mcp", "token", [], "portfolio", "groq",
+                                   context=context)
+
+    offered = [tool["function"]["name"] for tool in captured[0]["payload"]["tools"]]
+    assert offered[0] == "get_portfolio_snapshot" and "networth_holdings" in offered
+    assert "get_indian_stocks_ohlc" not in offered and len(offered) < 5
+    assert agent._estimated_request_tokens(captured[0]["payload"]["messages"], captured[0]["payload"]["tools"]) <= agent.GROQ_INPUT_TOKEN_BUDGET
+    budget = next(event for event in answer.events if event["kind"] == "validation" and event["check"] == "tool_budget")
+    assert budget["outcome"] == "warning" and "get_indian_stocks_ohlc" in budget["detail"]
+    contract = next(event for event in answer.events if event["kind"] == "contract")
+    assert set(contract["allowedTools"]) == set(offered)
+    assert answer.verdict["status"] == "met"
+
+
+def test_groq_tool_fitting_leaves_small_requests_alone():
+    tools = agent._model_tools([{"name": "networth_snapshot", "description": "Net worth"}], "groq")
+    messages = [{"role": "system", "content": "short"}, {"role": "user", "content": "net worth?"}]
+    assert agent._fit_groq_tools(tools, messages, set(), "net worth?") == (tools, [])

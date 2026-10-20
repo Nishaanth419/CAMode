@@ -8,7 +8,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Final
 
@@ -214,9 +214,63 @@ LOCAL_TIMEOUT_SECONDS = _positive_env_int("OLLAMA_TIMEOUT_SECONDS", 300)
 GROQ_COMPLETION_TOKEN_LIMIT = _positive_env_int("GROQ_COMPLETION_TOKEN_LIMIT", 1200)
 
 
+# Measured on CA Mode's prompts and tool schemas with an o200k tokenizer: 4.3 to 4.8 characters per token.
+# 3.5 keeps the estimate on the high side.
+GROQ_CHARS_PER_TOKEN: Final = 3.5
+# Room kept under the budget for tool results and retry messages added after the first model call.
+GROQ_TOOL_RESULT_RESERVE: Final = 1500
+_TOOL_WORD_RE = re.compile(r"[a-z0-9]{3,}")
+_TOOL_STOP_WORDS: Final = frozenset({
+    "the", "and", "for", "with", "what", "how", "about", "tell", "give", "show", "this", "that", "any", "its",
+    "are", "you", "can", "much", "does", "from", "into", "your", "anything", "keep", "eye", "get", "returns",
+})
+
+
 def _estimated_request_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
     serialized = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, separators=(",", ":"))
-    return math.ceil(len(serialized) / 1.8)
+    return math.ceil(len(serialized) / GROQ_CHARS_PER_TOKEN)
+
+
+def _content_words(text: str) -> set[str]:
+    """Words for matching a question to tool descriptions, cut to five letters as a light stem
+    ("candlestick" and "candle charting" share "candl" and "chart")."""
+    return {word[:5] for word in _TOOL_WORD_RE.findall(text.lower()) if word not in _TOOL_STOP_WORDS}
+
+
+def _fit_groq_tools(
+    model_tools: list[dict[str, Any]], messages: list[dict[str, Any]], keep: Collection[str], question: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The tools to offer on Groq, whose small input budget cannot take every INDmoney schema.
+
+    Every tool in ``keep`` (the local tools) stays; live tools are added while the request still fits
+    ``GROQ_INPUT_TOKEN_BUDGET`` less ``GROQ_TOOL_RESULT_RESERVE``, those sharing the most words with the
+    question first (ties keep the server's order). Returns the tools in their original order and the
+    names of the live tools left out.
+    """
+    budget = GROQ_INPUT_TOKEN_BUDGET - GROQ_TOOL_RESULT_RESERVE
+    if _estimated_request_tokens(messages, model_tools) <= budget:
+        return model_tools, []
+    asked = _content_words(question)
+
+    def relevance(tool: dict[str, Any]) -> int:
+        function = tool["function"]
+        return len(asked & _content_words(function["name"].replace("_", " ") + " " + (function.get("description") or "")))
+
+    chosen = [tool for tool in model_tools if tool["function"]["name"] in keep]
+    live = [tool for tool in model_tools if tool["function"]["name"] not in keep]
+    ranked = sorted(live, key=relevance, reverse=True)
+    # Market tools take an ind_key that only lookup_ind_keys resolves from a name, so it follows the first of them.
+    resolver = next((tool for tool in ranked if tool["function"]["name"] == "lookup_ind_keys"), None)
+    leading = [tool for tool in ranked[:2] if tool is not resolver]
+    if resolver and leading and "ind_key" in json.dumps(leading[0]["function"].get("parameters") or {}):
+        ranked.remove(resolver)
+        ranked.insert(ranked.index(leading[0]) + 1, resolver)
+    for tool in ranked:
+        if _estimated_request_tokens(messages, [*chosen, tool]) <= budget:
+            chosen.append(tool)
+    names = {tool["function"]["name"] for tool in chosen}
+    return ([tool for tool in model_tools if tool["function"]["name"] in names],
+            [tool["function"]["name"] for tool in live if tool["function"]["name"] not in names])
 
 
 def _fit_groq_context(
@@ -916,7 +970,6 @@ async def stream_agent(
     )
     code_config = None if direct_tools or not api_tools else code_runner.runner_config()
     model_tools = [code_runner.model_tool()] if code_config else _model_tools(api_tools, provider)
-    yield "contract", {"contract": tasks.contract_for(category, agent_type, [*local_tools, *tool_names])}
 
     if agent_type == "portfolio":
         prompt = _portfolio_prompt(context.profile_context if context else None)
@@ -934,6 +987,21 @@ async def stream_agent(
                     for item in history)
     messages.append({"role": "user", "content": message})
     current_user_index = len(messages) - 1
+
+    offered = [*local_tools, *tool_names]
+    left_out: list[str] = []
+    if provider == "groq" and not code_config and model_tools:
+        model_tools, left_out = _fit_groq_tools(
+            model_tools, [messages[0], messages[current_user_index]], local_tools.keys(), message,
+        )
+        offered = [tool["function"]["name"] for tool in model_tools]
+    yield "contract", {"contract": tasks.contract_for(category, agent_type, offered)}
+    if left_out:
+        logger.info("groq_tools_fitted", extra={"offered": len(offered), "left_out": len(left_out)})
+        yield "validation", {"check": "tool_budget", "outcome": "warning", "detail": (
+            f"offered {len(tool_names) - len(left_out)} of {len(tool_names)} live INDmoney tools to fit Groq's request "
+            f"limit; left out: {', '.join(left_out)}"
+        )}
 
     retried_portfolio_tool_selection = False
     retried_failed_tool_use = False

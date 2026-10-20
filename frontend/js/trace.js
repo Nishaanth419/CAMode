@@ -129,6 +129,7 @@
     task_contract: ['Check the answer is complete', 'The request type decides which data it needs before it counts as answered'],
     code_output: ['Check for code', 'Answers never contain programming code'],
     length: ['Check the answer length', 'Whether the model stopped at its length limit'],
+    tool_budget: ['Fit the request size', 'Groq accepts only small requests, so just the most relevant live INDmoney tools were offered'],
   };
 
   const TASK_LABELS = {
