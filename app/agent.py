@@ -172,7 +172,7 @@ FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer only finance
 
 PROVIDERS = {
     "ollama": {
-        "label": "Ollama (on this device)",
+        "label": "Ollama (private model)",
         # No key: the model runs locally, so messages and portfolio data never leave this computer.
         "key_env": "",
         "base_url_env": "OLLAMA_BASE_URL",

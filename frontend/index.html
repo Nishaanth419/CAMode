@@ -31,8 +31,8 @@
   <link rel="stylesheet" href="/css/app.css?v=37" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
   <script src="/js/finance.js?v=6" defer></script>
-  <script src="/js/trace.js?v=7" defer></script>
-  <script src="/js/app.js?v=28" defer></script>
+  <script src="/js/trace.js?v=8" defer></script>
+  <script src="/js/app.js?v=29" defer></script>
   <script src="/js/pages.js?v=19" defer></script>
   <script src="/js/rail.js?v=6" defer></script>
 </head>
@@ -313,7 +313,7 @@
           <header class="page-head">
             <div>
               <h1 id="planning-title" class="page-title">Planning Tools</h1>
-              <p class="page-sub">Quick calculators that run on this computer. They assume a steady return, which real markets never give, so treat the results as estimates, not advice.</p>
+              <p class="page-sub">Quick calculators that run in your browser. They assume a steady return, which real markets never give, so treat the results as estimates, not advice.</p>
             </div>
           </header>
           <div class="seg" role="tablist" aria-label="Calculators" id="calc-tabs">
@@ -539,7 +539,7 @@
           <code id="recovery-code-value" class="recovery-code"></code>
           <button id="copy-recovery-code" class="gate-secondary" type="button">Copy</button>
         </div>
-        <p class="recovery-note">Write it down or keep it in a password manager, not on this computer. It is shown only once. You can create a new one later from your profile.</p>
+        <p class="recovery-note">Write it down or keep it in a password manager, not on this device. It is shown only once. You can create a new one later from your profile.</p>
         <label class="consent-check"><input id="recovery-saved" type="checkbox" />
           <span>I have saved my recovery code somewhere safe.</span></label>
         <button id="recovery-continue" class="rail-button" type="button" disabled>Continue</button>
@@ -561,7 +561,7 @@
         <fieldset class="storage-choice">
           <legend>Chat and portfolio history</legend>
           <label class="choice"><input type="radio" name="consent-storage" value="device" checked />
-            <span><strong>Save on this computer</strong><small>Chats for 30 days and a daily portfolio snapshot</small></span></label>
+            <span><strong>Save history</strong><small>Chats for 30 days and a daily portfolio snapshot</small></span></label>
           <label class="choice"><input type="radio" name="consent-storage" value="private" />
             <span><strong>Private mode</strong><small>No chats or snapshots saved; chats end when you sign out</small></span></label>
         </fieldset>
@@ -577,7 +577,7 @@
       </form>
 
       <p id="gate-error" class="gate-error" role="alert" hidden></p>
-      <p id="gate-note" class="gate-note">Your PIN encrypts your saved history, so choose one other people on this computer can't guess. It is not a substitute for a device password.</p>
+      <p id="gate-note" class="gate-note">Your PIN encrypts your saved history, so choose one other people can't guess. It is not a substitute for a device password.</p>
       <p class="gate-legal"><a href="/privacy" target="_blank" rel="noopener">Privacy policy</a></p>
     </section>
   </div>
@@ -618,7 +618,7 @@
         <fieldset class="storage-choice">
           <legend>Chat and portfolio history</legend>
           <label class="choice"><input type="radio" name="settings-storage" value="device" checked />
-            <span><strong>Save on this computer</strong><small>Chats for 30 days and a daily portfolio snapshot</small></span></label>
+            <span><strong>Save history</strong><small>Chats for 30 days and a daily portfolio snapshot</small></span></label>
           <label class="choice"><input type="radio" name="settings-storage" value="private" />
             <span><strong>Private mode</strong><small>No chats or snapshots saved; chats end when you sign out</small></span></label>
         </fieldset>
@@ -649,7 +649,7 @@
       </details>
       <details class="danger-zone">
         <summary>Delete this profile</summary>
-        <p>Deletes this profile's chats, snapshots, and INDmoney connection from this computer.</p>
+        <p>Deletes this profile's chats, snapshots, and INDmoney connection from CA Mode.</p>
         <label class="field"><span>Confirm with your PIN</span><input id="delete-pin" type="password" autocomplete="current-password" /></label>
         <button id="delete-profile" class="danger-button" type="button">Delete profile</button>
       </details>

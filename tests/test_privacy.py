@@ -55,7 +55,7 @@ def test_new_profile_must_accept_notice_before_chatting(client, unconsented):
     assert state["consentRequired"] is True
     assert state["policyVersion"] == privacy.POLICY_VERSION
     titles = [item["title"] for item in state["notice"]]
-    assert titles[0] == "What is saved on this computer" and "What leaves this computer" in titles
+    assert titles[0] == "What is saved, and where" and "Where your questions go" in titles
 
     blocked = client.post("/api/chats", json={"agentType": "finance"})
     assert blocked.status_code == 403
@@ -298,7 +298,8 @@ def test_deleting_profile_removes_consents(client, signed_in):
 def test_notice_mentions_ai_providers_and_permanent_loss():
     text = json.dumps(privacy.NOTICE)
     assert "OpenAI or Groq" in text
-    assert "Ollama (on this device)" in text and "none of it leaves" in text
+    assert "With Ollama the model runs" in text and "not sent to any AI company" in text
+    assert "hosted copy" in text and "someone you trust" in text
     assert "recovery code" in text and "cannot be recovered" in text
 
 
