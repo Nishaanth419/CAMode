@@ -51,6 +51,7 @@ Several people can share one machine: each has a PIN-protected local profile tha
 - `provider_config()` returns `timeout` / `router_timeout` (`OLLAMA_TIMEOUT_SECONDS`, default 300, for Ollama; 120 s and `router.ROUTER_TIMEOUT_SECONDS` for cloud)
 - Ollama's `/v1` API ignores per-request context options and silently truncates long prompts (4,096-token default on smaller Macs). `ollama/Modelfile` builds `ca-mode` (gpt-oss:20b, `num_ctx 32768`); after the first successful response of each answer, `_ollama_context_problem()` reads `/api/ps` and errors below `OLLAMA_MIN_CONTEXT` (16,384)
 - Model choice and scores are in the README ("Use the local model"); re-run both evals with `--provider ollama` before changing it
+- Hosted setup (`deploy/`, README "Host on a server"): the app and cloudflared run on a server behind Cloudflare Access; Ollama stays on the Mac, shared with `tailscale serve --tcp 11434` and reached as `ollama.internal` (`extra_hosts`), because Ollama bound to loopback returns 403 for a Tailscale name or IP in the `Host` header. Model and classifier calls use a `router.CONNECT_TIMEOUT_SECONDS` (10 s) connect limit, so a sleeping Mac fails fast with a plain message
 
 **Profiles and sessions** (`users.py`):
 - The `indmoney_session` HttpOnly cookie maps to an `oauth_sessions` row whose `user_id` names the signed-in profile; the id rotates on sign-in

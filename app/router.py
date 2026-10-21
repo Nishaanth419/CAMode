@@ -23,6 +23,9 @@ CATEGORIES: Final = get_args(Category)
 
 ROUTER_PROMPT_VERSION: Final = "router.v1"
 ROUTER_TIMEOUT_SECONDS: Final = 10
+# A model host that is asleep or offline (Ollama on another computer reached over Tailscale) never
+# refuses the connection, so without a short connect limit a request would wait the full timeout.
+CONNECT_TIMEOUT_SECONDS: Final = 10
 MAX_CONTEXT_MESSAGES: Final = 3
 MAX_MESSAGE_CHARS: Final = 2000
 
@@ -100,7 +103,8 @@ async def classify(
         # Groq's gpt-oss reasons before calling the tool; 100 tokens cut it off (HTTP 400, no tool call).
         payload["max_tokens"] = 512
     try:
-        async with httpx.AsyncClient(timeout=config.get("router_timeout", ROUTER_TIMEOUT_SECONDS)) as client:
+        timeout = config.get("router_timeout", ROUTER_TIMEOUT_SECONDS)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS))) as client:
             response = await client.post(
                 f"{config['base_url']}/chat/completions",
                 headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},

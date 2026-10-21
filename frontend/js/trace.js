@@ -198,7 +198,7 @@
       const known = item.source === 'local' ? LOCAL_TOOLS[item.name] : null;
       view.title = known ? known[0] : item.source === 'local' ? 'Read saved data' : 'Fetch live INDmoney data';
       view.tool = item.name || 'tool';
-      view.purpose = known ? known[1] : item.source === 'local' ? 'Saved on this device' : 'Read-only call to your INDmoney account';
+      view.purpose = known ? known[1] : item.source === 'local' ? 'Saved in CA Mode' : 'Read-only call to your INDmoney account';
       const args = typeof item.arguments === 'string' ? item.arguments.trim() : '';
       if (args && args !== '{}') view.details.push({ label: 'Arguments', code: prettyJson(redactText(args)) });
       if (typeof item.result_preview === 'string' && item.result_preview) {

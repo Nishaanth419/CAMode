@@ -401,7 +401,7 @@ async def refresh_user(user_id: str, *, mcp_url: str, now: datetime | None = Non
     async with lock:
         user = users.get_user(user_id)
         if user is None or not snapshots_allowed(user):
-            raise SnapshotError("Snapshots are off for this profile. Choose to save history on this device to turn them on.")
+            raise SnapshotError("Snapshots are off for this profile. Choose to save history to turn them on.")
         with connect_db() as connection:
             connection.execute("UPDATE users SET snapshot_attempted_at = ? WHERE id = ?", (users.now_ms(), user_id))
         return await capture_snapshot(user_id, mcp_url=mcp_url, now=now)
