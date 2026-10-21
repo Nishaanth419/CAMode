@@ -96,6 +96,10 @@ cp .env.example .env
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `PORT` | `8080` | Port inside the Docker container |
+| `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per profile per day in `SNAPSHOT_TIMEZONE`; see [Limits for a shared copy](#limits-for-a-shared-copy) |
+| `RATE_LIMITS_ENABLED` | `false` | Request rate limits per IP and per profile on chat, sign-up, sign-in and investigations |
+| `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP` (only when the app is reachable solely through Cloudflare) |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | – | Both set: sign-up asks for a Cloudflare Turnstile check |
 
 You can configure several providers and switch in the app. Provider keys stay in the server environment and are never sent to the browser. Leave `OPENAI_API_KEY` and `GROQ_API_KEY` empty to make sending data to an AI company impossible.
 
@@ -356,6 +360,24 @@ python -m scripts.eval_tasks --dataset evals/multi_step.jsonl --provider ollama 
 
 The first live run passed 3/12: the local model writes `name` for `tool`, refers to steps as "step1", "0" or by tool name, and sometimes ends a plan one character wrong, which Ollama rejects with HTTP 500. These are now accepted or repaired in code, and the plan is still checked in full. The one miss above was a 500 that could not be repaired; the usual loop then answered. Two intermediate runs scored 8/12 and 7/12 on the way, so treat single runs as noisy.
 
+## Limits for a shared copy
+
+A copy on one computer has no limits. Before opening a hosted copy to other people, turn these on so one person or bot cannot monopolise the model (one Mac running Ollama answers one question at a time) or run up OpenAI or Groq costs. Each is independent and off unless set.
+
+- **Daily questions** (`DAILY_QUESTION_LIMIT=30`, for example). Each profile can get that many answers a day; the count starts again at midnight in `SNAPSHOT_TIMEZONE`. A question that gets no answer (the model failed, INDmoney needs reconnecting) does not count. Over the limit, `POST /api/chat` returns `429` with `Retry-After` and `{"error": "You've reached today's limit of 30 questions. It resets at midnight IST.", "dailyLimitReached": true, "limit", "resetsAt", "retryAfterSeconds"}`, and the chat shows that sentence. Counts are kept in the `question_counts` table (profile, date, number; today and yesterday only) and deleted with the profile.
+- **Request rate limits** (`RATE_LIMITS_ENABLED=true`). Sliding windows in `limits.RATE_RULES`:
+
+  | Routes | Per IP | Per profile |
+  | --- | --- | --- |
+  | `POST /api/chat` | 30 a minute | 10 a minute |
+  | `POST /api/users` (sign-up) | 5 an hour | – |
+  | `POST /api/session/login`, `/unlock`, `/recover` | 20 per 10 minutes | 10 per 10 minutes (the profile signed in to) |
+  | `POST /api/investigations` | 20 per 10 minutes | 10 per 10 minutes |
+
+  Over a limit the route returns `429` with `Retry-After` and `{"error": "Too many requests. Try again in 2 minutes.", "rateLimited": true, "retryAfterSeconds"}`. The counters live in the app's memory (they reset on restart and assume a single app process, which is how CA Mode runs); IPv6 addresses are grouped by /64. These sit on top of the five-wrong-PINs lockout.
+- **Client IP behind Cloudflare** (`TRUSTED_PROXY=cloudflare`). Behind a Cloudflare Tunnel every request reaches the app from `cloudflared`, so without this all visitors share one IP limit. With it the app reads `CF-Connecting-IP`. Set it only when the app's port is not reachable except through Cloudflare (the hosted Compose file publishes no ports); otherwise anyone can send the header and choose their own IP.
+- **Turnstile on sign-up** (`TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, from Cloudflare → Turnstile → Add widget, for your hostname). The sign-up form then loads the widget from `challenges.cloudflare.com` and the server checks each token with Cloudflare before creating the profile (`400 {"turnstileFailed": true}` when it fails, `503` when Cloudflare cannot be reached, so sign-up fails closed). Sign-in is not affected.
+
 ## Local data and privacy
 
 The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no third-party analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.
@@ -415,8 +437,8 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/session` | Current profile, INDmoney status, and the list of profiles |
-| `POST /api/users` | Create a profile and sign in |
+| `GET /api/session` | Current profile, INDmoney status, the list of profiles, and `turnstileSiteKey` when sign-up uses Turnstile |
+| `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`) |
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN; sign out |
 | `POST /api/session/unlock` | Unlock the signed-in profile's history after a restart (body: `{"pin": ...}`) |
 | `POST /api/session/recover` | Set a new PIN with the recovery code and sign in (body: `{"userId", "recoveryCode", "newPin"}`); returns a new recovery code |
@@ -439,7 +461,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/cas`, `POST /api/cas`, `DELETE /api/cas/{id}` | List, upload (body: `{"password", "pdfBase64"}`), or delete CAS statements |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
 | `GET /api/chats/{id}`, `DELETE /api/chats/{id}` | Read or delete a chat |
-| `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace` |
+| `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace`; `429` over a [usage limit](#limits-for-a-shared-copy) |
 | `GET /api/snapshots?days=30` | Latest snapshot summary and net-worth history |
 | `POST /api/snapshots/refresh` | Capture a snapshot now |
 | `GET /api/providers` | Configured AI providers |
