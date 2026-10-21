@@ -12,8 +12,9 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, snapshots, users
+from app import accounts, main, privacy, snapshots, users
 from app.agent import AgentRunError
+from conftest import sign_up
 
 
 def connect_user_to_indmoney(user_id: str, **overrides) -> None:
@@ -82,7 +83,7 @@ def test_session_initialization_sets_http_only_cookie(client):
 
     assert response.json() == {
         "connected": False, "user": None, "locked": False, "consentRequired": False, "storageMode": None,
-        "profiles": [],
+        "profiles": [], "authMode": "local", "account": None,
     }
     cookie = response.headers["set-cookie"].lower()
     assert "indmoney_session=" in cookie
@@ -642,3 +643,294 @@ def test_portfolio_endpoint_returns_figures_and_every_holding(client, signed_in)
 
 def test_portfolio_endpoint_requires_an_unlocked_profile(client):
     assert client.get("/api/portfolio").status_code == 401
+
+
+# ── Google sign-in (AUTH_MODE=google) ──────────────────────────────────────────
+
+GOOGLE_CLIENT_ID = "client-123.apps.googleusercontent.com"
+
+
+def fake_id_token(claims: dict) -> str:
+    encode = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")  # noqa: E731
+    return f"{encode({'alg': 'RS256'})}.{encode(claims)}.signature"
+
+
+@pytest.fixture
+def google_mode(monkeypatch):
+    monkeypatch.setenv("AUTH_MODE", "google")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", GOOGLE_CLIENT_ID)
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "google-secret")
+    return monkeypatch
+
+
+def google_sign_in(client, monkeypatch, subject="google-asha", email="asha@example.com", *, params=None, **claims):
+    """Run /auth/google/start and the callback against a fake Google token endpoint; return the callback response."""
+    start = client.get("/auth/google/start")
+    assert start.status_code == 302, start.text
+    query = parse_qs(urlparse(start.headers["location"]).query)
+    now = int(time.time())
+    token_claims = {
+        "iss": "https://accounts.google.com", "aud": GOOGLE_CLIENT_ID, "sub": subject, "email": email,
+        "email_verified": True, "name": "Asha Kumar", "given_name": "Asha", "nonce": query["nonce"][0],
+        "iat": now, "exp": now + 3600, **claims,
+    }
+    posted = {}
+
+    class GoogleTokenClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, data):
+            posted.update(url=url, **data)
+            return OAuthResponse({"id_token": fake_id_token(token_claims), "access_token": "unused"})
+
+    monkeypatch.setattr(accounts.httpx, "AsyncClient", GoogleTokenClient)
+    callback = client.get("/auth/google/callback", params=params or {"state": query["state"][0], "code": "auth-code"})
+    callback.posted = posted
+    return callback
+
+
+def create_account_profile(client, name="Asha", pin="2468", *, consent=True) -> dict:
+    created = client.post("/api/users", json={"displayName": name, "pin": pin})
+    assert created.status_code == 201, created.text
+    if consent:
+        client.post("/api/privacy/consent", json={"policyVersion": privacy.POLICY_VERSION, "storageMode": "device"})
+    return created.json()
+
+
+def test_google_mode_never_lists_profiles_or_signs_in_by_profile_id(client, google_mode):
+    existing = users.create_user("Ravi", users.hash_pin("1357"))
+
+    session = client.get("/api/session").json()
+
+    assert session["profiles"] == [] and session["user"] is None
+    assert (session["authMode"], session["account"]) == ("google", None)
+    assert "Ravi" not in json.dumps(session)
+    assert client.post("/api/session/login", json={"userId": existing["id"], "pin": "1357"}).status_code == 404
+    refused = client.post("/api/users", json={"displayName": "Mallory", "pin": "2468"})
+    assert refused.status_code == 401 and refused.json()["signInRequired"] is True
+
+
+def test_google_start_redirects_with_pkce_state_and_nonce(client, google_mode):
+    client.get("/api/session")
+    before = client.cookies.get(main.SESSION_COOKIE)
+
+    start = client.get("/auth/google/start")
+
+    location = urlparse(start.headers["location"])
+    query = {key: values[0] for key, values in parse_qs(location.query).items()}
+    assert f"{location.scheme}://{location.netloc}{location.path}" == accounts.GOOGLE_AUTHORIZE_URL
+    assert query["client_id"] == GOOGLE_CLIENT_ID
+    assert query["redirect_uri"] == "http://testserver/auth/google/callback"
+    assert query["scope"] == "openid email profile"
+    assert query["code_challenge_method"] == "S256" and query["code_challenge"]
+    assert query["state"] and query["nonce"] and query["state"] != query["nonce"]
+    assert client.cookies.get(main.SESSION_COOKIE) != before  # Rotated before leaving for Google.
+    assert start.headers["cache-control"] == "no-store"
+
+
+def test_new_google_account_creates_a_profile_and_unlocks_it(client, google_mode):
+    callback = google_sign_in(client, google_mode)
+
+    assert callback.status_code == 302 and callback.headers["location"] == "http://testserver/"
+    assert callback.posted["code"] == "auth-code" and callback.posted["code_verifier"]
+    assert callback.posted["client_secret"] == "google-secret"
+    session = client.get("/api/session").json()
+    assert session["user"] is None
+    assert session["account"] == {"email": "asha@example.com", "name": "Asha", "pending": True, "canClaim": True}
+
+    created = create_account_profile(client)
+
+    assert created["recoveryCode"]
+    session = client.get("/api/session").json()
+    assert session["user"] == created["user"] and session["locked"] is False
+    assert session["account"] == {"email": "asha@example.com"}
+    assert client.get("/api/chats").status_code == 200
+    with main.connect_db() as connection:
+        row = connection.execute("SELECT provider, subject, email FROM accounts").fetchone()
+    assert (row["provider"], row["subject"]) == ("google", "google-asha")
+    assert "asha@example.com" not in row["email"]  # Encrypted at rest.
+
+
+def test_returning_google_account_signs_in_locked_until_pin(client, google_mode):
+    google_sign_in(client, google_mode)
+    user = create_account_profile(client)["user"]
+    chat = client.post("/api/chats", json={"agentType": "finance"}).json()
+    client.post("/api/session/logout")
+    assert client.get("/api/session").json()["account"] is None
+
+    google_sign_in(client, google_mode)
+
+    session = client.get("/api/session").json()
+    assert session["user"] == user and session["locked"] is True
+    assert client.get("/api/chats").status_code == 403
+    assert client.post("/api/session/unlock", json={"pin": "0000"}).status_code == 401
+    assert client.post("/api/session/unlock", json={"pin": "2468"}).status_code == 200
+    assert [item["id"] for item in client.get("/api/chats").json()["chats"]] == [chat["id"]]
+
+
+def test_google_accounts_may_share_a_profile_name(client, google_mode):
+    google_sign_in(client, google_mode, "google-asha", "asha@example.com")
+    first = create_account_profile(client, "Asha")["user"]
+    client.post("/api/session/logout")
+
+    google_sign_in(client, google_mode, "google-other", "other@example.com")
+    second = create_account_profile(client, "asha", "1357")["user"]
+
+    assert first["id"] != second["id"]
+    assert client.get("/api/chats").json()["chats"] == []
+
+
+def test_profile_from_the_picker_is_claimed_with_its_pin(client, google_mode):
+    google_mode.setenv("AUTH_MODE", "local")
+    ravi = sign_up(client, "Ravi", "1357")
+    chat = client.post("/api/chats", json={"agentType": "finance"}).json()
+    google_mode.setenv("AUTH_MODE", "google")
+    # The picker session no longer counts: the profile has no account yet.
+    assert client.get("/api/session").json()["user"] is None
+
+    google_sign_in(client, google_mode, "google-ravi", "ravi@example.com")
+    unknown = client.post("/api/account/claim", json={"displayName": "Nobody", "pin": "1357"})
+    wrong = client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "0000"})
+    claimed = client.post("/api/account/claim", json={"displayName": " ravi ", "pin": "1357"})
+
+    assert unknown.status_code == wrong.status_code == 401
+    assert unknown.json() == wrong.json() == {"error": main.CLAIM_FAILED}
+    assert claimed.status_code == 200 and claimed.json()["user"] == ravi
+    session = client.get("/api/session").json()
+    assert session["user"] == ravi and session["locked"] is False
+    assert [item["id"] for item in client.get("/api/chats").json()["chats"]] == [chat["id"]]
+
+    # Another Google account cannot claim it again, even with the PIN.
+    client.post("/api/session/logout")
+    google_sign_in(client, google_mode, "google-mallory", "mallory@example.com")
+    again = client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"})
+    assert again.status_code == 401 and again.json() == {"error": main.CLAIM_FAILED}
+
+
+def test_claim_shares_the_profile_pin_lockout_and_can_be_turned_off(client, google_mode):
+    users.create_user("Ravi", users.hash_pin("1357"))
+    google_sign_in(client, google_mode, "google-mallory", "mallory@example.com")
+
+    for _ in range(users.MAX_FAILED_LOGINS - 1):
+        assert client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "0000"}).status_code == 401
+    assert client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "0000"}).status_code == 429
+    assert client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"}).status_code == 429
+
+    google_mode.setenv("ALLOW_PROFILE_CLAIMS", "false")
+    off = client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"})
+    assert off.status_code == 403
+    assert client.get("/api/session").json()["account"]["canClaim"] is False
+
+
+def test_claim_needs_a_google_account_waiting_and_google_mode(client, google_mode):
+    users.create_user("Ravi", users.hash_pin("1357"))
+    client.get("/api/session")
+    no_account = client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"})
+    assert no_account.status_code == 401 and no_account.json()["signInRequired"] is True
+
+    google_mode.setenv("AUTH_MODE", "local")
+    assert client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"}).status_code == 404
+    assert client.get("/auth/google/start").status_code == 404
+    assert client.get("/auth/google/callback").status_code == 404
+
+
+def test_pending_google_account_expires(client, google_mode):
+    google_sign_in(client, google_mode)
+    sid = client.cookies.get(main.SESSION_COOKIE)
+    stored = main.get_session(sid)
+    stored[accounts.PENDING_KEY]["at"] -= accounts.PENDING_SECONDS * 1000 + 1
+    main.save_session(sid, stored)
+
+    assert client.get("/api/session").json()["account"] is None
+    assert client.post("/api/users", json={"displayName": "Asha", "pin": "2468"}).status_code == 401
+
+
+@pytest.mark.parametrize(("case", "expected"), [
+    ("wrong_state", "failed"), ("denied", "cancelled"), ("other_audience", "failed"),
+    ("unverified_email", "failed"), ("wrong_nonce", "failed"), ("expired_token", "expired"), ("not_google", "failed"),
+])
+def test_google_callback_failures_sign_nobody_in(client, google_mode, case, expected):
+    now = int(time.time())
+    options = {
+        "wrong_state": {"params": {"state": "forged", "code": "auth-code"}},
+        "denied": {"params": {"error": "access_denied"}},
+        "other_audience": {"aud": "someone-else"},
+        "unverified_email": {"email_verified": False},
+        "wrong_nonce": {"nonce": "replayed"},
+        "expired_token": {"exp": now - 3600, "iat": now - 7200},
+        "not_google": {"iss": "https://evil.example"},
+    }[case]
+
+    callback = google_sign_in(client, google_mode, **options)
+
+    assert callback.status_code == 302
+    assert callback.headers["location"] == f"http://testserver/?signInError={expected}"
+    session = client.get("/api/session").json()
+    assert session["user"] is None and session["account"] is None
+
+
+def test_google_callback_without_a_started_sign_in_is_refused(client, google_mode):
+    client.get("/api/session")
+    callback = client.get("/auth/google/callback", params={"state": "s", "code": "c"})
+    assert callback.headers["location"] == "http://testserver/?signInError=expired"
+
+
+def test_deleting_a_google_profile_removes_the_account_link(client, google_mode):
+    google_sign_in(client, google_mode)
+    user = create_account_profile(client)["user"]
+
+    assert client.request("DELETE", "/api/users/me", json={"pin": "2468"}).json() == {"deleted": True}
+
+    assert accounts.account_for_user(user["id"]) is None
+    google_sign_in(client, google_mode)
+    assert client.get("/api/session").json()["account"]["pending"] is True
+
+
+def test_export_includes_the_account_email(client, google_mode):
+    google_sign_in(client, google_mode)
+    create_account_profile(client)
+
+    exported = client.post("/api/users/me/export", json={"pin": "2468"}).json()
+
+    assert exported["account"]["provider"] == "google"
+    assert exported["account"]["email"] == "asha@example.com"
+    assert "google-asha" not in json.dumps(exported)
+
+
+def test_google_recovery_resets_the_signed_in_profile_only(client, google_mode):
+    google_sign_in(client, google_mode, "google-other", "other@example.com")
+    other = create_account_profile(client, "Other", "9999")["user"]
+    client.post("/api/session/logout")
+    google_sign_in(client, google_mode)
+    asha = create_account_profile(client)
+    client.post("/api/session/logout")
+    google_sign_in(client, google_mode)  # Signed in again: locked.
+
+    stolen = client.post("/api/session/recover", json={
+        "userId": other["id"], "recoveryCode": asha["recoveryCode"], "newPin": "1111",
+    })
+    recovered = client.post("/api/session/recover", json={"recoveryCode": asha["recoveryCode"], "newPin": "1111"})
+
+    assert stolen.status_code == 401
+    assert recovered.status_code == 200 and recovered.json()["recoveryCode"]
+    assert client.get("/api/session").json()["locked"] is False
+    client.post("/api/session/logout")
+    assert client.post("/api/session/recover", json={"recoveryCode": "x", "newPin": "1111"}).json()["signInRequired"]
+
+
+def test_local_mode_still_lists_profiles_and_refuses_duplicate_names(client):
+    asha = sign_up(client, "Asha")
+    client.post("/api/session/logout")
+
+    session = client.get("/api/session").json()
+
+    assert (session["authMode"], session["account"], session["profiles"]) == ("local", None, [asha])
+    assert client.post("/api/users", json={"displayName": "ASHA", "pin": "1111"}).status_code == 409
+    assert client.post("/api/session/login", json={"userId": asha["id"], "pin": "2468"}).status_code == 200
