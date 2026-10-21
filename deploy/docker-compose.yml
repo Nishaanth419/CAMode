@@ -1,0 +1,35 @@
+# Hosted CA Mode: the app and its SQLite database run on this server, the model runs in
+# Ollama on the operator's Mac, reached over Tailscale. Setup: "Host on a server" in the README.
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    env_file: app.env
+    environment:
+      APP_DATA_DIR: /app/.data
+      APP_MASTER_KEY_FILE: /run/ca-mode/master.key
+      BACKUP_DIR: /backups
+      # Ollama on the Mac only accepts requests addressed to localhost or a *.internal name
+      # (403 for a Tailscale name or IP), so its Tailscale IP is reached under this name.
+      OLLAMA_BASE_URL: http://ollama.internal:11434/v1
+    extra_hosts:
+      - "ollama.internal:${MAC_TAILSCALE_IP:?set MAC_TAILSCALE_IP in deploy/.env}"
+    volumes:
+      - ${CA_MODE_HOME:-/srv/ca-mode}/data:/app/.data
+      - ${CA_MODE_HOME:-/srv/ca-mode}/key:/run/ca-mode
+      - ${CA_MODE_HOME:-/srv/ca-mode}/backups:/backups
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # No published ports: only the tunnel reaches the app, and Cloudflare Access sits in front of it.
+
+  tunnel:
+    image: cloudflare/cloudflared:2025.8.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in deploy/.env}
+    depends_on:
+      - app

@@ -96,6 +96,10 @@ cp .env.example .env
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `PORT` | `8080` | Port inside the Docker container |
+| `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per profile per day in `SNAPSHOT_TIMEZONE`; see [Limits for a shared copy](#limits-for-a-shared-copy) |
+| `RATE_LIMITS_ENABLED` | `false` | Request rate limits per IP and per profile on chat, sign-up, sign-in and investigations |
+| `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP` (only when the app is reachable solely through Cloudflare) |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | – | Both set: sign-up asks for a Cloudflare Turnstile check |
 
 You can configure several providers and switch in the app. Provider keys stay in the server environment and are never sent to the browser. Leave `OPENAI_API_KEY` and `GROQ_API_KEY` empty to make sending data to an AI company impossible.
 
@@ -150,10 +154,57 @@ Run `uvicorn` from the activated virtual environment (or call `.venv/bin/uvicorn
 
 Open [http://localhost:8003](http://localhost:8003) and keep using this address during INDmoney sign-in.
 
+## Host on a server (model on your Mac)
+
+For a small team: the app, its database and the daily snapshot job run on a cheap Linux server, and answers come from Ollama on your Mac. The two are joined by [Tailscale](https://tailscale.com) (a private, encrypted network), and the site is published through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) with [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front, so only your team can open it. The server opens no ports.
+
+```mermaid
+flowchart LR
+    Browser -->|"HTTPS + team login"| CF["Cloudflare Access + Tunnel"]
+    CF --> App["Server: app + SQLite + snapshots"]
+    App -->|"Tailscale"| Mac["Your Mac: Ollama"]
+    App --> IND["INDmoney"]
+```
+
+When the Mac sleeps, sign-in, the portfolio pages, calculators and daily snapshots keep working; chat answers say the model is offline. A server with 1 vCPU and 2 GB of memory is enough (about €5–10 a month), plus a domain on Cloudflare. Tailscale's and Cloudflare Access's free plans cover a small team.
+
+**1. On the Mac.** Install Tailscale and sign in, then share Ollama with your tailnet only (Ollama itself keeps listening on `localhost`):
+
+```bash
+tailscale serve --bg --tcp 11434 tcp://localhost:11434
+tailscale ip -4    # note this address
+```
+
+Keep Ollama opening at login, and stop the Mac sleeping on power (System Settings → Battery → Options → *Prevent automatic sleeping on power adapter when the display is off*; a closed MacBook still sleeps unless it has an external display).
+
+**2. On the server.** Install Docker and Tailscale (`curl -fsSL https://tailscale.com/install.sh | sh`, then `sudo tailscale up` with the same account). Check that the Mac answers; Ollama refuses requests addressed to a Tailscale name or IP, hence the `Host` header (the app uses the same `ollama.internal` name):
+
+```bash
+curl -H "Host: ollama.internal:11434" http://<mac-tailscale-ip>:11434/api/version
+```
+
+**3. In Cloudflare.** With your domain on Cloudflare, create a tunnel (Zero Trust → Networks → Tunnels), copy its token, and add a public hostname such as `camode.example.com` pointing to `http://app:8080`. Then add a self-hosted Access application for that hostname with a policy that allows your team (for example emails ending in `@yourcompany.com`), and set its session duration to a month: when an Access session expires, the open app's requests fail until the page is reloaded.
+
+**4. Start it.**
+
+```bash
+git clone <this repository> ca-mode && cd ca-mode/deploy
+cp .env.example .env              # MAC_TAILSCALE_IP, CLOUDFLARE_TUNNEL_TOKEN
+cp app.env.example app.env        # APP_ORIGIN=https://camode.example.com
+sudo mkdir -p /srv/ca-mode/data /srv/ca-mode/key /srv/ca-mode/backups
+docker compose up -d --build
+```
+
+The master key is created in `/srv/ca-mode/key` on first start; keep a copy somewhere safe, away from the backups. Daily backups go to `/srv/ca-mode/backups`, on the same disk, so also copy them off the server, for example from the Mac: `rsync -a <server>:/srv/ca-mode/backups/ ~/ca-mode-backups/server/`. To update: `git pull && docker compose up -d --build` (everyone enters their PIN again after a restart).
+
+**Moving your existing data (optional).** On the Mac, run `python -m scripts.backup now` and stop the local app for good: two copies would both refresh the same INDmoney tokens. Before the server's first start, copy the backup file to `/srv/ca-mode/data/codemode.sqlite3` and `~/.config/ca-mode/master.key` to `/srv/ca-mode/key/master.key`. Otherwise everyone creates a profile on the server and connects INDmoney again.
+
+The profile picker lists every profile to anyone who can open the site and the PIN is a lock, not network-grade sign-in, which is why Cloudflare Access must stay in front of it.
+
 ## First run
 
 1. **Create a profile.** The first screen asks "Who's using CA Mode?". Enter your name and a PIN of at least four characters. Other people on the same computer add their own profiles with **+ Add a profile**. You then see a **recovery code** once: write it down. It is the only way back into your saved history if you forget your PIN.
-2. **Review the privacy notice.** It explains what is saved on this computer and what is sent to the AI provider. Choose **Save on this computer** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
+2. **Review the privacy notice.** It explains what is saved, where, and what is sent to the AI provider. Choose **Save history** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
 3. **Fill in your profile (optional).** Click your name at the bottom of the sidebar to set risk appetite, horizon, goal, monthly investment, and age band. Portfolio Analyzer uses these to relate its analysis to your goals; it is not personalised investment advice.
 4. **Connect INDmoney.** Select **Connect**, sign in to INDmoney, and approve read-only access. The first snapshot is saved straight away, and the portfolio card shows your net worth.
 
@@ -382,6 +433,24 @@ python -m scripts.eval_tasks --dataset evals/multi_step.jsonl --provider ollama 
 
 The first live run passed 3/12: the local model writes `name` for `tool`, refers to steps as "step1", "0" or by tool name, and sometimes ends a plan one character wrong, which Ollama rejects with HTTP 500. These are now accepted or repaired in code, and the plan is still checked in full. The one miss above was a 500 that could not be repaired; the usual loop then answered. Two intermediate runs scored 8/12 and 7/12 on the way, so treat single runs as noisy.
 
+## Limits for a shared copy
+
+A copy on one computer has no limits. Before opening a hosted copy to other people, turn these on so one person or bot cannot monopolise the model (one Mac running Ollama answers one question at a time) or run up OpenAI or Groq costs. Each is independent and off unless set.
+
+- **Daily questions** (`DAILY_QUESTION_LIMIT=30`, for example). Each profile can get that many answers a day; the count starts again at midnight in `SNAPSHOT_TIMEZONE`. A question that gets no answer (the model failed, INDmoney needs reconnecting) does not count. Over the limit, `POST /api/chat` returns `429` with `Retry-After` and `{"error": "You've reached today's limit of 30 questions. It resets at midnight IST.", "dailyLimitReached": true, "limit", "resetsAt", "retryAfterSeconds"}`, and the chat shows that sentence. Counts are kept in the `question_counts` table (profile, date, number; today and yesterday only) and deleted with the profile.
+- **Request rate limits** (`RATE_LIMITS_ENABLED=true`). Sliding windows in `limits.RATE_RULES`:
+
+  | Routes | Per IP | Per profile |
+  | --- | --- | --- |
+  | `POST /api/chat` | 30 a minute | 10 a minute |
+  | `POST /api/users` (sign-up) | 5 an hour | – |
+  | `POST /api/session/login`, `/unlock`, `/recover` | 20 per 10 minutes | 10 per 10 minutes (the profile signed in to) |
+  | `POST /api/investigations` | 20 per 10 minutes | 10 per 10 minutes |
+
+  Over a limit the route returns `429` with `Retry-After` and `{"error": "Too many requests. Try again in 2 minutes.", "rateLimited": true, "retryAfterSeconds"}`. The counters live in the app's memory (they reset on restart and assume a single app process, which is how CA Mode runs); IPv6 addresses are grouped by /64. These sit on top of the five-wrong-PINs lockout.
+- **Client IP behind Cloudflare** (`TRUSTED_PROXY=cloudflare`). Behind a Cloudflare Tunnel every request reaches the app from `cloudflared`, so without this all visitors share one IP limit. With it the app reads `CF-Connecting-IP`. Set it only when the app's port is not reachable except through Cloudflare (the hosted Compose file publishes no ports); otherwise anyone can send the header and choose their own IP.
+- **Turnstile on sign-up** (`TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, from Cloudflare → Turnstile → Add widget, for your hostname). The sign-up form then loads the widget from `challenges.cloudflare.com` and the server checks each token with Cloudflare before creating the profile (`400 {"turnstileFailed": true}` when it fails, `503` when Cloudflare cannot be reached, so sign-up fails closed). Sign-in is not affected.
+
 ## Local data and privacy
 
 The full notice is also published at `/privacy` (linked from the sign-in screen and **Your data and privacy**), so it can be read before creating a profile. The app has no third-party analytics or tracking; the only outside requests the browser makes on its own are to Google Fonts and the Plotly CDN.
@@ -402,7 +471,7 @@ The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney 
 
 **Consent and storage modes.** Each profile must accept the privacy notice before it can chat, connect INDmoney, or have snapshots captured. Every acceptance, including a later change of storage settings, is recorded in the `consents` table with the notice version and a timestamp. When the notice changes (`POLICY_VERSION` in `app/privacy.py`), every profile is asked again, and its snapshots pause until it accepts.
 
-- **Save on this computer**: chats and daily snapshots are stored in SQLite as described above.
+- **Save history**: chats and daily snapshots are stored in SQLite as described above.
 - **Private mode**: chats are kept only in server memory and disappear when you sign out or the app restarts. No snapshots are captured. Switching to private mode deletes the chats and snapshots already saved for the profile. INDmoney tokens, profile details, goals and decisions are still saved; **Disconnect** removes the tokens, and the Goals page removes the rest.
 
 Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, goals, decisions, consent history, chats, snapshots, and the email address you sign in with, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
@@ -441,8 +510,8 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/session` | Current profile, INDmoney status, `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), and the list of profiles (local mode only; always empty with Google sign-in) |
-| `POST /api/users` | Create a profile and sign in; with Google sign-in, only for a Google account just signed in (else `401 {"signInRequired": true}`), and linked to it |
+| `GET /api/session` | Current profile, INDmoney status, `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), and `turnstileSiteKey` when sign-up uses Turnstile |
+| `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`); with Google sign-in, only for a Google account just signed in (else `401 {"signInRequired": true}`), and linked to it |
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN (local mode only; `404` with Google sign-in); sign out |
 | `GET /auth/google/start`, `GET /auth/google/callback` | Google sign-in (`AUTH_MODE=google`); the callback redirects to `/`, or to `/?signInError=cancelled\|expired\|failed` |
 | `POST /api/account/claim` | Google sign-in: link the Google account just signed in to an unclaimed profile (body: `{"displayName", "pin"}`); `401` with one message for any unknown name, claimed profile or wrong PIN, `429` when locked, `403` when `ALLOW_PROFILE_CLAIMS=false` |
@@ -467,7 +536,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /api/cas`, `POST /api/cas`, `DELETE /api/cas/{id}` | List, upload (body: `{"password", "pdfBase64"}`), or delete CAS statements |
 | `GET /api/chats`, `POST /api/chats` | List or create chats |
 | `GET /api/chats/{id}`, `DELETE /api/chats/{id}` | Read or delete a chat |
-| `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace` |
+| `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace`; `429` over a [usage limit](#limits-for-a-shared-copy) |
 | `GET /api/snapshots?days=30` | Latest snapshot summary and net-worth history |
 | `POST /api/snapshots/refresh` | Capture a snapshot now |
 | `GET /api/providers` | Configured AI providers |
@@ -572,4 +641,5 @@ tests/
                      Goal maths, the goals/decisions/context API and its access rules, context selection
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup
+deploy/                        Hosted setup: app + Cloudflare Tunnel, Ollama on the Mac over Tailscale
 ```

@@ -172,7 +172,7 @@ FINANCE_SYSTEM_PROMPT = """You are Finance Agent in CA Mode. Answer only finance
 
 PROVIDERS = {
     "ollama": {
-        "label": "Ollama (on this device)",
+        "label": "Ollama (private model)",
         # No key: the model runs locally, so messages and portfolio data never leave this computer.
         "key_env": "",
         "base_url_env": "OLLAMA_BASE_URL",
@@ -1178,7 +1178,8 @@ async def stream_agent(
     known_tools = set(IMPORTANT_PORTFOLIO_TOOL_NAMES) | {tool.name for tool in (context.local_tools if context else ())}
 
     try:
-        async with httpx.AsyncClient(timeout=config["timeout"]) as client, httpx.AsyncClient(timeout=90) as mcp_client:
+        model_timeout = httpx.Timeout(config["timeout"], connect=router.CONNECT_TIMEOUT_SECONDS)
+        async with httpx.AsyncClient(timeout=model_timeout) as client, httpx.AsyncClient(timeout=90) as mcp_client:
             runner = _ToolRunner(
                 mcp_url=mcp_url, token=token, local_tools=local_tools, tool_schemas=tool_schemas,
                 offers_live_tools=bool(tools), context=context, session=session, mcp_client=mcp_client,
@@ -1224,7 +1225,14 @@ async def stream_agent(
                         json=payload,
                     )
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    yield "error", {"message": f"Could not connect to {config['label']}: {_error_text(exc)}", "code": "provider_unreachable"}
+                    if provider == "ollama":
+                        message_text = (
+                            "Could not reach the local model (Ollama). The computer that runs it may be asleep or "
+                            "offline; try again later or pick another provider."
+                        )
+                    else:
+                        message_text = f"Could not connect to {config['label']}: {_error_text(exc)}"
+                    yield "error", {"message": message_text, "code": "provider_unreachable"}
                     yield "done", {}
                     return
                 except httpx.TimeoutException:

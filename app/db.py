@@ -126,6 +126,13 @@ _SCHEMA = """
         views INTEGER NOT NULL,
         PRIMARY KEY (day, route)
     );
+    -- Questions asked per profile per local day, only when DAILY_QUESTION_LIMIT is set (limits.py).
+    CREATE TABLE IF NOT EXISTS question_counts (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        questions INTEGER NOT NULL,
+        PRIMARY KEY (user_id, day)
+    );
     -- Sign-in accounts (accounts.py): one Google account per profile, one profile per account.
     CREATE TABLE IF NOT EXISTS accounts (
         provider TEXT NOT NULL,

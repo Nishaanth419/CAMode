@@ -21,24 +21,27 @@ from .db import connect_db
 
 # 2026-10-17.1: anonymous daily counts of which app pages are opened, kept on this computer.
 # 2026-10-17.2: a record of the steps behind each chat answer (agent_runs), for the Activity page.
-# 2026-10-21.1: Google sign-in (AUTH_MODE=google) stores the Google account id and email address.
-POLICY_VERSION: Final = "2026-10-21.1"
+# 2026-10-21.1: CA Mode may run on a server, with Ollama on another computer the operator controls.
+# 2026-10-21.2: optional usage limits (daily question counts, in-memory rate limits, Turnstile on sign-up).
+# 2026-10-21.3: Google sign-in (AUTH_MODE=google) stores the Google account id and email address.
+POLICY_VERSION: Final = "2026-10-21.3"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
 
 NOTICE: Final = (
     {
-        "title": "What is saved on this computer",
+        "title": "What is saved, and where",
         "body": (
-            "Your profile name, a scrypt hash of your PIN, the optional profile details, savings goals and decisions you "
+            "Everything below is saved on the computer that runs CA Mode: this computer, or the server your team "
+            "hosts it on. Your profile name, a scrypt hash of your PIN, the optional profile details, savings goals and decisions you "
             "enter yourself, your INDmoney connection tokens and, with Google sign-in, your Google account ID and "
             "email address. CA Mode never saves details the assistant infers "
             "from your chats. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick, the holdings from any CAS statement you upload (the last 12; never the PDF, its "
             "password, or your name, PAN or contact details), and the portfolio change investigations you run (the "
-            "last 50: the snapshots compared, the figures computed from them, the checks and the result), and a record of the steps behind each chat answer (the last 200, none older than 30 days: the start of your question, which data was read and a short preview of it, the checks on the answer and how long each step took; never the answer itself or your PIN, tokens or PAN). Everything is in a SQLite file readable only by this computer's user account. INDmoney "
+            "last 50: the snapshots compared, the figures computed from them, the checks and the result), and a record of the steps behind each chat answer (the last 200, none older than 30 days: the start of your question, which data was read and a short preview of it, the checks on the answer and how long each step took; never the answer itself or your PIN, tokens or PAN). Everything is in a SQLite file readable only by the account that runs CA Mode. INDmoney "
             "tokens are encrypted with a key kept outside that file."
         ),
     },
@@ -46,8 +49,9 @@ NOTICE: Final = (
         "title": "Locked with your PIN",
         "body": (
             "Your saved chats, answer records, portfolio snapshots, investigations, CAS holdings, profile details, goals and decisions are encrypted with a key that only your PIN or "
-            "your recovery code can unlock. Nobody else using this computer, and nobody with a copy of the database, "
-            "can read them. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
+            "your recovery code can unlock. Other profiles, and anyone with a copy of the database, "
+            "cannot read them. Whoever runs a hosted copy could change the app to capture your PIN, so only use one "
+            "run by someone you trust. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
             "code lets you set a new one. If you lose both, your saved history cannot be recovered by anyone."
         ),
     },
@@ -64,12 +68,13 @@ NOTICE: Final = (
         ),
     },
     {
-        "title": "What leaves this computer",
+        "title": "Where your questions go",
         "body": (
             "To answer you, your message, recent chat history, and the profile details, goals and decisions that bear on "
             "your question (with figures calculated from them) go to the AI model you select, "
-            "along with any INDmoney or snapshot data Portfolio Analyzer reads for that answer. With Ollama (on this "
-            "device) the model runs on this computer and none of it leaves. With OpenAI or Groq it is sent to that "
+            "along with any INDmoney or snapshot data Portfolio Analyzer reads for that answer. With Ollama the model runs "
+            "on a computer controlled by whoever runs CA Mode (this computer, or for a hosted copy the operator's own "
+            "machine, reached over an encrypted private network) and is not sent to any AI company. With OpenAI or Groq it is sent to that "
             "company and handled under its own data policy. Portfolio Analyzer reads from INDmoney with read-only "
             "access and cannot trade or move money."
         ),
@@ -98,12 +103,24 @@ NOTICE: Final = (
     {
         "title": "Page-view counts",
         "body": (
-            "If you save history on this computer, CA Mode adds one to a daily count each time you open one of its "
+            "If you save history, CA Mode adds one to a daily count each time you open one of its "
             "pages, such as Goals or Portfolio Overview. Only the date, the page name and the number are stored: not "
             "your profile, what you typed, which chat or investigation you opened, your IP address or your browser. "
             "The counts stay in the same SQLite file for 90 days, are never sent anywhere, and can be read by whoever "
-            "runs CA Mode on this computer. Because they are not linked to you, they are not part of your export and "
+            "runs CA Mode. Because they are not linked to you, they are not part of your export and "
             "are not removed when you clear history or delete your profile. Private mode is never counted."
+        ),
+    },
+    {
+        "title": "Usage limits",
+        "body": (
+            "A copy of CA Mode shared with other people may limit how much it can be used; a copy for one computer "
+            "has no limits unless whoever runs it sets them. With a daily question limit, the number of questions "
+            "your profile asked today and yesterday is stored (never what you asked); it is not part of your export "
+            "and is deleted with your profile. With request rate limits, the times of recent requests from your IP "
+            "address and profile are kept in memory only, for about an hour at most, and never saved. If sign-up includes a "
+            "Cloudflare Turnstile check, the sign-up form loads it from challenges.cloudflare.com, which sees your "
+            "IP address and browser details to tell people from bots."
         ),
     },
     {

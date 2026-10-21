@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -97,6 +97,8 @@ class CreateProfileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     displayName: str
     pin: str
+    # The Cloudflare Turnstile response; required only when TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY are set.
+    turnstileToken: str | None = Field(default=None, max_length=2048)
 
 
 class SignInRequest(BaseModel):
@@ -251,6 +253,29 @@ def pin_error(exc: users.ProfileLockedError | None = None) -> JSONResponse:
     return JSONResponse({"error": "Incorrect PIN."}, status_code=401)
 
 
+def rate_limited(request: Request, group: limits.RateGroup, profile_id: str | None = None) -> JSONResponse | None:
+    """Count this request against ``group``'s limits; return the 429 response when it is over one."""
+    try:
+        limits.check_rate(group, ip=limits.client_ip(request), profile_id=profile_id)
+    except limits.RateLimited as exc:
+        return JSONResponse(
+            {"error": str(exc), "rateLimited": True, "retryAfterSeconds": exc.retry_after_seconds},
+            status_code=429, headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    return None
+
+
+def daily_limit_reached(exc: limits.DailyLimitReached) -> JSONResponse:
+    retry_after = exc.retry_after_seconds(limits.local_now())
+    return JSONResponse(
+        {
+            "error": str(exc), "dailyLimitReached": True, "limit": exc.limit,
+            "resetsAt": exc.resets_at.isoformat(timespec="minutes"), "retryAfterSeconds": retry_after,
+        },
+        status_code=429, headers={"Retry-After": str(retry_after)},
+    )
+
+
 def is_indmoney_auth_error(error: Exception) -> bool:
     """Whether INDmoney rejected the token, so the chat refreshes it and tries once more.
 
@@ -306,6 +331,8 @@ async def local_session(request: Request):
         "profiles": [] if google else users.list_profiles(),
         "authMode": accounts.auth_mode(),
         "account": _session_account(sid, user) if google else None,
+        # Only when sign-up asks for a Cloudflare Turnstile check.
+        **({"turnstileSiteKey": site_key} if (site_key := limits.turnstile_site_key()) else {}),
     })
     response.set_cookie(value=sid, **cookie_options(request))
     return response
@@ -347,15 +374,36 @@ def _signed_in_response(
     return response
 
 
+async def turnstile_failure(token: str | None, request: Request) -> JSONResponse | None:
+    """Return the error response when sign-up's Turnstile check is on and fails, else None."""
+    if not limits.turnstile_site_key():
+        return None
+    try:
+        passed = await limits.verify_turnstile(token, remote_ip=limits.client_address(request) or None)
+    except limits.TurnstileUnavailable:
+        return JSONResponse(
+            {"error": "Could not run the sign-up check. Try again in a minute.", "turnstileFailed": True}, status_code=503,
+        )
+    if passed:
+        return None
+    return JSONResponse(
+        {"error": "Complete the check that you are a person, then try again.", "turnstileFailed": True}, status_code=400,
+    )
+
+
 @app.post("/api/users", status_code=201)
 async def create_profile(body: CreateProfileRequest, request: Request):
     """Create a profile and sign in. With account sign-in, the profile belongs to the Google account just signed in."""
+    if blocked := rate_limited(request, "sign_up"):
+        return blocked
     identity = None
     if accounts.uses_google() and (identity := _pending_identity(request)) is None:
         return sign_in_required()
     try:
         display_name = users.clean_display_name(body.displayName)
         users.validate_new_pin(body.pin)
+        if blocked := await turnstile_failure(body.turnstileToken, request):
+            return blocked
         pin_hash = await asyncio.to_thread(users.hash_pin, body.pin)
         user = users.create_user(display_name, pin_hash, unique_name=identity is None)
         if identity is not None:
@@ -385,6 +433,8 @@ async def claim_profile(body: ClaimProfileRequest, request: Request):
     """
     if not accounts.uses_google():
         return local_mode_only()
+    if blocked := rate_limited(request, "sign_in"):
+        return blocked
     identity = _pending_identity(request)
     if identity is None:
         return sign_in_required()
@@ -419,6 +469,8 @@ async def sign_in(body: SignInRequest, request: Request):
     if accounts.uses_google():
         return local_mode_only()
     user = users.get_user(body.userId)
+    if blocked := rate_limited(request, "sign_in", user["id"] if user else None):
+        return blocked
     if user is None:
         return JSONResponse({"error": "Incorrect profile or PIN."}, status_code=401)
     try:
@@ -441,6 +493,8 @@ async def unlock_session(body: ConfirmPinRequest, request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
+    if blocked := rate_limited(request, "sign_in", user["id"]):
+        return blocked
     try:
         valid = await asyncio.to_thread(users.check_pin, user, body.pin)
     except users.ProfileLockedError as exc:
@@ -464,6 +518,8 @@ async def recover_profile(body: RecoverRequest, request: Request):
             return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
     else:
         user = users.get_user(body.userId) if body.userId else None
+    if blocked := rate_limited(request, "sign_in", user["id"] if user else None):
+        return blocked
     if user is None:
         return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
     try:
@@ -1186,6 +1242,8 @@ async def create_investigation(body: InvestigationRequest, request: Request):
     user = current_user(request)
     if blocked := history_gate(user, needs_consent=True):
         return blocked
+    if blocked := rate_limited(request, "investigation", user["id"]):
+        return blocked
     try:
         record = await investigations.investigate_portfolio_change(user, baseline_date=body.baselineDate, trigger="api")
     except investigations.InvestigationStorageError as exc:
@@ -1324,6 +1382,8 @@ async def chat(body: ChatRequest, request: Request):
     user = current_user(request)
     if blocked := history_gate(user, needs_consent=True):
         return blocked
+    if blocked := rate_limited(request, "chat", user["id"]):
+        return blocked
     data = chats.read_chat(user, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
@@ -1354,45 +1414,56 @@ async def chat(body: ChatRequest, request: Request):
         extra_tools += calculator
         context = snapshots.portfolio_context(user, extra_tools=extra_tools)
     try:
-        answer = await run_agent(
-            message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
-            plan_parts=task_parts(message),
-        )
-    except Exception as exc:
-        if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
-            refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
-            if not refreshed_token:
-                return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
-            try:
-                answer = await run_agent(
-                    message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
-                    context=context, saved_context=saved_context, plan_parts=task_parts(message),
-                )
-            except Exception as retry_exc:
-                if is_indmoney_auth_error(retry_exc):
-                    return auth_error("INDmoney rejected the renewed session. Reconnect your account and try again.")
-                exc = retry_exc
-            else:
-                exc = None
-
-        if exc is not None:
-            logger.error("Chat agent request failed: %s", exc)
-            details = str(exc)
-            error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
-            trace = getattr(exc, "trace", [])[:12]
-            run_id = _save_agent_run(user, data, body, provider, exc, error=details)
-            return JSONResponse(
-                {"error": error, "details": details, **({"runId": run_id} if run_id else {})}, status_code=502,
-                headers={"X-Agent-Trace": trace_header(trace), **_run_header(run_id)},
+        question_day = limits.reserve_question(user["id"], now=limits.local_now())
+    except limits.DailyLimitReached as exc:
+        return daily_limit_reached(exc)
+    # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
+    answered = False
+    try:
+        try:
+            answer = await run_agent(
+                message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
+                plan_parts=task_parts(message),
             )
-    answer_text = str(answer)
-    trace = getattr(answer, "trace", [])[:12]
-    run_id = _save_agent_run(user, data, body, provider, answer)
-    if answer_text.strip():
-        chats.append_turn(user, data, message, answer_text, trace, run_id=run_id)
-    return PlainTextResponse(answer_text, headers={
-        "X-Agent-Trace": trace_header(trace), **_run_header(run_id),
-    })
+        except Exception as exc:
+            if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
+                refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
+                if not refreshed_token:
+                    return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
+                try:
+                    answer = await run_agent(
+                        message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
+                        context=context, saved_context=saved_context, plan_parts=task_parts(message),
+                    )
+                except Exception as retry_exc:
+                    if is_indmoney_auth_error(retry_exc):
+                        return auth_error("INDmoney rejected the renewed session. Reconnect your account and try again.")
+                    exc = retry_exc
+                else:
+                    exc = None
+
+            if exc is not None:
+                logger.error("Chat agent request failed: %s", exc)
+                details = str(exc)
+                error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
+                trace = getattr(exc, "trace", [])[:12]
+                run_id = _save_agent_run(user, data, body, provider, exc, error=details)
+                return JSONResponse(
+                    {"error": error, "details": details, **({"runId": run_id} if run_id else {})}, status_code=502,
+                    headers={"X-Agent-Trace": trace_header(trace), **_run_header(run_id)},
+                )
+        answer_text = str(answer)
+        trace = getattr(answer, "trace", [])[:12]
+        run_id = _save_agent_run(user, data, body, provider, answer)
+        if answer_text.strip():
+            chats.append_turn(user, data, message, answer_text, trace, run_id=run_id)
+        answered = bool(answer_text.strip())
+        return PlainTextResponse(answer_text, headers={
+            "X-Agent-Trace": trace_header(trace), **_run_header(run_id),
+        })
+    finally:
+        if not answered:
+            limits.release_question(user["id"], question_day)
 
 
 def _save_agent_run(

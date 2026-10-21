@@ -96,6 +96,10 @@ let signInError = (() => {
   window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
   return SIGN_IN_ERRORS[code] || SIGN_IN_ERRORS.failed;
 })();
+// Cloudflare Turnstile on sign-up: the site key from /api/session (null when off), the widget and its script.
+let turnstileSiteKey = null;
+let turnstileWidget = null;
+let turnstileScript = null;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
 let providerReady = false;
@@ -382,6 +386,7 @@ async function loadChats() {
     storageMode = session.storageMode || 'device';
     authMode = session.authMode === 'google' ? 'google' : 'local';
     sessionAccount = session.account || null;
+    turnstileSiteKey = session.turnstileSiteKey || null;
     renderAccount();
     if (!currentUser) {
       chats = [];
@@ -447,7 +452,7 @@ const GATE_TEXT = {
   locked: ['Welcome back', 'Enter your PIN to unlock your saved chats and portfolio history.'],
   recover: ['Reset your PIN', 'Use the recovery code you saved when you created this profile.'],
   'recovery-code': ['Save your recovery code', "If you forget your PIN, this code is the only way back into your saved history. Nobody can reset it for you."],
-  consent: ['Before you start', 'Here is what CA Mode keeps on this computer and what it sends elsewhere. Choose how much history to keep.'],
+  consent: ['Before you start', 'Here is what CA Mode keeps, where, and what it sends elsewhere. Choose how much history to keep.'],
 };
 
 const GATE_NOTES = {
@@ -482,6 +487,7 @@ function showGateView(view) {
   gateTitle.textContent = name && ['locked', 'consent'].includes(textKey) ? `${title}, ${name}` : title;
   gateSub.textContent = sub;
   showGateError('');
+  if (view === 'create') showTurnstile();
   const focusTargets = {
     consent: consentNotice, unlock: unlockPin, create: document.getElementById('create-name'),
     google: document.getElementById('google-sign-in-button'), claim: document.getElementById('claim-name'),
@@ -589,7 +595,8 @@ async function submitGate(url, body, form) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (response.status === 429) {
+    // A rate limit (rateLimited) carries its own message; otherwise a 429 is the PIN lockout.
+    if (response.status === 429 && !data.rateLimited) {
       const minutes = Math.ceil(Number(data.retryAfterSeconds || response.headers.get('Retry-After') || 300) / 60);
       throw new Error(`Too many incorrect attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
     }
@@ -666,15 +673,61 @@ claimForm.addEventListener('submit', (event) => {
     displayName: document.getElementById('claim-name').value, pin: document.getElementById('claim-pin').value,
   }, claimForm);
 });
-createForm.addEventListener('submit', (event) => {
+createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const pin = document.getElementById('create-pin').value;
   if (pin !== document.getElementById('create-pin-confirm').value) {
     showGateError('The two PINs do not match.');
     return;
   }
-  submitGate('/api/users', { displayName: document.getElementById('create-name').value, pin }, createForm);
+  const body = { displayName: document.getElementById('create-name').value, pin };
+  if (turnstileSiteKey) {
+    body.turnstileToken = turnstileToken();
+    if (!body.turnstileToken) {
+      showGateError('Complete the check below, then create your profile.');
+      return;
+    }
+  }
+  await submitGate('/api/users', body, createForm);
+  resetTurnstile(); // Each Turnstile response can be used once.
 });
+
+/* ── Cloudflare Turnstile on sign-up (only when the server sends a site key) ── */
+function loadTurnstile() {
+  turnstileScript ||= new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.onload = () => resolve(window.turnstile);
+    script.onerror = () => {
+      turnstileScript = null;
+      script.remove();
+      reject(new Error('Could not load the sign-up check. Check your connection and try again.'));
+    };
+    document.head.appendChild(script);
+  });
+  return turnstileScript;
+}
+
+async function showTurnstile() {
+  const slot = document.getElementById('create-turnstile');
+  slot.hidden = !turnstileSiteKey;
+  if (!turnstileSiteKey || turnstileWidget !== null) return;
+  try {
+    const turnstile = await loadTurnstile();
+    turnstileWidget = turnstile.render(slot, { sitekey: turnstileSiteKey, action: 'sign_up' });
+  } catch (error) {
+    showGateError(error.message);
+  }
+}
+
+function turnstileToken() {
+  return turnstileWidget === null ? null : (window.turnstile.getResponse(turnstileWidget) || null);
+}
+
+function resetTurnstile() {
+  if (turnstileWidget !== null) window.turnstile.reset(turnstileWidget);
+}
 
 /* ── Privacy notice and storage choices ─────────────────────────────── */
 function renderNotice(container, notice) {
@@ -819,7 +872,7 @@ function renderDataZone(privacy) {
   const accepted = privacy.acceptedAt ? ` You agreed to the current notice on ${new Date(privacy.acceptedAt).toLocaleDateString()}.` : '';
   dataSummary.textContent = (privacy.storageMode === 'private'
     ? 'Private mode: chats stay in memory until you sign out, and no portfolio snapshots are saved.'
-    : `Saving on this computer: chats for 30 days and portfolio snapshots for ${privacy.snapshotRetentionDays} days.`) + accepted;
+    : `Saving history: chats for 30 days and portfolio snapshots for ${privacy.snapshotRetentionDays} days.`) + accepted;
   renderNotice(settingsNotice, privacy.notice);
   setStorageChoice(profileForm, 'settings-storage', privacy.storageMode, privacy.snapshotRetentionDays);
 }
@@ -829,7 +882,7 @@ profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => 
 document.getElementById('save-data-settings').addEventListener('click', async () => {
   const choice = readStorageChoice(profileForm, 'settings-storage');
   if (choice.storageMode === 'private' && storageMode !== 'private'
-    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile on this computer. Continue?')) return;
+    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile. Continue?')) return;
   try {
     renderDataZone(await savePrivacyChoice(choice));
     dataStatus.textContent = 'Data settings saved.';
@@ -1252,6 +1305,14 @@ async function sendMessage(text) {
       if (err.profileRequired || err.unlockRequired || err.consentRequired) {
         removeTypingIndicator();
         await loadChats();
+        return;
+      }
+      if (res.status === 429 && (err.dailyLimitReached || err.rateLimited)) {
+        // A limit, not a failure: say so plainly ("You've reached today's limit… resets at midnight IST").
+        removeTypingIndicator();
+        addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}</p>`);
+        setStatus('online', err.dailyLimitReached ? 'Daily limit reached' : 'Too many requests');
+        if (createdChatId) await discardEmptyChat(createdChatId);
         return;
       }
       if (err.loginUrl) {

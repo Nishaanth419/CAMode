@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, main, privacy, snapshots, users
+from app import accounts, limits, main, privacy, snapshots, users
 from app.agent import AgentRunError
 from conftest import sign_up
 
@@ -715,6 +715,23 @@ def test_google_mode_never_lists_profiles_or_signs_in_by_profile_id(client, goog
     assert client.post("/api/session/login", json={"userId": existing["id"], "pin": "1357"}).status_code == 404
     refused = client.post("/api/users", json={"displayName": "Mallory", "pin": "2468"})
     assert refused.status_code == 401 and refused.json()["signInRequired"] is True
+
+
+def test_google_mode_keeps_the_sign_up_check_and_sign_in_rate_limit(client, google_mode):
+    google_mode.setenv("TURNSTILE_SITE_KEY", "site-key")
+    google_mode.setenv("TURNSTILE_SECRET_KEY", "secret-key")
+    google_mode.setenv("RATE_LIMITS_ENABLED", "true")
+    google_mode.setitem(limits.RATE_RULES, "sign_in", limits.GroupRules(limits.Rule(1, 600), None))
+    google_sign_in(client, google_mode)
+
+    session = client.get("/api/session").json()
+    assert (session["authMode"], session["turnstileSiteKey"]) == ("google", "site-key")
+    unchecked = client.post("/api/users", json={"displayName": "Asha", "pin": "2468"})
+    assert unchecked.status_code == 400 and unchecked.json()["turnstileFailed"] is True
+    # Claiming a profile checks a PIN, so it shares the sign-in limit.
+    assert client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"}).status_code == 401
+    blocked = client.post("/api/account/claim", json={"displayName": "Ravi", "pin": "1357"})
+    assert blocked.status_code == 429 and blocked.json()["rateLimited"] is True
 
 
 def test_google_start_redirects_with_pkce_state_and_nonce(client, google_mode):
