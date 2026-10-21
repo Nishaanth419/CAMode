@@ -15,3 +15,4 @@ ui-debug.log
 *.jks
 *.keystore
 .agent-loop/
+deploy/app.env

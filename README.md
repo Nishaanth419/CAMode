@@ -154,10 +154,57 @@ Run `uvicorn` from the activated virtual environment (or call `.venv/bin/uvicorn
 
 Open [http://localhost:8003](http://localhost:8003) and keep using this address during INDmoney sign-in.
 
+## Host on a server (model on your Mac)
+
+For a small team: the app, its database and the daily snapshot job run on a cheap Linux server, and answers come from Ollama on your Mac. The two are joined by [Tailscale](https://tailscale.com) (a private, encrypted network), and the site is published through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) with [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front, so only your team can open it. The server opens no ports.
+
+```mermaid
+flowchart LR
+    Browser -->|"HTTPS + team login"| CF["Cloudflare Access + Tunnel"]
+    CF --> App["Server: app + SQLite + snapshots"]
+    App -->|"Tailscale"| Mac["Your Mac: Ollama"]
+    App --> IND["INDmoney"]
+```
+
+When the Mac sleeps, sign-in, the portfolio pages, calculators and daily snapshots keep working; chat answers say the model is offline. A server with 1 vCPU and 2 GB of memory is enough (about €5–10 a month), plus a domain on Cloudflare. Tailscale's and Cloudflare Access's free plans cover a small team.
+
+**1. On the Mac.** Install Tailscale and sign in, then share Ollama with your tailnet only (Ollama itself keeps listening on `localhost`):
+
+```bash
+tailscale serve --bg --tcp 11434 tcp://localhost:11434
+tailscale ip -4    # note this address
+```
+
+Keep Ollama opening at login, and stop the Mac sleeping on power (System Settings → Battery → Options → *Prevent automatic sleeping on power adapter when the display is off*; a closed MacBook still sleeps unless it has an external display).
+
+**2. On the server.** Install Docker and Tailscale (`curl -fsSL https://tailscale.com/install.sh | sh`, then `sudo tailscale up` with the same account). Check that the Mac answers; Ollama refuses requests addressed to a Tailscale name or IP, hence the `Host` header (the app uses the same `ollama.internal` name):
+
+```bash
+curl -H "Host: ollama.internal:11434" http://<mac-tailscale-ip>:11434/api/version
+```
+
+**3. In Cloudflare.** With your domain on Cloudflare, create a tunnel (Zero Trust → Networks → Tunnels), copy its token, and add a public hostname such as `camode.example.com` pointing to `http://app:8080`. Then add a self-hosted Access application for that hostname with a policy that allows your team (for example emails ending in `@yourcompany.com`), and set its session duration to a month: when an Access session expires, the open app's requests fail until the page is reloaded.
+
+**4. Start it.**
+
+```bash
+git clone <this repository> ca-mode && cd ca-mode/deploy
+cp .env.example .env              # MAC_TAILSCALE_IP, CLOUDFLARE_TUNNEL_TOKEN
+cp app.env.example app.env        # APP_ORIGIN=https://camode.example.com
+sudo mkdir -p /srv/ca-mode/data /srv/ca-mode/key /srv/ca-mode/backups
+docker compose up -d --build
+```
+
+The master key is created in `/srv/ca-mode/key` on first start; keep a copy somewhere safe, away from the backups. Daily backups go to `/srv/ca-mode/backups`, on the same disk, so also copy them off the server, for example from the Mac: `rsync -a <server>:/srv/ca-mode/backups/ ~/ca-mode-backups/server/`. To update: `git pull && docker compose up -d --build` (everyone enters their PIN again after a restart).
+
+**Moving your existing data (optional).** On the Mac, run `python -m scripts.backup now` and stop the local app for good: two copies would both refresh the same INDmoney tokens. Before the server's first start, copy the backup file to `/srv/ca-mode/data/codemode.sqlite3` and `~/.config/ca-mode/master.key` to `/srv/ca-mode/key/master.key`. Otherwise everyone creates a profile on the server and connects INDmoney again.
+
+The profile picker lists every profile to anyone who can open the site and the PIN is a lock, not network-grade sign-in, which is why Cloudflare Access must stay in front of it.
+
 ## First run
 
 1. **Create a profile.** The first screen asks "Who's using CA Mode?". Enter your name and a PIN of at least four characters. Other people on the same computer add their own profiles with **+ Add a profile**. You then see a **recovery code** once: write it down. It is the only way back into your saved history if you forget your PIN.
-2. **Review the privacy notice.** It explains what is saved on this computer and what is sent to the AI provider. Choose **Save on this computer** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
+2. **Review the privacy notice.** It explains what is saved, where, and what is sent to the AI provider. Choose **Save history** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
 3. **Fill in your profile (optional).** Click your name at the bottom of the sidebar to set risk appetite, horizon, goal, monthly investment, and age band. Portfolio Analyzer uses these to relate its analysis to your goals; it is not personalised investment advice.
 4. **Connect INDmoney.** Select **Connect**, sign in to INDmoney, and approve read-only access. The first snapshot is saved straight away, and the portfolio card shows your net worth.
 
@@ -398,7 +445,7 @@ The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney 
 
 **Consent and storage modes.** Each profile must accept the privacy notice before it can chat, connect INDmoney, or have snapshots captured. Every acceptance, including a later change of storage settings, is recorded in the `consents` table with the notice version and a timestamp. When the notice changes (`POLICY_VERSION` in `app/privacy.py`), every profile is asked again, and its snapshots pause until it accepts.
 
-- **Save on this computer**: chats and daily snapshots are stored in SQLite as described above.
+- **Save history**: chats and daily snapshots are stored in SQLite as described above.
 - **Private mode**: chats are kept only in server memory and disappear when you sign out or the app restarts. No snapshots are captured. Switching to private mode deletes the chats and snapshots already saved for the profile. INDmoney tokens, profile details, goals and decisions are still saved; **Disconnect** removes the tokens, and the Goals page removes the rest.
 
 Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, goals, decisions, consent history, chats, and snapshots, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
@@ -565,4 +612,5 @@ tests/
                      Goal maths, the goals/decisions/context API and its access rules, context selection
 .github/workflows/ GitHub Actions CI
 Dockerfile, docker-compose.yml  Container image and local Docker setup
+deploy/                        Hosted setup: app + Cloudflare Tunnel, Ollama on the Mac over Tailscale
 ```

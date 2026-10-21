@@ -418,7 +418,7 @@ const GATE_TEXT = {
   locked: ['Welcome back', 'Enter your PIN to unlock your saved chats and portfolio history.'],
   recover: ['Reset your PIN', 'Use the recovery code you saved when you created this profile.'],
   'recovery-code': ['Save your recovery code', "If you forget your PIN, this code is the only way back into your saved history. Nobody can reset it for you."],
-  consent: ['Before you start', 'Here is what CA Mode keeps on this computer and what it sends elsewhere. Choose how much history to keep.'],
+  consent: ['Before you start', 'Here is what CA Mode keeps, where, and what it sends elsewhere. Choose how much history to keep.'],
 };
 
 function showGateView(view) {
@@ -785,7 +785,7 @@ function renderDataZone(privacy) {
   const accepted = privacy.acceptedAt ? ` You agreed to the current notice on ${new Date(privacy.acceptedAt).toLocaleDateString()}.` : '';
   dataSummary.textContent = (privacy.storageMode === 'private'
     ? 'Private mode: chats stay in memory until you sign out, and no portfolio snapshots are saved.'
-    : `Saving on this computer: chats for 30 days and portfolio snapshots for ${privacy.snapshotRetentionDays} days.`) + accepted;
+    : `Saving history: chats for 30 days and portfolio snapshots for ${privacy.snapshotRetentionDays} days.`) + accepted;
   renderNotice(settingsNotice, privacy.notice);
   setStorageChoice(profileForm, 'settings-storage', privacy.storageMode, privacy.snapshotRetentionDays);
 }
@@ -795,7 +795,7 @@ profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => 
 document.getElementById('save-data-settings').addEventListener('click', async () => {
   const choice = readStorageChoice(profileForm, 'settings-storage');
   if (choice.storageMode === 'private' && storageMode !== 'private'
-    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile on this computer. Continue?')) return;
+    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile. Continue?')) return;
   try {
     renderDataZone(await savePrivacyChoice(choice));
     dataStatus.textContent = 'Data settings saved.';

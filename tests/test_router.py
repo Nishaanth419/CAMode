@@ -177,6 +177,31 @@ def test_routing_eval_set_is_well_formed():
 
 
 @pytest.mark.asyncio
+async def test_unreachable_ollama_fails_fast_with_a_plain_message(model_router, monkeypatch):
+    # Ollama on a sleeping Mac behind Tailscale never refuses the connection; only the connect limit ends the wait.
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+
+    class Unreachable(FakeAsyncClient):
+        async def post(self, url, headers, json):
+            raise httpx.ConnectTimeout("timed out")
+
+    timeouts: list[httpx.Timeout] = []
+
+    def make_client(**kwargs):
+        timeouts.append(kwargs["timeout"])
+        return Unreachable([], [])
+
+    monkeypatch.setattr(agent.httpx, "AsyncClient", make_client)
+
+    with pytest.raises(agent.AgentRunError, match="may be asleep or offline"):
+        await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "ollama")
+
+    model_timeouts = [t for t in timeouts if isinstance(t, httpx.Timeout) and t.read == agent.LOCAL_TIMEOUT_SECONDS]
+    assert len(model_timeouts) == 2  # Classifier, then the answer model.
+    assert all(t.connect == router.CONNECT_TIMEOUT_SECONDS for t in model_timeouts)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("provider", "temperature"), [("ollama", 0), ("openai", None)])
 async def test_local_classifier_is_deterministic(model_router, monkeypatch, provider, temperature):
     # The local model samples at temperature 1, which occasionally labelled a price-chart request general_finance.
