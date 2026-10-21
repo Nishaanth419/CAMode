@@ -42,6 +42,10 @@ const unlockForm = document.getElementById('profile-unlock-form');
 const unlockName = document.getElementById('unlock-name');
 const unlockPin = document.getElementById('unlock-pin');
 const createForm = document.getElementById('profile-create-form');
+const claimForm = document.getElementById('profile-claim-form');
+const showClaimProfile = document.getElementById('show-claim-profile');
+const googleSignIn = document.getElementById('google-sign-in');
+const gateAccount = document.getElementById('gate-account');
 const gateError = document.getElementById('gate-error');
 const profileDialog = document.getElementById('profile-dialog');
 const profileForm = document.getElementById('profile-form');
@@ -73,6 +77,25 @@ let privacyPolicyVersion = null;
 let unlockTarget = null;
 // True when the signed-in profile is locked after a restart (unlock with /api/session/unlock).
 let isLockedSession = false;
+// 'local': the shared-computer profile picker. 'google': each person signs in with Google, then their PIN unlocks.
+let authMode = 'local';
+// Google mode: the signed-in account's email, or a Google account waiting to create or claim its profile.
+let sessionAccount = null;
+const SIGN_IN_ERRORS = {
+  cancelled: 'Google sign-in was cancelled.',
+  expired: 'That sign-in took too long or started in another browser. Try again.',
+  failed: 'Google sign-in could not be completed. Try again.',
+};
+// Set from ?signInError= when Google sends the browser back after a failed sign-in.
+let signInError = (() => {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('signInError');
+  if (!code) return '';
+  params.delete('signInError');
+  const query = params.toString();
+  window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+  return SIGN_IN_ERRORS[code] || SIGN_IN_ERRORS.failed;
+})();
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
 let providerReady = false;
@@ -210,6 +233,7 @@ function renderAccount() {
   authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
   connectionStatus.textContent = isConnected ? 'Connected. Portfolio Analyzer can read your holdings.' : 'Not connected';
   accountName.textContent = currentUser?.displayName || 'Guest';
+  document.getElementById('switch-profile').textContent = authMode === 'google' ? 'Sign out' : 'Switch profile';
   accountAvatar.textContent = (currentUser?.displayName || '?').trim().charAt(0).toUpperCase();
   accountPlan.textContent = [isConnected ? 'INDmoney connected' : 'INDmoney not connected', storageMode === 'private' ? 'Private' : '']
     .filter(Boolean).join(' · ');
@@ -356,14 +380,21 @@ async function loadChats() {
     currentUser = session.user;
     isConnected = Boolean(session.connected);
     storageMode = session.storageMode || 'device';
+    authMode = session.authMode === 'google' ? 'google' : 'local';
+    sessionAccount = session.account || null;
     renderAccount();
     if (!currentUser) {
       chats = [];
       activeChatId = null;
       resetConversationView();
       renderChats();
-      showProfileGate(session.profiles || []);
-      setStatus('online', 'Choose a profile');
+      if (authMode === 'google') {
+        showAccountGate(sessionAccount);
+        setStatus('online', 'Sign in');
+      } else {
+        showProfileGate(session.profiles || []);
+        setStatus('online', 'Choose a profile');
+      }
       return;
     }
     if (session.locked) {
@@ -410,24 +441,42 @@ function showGateError(message) {
 
 const GATE_TEXT = {
   default: ["Who's using CA Mode?", 'Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.'],
+  google: ['Welcome to CA Mode', 'Sign in with your Google account. Your PIN then unlocks your own chats, INDmoney connection and portfolio history.'],
+  'account-create': ['Create your profile', 'Choose a name and a PIN. The PIN encrypts your saved history, and you enter it each time you sign in.'],
+  claim: ['Claim your profile', 'Enter the name and PIN of the profile you used on the shared computer. From now on it signs in with this Google account.'],
   locked: ['Welcome back', 'Enter your PIN to unlock your saved chats and portfolio history.'],
   recover: ['Reset your PIN', 'Use the recovery code you saved when you created this profile.'],
   'recovery-code': ['Save your recovery code', "If you forget your PIN, this code is the only way back into your saved history. Nobody can reset it for you."],
   consent: ['Before you start', 'Here is what CA Mode keeps on this computer and what it sends elsewhere. Choose how much history to keep.'],
 };
 
+const GATE_NOTES = {
+  local: "Your PIN encrypts your saved history, so choose one other people on this computer can't guess. It is not a substitute for a device password.",
+  google: 'Your PIN encrypts your saved history, so choose one nobody else can guess. Signing in with Google alone does not unlock it, and nobody can reset it for you.',
+};
+
 function showGateView(view) {
   const isConsent = view === 'consent';
+  const isGoogle = authMode === 'google';
   profileList.hidden = view !== 'list';
   showCreateProfile.hidden = view !== 'list';
+  googleSignIn.hidden = view !== 'google';
   unlockForm.hidden = view !== 'unlock';
   createForm.hidden = view !== 'create';
+  claimForm.hidden = view !== 'claim';
+  showClaimProfile.hidden = !(isGoogle && view === 'create' && sessionAccount?.canClaim);
   recoverForm.hidden = view !== 'recover';
   recoveryCodeView.hidden = view !== 'recovery-code';
   consentForm.hidden = !isConsent;
-  gateNote.hidden = !['list', 'unlock', 'create'].includes(view);
+  gateNote.hidden = !['list', 'unlock', 'create', 'claim'].includes(view);
+  gateNote.textContent = GATE_NOTES[authMode];
+  const email = isGoogle && ['create', 'claim', 'unlock'].includes(view) ? sessionAccount?.email : '';
+  gateAccount.hidden = !email;
+  gateAccount.textContent = email ? `Signed in with Google as ${email}` : '';
+  document.getElementById('create-title').hidden = isGoogle;
   gateCard.classList.toggle('is-consent', isConsent);
-  const textKey = view === 'unlock' && isLockedSession ? 'locked' : (GATE_TEXT[view] ? view : 'default');
+  const viewText = isGoogle && view === 'create' ? 'account-create' : view;
+  const textKey = view === 'unlock' && isLockedSession ? 'locked' : (GATE_TEXT[viewText] ? viewText : 'default');
   const [title, sub] = GATE_TEXT[textKey];
   const name = currentUser?.displayName;
   gateTitle.textContent = name && ['locked', 'consent'].includes(textKey) ? `${title}, ${name}` : title;
@@ -435,6 +484,7 @@ function showGateView(view) {
   showGateError('');
   const focusTargets = {
     consent: consentNotice, unlock: unlockPin, create: document.getElementById('create-name'),
+    google: document.getElementById('google-sign-in-button'), claim: document.getElementById('claim-name'),
     recover: document.getElementById('recover-code'), 'recovery-code': recoverySaved,
   };
   (focusTargets[view] || profileList.querySelector('button'))?.focus();
@@ -450,7 +500,7 @@ function showLockedGate() {
   unlockTarget = currentUser;
   unlockName.textContent = currentUser.displayName;
   unlockForm.reset();
-  unlockForm.querySelector('[data-gate-back]').textContent = 'Switch profile';
+  unlockForm.querySelector('[data-gate-back]').textContent = authMode === 'google' ? 'Sign out' : 'Switch profile';
   openGate();
   showGateView('unlock');
 }
@@ -501,11 +551,32 @@ function showProfileGate(profiles) {
   createForm.querySelector('[data-gate-back]').hidden = !profiles.length;
 }
 
+// Google mode, not signed in to a profile: the Google button, or create/claim for an account that has none yet.
+function showAccountGate(account) {
+  isLockedSession = false;
+  const back = createForm.querySelector('[data-gate-back]');
+  back.hidden = false;
+  back.textContent = 'Use another account';
+  openGate();
+  if (account?.pending) {
+    const nameInput = document.getElementById('create-name');
+    if (!nameInput.value) nameInput.value = account.name || '';
+    showGateView('create');
+  } else {
+    showGateView('google');
+  }
+  if (signInError) {
+    showGateError(signInError);
+    signInError = '';
+  }
+}
+
 function hideProfileGate() {
   profileGate.hidden = true;
   document.body.classList.remove('gate-open');
   unlockForm.reset();
   createForm.reset();
+  claimForm.reset();
   recoverForm.reset();
 }
 
@@ -541,7 +612,8 @@ async function submitGate(url, body, form) {
 
 showCreateProfile.addEventListener('click', () => showGateView('create'));
 profileGate.querySelectorAll('[data-gate-back]').forEach(button => button.addEventListener('click', async () => {
-  if (!isLockedSession) {
+  // Google mode has no list to go back to: going back signs out (and forgets an account waiting for a profile).
+  if (!isLockedSession && authMode !== 'google') {
     showGateView('list');
     return;
   }
@@ -578,6 +650,21 @@ document.getElementById('copy-recovery-code').addEventListener('click', (event) 
 recoveryContinue.addEventListener('click', async () => {
   document.getElementById('recovery-code-value').textContent = '';
   await loadChats();
+});
+document.getElementById('google-sign-in-button').addEventListener('click', (event) => {
+  event.currentTarget.disabled = true;
+  window.location.assign('/auth/google/start');
+});
+showClaimProfile.addEventListener('click', () => {
+  claimForm.reset();
+  showGateView('claim');
+});
+claimForm.querySelector('[data-claim-back]').addEventListener('click', () => showGateView('create'));
+claimForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  submitGate('/api/account/claim', {
+    displayName: document.getElementById('claim-name').value, pin: document.getElementById('claim-pin').value,
+  }, claimForm);
 });
 createForm.addEventListener('submit', (event) => {
   event.preventDefault();
