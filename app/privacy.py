@@ -16,14 +16,15 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from . import chats, users
+from . import accounts, chats, users
 from .db import connect_db
 
 # 2026-10-17.1: anonymous daily counts of which app pages are opened, kept on this computer.
 # 2026-10-17.2: a record of the steps behind each chat answer (agent_runs), for the Activity page.
 # 2026-10-21.1: CA Mode may run on a server, with Ollama on another computer the operator controls.
 # 2026-10-21.2: optional usage limits (daily question counts, in-memory rate limits, Turnstile on sign-up).
-POLICY_VERSION: Final = "2026-10-21.2"
+# 2026-10-21.3: Google sign-in (AUTH_MODE=google) stores the Google account id and email address.
+POLICY_VERSION: Final = "2026-10-21.3"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -34,7 +35,8 @@ NOTICE: Final = (
         "body": (
             "Everything below is saved on the computer that runs CA Mode: this computer, or the server your team "
             "hosts it on. Your profile name, a scrypt hash of your PIN, the optional profile details, savings goals and decisions you "
-            "enter yourself, and your INDmoney connection tokens. CA Mode never saves details the assistant infers "
+            "enter yourself, your INDmoney connection tokens and, with Google sign-in, your Google account ID and "
+            "email address. CA Mode never saves details the assistant infers "
             "from your chats. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick, the holdings from any CAS statement you upload (the last 12; never the PDF, its "
@@ -51,6 +53,18 @@ NOTICE: Final = (
             "cannot read them. Whoever runs a hosted copy could change the app to capture your PIN, so only use one "
             "run by someone you trust. After the app restarts you enter your PIN again. If you forget your PIN, your recovery "
             "code lets you set a new one. If you lose both, your saved history cannot be recovered by anyone."
+        ),
+    },
+    {
+        "title": "Signing in with Google",
+        "body": (
+            "Where CA Mode is set up for Google sign-in, Google tells CA Mode your Google account ID, email address, "
+            "whether it is verified, and your name. CA Mode keeps the account ID and email address (the address "
+            "encrypted with the same key as INDmoney tokens) to know which profile is yours, and uses your name only "
+            "to suggest a profile name; it never sees your Google password and has no access to your Gmail, Drive, "
+            "contacts or anything else in your Google account. Google learns that you signed in to CA Mode, under "
+            "Google's own privacy policy. Signing in does not unlock your saved history: your PIN still does. The "
+            "account link is part of your export and is deleted with your profile."
         ),
     },
     {
@@ -79,7 +93,8 @@ NOTICE: Final = (
     {
         "title": "In your browser",
         "body": (
-            "CA Mode sets one cookie, which keeps this browser signed in to your profile, and remembers your theme, "
+            "CA Mode sets one cookie, which keeps this browser signed in to your profile (and, during Google sign-in, "
+            "ties Google's answer to this browser), and remembers your theme, "
             "agent and model choice in this browser. It has no advertising and no third-party analytics or tracking. "
             "Pages load fonts from Google Fonts and the chart library from cdn.plot.ly, so those services see this "
             "computer's IP address when the app opens."
@@ -215,7 +230,7 @@ def export_data(
     saved_context: dict[str, list[dict[str, Any]]] | None = None,
     agent_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Return everything stored for the profile except its PIN hash, keys and INDmoney tokens.
+    """Return everything stored for the profile except its PIN hash, keys, INDmoney tokens and account id.
 
     ``user["keys"]`` must be unlocked; ``snapshots`` are the profile's decrypted snapshots.
     """
@@ -227,6 +242,7 @@ def export_data(
     return {
         "exportedAt": users.now_ms(),
         "profile": {"displayName": user["displayName"], "fields": users.profile_fields(user, user["keys"])},
+        "account": accounts.account_for_user(user["id"]),
         "settings": {"storageMode": user["storageMode"], "snapshotRetentionDays": user["snapshotRetentionDays"]},
         "indmoneyConnected": users.has_indmoney_tokens(user["indmoney"]),
         "consents": [

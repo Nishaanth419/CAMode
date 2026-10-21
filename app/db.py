@@ -14,26 +14,29 @@ logger = logging.getLogger("ca_mode.db")
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", Path(__file__).resolve().parent.parent / ".data"))
 DATABASE_PATH = DATA_DIR / "codemode.sqlite3"
 
+# The ``users`` columns, shared by the schema and ``_drop_unique_display_name``'s rebuild.
+_USERS_COLUMNS = """(
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL COLLATE NOCASE,
+    pin_hash TEXT NOT NULL,
+    profile TEXT NOT NULL DEFAULT '{}',
+    indmoney TEXT NOT NULL DEFAULT '{}',
+    mcp_tools TEXT,
+    mcp_tools_fetched_at INTEGER,
+    snapshot_attempted_at INTEGER NOT NULL DEFAULT 0,
+    storage_mode TEXT NOT NULL DEFAULT 'device',
+    snapshot_retention_days INTEGER NOT NULL DEFAULT 365,
+    history_public_key TEXT,
+    history_key_pin TEXT,
+    history_key_recovery TEXT,
+    failed_logins INTEGER NOT NULL DEFAULT 0,
+    locked_until INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+)"""
+
 _SCHEMA = """
-    CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        display_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        pin_hash TEXT NOT NULL,
-        profile TEXT NOT NULL DEFAULT '{}',
-        indmoney TEXT NOT NULL DEFAULT '{}',
-        mcp_tools TEXT,
-        mcp_tools_fetched_at INTEGER,
-        snapshot_attempted_at INTEGER NOT NULL DEFAULT 0,
-        storage_mode TEXT NOT NULL DEFAULT 'device',
-        snapshot_retention_days INTEGER NOT NULL DEFAULT 365,
-        history_public_key TEXT,
-        history_key_pin TEXT,
-        history_key_recovery TEXT,
-        failed_logins INTEGER NOT NULL DEFAULT 0,
-        locked_until INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-    );
+    CREATE TABLE IF NOT EXISTS users {users_columns};
     CREATE TABLE IF NOT EXISTS oauth_sessions (
         id TEXT PRIMARY KEY,
         data TEXT NOT NULL,
@@ -130,7 +133,17 @@ _SCHEMA = """
         questions INTEGER NOT NULL,
         PRIMARY KEY (user_id, day)
     );
-"""
+    -- Sign-in accounts (accounts.py): one Google account per profile, one profile per account.
+    CREATE TABLE IF NOT EXISTS accounts (
+        provider TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_sign_in_at INTEGER NOT NULL,
+        PRIMARY KEY (provider, subject)
+    );
+""".format(users_columns=_USERS_COLUMNS)
 
 # Columns added to ``users`` after its first release; CREATE TABLE IF NOT EXISTS
 # leaves existing tables alone, so these are added in place.
@@ -185,6 +198,37 @@ def _add_user_columns(connection: sqlite3.Connection) -> None:
             connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
 
 
+def _drop_unique_display_name(connection: sqlite3.Connection) -> None:
+    """Rebuild ``users`` without the UNIQUE constraint on ``display_name`` (SQLite cannot drop one in place).
+
+    Names were unique so the shared-computer picker could tell profiles apart. With account sign-in two
+    strangers may choose the same name, and refusing the second would tell them the first exists; local mode
+    still refuses duplicates in ``users.create_user``. Follows SQLite's documented rebuild: foreign keys off
+    (so dropping the old table cascades nothing), copy, drop, rename, in one transaction.
+    """
+    if not any(row["unique"] and row["origin"] == "u" for row in connection.execute("PRAGMA index_list(users)")):
+        return
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
+            raise RuntimeError("Could not turn off foreign keys to rebuild the users table.")
+        columns = ", ".join(row["name"] for row in connection.execute("PRAGMA table_info(users)"))
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(f"CREATE TABLE users_rebuilt {_USERS_COLUMNS}")
+            connection.execute(f"INSERT INTO users_rebuilt ({columns}) SELECT {columns} FROM users")
+            connection.execute("DROP TABLE users")
+            connection.execute("ALTER TABLE users_rebuilt RENAME TO users")
+        except BaseException:
+            connection.rollback()
+            raise
+        connection.commit()
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+    logger.info("users_table_rebuilt: profile names no longer need to be unique")
+
+
 def initialize_db() -> None:
     with connect_db() as connection:
         # WAL is persistent in the database file, so it only needs setting once.
@@ -192,6 +236,7 @@ def initialize_db() -> None:
         _migrate_legacy_tables(connection)
         connection.executescript(_SCHEMA)
         _add_user_columns(connection)
+        _drop_unique_display_name(connection)
     try:
         os.chmod(DATABASE_PATH, 0o600)
     except OSError:

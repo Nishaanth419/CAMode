@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, snapshots, users
+from app import accounts, db, main, snapshots, users
 from conftest import sign_up
 
 
@@ -188,3 +190,89 @@ def test_profiles_do_not_see_each_others_chats(client):
     assert client.get("/api/chats").json()["chats"] == []
     assert client.get(f"/api/chats/{asha_chat['id']}").status_code == 404
     assert client.delete(f"/api/chats/{asha_chat['id']}").status_code == 404
+
+
+# ── Account sign-in ────────────────────────────────────────────────────────────
+
+def google_claims(**overrides) -> dict:
+    return {
+        "iss": "accounts.google.com", "aud": "client", "sub": "123", "email": "a@example.com",
+        "email_verified": True, "nonce": "n", "iat": 1_000, "exp": 4_600, **overrides,
+    }
+
+
+def test_google_claims_are_checked():
+    identity = accounts.check_claims(google_claims(given_name="Asha"), client_id="client", nonce="n", now_seconds=2_000)
+    assert identity == accounts.GoogleIdentity(subject="123", email="a@example.com", name="Asha")
+
+    # Several audiences are accepted only when this app is the authorised party.
+    several = google_claims(aud=["client", "other"], azp="client")
+    assert accounts.check_claims(several, client_id="client", nonce="n", now_seconds=2_000).subject == "123"
+    for bad, code in (
+        (google_claims(aud=["client", "other"], azp="other"), "failed"),
+        (google_claims(aud="other"), "failed"),
+        (google_claims(iss="https://accounts.example.com"), "failed"),
+        (google_claims(nonce="other"), "failed"),
+        (google_claims(email_verified=False), "failed"),
+        (google_claims(sub=""), "failed"),
+        (google_claims(exp="soon"), "failed"),
+        (google_claims(exp=1_500), "expired"),
+        (google_claims(iat=9_000), "expired"),
+    ):
+        with pytest.raises(accounts.SignInError) as raised:
+            accounts.check_claims(bad, client_id="client", nonce="n", now_seconds=2_000)
+        assert raised.value.code == code, bad
+
+
+def test_unreadable_id_tokens_are_refused():
+    for token in ("", "only-one-part", "a.!!!.c", "a." + base64.urlsafe_b64encode(b"[1]").decode() + ".c"):
+        with pytest.raises(accounts.SignInError):
+            accounts.id_token_claims(token)
+
+
+def test_auth_mode_config_is_checked_at_startup(monkeypatch):
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    accounts.check_config()
+    assert accounts.auth_mode() == "local"
+
+    monkeypatch.setenv("AUTH_MODE", "cloudflare")
+    with pytest.raises(accounts.AccountConfigError):
+        accounts.check_config()
+    monkeypatch.setenv("AUTH_MODE", "Google")
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    with pytest.raises(accounts.AccountConfigError):
+        accounts.check_config()
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret")
+    accounts.check_config()
+    assert accounts.uses_google()
+
+
+def test_unique_profile_names_are_dropped_from_an_existing_database():
+    with db.connect_db() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript(
+            "DROP TABLE users; "
+            "CREATE TABLE users (id TEXT PRIMARY KEY, display_name TEXT NOT NULL UNIQUE COLLATE NOCASE, "
+            "pin_hash TEXT NOT NULL, profile TEXT NOT NULL DEFAULT '{}', indmoney TEXT NOT NULL DEFAULT '{}', "
+            "mcp_tools TEXT, mcp_tools_fetched_at INTEGER, snapshot_attempted_at INTEGER NOT NULL DEFAULT 0, "
+            "failed_logins INTEGER NOT NULL DEFAULT 0, locked_until INTEGER NOT NULL DEFAULT 0, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
+            "INSERT INTO users(id, display_name, pin_hash, created_at, updated_at) VALUES ('old', 'Asha', 'x', 1, 1);"
+            "INSERT INTO chats(id, user_id, title, messages, updated_at, expires_at) VALUES ('c', 'old', 't', '[]', 1, 9);",
+        )
+
+    db.initialize_db()
+
+    assert users.get_user("old")["displayName"] == "Asha"
+    assert users.get_user("old")["storageMode"] == "device"
+    users.create_user("asha", "hash", unique_name=False)  # Allowed for account sign-in.
+    with pytest.raises(users.DuplicateProfileError):
+        users.create_user("ASHA", "hash")  # Still refused for the picker.
+    with db.connect_db() as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM chats WHERE user_id = 'old'").fetchone()[0] == 1
+        connection.execute("DELETE FROM users WHERE id = 'old'")
+        # Foreign keys still point at the rebuilt table and cascade.
+        assert connection.execute("SELECT COUNT(*) FROM chats").fetchone()[0] == 0
+    db.initialize_db()  # Runs once: the second start leaves the table alone.

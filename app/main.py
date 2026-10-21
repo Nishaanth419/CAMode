@@ -1,4 +1,4 @@
-"""Local FastAPI app: profiles, INDmoney OAuth, MCP, snapshots, and private chat history."""
+"""FastAPI app: account sign-in, profiles, INDmoney OAuth, MCP, snapshots, and private chat history."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -55,6 +55,7 @@ __all__ = [
 
 initialize_db()
 vault.check_key()
+accounts.check_config()
 users.encrypt_stored_secrets()
 
 
@@ -132,9 +133,16 @@ class InvestigationRequest(BaseModel):
             raise ValueError(str(exc)) from exc
 
 
+class ClaimProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    displayName: str
+    pin: str
+
+
 class RecoverRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    userId: str
+    # The profile picked in local mode; with account sign-in, the signed-in profile is used.
+    userId: str | None = None
     recoveryCode: str
     newPin: str
 
@@ -143,10 +151,22 @@ def session_id(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
 
 
+def signed_in_user_id(sid: str | None) -> str | None:
+    """The profile this browser session is signed in to.
+
+    With account sign-in, only a profile linked to an account counts: a session from the
+    shared-computer picker (before the switch, or for a profile not yet claimed) reads as signed out.
+    """
+    user_id = users.session_user_id(sid)
+    if user_id and accounts.uses_google() and not accounts.is_linked(user_id):
+        return None
+    return user_id
+
+
 def current_user(request: Request) -> dict[str, Any] | None:
     """Return the signed-in profile with ``keys`` (unlocked if this session entered the PIN)."""
     sid = session_id(request)
-    user_id = users.session_user_id(sid)
+    user_id = signed_in_user_id(sid)
     user = users.get_user(user_id) if user_id else None
     if user:
         user["keys"] = unlock.keys_for_session(user, sid)
@@ -201,6 +221,19 @@ def auth_error(message: str) -> JSONResponse:
 
 def profile_required() -> JSONResponse:
     return JSONResponse({"error": "Choose your profile to continue.", "profileRequired": True}, status_code=401)
+
+
+def sign_in_required() -> JSONResponse:
+    """Account sign-in: no Google account is waiting on this session to create or claim a profile."""
+    return JSONResponse(
+        {"error": "Sign in with Google to continue.", "signInRequired": True, "signInUrl": "/auth/google/start"},
+        status_code=401,
+    )
+
+
+def local_mode_only() -> JSONResponse:
+    """A shared-computer route (picking a profile by id) that account sign-in does not offer."""
+    return JSONResponse({"error": "Not found."}, status_code=404)
 
 
 def unlock_required() -> JSONResponse:
@@ -280,25 +313,45 @@ async def local_session(request: Request):
     else:
         sid = random_token()
         save_session(sid, {})
-    user_id = users.session_user_id(sid)
+    user_id = signed_in_user_id(sid)
     user = users.get_user(user_id) if user_id else None
     locked = bool(user) and not unlock.keys_for_session(user, sid).is_unlocked
     connected = False
     if user:
         chats.purge_expired(user["id"])
         connected = bool(await users.user_access_token(user["id"]))
+    google = accounts.uses_google()
     response = JSONResponse({
         "connected": connected,
         "user": public_user(user) if user else None,
         "locked": locked,
         "consentRequired": bool(user) and not privacy.has_current_consent(user["id"]),
         "storageMode": user["storageMode"] if user else None,
-        "profiles": users.list_profiles(),
+        # The shared-computer picker only: with account sign-in nobody sees other profiles.
+        "profiles": [] if google else users.list_profiles(),
+        "authMode": accounts.auth_mode(),
+        "account": _session_account(sid, user) if google else None,
         # Only when sign-up asks for a Cloudflare Turnstile check.
         **({"turnstileSiteKey": site_key} if (site_key := limits.turnstile_site_key()) else {}),
     })
     response.set_cookie(value=sid, **cookie_options(request))
     return response
+
+
+def _session_account(sid: str, user: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The signed-in account's email, or the Google account waiting to create or claim a profile."""
+    if user:
+        account = accounts.account_for_user(user["id"])
+        return {"email": account["email"]} if account else None
+    pending = accounts.pending_identity(get_session(sid))
+    if pending is None:
+        return None
+    return {"email": pending.email, "name": pending.name, "pending": True, "canClaim": accounts.claims_allowed()}
+
+
+def _pending_identity(request: Request) -> accounts.GoogleIdentity | None:
+    sid = session_id(request)
+    return accounts.pending_identity(get_session(sid)) if sid else None
 
 
 def _unlocked_body(user: dict[str, Any], unlocked: unlock.Unlocked) -> dict[str, Any]:
@@ -340,26 +393,81 @@ async def turnstile_failure(token: str | None, request: Request) -> JSONResponse
 
 @app.post("/api/users", status_code=201)
 async def create_profile(body: CreateProfileRequest, request: Request):
+    """Create a profile and sign in. With account sign-in, the profile belongs to the Google account just signed in."""
     if blocked := rate_limited(request, "sign_up"):
         return blocked
+    identity = None
+    if accounts.uses_google() and (identity := _pending_identity(request)) is None:
+        return sign_in_required()
     try:
         display_name = users.clean_display_name(body.displayName)
         users.validate_new_pin(body.pin)
         if blocked := await turnstile_failure(body.turnstileToken, request):
             return blocked
         pin_hash = await asyncio.to_thread(users.hash_pin, body.pin)
-        user = users.create_user(display_name, pin_hash)
+        user = users.create_user(display_name, pin_hash, unique_name=identity is None)
+        if identity is not None:
+            try:
+                accounts.link(user["id"], identity)
+            except accounts.AccountLinkError:
+                users.delete_user(user["id"])
+                return JSONResponse({"error": "This Google account already has a profile. Sign in again."}, status_code=409)
         unlocked = await asyncio.to_thread(unlock.create_keys, user["id"], body.pin)
     except users.DuplicateProfileError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
     except users.ProfileError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    logger.info("profile_created", extra={"user_id": user["id"]})
+    logger.info("profile_created", extra={"user_id": user["id"], "account": bool(identity)})
     return _signed_in_response(request, user, unlocked, status_code=201)
+
+
+CLAIM_FAILED = "No unclaimed profile matches that name and PIN."
+
+
+@app.post("/api/account/claim")
+async def claim_profile(body: ClaimProfileRequest, request: Request):
+    """Link the Google account just signed in to a profile made on the shared-computer picker, proven by its PIN.
+
+    Unknown names, profiles already claimed and wrong PINs all get the same answer, in about the same time,
+    so a claim does not reveal which names exist. Wrong PINs count towards that profile's lockout.
+    """
+    if not accounts.uses_google():
+        return local_mode_only()
+    if blocked := rate_limited(request, "sign_in"):
+        return blocked
+    identity = _pending_identity(request)
+    if identity is None:
+        return sign_in_required()
+    if not accounts.claims_allowed():
+        return JSONResponse({"error": "Claiming existing profiles is turned off on this server."}, status_code=403)
+    try:
+        user = accounts.unclaimed_profile_named(users.clean_display_name(body.displayName))
+    except users.ProfileError:
+        user = None
+    if user is None:
+        await asyncio.to_thread(accounts.spend_pin_check, body.pin)
+        return JSONResponse({"error": CLAIM_FAILED}, status_code=401)
+    try:
+        valid = await asyncio.to_thread(users.check_pin, user, body.pin)
+    except users.ProfileLockedError as exc:
+        return pin_error(exc)
+    if not valid:
+        logger.warning("profile_claim_failed", extra={"user_id": user["id"]})
+        return JSONResponse({"error": CLAIM_FAILED}, status_code=401)
+    try:
+        accounts.link(user["id"], identity)
+    except accounts.AccountLinkError:
+        return JSONResponse({"error": "This Google account already has a profile. Sign in again."}, status_code=409)
+    logger.info("profile_claimed", extra={"user_id": user["id"]})
+    unlocked = await asyncio.to_thread(unlock.unlock_with_pin, user, body.pin)
+    return _signed_in_response(request, user, unlocked)
 
 
 @app.post("/api/session/login")
 async def sign_in(body: SignInRequest, request: Request):
+    """Shared-computer picker: sign in to the chosen profile with its PIN."""
+    if accounts.uses_google():
+        return local_mode_only()
     user = users.get_user(body.userId)
     if blocked := rate_limited(request, "sign_in", user["id"] if user else None):
         return blocked
@@ -401,7 +509,15 @@ async def unlock_session(body: ConfirmPinRequest, request: Request):
 @app.post("/api/session/recover")
 async def recover_profile(body: RecoverRequest, request: Request):
     """Set a new PIN with the recovery code, sign in, and return a replacement recovery code."""
-    user = users.get_user(body.userId)
+    if accounts.uses_google():
+        # Only the profile this Google account signed in to; its PIN is what is being reset.
+        user = current_user(request)
+        if user is None:
+            return sign_in_required()
+        if body.userId not in (None, user["id"]):
+            return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
+    else:
+        user = users.get_user(body.userId) if body.userId else None
     if blocked := rate_limited(request, "sign_in", user["id"] if user else None):
         return blocked
     if user is None:
@@ -421,13 +537,65 @@ async def recover_profile(body: RecoverRequest, request: Request):
 @app.post("/api/session/logout")
 async def sign_out(request: Request):
     sid = session_id(request)
-    user_id = users.session_user_id(sid)
+    user_id = signed_in_user_id(sid)
     if sid:
         users.sign_out(sid)
         unlock.forget_session(sid)
     if user_id:
         chats.forget_private_chats(user_id)
     return {"user": None}
+
+
+# ── Google sign-in (AUTH_MODE=google) ──────────────────────────────────────────
+
+def _home(request: Request, query: str = "") -> RedirectResponse:
+    return RedirectResponse(request_origin(request) + "/" + query, status_code=302, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/auth/google/start")
+async def start_google_sign_in(request: Request):
+    if not accounts.uses_google():
+        raise HTTPException(404)
+    url, values = accounts.start_sign_in(request_origin(request))
+    sid = session_id(request)
+    if users.session_user_id(sid) is None:
+        # Not signed in: a fresh session id carries the sign-in, so no id seen before it is trusted after.
+        sid = users.start_unbound_session(sid, values)
+    else:
+        save_session(sid, values)
+    response = RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
+    response.set_cookie(value=sid, **cookie_options(request))
+    return response
+
+
+@app.get("/auth/google/callback")
+async def finish_google_sign_in(request: Request):
+    """Sign in to the profile linked to this Google account, or hold the account until it creates or claims one.
+
+    The session id rotates either way. A linked profile's history stays locked until its PIN is entered.
+    """
+    if not accounts.uses_google():
+        raise HTTPException(404)
+    sid = session_id(request)
+    stored = get_session(sid).get(accounts.SIGN_IN_KEY) if sid else None
+    try:
+        identity = await accounts.finish_sign_in(stored, dict(request.query_params))
+    except accounts.SignInError as exc:
+        logger.warning("google_sign_in_failed: %s", exc)
+        if sid:
+            save_session(sid, {})
+        return _home(request, f"?signInError={exc.code}")
+    if sid:
+        unlock.forget_session(sid)
+    if user_id := accounts.user_for_identity(identity):
+        new_sid = users.sign_in(sid, user_id)
+        logger.info("account_signed_in", extra={"user_id": user_id})
+    else:
+        new_sid = users.start_unbound_session(sid, accounts.pending_values(identity))
+        logger.info("account_without_profile_signed_in")
+    response = _home(request)
+    response.set_cookie(value=new_sid, **cookie_options(request))
+    return response
 
 
 @app.get("/api/profile")
@@ -920,7 +1088,7 @@ async def register_oauth_client(redirect_uri: str) -> tuple[dict[str, Any], dict
 @app.get("/auth/indmoney/connect")
 async def connect_indmoney(request: Request):
     sid = session_id(request)
-    user_id = users.session_user_id(sid)
+    user_id = signed_in_user_id(sid)
     if not user_id or not privacy.has_current_consent(user_id):
         # The connection belongs to a profile that has accepted the privacy notice;
         # the app shows the profile picker or the notice.
@@ -958,7 +1126,7 @@ async def finish_indmoney_login(request: Request, background_tasks: BackgroundTa
         return PlainTextResponse(f"INDmoney sign-in was not completed: {error}", status_code=400)
     sid = session_id(request)
     stored = get_session(sid) if sid else {}
-    user_id = users.session_user_id(sid)
+    user_id = signed_in_user_id(sid)
     code = request.query_params.get("code")
     if not sid or not user_id or not stored.get("state") or not stored.get("verifier") or not stored.get("clientId") or not stored.get("clientSecret") or not code or request.query_params.get("state") != stored.get("state"):
         return PlainTextResponse("INDmoney sign-in could not be verified. Please connect again.", status_code=400)

@@ -1,8 +1,9 @@
-"""Local user profiles: PIN sign-in, browser sessions, profile fields, INDmoney tokens.
+"""User profiles: PINs, browser sessions, profile fields, INDmoney tokens.
 
-Profiles are a *local* lock for people sharing one machine, not internet-grade
-authentication. Replace with real authentication before deploying CA Mode anywhere
-other people can reach it.
+On its own a profile's PIN is a *local* lock for people sharing one machine, not
+internet-grade authentication. Where other people can reach CA Mode, run it with
+``AUTH_MODE=google`` (``accounts.py``): each person signs in with their own Google
+account and the PIN only unlocks their sealed history.
 """
 
 from __future__ import annotations
@@ -197,16 +198,22 @@ def _user_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def create_user(display_name: str, pin_hash: str) -> dict[str, Any]:
+def create_user(display_name: str, pin_hash: str, *, unique_name: bool = True) -> dict[str, Any]:
+    """Create a profile. ``unique_name`` (the shared-computer picker) refuses a name another profile uses.
+
+    With account sign-in names may repeat: refusing one would tell a stranger that the name exists.
+    """
     user_id, now = random_token(), now_ms()
-    try:
-        with connect_db() as connection:
-            connection.execute(
-                "INSERT INTO users(id, display_name, pin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, display_name, pin_hash, now, now),
-            )
-    except sqlite3.IntegrityError as exc:
-        raise DuplicateProfileError("A profile with this name already exists.") from exc
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if unique_name and connection.execute(
+            "SELECT 1 FROM users WHERE display_name = ? COLLATE NOCASE", (display_name,),
+        ).fetchone():
+            raise DuplicateProfileError("A profile with this name already exists.")
+        connection.execute(
+            "INSERT INTO users(id, display_name, pin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, display_name, pin_hash, now, now),
+        )
     user = get_user(user_id)
     assert user is not None  # Inserted above in the same process.
     return user
@@ -365,6 +372,16 @@ def sign_in(old_sid: str | None, user_id: str) -> str:
     with connect_db() as connection:
         connection.execute("UPDATE oauth_sessions SET user_id = ? WHERE id = ?", (user_id, new_sid))
         if old_sid:
+            connection.execute("DELETE FROM oauth_sessions WHERE id = ?", (old_sid,))
+    return new_sid
+
+
+def start_unbound_session(old_sid: str | None, values: dict[str, Any]) -> str:
+    """Replace ``old_sid`` with a fresh session holding ``values`` and no profile (rotating the id)."""
+    new_sid = random_token()
+    save_session(new_sid, values)
+    if old_sid:
+        with connect_db() as connection:
             connection.execute("DELETE FROM oauth_sessions WHERE id = ?", (old_sid,))
     return new_sid
 

@@ -1180,6 +1180,24 @@ body.gate-open #app { visibility: hidden; }
 .gate-secondary:hover { background: var(--surface-2); }
 .gate-error { margin-top: 14px; color: var(--error); font-size: 13px; }
 .gate-note { margin-top: 18px; color: var(--text-muted); font-size: 11.5px; line-height: 1.5; }
+.gate-account { margin: -10px 0 18px; color: var(--text-soft); font-size: 13px; overflow-wrap: anywhere; }
+.google-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--border-hover);
+  border-radius: 11px;
+  background: #fff;
+  color: #1f1f1f;
+  font-size: 14px;
+  font-weight: 600;
+}
+.google-button:hover { background: #f4f4f4; }
+.google-button:disabled { cursor: wait; opacity: .6; }
+.google-button svg { width: 18px; height: 18px; flex-shrink: 0; }
 
 .field { display: grid; gap: 5px; color: var(--text-soft); font-size: 12px; font-weight: 600; text-align: left; }
 .field input, .field select, .field textarea {

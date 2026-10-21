@@ -5,11 +5,11 @@ CA Mode is a local finance assistant with two agents:
 - **Finance Agent** answers general finance questions. It never sees your INDmoney account.
 - **Portfolio Analyzer** answers questions about your INDmoney account. It reads a saved daily snapshot of your portfolio and calls INDmoney's read-only MCP tools for live data.
 
-It runs its AI model on your computer through [Ollama](https://ollama.com), so your questions and portfolio data never leave it; OpenAI and Groq are optional. Several people can share one computer: each person has a PIN-protected profile with their own chats, INDmoney connection, and daily portfolio snapshots. Everything is stored in a local SQLite database.
+It runs its AI model on your computer through [Ollama](https://ollama.com), so your questions and portfolio data never leave it; OpenAI and Groq are optional. Several people can share one computer: each person has a PIN-protected profile with their own chats, INDmoney connection, and daily portfolio snapshots. To open it to other people, switch on [Google sign-in](#open-it-to-other-people-google-sign-in): each person signs in with their own Google account, and their PIN still unlocks their history. Everything is stored in a local SQLite database.
 
 ## Features
 
-- A profile per person (name + PIN), with a profile picker and a quick **Switch profile**.
+- A profile per person (name + PIN), with a profile picker and a quick **Switch profile** on a shared computer, or Google sign-in (one Google account per profile, no profile list) where other people can reach the app.
 - A privacy notice each profile accepts before use, a choice between saving history on this computer and a private mode that saves no chats or snapshots, plus data export and history clearing.
 - Optional profile details (risk appetite, investment horizon, primary goal, monthly investment, age band) that Portfolio Analyzer uses as context.
 - Savings goals (amount, currency, target date, earmarked savings, monthly contribution, notes) with projections calculated in code under your own return assumption, and a list of decisions you record. Either agent sees the ones your question is about; both can also call two read-only tools, `get_goal_plans` and `plan_goal_what_if` (a what-if is never saved), when you have a goal. Only Portfolio Analyzer sees the value of assigned holdings.
@@ -37,7 +37,7 @@ flowchart LR
 
 **A chat request** (`POST /api/chat`):
 
-1. The session cookie identifies the signed-in profile. Without one, the API returns `401` with `profileRequired`, and the app shows the profile picker.
+1. The session cookie identifies the signed-in profile. Without one, the API returns `401` with `profileRequired`, and the app shows the profile picker (or, with Google sign-in, the **Sign in with Google** screen).
 2. A short AI call classifies the message as off-topic, a code request, a general finance question, or one that needs your account data. Off-topic and code requests are refused without calling the answer model. If that call fails or is rate-limited, offline keyword rules decide instead. The decision is the first step of the trace.
 3. **Finance Agent** sends the conversation to the selected provider with no tools.
 4. **Portfolio Analyzer** adds your profile details to the system prompt and always offers the snapshot tools; the live INDmoney tools are added when the question needs your account data:
@@ -207,6 +207,32 @@ The profile picker lists every profile to anyone who can open the site and the P
 2. **Review the privacy notice.** It explains what is saved, where, and what is sent to the AI provider. Choose **Save history** (chats and daily snapshots, with a snapshot retention of 30 days to 1 year) or **Private mode**, then accept. You can't chat or connect INDmoney until you accept.
 3. **Fill in your profile (optional).** Click your name at the bottom of the sidebar to set risk appetite, horizon, goal, monthly investment, and age band. Portfolio Analyzer uses these to relate its analysis to your goals; it is not personalised investment advice.
 4. **Connect INDmoney.** Select **Connect**, sign in to INDmoney, and approve read-only access. The first snapshot is saved straight away, and the portfolio card shows your net worth.
+
+## Open it to other people: Google sign-in
+
+The profile picker suits one shared computer: anyone at the screen sees every profile name and can try PINs. Where other people can reach CA Mode, set `AUTH_MODE=google` instead. Each person then signs in with their own Google account, which is linked to exactly one profile, and nobody is ever shown a list of profiles. Signing in only says who the person is: their history stays sealed until they enter their PIN, exactly as before (the PIN and recovery code are unchanged).
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials), create an **OAuth client ID** of type **Web application**. Add `https://your.domain/auth/google/callback` (your `APP_ORIGIN` followed by `/auth/google/callback`) as an authorised redirect URI. The OAuth consent screen needs only the `openid`, `email` and `profile` scopes.
+2. Set these in `.env` and restart the app:
+
+   ```bash
+   AUTH_MODE=google
+   GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...
+   APP_ORIGIN=https://your.domain
+   ```
+
+   The app refuses to start with `AUTH_MODE=google` and no client ID or secret. Serve it over HTTPS so the session cookie is marked `Secure`.
+3. **First sign-in.** A Google account with no profile chooses a profile name and PIN (names may repeat between people) and gets its recovery code, then accepts the privacy notice. A person who already had a profile on the shared computer selects **Claim that profile** and types that profile's name and PIN; from then on it signs in with that Google account. A profile can be claimed once. Unknown names, claimed profiles and wrong PINs get the same answer, and wrong PINs count towards the profile's five-attempt lockout.
+4. **Returning.** **Sign in with Google**, then the PIN unlocks the history. **Sign out** replaces **Switch profile**.
+
+How it works:
+
+- The app uses OpenID Connect's authorization code flow with PKCE, a `state` tied to the browser session and a `nonce`, and asks Google to show the account chooser. The ID token comes straight from Google's token endpoint in exchange for the code and the client secret, so its issuer, audience, expiry and nonce are checked rather than its signature. Only accounts with a verified email address are accepted.
+- The `accounts` table links Google's account ID to the profile and keeps the email address (encrypted with the master key, like INDmoney tokens) to show who is signed in; the Google name is only used to suggest a profile name. The link is in the export and is deleted with the profile. The session id rotates on every sign-in.
+- Sessions from the profile picker do not carry over: a profile is reached only through its linked Google account.
+- `ALLOW_PROFILE_CLAIMS=false` turns claiming off. Do this once everyone has claimed their profile, because an unclaimed profile can otherwise be claimed by any Google account that guesses its name and PIN (five guesses every five minutes).
+- Leave `AUTH_MODE` unset (or `local`) on a single computer: nothing changes there. Profiles created with Google sign-in still appear in the picker if you switch back to local mode.
 
 ## Use the agents
 
@@ -448,11 +474,11 @@ The SQLite database at `.data/codemode.sqlite3` holds profiles, chats, INDmoney 
 - **Save history**: chats and daily snapshots are stored in SQLite as described above.
 - **Private mode**: chats are kept only in server memory and disappear when you sign out or the app restarts. No snapshots are captured. Switching to private mode deletes the chats and snapshots already saved for the profile. INDmoney tokens, profile details, goals and decisions are still saved; **Disconnect** removes the tokens, and the Goals page removes the rest.
 
-Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, goals, decisions, consent history, chats, and snapshots, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
+Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, goals, decisions, consent history, chats, snapshots, and the email address you sign in with, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
 
 In both modes, your messages, recent chat history, the profile details, goals and decisions relevant to the question (with figures calculated from them), and any INDmoney data Portfolio Analyzer reads go to the AI model you select: they stay on this computer with the local model and are sent to OpenAI or Groq if you pick one of those.
 
-The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Add real authentication before exposing CA Mode to a network.
+The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Before exposing CA Mode to a network, switch on [Google sign-in](#open-it-to-other-people-google-sign-in) so each person signs in with their own account.
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
@@ -484,11 +510,13 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/session` | Current profile, INDmoney status, the list of profiles, and `turnstileSiteKey` when sign-up uses Turnstile |
-| `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`) |
-| `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN; sign out |
+| `GET /api/session` | Current profile, INDmoney status, `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), and `turnstileSiteKey` when sign-up uses Turnstile |
+| `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`); with Google sign-in, only for a Google account just signed in (else `401 {"signInRequired": true}`), and linked to it |
+| `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN (local mode only; `404` with Google sign-in); sign out |
+| `GET /auth/google/start`, `GET /auth/google/callback` | Google sign-in (`AUTH_MODE=google`); the callback redirects to `/`, or to `/?signInError=cancelled\|expired\|failed` |
+| `POST /api/account/claim` | Google sign-in: link the Google account just signed in to an unclaimed profile (body: `{"displayName", "pin"}`); `401` with one message for any unknown name, claimed profile or wrong PIN, `429` when locked, `403` when `ALLOW_PROFILE_CLAIMS=false` |
 | `POST /api/session/unlock` | Unlock the signed-in profile's history after a restart (body: `{"pin": ...}`) |
-| `POST /api/session/recover` | Set a new PIN with the recovery code and sign in (body: `{"userId", "recoveryCode", "newPin"}`); returns a new recovery code |
+| `POST /api/session/recover` | Set a new PIN with the recovery code and sign in (body: `{"userId", "recoveryCode", "newPin"}`; with Google sign-in `userId` may be left out and only the signed-in profile can be reset); returns a new recovery code |
 | `POST /api/users/me/recovery-code` | Replace the recovery code (body: `{"pin": ...}`) |
 | `GET /api/profile`, `PUT /api/profile` | Read or update the profile details (with `updatedAt`) |
 | `GET /api/goals`, `POST /api/goals` | List goals, each with its `plan`, `suitability`, `followUps` and `mapping`, plus `fundData` and `portfolio` totals; create one (`201` with `Location`; `409` at 10 goals) |
@@ -519,7 +547,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /privacy` | Privacy policy page, rendered from the same notice profiles accept (no profile needed) |
 | `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy`; URLs use `APP_ORIGIN` |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, and sign-out routes, and the public pages (`/`, `/privacy`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
+Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, and the public pages (`/`, `/privacy`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
 
 ## Troubleshooting
 
@@ -559,6 +587,7 @@ app/
   main.py          FastAPI app: routes, INDmoney OAuth, and the snapshot scheduler lifespan
   db.py            SQLite connection, schema, and migrations
   users.py         Profiles, PIN sign-in, sessions, and per-profile INDmoney tokens
+  accounts.py      AUTH_MODE, Google sign-in (OpenID Connect) and the accounts linked to profiles
   privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
   page_views.py    Anonymous local page-view counts
   public_pages.py  App shell with absolute Open Graph URLs, privacy policy and 404 pages, robots.txt, sitemap.xml

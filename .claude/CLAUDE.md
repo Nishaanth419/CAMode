@@ -8,14 +8,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Finance Agent**: Answers general finance questions (budgeting, saving, concepts) — no account access
 - **Portfolio Analyzer**: Answers questions about the user's INDmoney portfolio from a saved daily snapshot plus read-only MCP tools for live data
 
-Several people can share one machine: each has a PIN-protected local profile that owns its chats, INDmoney connection, profile fields and portfolio snapshots. The app runs its model locally through Ollama by default (OpenAI and Groq are optional), stores everything in local SQLite, and renders Plotly charts from portfolio data. It runs as a FastAPI backend with a vanilla JS PWA frontend.
+Several people can share one machine: each has a PIN-protected local profile that owns its chats, INDmoney connection, profile fields and portfolio snapshots. With `AUTH_MODE=google` each person instead signs in with their own Google account (one account per profile, no profile list) and the PIN only unlocks their sealed history. The app runs its model locally through Ollama by default (OpenAI and Groq are optional), stores everything in local SQLite, and renders Plotly charts from portfolio data. It runs as a FastAPI backend with a vanilla JS PWA frontend.
 
 ## Architecture
 
 ### Backend modules
 - **`app/main.py`**: FastAPI routes, INDmoney OAuth, and the lifespan task that runs the snapshot scheduler. `POST /api/chat` returns the full answer as plain text with the call trace in an `X-Agent-Trace` header (no streaming to the browser).
-- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations`, `agent_runs`, `financial_goals`, `financial_decisions`, `goal_allocations`, `page_views`, `question_counts` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`. A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
+- **`app/db.py`**: `connect_db()` context manager (commits/rolls back, always closes), schema, and migrations. Tables: `users`, `accounts`, `oauth_sessions`, `chats`, `portfolio_snapshots`, `consents`, `cas_statements`, `investigations`, `agent_runs`, `financial_goals`, `financial_decisions`, `goal_allocations`, `page_views`, `question_counts` (WAL mode). Columns added to `users` after release go in `_ADDED_USER_COLUMNS`; the `users` columns live in `_USERS_COLUMNS` (shared with `_drop_unique_display_name()`, which rebuilds an older table whose `display_name` was UNIQUE, foreign keys off, in one transaction). A pre-profile `chats` table is renamed `chats_legacy` and adopted on first sign-in.
 - **`app/users.py`**: Profiles (scrypt PIN hashes, account-bound lockout), browser sessions bound to profiles, profile fields (`ProfileFields`), and per-profile INDmoney tokens (`user_access_token` refreshes them).
+- **`app/accounts.py`**: `AUTH_MODE` (`local` default, `google`), `check_config()` (startup), Google OpenID Connect (`start_sign_in()`, `finish_sign_in()`, `id_token_claims()`, `check_claims()`), the pending Google account on a session (`pending_values()`, `pending_identity()`), and the `accounts` table (`user_for_identity()`, `link()`, `is_linked()`, `account_for_user()`, `unclaimed_profile_named()`).
 - **`app/privacy.py`**: The privacy notice (`NOTICE`, `POLICY_VERSION`), consent records, per-profile storage mode and snapshot retention, data export, and history clearing.
 - **`app/chats.py`**: Chat storage behind one API: SQLite rows in `device` mode, process memory in `private` mode.
 - **`app/snapshots.py`**: Daily capture of net worth/allocation/holdings, history queries, the polling scheduler, profile prompt text, and the agent's local snapshot tools.
@@ -56,10 +57,18 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 **Profiles and sessions** (`users.py`):
 - The `indmoney_session` HttpOnly cookie maps to an `oauth_sessions` row whose `user_id` names the signed-in profile; the id rotates on sign-in
-- Routes other than `/healthz`, `/api/providers`, `/api/session` and the sign-up/sign-in/sign-out routes return `401 {"profileRequired": true}` without a profile
+- Routes other than `/healthz`, `/api/providers`, `/api/session`, the sign-up/sign-in/claim/sign-out routes and `/auth/google/*` return `401 {"profileRequired": true}` without a profile
 - `check_pin()` reads the lock state from the DB and records the outcome in a `BEGIN IMMEDIATE` transaction, so concurrent wrong PINs cannot bypass the 5-attempt / 5-minute lock
 - PIN hashing (scrypt N=2^17) runs via `asyncio.to_thread`; tests lower `users.SCRYPT_N`
-- The PIN is a local lock, not network-grade auth; chats, snapshots and profile fields are not encrypted at rest
+- The PIN is a local lock, not network-grade auth; anywhere other people can reach the app, use `AUTH_MODE=google` (below)
+- `users.create_user(unique_name=)`: the picker refuses a name in use (checked in `BEGIN IMMEDIATE`); Google mode allows repeats, since refusing would reveal that the name exists
+
+**Account sign-in** (`accounts.py`, `AUTH_MODE=google`):
+- Needs `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (`accounts.check_config()` fails startup otherwise) and `APP_ORIGIN`; redirect URI is `APP_ORIGIN + /auth/google/callback`
+- `GET /auth/google/start` stores `state`, `nonce`, PKCE verifier and start time under `accounts.SIGN_IN_KEY` on the session (a fresh session id when not signed in) and redirects to Google with `prompt=select_account`. The callback exchanges the code with the client secret; the ID token comes from the token endpoint over TLS, so its claims (issuer, audience/azp, exp/iat with `CLOCK_SKEW_SECONDS`, nonce, verified email) are checked, not its signature. Failures redirect to `/?signInError=cancelled|expired|failed` (`app.js` `SIGN_IN_ERRORS`)
+- A linked account signs in with `users.sign_in()` (rotated id, history still locked until `/api/session/unlock`). An unlinked one gets a fresh unbound session holding `accounts.PENDING_KEY` (`PENDING_SECONDS`, 30 min) until `POST /api/users` (create + link) or `POST /api/account/claim` (name + PIN of a profile no account has claimed; one generic `CLAIM_FAILED` answer, `accounts.spend_pin_check()` for unknown names, wrong PINs count towards that profile's lockout; `ALLOW_PROFILE_CLAIMS=false` returns 403)
+- `main.signed_in_user_id()` (used by `current_user()`, `/api/session`, logout and the INDmoney routes) treats a session bound to a profile without an `accounts` row as signed out in Google mode. `/api/session` returns `profiles: []`, `authMode` and `account`; `POST /api/session/login` is 404; `/api/session/recover` resets only the signed-in profile
+- `accounts.email` is vault-encrypted; `accounts.subject` (Google `sub`) is plain for lookup and never exported. The link cascades with the profile; export has `account` (`provider`, `email`, times). `POLICY_VERSION` 2026-10-21.1 added the notice section on Google sign-in
 
 **PIN-locked history** (`sealing.py`, `unlock.py`):
 - Saved chat titles and messages, snapshot `data` (with the net worth inside; `networth_inr` is NULL) and `users.profile` are `sealed:v1:<sealed box>` under the profile's public key; plaintext rows (profiles that never unlocked since this feature) pass through `ProfileKeys.open()` and are sealed by `unlock.activate()` at the next PIN entry
@@ -192,8 +201,8 @@ Several people can share one machine: each has a PIN-protected local profile tha
 
 ### Frontend
 - Static HTML/CSS/JS in `frontend/` (installable PWA)
-- `index.html`: app shell, profile picker (`#profile-gate`, including the `#consent-form` privacy step), profile dialog (`<dialog id="profile-dialog">`, including the `#data-zone` privacy settings)
-- `app.js`: profile sign-in/creation, privacy notice and storage choices, export and history clearing, profile dialog (including INDmoney connect/disconnect), chat UI, agent switch above the input, sidebar recent chats (newest 6), `refreshSnapshot()`, Markdown rendering (links limited to http(s)/mailto), Plotly charts, theme toggle. Fires `ca:session`, `ca:chats` and `ca:snapshot` document events for the pages
+- `index.html`: app shell, profile picker (`#profile-gate`: the picker, `#google-sign-in`, create and `#profile-claim-form`, unlock, recovery, and the `#consent-form` privacy step), profile dialog (`<dialog id="profile-dialog">`, including the `#data-zone` privacy settings)
+- `app.js`: profile sign-in/creation (`authMode` from `/api/session`: the picker, or `showAccountGate()` for Google sign-in, create and claim), privacy notice and storage choices, export and history clearing, profile dialog (including INDmoney connect/disconnect), chat UI, agent switch above the input, sidebar recent chats (newest 6), `refreshSnapshot()`, Markdown rendering (links limited to http(s)/mailto), Plotly charts, theme toggle. Fires `ca:session`, `ca:chats` and `ca:snapshot` document events for the pages
 - `trace.js` (loaded after `finance.js`): answer trace timeline, investigation evidence card and Activity helpers (see "Answer trace and Activity")
 - `finance.js` (loaded first): pure helpers shared by the pages and the rail and exported for Node tests: Indian money formatting, SIP/lumpsum/goal math, `goalKind()`, `historyChange()`, `portfolioInsights()` (observations about the user's own holdings, never market news) and goal formatting (`amount()`, `amountShort()`, `totalsByCurrency()`, `goalStatus()`, `baseScenario()`; plans come from the server) and `incomeTax()` with `TAX_RULES` (FY 2026-27 slabs, 87A rebate and marginal relief, surcharge with marginal relief, 4% cess). Update `TAX_RULES`, its label and `tests/js/finance.test.js` after each budget
 - `rail.js` (loaded last): the right rail's Financial Portfolio (net worth, change over the saved history, sparkline, Total Invested / Total Returns / Return % over holdings with a cost), Financial Goals (the 3 nearest target years; a row opens the goal editor, "+ Add a goal" below), Market Insights and Quick Tools cards; renders on `ca:session`, `ca:snapshot` and `ca:goals`, and clears on `ca:session-ended`. Hidden below 1280px like before
@@ -308,7 +317,8 @@ python -m compileall -q app tests && python -m pytest -q
 - `GROQ_INPUT_TOKEN_BUDGET`, `GROQ_COMPLETION_TOKEN_LIMIT`: Groq limits
 - `REQUEST_ROUTER` (`model` default, or `keywords`), `OPENAI_ROUTER_MODEL` / `GROQ_ROUTER_MODEL`: request classifier
 - `MCP_SERVER_URL`: INDmoney MCP endpoint (default `https://mcp.indmoney.com/mcp`)
-- `APP_ORIGIN`: public origin for the OAuth callback
+- `APP_ORIGIN`: public origin for the OAuth callbacks (INDmoney and Google)
+- `AUTH_MODE` (`local` default, or `google`), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOW_PROFILE_CLAIMS` (true): sign-in
 - `FUND_STALE_DAYS` (5): days after a NAV date before fund returns are marked old
 - `PLAN_STEP_TIMEOUT_SECONDS` (60), `PLAN_DEADLINE_SECONDS` (240): planned answers
 - `INVESTIGATION_TOLERANCE_PCT` (0.5), `INVESTIGATION_TOLERANCE_INR` (1), `INVESTIGATION_STALE_HOURS` (36): investigation checks
@@ -324,9 +334,9 @@ python -m compileall -q app tests && python -m pytest -q
 Tests use mocked AI, MCP and OAuth responses (no live API calls). `conftest.py` points `app.db` at a temporary database per test, lowers the scrypt cost, disables the scheduler, and provides `client`, `signed_in` (a signed-in, unlocked profile that accepted the notice in `device` mode) and `sign_up()` (pass `storage_mode=None` to skip consent, or `"private"`).
 
 Test coverage:
-- `test_api.py`: routes, OAuth flow, chats, profile-scoped access, snapshot endpoints
+- `test_api.py`: routes, OAuth flow, chats, profile-scoped access, snapshot endpoints; Google sign-in (`google_mode` fixture, `google_sign_in()` with a fake token endpoint): no profile list, PKCE/state/nonce, create, locked return, repeated names, claims and their lockout, pending expiry, callback failures, deletion, export, recovery, local mode unchanged
 - `test_agent.py`: request filtering, Finance Agent and Portfolio Analyzer loops, snapshot tools, lazy MCP, Groq context fitting, error handling
-- `test_users.py`: PIN hashing, sign-in, lockout (including concurrent guesses), session rotation, legacy adoption, profile isolation
+- `test_users.py`: PIN hashing, sign-in, lockout (including concurrent guesses), session rotation, legacy adoption, profile isolation, Google ID token claim checks, `AUTH_MODE` config, the unique-name table rebuild
 - `test_snapshots.py`: net-worth parsing, IST schedule, capture, due-profile selection and backoff, scheduler, local tools, retention
 - `test_privacy.py`: consent gate, stale notices, storage modes, private in-memory chats, export, history clearing, retention, scheduler exclusion, column migration
 - `test_unlock.py`: sealed storage, restart locking, per-session unlock, recovery and its lockout, new recovery codes, upgrading profiles from before encryption, export while locked
