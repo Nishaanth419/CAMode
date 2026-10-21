@@ -1166,6 +1166,7 @@ body.gate-open #app { visibility: hidden; }
 .gate-form { display: grid; gap: 12px; text-align: left; }
 .gate-form-title { color: var(--text); font-size: 15px; }
 .gate-actions, .dialog-actions { display: flex; gap: 10px; }
+.turnstile-slot { min-height: 65px; }
 .gate-actions .rail-button, .dialog-actions .rail-button { flex: 1; }
 .gate-secondary {
   padding: 10px 14px;

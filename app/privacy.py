@@ -22,7 +22,8 @@ from .db import connect_db
 # 2026-10-17.1: anonymous daily counts of which app pages are opened, kept on this computer.
 # 2026-10-17.2: a record of the steps behind each chat answer (agent_runs), for the Activity page.
 # 2026-10-21.1: CA Mode may run on a server, with Ollama on another computer the operator controls.
-POLICY_VERSION: Final = "2026-10-21.1"
+# 2026-10-21.2: optional usage limits (daily question counts, in-memory rate limits, Turnstile on sign-up).
+POLICY_VERSION: Final = "2026-10-21.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -93,6 +94,18 @@ NOTICE: Final = (
             "The counts stay in the same SQLite file for 90 days, are never sent anywhere, and can be read by whoever "
             "runs CA Mode. Because they are not linked to you, they are not part of your export and "
             "are not removed when you clear history or delete your profile. Private mode is never counted."
+        ),
+    },
+    {
+        "title": "Usage limits",
+        "body": (
+            "A copy of CA Mode shared with other people may limit how much it can be used; a copy for one computer "
+            "has no limits unless whoever runs it sets them. With a daily question limit, the number of questions "
+            "your profile asked today and yesterday is stored (never what you asked); it is not part of your export "
+            "and is deleted with your profile. With request rate limits, the times of recent requests from your IP "
+            "address and profile are kept in memory only, for about an hour at most, and never saved. If sign-up includes a "
+            "Cloudflare Turnstile check, the sign-up form loads it from challenges.cloudflare.com, which sees your "
+            "IP address and browser details to tell people from bots."
         ),
     },
     {

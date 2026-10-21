@@ -21,7 +21,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, privacy, users
+from app import db, limits, main, privacy, users
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +32,10 @@ def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
     # Production scrypt cost (~128 MiB per hash) would make every sign-in test slow.
     monkeypatch.setattr(users, "SCRYPT_N", 2**10)
+    # Usage limits stay off (as on one computer) unless a test turns them on; tests/test_limits.py covers them.
+    for name in ("DAILY_QUESTION_LIMIT", "RATE_LIMITS_ENABLED", "TRUSTED_PROXY", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    limits.limiter.clear()
     db.initialize_db()
 
 

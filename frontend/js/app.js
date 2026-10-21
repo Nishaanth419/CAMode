@@ -73,6 +73,10 @@ let privacyPolicyVersion = null;
 let unlockTarget = null;
 // True when the signed-in profile is locked after a restart (unlock with /api/session/unlock).
 let isLockedSession = false;
+// Cloudflare Turnstile on sign-up: the site key from /api/session (null when off), the widget and its script.
+let turnstileSiteKey = null;
+let turnstileWidget = null;
+let turnstileScript = null;
 let selectedAgent = localStorage.getItem('ca-mode-agent') || 'finance';
 let selectedProvider = localStorage.getItem('ca-mode-provider') || 'openai';
 let providerReady = false;
@@ -356,6 +360,7 @@ async function loadChats() {
     currentUser = session.user;
     isConnected = Boolean(session.connected);
     storageMode = session.storageMode || 'device';
+    turnstileSiteKey = session.turnstileSiteKey || null;
     renderAccount();
     if (!currentUser) {
       chats = [];
@@ -433,6 +438,7 @@ function showGateView(view) {
   gateTitle.textContent = name && ['locked', 'consent'].includes(textKey) ? `${title}, ${name}` : title;
   gateSub.textContent = sub;
   showGateError('');
+  if (view === 'create') showTurnstile();
   const focusTargets = {
     consent: consentNotice, unlock: unlockPin, create: document.getElementById('create-name'),
     recover: document.getElementById('recover-code'), 'recovery-code': recoverySaved,
@@ -518,7 +524,8 @@ async function submitGate(url, body, form) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (response.status === 429) {
+    // A rate limit (rateLimited) carries its own message; otherwise a 429 is the PIN lockout.
+    if (response.status === 429 && !data.rateLimited) {
       const minutes = Math.ceil(Number(data.retryAfterSeconds || response.headers.get('Retry-After') || 300) / 60);
       throw new Error(`Too many incorrect attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
     }
@@ -579,15 +586,61 @@ recoveryContinue.addEventListener('click', async () => {
   document.getElementById('recovery-code-value').textContent = '';
   await loadChats();
 });
-createForm.addEventListener('submit', (event) => {
+createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const pin = document.getElementById('create-pin').value;
   if (pin !== document.getElementById('create-pin-confirm').value) {
     showGateError('The two PINs do not match.');
     return;
   }
-  submitGate('/api/users', { displayName: document.getElementById('create-name').value, pin }, createForm);
+  const body = { displayName: document.getElementById('create-name').value, pin };
+  if (turnstileSiteKey) {
+    body.turnstileToken = turnstileToken();
+    if (!body.turnstileToken) {
+      showGateError('Complete the check below, then create your profile.');
+      return;
+    }
+  }
+  await submitGate('/api/users', body, createForm);
+  resetTurnstile(); // Each Turnstile response can be used once.
 });
+
+/* ── Cloudflare Turnstile on sign-up (only when the server sends a site key) ── */
+function loadTurnstile() {
+  turnstileScript ||= new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.onload = () => resolve(window.turnstile);
+    script.onerror = () => {
+      turnstileScript = null;
+      script.remove();
+      reject(new Error('Could not load the sign-up check. Check your connection and try again.'));
+    };
+    document.head.appendChild(script);
+  });
+  return turnstileScript;
+}
+
+async function showTurnstile() {
+  const slot = document.getElementById('create-turnstile');
+  slot.hidden = !turnstileSiteKey;
+  if (!turnstileSiteKey || turnstileWidget !== null) return;
+  try {
+    const turnstile = await loadTurnstile();
+    turnstileWidget = turnstile.render(slot, { sitekey: turnstileSiteKey, action: 'sign_up' });
+  } catch (error) {
+    showGateError(error.message);
+  }
+}
+
+function turnstileToken() {
+  return turnstileWidget === null ? null : (window.turnstile.getResponse(turnstileWidget) || null);
+}
+
+function resetTurnstile() {
+  if (turnstileWidget !== null) window.turnstile.reset(turnstileWidget);
+}
 
 /* ── Privacy notice and storage choices ─────────────────────────────── */
 function renderNotice(container, notice) {
@@ -1165,6 +1218,14 @@ async function sendMessage(text) {
       if (err.profileRequired || err.unlockRequired || err.consentRequired) {
         removeTypingIndicator();
         await loadChats();
+        return;
+      }
+      if (res.status === 429 && (err.dailyLimitReached || err.rateLimited)) {
+        // A limit, not a failure: say so plainly ("You've reached today's limit… resets at midnight IST").
+        removeTypingIndicator();
+        addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}</p>`);
+        setStatus('online', err.dailyLimitReached ? 'Daily limit reached' : 'Too many requests');
+        if (createdChatId) await discardEmptyChat(createdChatId);
         return;
       }
       if (err.loginUrl) {

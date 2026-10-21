@@ -28,11 +28,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=37" />
+  <link rel="stylesheet" href="/css/app.css?v=38" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
   <script src="/js/finance.js?v=6" defer></script>
   <script src="/js/trace.js?v=8" defer></script>
-  <script src="/js/app.js?v=29" defer></script>
+  <script src="/js/app.js?v=30" defer></script>
   <script src="/js/pages.js?v=19" defer></script>
   <script src="/js/rail.js?v=6" defer></script>
 </head>
@@ -550,6 +550,7 @@
         <label class="field"><span>Name</span><input id="create-name" type="text" maxlength="40" autocomplete="nickname" required /></label>
         <label class="field"><span>PIN (at least 4 characters)</span><input id="create-pin" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="64" required /></label>
         <label class="field"><span>Confirm PIN</span><input id="create-pin-confirm" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="64" required /></label>
+        <div id="create-turnstile" class="turnstile-slot" hidden></div>
         <div class="gate-actions">
           <button class="gate-secondary" type="button" data-gate-back>Back</button>
           <button class="rail-button" type="submit">Create profile</button>
