@@ -99,7 +99,7 @@ cp .env.example .env
 | `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per Free-plan profile per day in `SNAPSHOT_TIMEZONE` (the hosted copy uses `5`); see [Plans and pricing](#plans-and-pricing) |
 | `PRICING_CONTACT_EMAIL` | – | Where the `/pricing` page's "Choose Individual" and "Contact us" buttons send an email; unset, the page says to ask whoever runs the copy |
 | `RATE_LIMITS_ENABLED` | `false` | Request rate limits per IP and per profile on chat, sign-up, sign-in and investigations |
-| `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP` (only when the app is reachable solely through Cloudflare) |
+| `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP`; `caddy`: from the last `X-Forwarded-For` entry. Only when the app is reachable solely through that proxy |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | – | Both set: sign-up asks for a Cloudflare Turnstile check |
 
 You can configure several providers and switch in the app. Provider keys stay in the server environment and are never sent to the browser. Leave `OPENAI_API_KEY` and `GROQ_API_KEY` empty to make sending data to an AI company impossible.
@@ -201,6 +201,16 @@ The master key is created in `/srv/ca-mode/key` on first start; keep a copy some
 **Moving your existing data (optional).** On the Mac, run `python -m scripts.backup now` and stop the local app for good: two copies would both refresh the same INDmoney tokens. Before the server's first start, copy the backup file to `/srv/ca-mode/data/codemode.sqlite3` and `~/.config/ca-mode/master.key` to `/srv/ca-mode/key/master.key`. Otherwise everyone creates a profile on the server and connects INDmoney again.
 
 The profile picker lists every profile to anyone who can open the site and the PIN is a lock, not network-grade sign-in, which is why Cloudflare Access must stay in front of it.
+
+**Without a domain or Cloudflare: Caddy.** Caddy can serve the app over HTTPS on the server's own ports, with a free Let's Encrypt certificate for a domain pointing at the server or for `<ip-with-dashes>.sslip.io` (a free DNS name that points at that IP, e.g. `129-225-97-229.sslip.io`). The site is then public with no Cloudflare Access in front, so use it only with `AUTH_MODE=google`. Open TCP 80 and 443 (and UDP 443) to the internet in the cloud firewall, then:
+
+```bash
+echo "SITE_ADDRESS=129-225-97-229.sslip.io" >> .env      # in deploy/
+# app.env: APP_ORIGIN=https://129-225-97-229.sslip.io and TRUSTED_PROXY=caddy
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build app caddy
+```
+
+Add `https://<SITE_ADDRESS>/auth/google/callback` as a redirect URI on the Google client. The address changes with the server's IP, so keep the IP (on Oracle Cloud an ephemeral public IP lasts as long as the instance; a reserved IP survives re-creating it).
 
 ## First run
 
@@ -469,7 +479,7 @@ A copy on one computer has no limits. Before opening a hosted copy to other peop
   | `POST /api/investigations` | 20 per 10 minutes | 10 per 10 minutes |
 
   Over a limit the route returns `429` with `Retry-After` and `{"error": "Too many requests. Try again in 2 minutes.", "rateLimited": true, "retryAfterSeconds"}`. The counters live in the app's memory (they reset on restart and assume a single app process, which is how CA Mode runs); IPv6 addresses are grouped by /64. These sit on top of the five-wrong-PINs lockout.
-- **Client IP behind Cloudflare** (`TRUSTED_PROXY=cloudflare`). Behind a Cloudflare Tunnel every request reaches the app from `cloudflared`, so without this all visitors share one IP limit. With it the app reads `CF-Connecting-IP`. Set it only when the app's port is not reachable except through Cloudflare (the hosted Compose file publishes no ports); otherwise anyone can send the header and choose their own IP.
+- **Client IP behind Cloudflare** (`TRUSTED_PROXY=cloudflare`). Behind a Cloudflare Tunnel every request reaches the app from `cloudflared`, so without this all visitors share one IP limit. With it the app reads `CF-Connecting-IP`. Set it only when the app's port is not reachable except through Cloudflare (the hosted Compose file publishes no ports); otherwise anyone can send the header and choose their own IP. Behind Caddy (`deploy/docker-compose.caddy.yml`), `TRUSTED_PROXY=caddy` reads the last `X-Forwarded-For` entry, the address Caddy saw.
 - **Turnstile on sign-up** (`TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, from Cloudflare → Turnstile → Add widget, for your hostname). The sign-up form then loads the widget from `challenges.cloudflare.com` and the server checks each token with Cloudflare before creating the profile (`400 {"turnstileFailed": true}` when it fails, `503` when Cloudflare cannot be reached, so sign-up fails closed). Sign-in is not affected.
 
 ## Local data and privacy

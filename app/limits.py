@@ -13,9 +13,11 @@ behaves exactly as before:
 - ``TURNSTILE_SITE_KEY`` + ``TURNSTILE_SECRET_KEY``: a Cloudflare Turnstile check on
   sign-up, verified server side.
 
-The client IP is the TCP peer unless ``TRUSTED_PROXY=cloudflare``, which takes it from
-``CF-Connecting-IP``. Set that only when the app is reachable solely through Cloudflare
-(a Tunnel with no published ports); otherwise anyone could pick their own IP.
+The client IP is the TCP peer unless ``TRUSTED_PROXY`` names the proxy in front of the app:
+``cloudflare`` takes it from ``CF-Connecting-IP``, ``caddy`` from the last ``X-Forwarded-For``
+entry (the address Caddy saw; Caddy replaces a client's own header). Set it only when that proxy
+is the only way in (a Tunnel, or Caddy with the app's port unpublished); otherwise anyone could
+pick their own IP.
 """
 
 from __future__ import annotations
@@ -254,12 +256,15 @@ def check_rate(group: RateGroup, *, ip: str, profile_id: str | None = None) -> N
             raise RateLimited(retry_after)
 
 
+TRUSTED_PROXIES: Final = ("cloudflare", "caddy")
+
+
 def _trusted_proxy() -> str | None:
     value = os.getenv("TRUSTED_PROXY", "").strip().lower()
     if not value:
         return None
-    if value != "cloudflare":
-        logger.warning("Ignoring TRUSTED_PROXY=%r: only 'cloudflare' is supported", value)
+    if value not in TRUSTED_PROXIES:
+        logger.warning("Ignoring TRUSTED_PROXY=%r: use one of %s", value, ", ".join(TRUSTED_PROXIES))
         return None
     return value
 
@@ -278,11 +283,15 @@ def _client_key(address: str) -> str | None:
 
 
 def client_address(request: Request) -> str:
-    """Return the client's address: ``CF-Connecting-IP`` behind a trusted Cloudflare, else the TCP peer."""
-    if _trusted_proxy() == "cloudflare":
+    """Return the client's address as the trusted proxy reports it (``TRUSTED_PROXY``), else the TCP peer."""
+    proxy = _trusted_proxy()
+    forwarded = ""
+    if proxy == "cloudflare":
         forwarded = request.headers.get("cf-connecting-ip", "").strip()
-        if _client_key(forwarded):
-            return forwarded
+    elif proxy == "caddy":
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
+    if _client_key(forwarded):
+        return forwarded
     return request.client.host if request.client else ""
 
 

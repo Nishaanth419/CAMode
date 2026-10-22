@@ -1,0 +1,8 @@
+# Public HTTPS without Cloudflare: Caddy gets a Let's Encrypt certificate for SITE_ADDRESS
+# (a domain pointing at this server, or <ip-with-dashes>.sslip.io) and is the only way in.
+# Set TRUSTED_PROXY=caddy in app.env so rate limits see each visitor's address.
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy app:8080
+}
