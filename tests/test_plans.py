@@ -162,6 +162,16 @@ def test_pricing_page_has_no_email_buttons_without_a_valid_contact(client, monke
 
 # ── python -m scripts.plans ─────────────────────────────────────────────────────
 
+def test_cli_sets_a_plan_for_an_id_starting_with_a_dash(monkeypatch):
+    # Profile ids are URL-safe base64, so about 1 in 64 starts with "-", which argparse took for an option.
+    monkeypatch.setattr(users, "random_token", lambda: "-dash-leading-profile-id")
+    profile = users.create_user("Asha", users.hash_pin("2468"))
+
+    assert plans_cli.main(["set", profile["id"], "team"]) == 0
+
+    assert users.get_user(profile["id"])["plan"] == "team"
+
+
 def test_cli_sets_a_plan_by_name_id_or_email(client, capsys):
     asha = sign_up(client, "Asha")
     ravi = sign_up(client, "Ravi", "1357")
