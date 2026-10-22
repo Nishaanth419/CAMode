@@ -454,6 +454,33 @@ python -m scripts.plans set Asha free                     # back to the daily li
 
 (In the hosted setup: `docker compose exec app python -m scripts.plans …`.) The plan is the `users.plan` column; paid plans skip the daily question cap, while request rate limits still apply to everyone. `/api/session` returns `usage` (`plan`, `planName`, `limit`, `used`, `remaining`, `resetsAt`; `limit` is `null` when nothing caps the profile), a counted answer carries `X-Questions-Remaining`, and the daily-limit `429` adds `pricingUrl`. The profile dialog shows "5 of 5 questions left today" or "Unlimited questions". A copy on one computer with no `DAILY_QUESTION_LIMIT` stays unlimited on every plan. To change a price, edit `PLANS` and `PRICES_UPDATED` (the sitemap date).
 
+## Admin page
+
+`/admin` is for whoever runs the copy: every profile with its name, Google email address, plan, questions asked today, when it joined and was last seen, whether it accepted the current privacy notice, whether INDmoney is connected (and whether the last snapshot failed), and whether its PIN is locked. From it you can change a plan, clear a PIN lock, sign a profile out on every device, delete a profile (type its name to confirm), and back up the database now. It also shows backup status and the last 7 days of anonymous page views.
+
+It never shows PIN-locked history: chats, goals, decisions, profile details and snapshot contents stay sealed, and no admin route opens them.
+
+1. Use a Google OAuth web client (the same one as [Google sign-in](#open-it-to-other-people-google-sign-in), with `APP_ORIGIN/auth/google/callback` as the redirect URI). Admin sign-in works in either `AUTH_MODE`.
+2. List the admins and restart:
+
+   ```bash
+   ADMIN_EMAILS=you@example.com,partner@example.com
+   GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...
+   ```
+
+   The app refuses to start with `ADMIN_EMAILS` set and no Google client.
+3. Open `https://your.domain/admin` and choose **Sign in with Google**.
+
+How it works:
+
+- Without `ADMIN_EMAILS`, every admin path is a 404.
+- Admin sign-in has its own cookie (`ca_admin`, 8 hours) and session row, never bound to a profile. Being an admin opens no profile, and signing in to a profile, even with the same Google account, gives no admin access.
+- The address is checked against `ADMIN_EMAILS` on every request, so removing an address ends that admin's access at once.
+- Every action is logged with the admin's email (`admin_plan_changed`, `admin_lockout_cleared`, `admin_profile_signed_out`, `admin_profile_deleted`, `admin_backup_created`).
+- The privacy notice (version 2026-10-22.2) tells profiles what the admin page shows and can do.
+- In the hosted setup, you can also put `/admin*` behind its own Cloudflare Access policy that allows only your email.
+
 ## Limits for a shared copy
 
 A copy on one computer has no limits. Before opening a hosted copy to other people, turn these on so one person or bot cannot monopolise the model (one Mac running Ollama answers one question at a time) or run up OpenAI or Groq costs. Each is independent and off unless set.
@@ -505,7 +532,7 @@ Keep `.env`, `.data/`, and any database backups private; none of them should be 
 
 ### Backups
 
-While the app runs, it backs up the database once a day to `~/ca-mode-backups` (`BACKUP_DIR`) and keeps the last 14. **Back up now** under **Your data and privacy** makes one immediately. Backups use SQLite's online backup API, so they are consistent while the app is running, and each is checked with SQLite's integrity check before it is kept.
+While the app runs, it backs up the database once a day to `~/ca-mode-backups` (`BACKUP_DIR`) and keeps the last 14. **Back up now** under **Your data and privacy** makes one immediately. With the [admin page](#admin-page) on (`ADMIN_EMAILS` set), backups are the operator's job: the profile dialog hides them, `/api/backups` returns 404 to profiles, and **Back up now** is on `/admin` instead, so nobody else sees the server's backup folder or backs up every profile's data. Backups use SQLite's online backup API, so they are consistent while the app is running, and each is checked with SQLite's integrity check before it is kept.
 
 - Chats, snapshots, and profile details in a backup stay sealed with each profile's PIN, so the file is safe to copy to an external drive or cloud folder. Point `BACKUP_DIR` there for copies that survive losing this disk.
 - The master key (`~/.config/ca-mode/master.key`) is never copied into backups, because keeping it beside the database would undo the token encryption. Losing it only means reconnecting INDmoney; keep a copy in a password manager if you want to avoid that.
@@ -531,7 +558,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/session` | Current profile, INDmoney status, `usage` (plan and today's questions), `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), and `turnstileSiteKey` when sign-up uses Turnstile |
+| `GET /api/session` | Current profile, INDmoney status, `usage` (plan and today's questions), `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), `backupsInApp` (`false` with `ADMIN_EMAILS` set, so the profile dialog hides backups), and `turnstileSiteKey` when sign-up uses Turnstile |
 | `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`); with Google sign-in, only for a Google account just signed in (else `401 {"signInRequired": true}`), and linked to it |
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN (local mode only; `404` with Google sign-in); sign out |
 | `GET /auth/google/start`, `GET /auth/google/callback` | Google sign-in (`AUTH_MODE=google`); the callback redirects to `/`, or to `/?signInError=cancelled\|expired\|failed` |
@@ -560,16 +587,22 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace`; `429` over a [usage limit](#limits-for-a-shared-copy) |
 | `GET /api/snapshots?days=30` | Latest snapshot summary and net-worth history |
 | `POST /api/snapshots/refresh` | Capture a snapshot now |
+| `GET /api/backups`, `POST /api/backups` | Backup status (directory, count, latest, schedule) or back up the whole database now; any signed-in profile on a copy without an admin page, `404` with `ADMIN_EMAILS` set (use `/api/admin/backups`) |
 | `GET /api/providers` | Configured AI providers |
 | `GET /api/tools` | INDmoney tools available to the signed-in profile |
 | `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect` | INDmoney OAuth |
 | `GET /healthz` | Health check |
 | `POST /api/page-views` | Count one anonymous page view (body: `{"route"}`, an app page name); returns `{"counted"}`, `false` in private mode, without current consent, or when disabled |
+| `GET /admin`, `GET /auth/admin/start` | The [admin page](#admin-page) and its Google sign-in (the shared callback redirects to `/admin`, or `/admin?error=not_admin\|cancelled\|expired\|failed`); `404` without `ADMIN_EMAILS` |
+| `GET /api/admin/session`, `POST /api/admin/sign-out` | The signed-in admin (`{"admin": {"email", "signedInAt"} \| null}`); end the admin session |
+| `GET /api/admin/overview` | Totals, plans, the daily cap, backup status, page views and every profile (no sealed history) |
+| `PUT /api/admin/profiles/{id}/plan`, `POST /api/admin/profiles/{id}/clear-lockout`, `POST /api/admin/profiles/{id}/sign-out`, `DELETE /api/admin/profiles/{id}` | Change a plan (`{"plan"}`), clear a PIN lock, end every session of a profile, delete a profile (`{"confirmName"}`, its name; `422` when it does not match) |
+| `POST /api/admin/backups` | Back up the database now |
 | `GET /privacy` | Privacy policy page, rendered from the same notice profiles accept (no profile needed) |
 | `GET /pricing` | Pricing page, rendered from `plans.PLANS` (no profile needed) |
-| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy` and `/pricing`; URLs use `APP_ORIGIN` |
+| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/`, `/auth/` and `/admin` disallowed) and a sitemap listing only `/privacy` and `/pricing`; URLs use `APP_ORIGIN` |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, and the public pages (`/`, `/privacy`, `/pricing`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
+Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, the admin routes (which need an admin session instead: `401 {"adminRequired": true}`), and the public pages (`/`, `/privacy`, `/pricing`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
 
 ## Troubleshooting
 
@@ -612,8 +645,9 @@ app/
   accounts.py      AUTH_MODE, Google sign-in (OpenID Connect) and the accounts linked to profiles
   privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
   page_views.py    Anonymous local page-view counts
+  admin.py         The operator's admin page: admin sign-in, profiles overview, plan/lockout/sign-out actions
   plans.py         Plans (Free, Individual, Team), the Free daily cap and today's usage
-  public_pages.py  App shell with absolute Open Graph URLs, privacy policy, pricing and 404 pages, robots.txt, sitemap.xml
+  public_pages.py  App shell with absolute Open Graph URLs, privacy policy, pricing, admin and 404 pages, robots.txt, sitemap.xml
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
@@ -654,6 +688,7 @@ tests/
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
   test_page_views.py   Page-view counting, retention and gates
+  test_admin.py        Admin page: off by default, its own sign-in, the overview, account actions
   test_plans.py        Plan caps, usage in the session, the pricing page, the plans CLI
   test_public_pages.py Meta tags, privacy page, robots/sitemap, HTML vs JSON 404s, icons and manifest
   test_mcp_client.py MCP protocol handling and tool filtering
