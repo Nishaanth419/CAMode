@@ -25,7 +25,8 @@ from .db import connect_db
 # 2026-10-21.2: optional usage limits (daily question counts, in-memory rate limits, Turnstile on sign-up).
 # 2026-10-21.3: Google sign-in (AUTH_MODE=google) stores the Google account id and email address.
 # 2026-10-22.1: each profile's plan (Free, Individual or Team) is stored with it.
-POLICY_VERSION: Final = "2026-10-22.1"
+# 2026-10-22.2: the operator's admin page (admin.py) and what it shows.
+POLICY_VERSION: Final = "2026-10-22.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -66,6 +67,18 @@ NOTICE: Final = (
             "contacts or anything else in your Google account. Google learns that you signed in to CA Mode, under "
             "Google's own privacy policy. Signing in does not unlock your saved history: your PIN still does. The "
             "account link is part of your export and is deleted with your profile."
+        ),
+    },
+    {
+        "title": "What whoever runs CA Mode can see",
+        "body": (
+            "Where an admin page is turned on, the people who run this copy can see a list of profiles with each "
+            "one's name, Google email address, plan, the number of questions asked today, when it was created and "
+            "last used, whether it accepted this notice, whether INDmoney is connected and when the last snapshot "
+            "was taken, and whether its PIN is locked after wrong guesses. From that page they can change your plan, "
+            "clear a PIN lock, sign your profile out on every device, or delete your profile and everything it owns. "
+            "The admin page cannot open your PIN-locked history: your chats, goals, decisions, profile details and "
+            "portfolio snapshots are not shown there."
         ),
     },
     {

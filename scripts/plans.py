@@ -45,6 +45,13 @@ def find_profiles(who: str) -> list[dict[str, Any]]:
     return []
 
 
+def _positional_set_arguments(argv: list[str]) -> list[str]:
+    """Read everything after ``set`` as positional: a profile id can start with ``-`` (ids are URL-safe base64)."""
+    if argv[:1] == ["set"] and "--" not in argv and not {"-h", "--help"} & set(argv):
+        return ["set", "--", *argv[1:]]
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -52,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     change = commands.add_parser("set", help="change one profile's plan")
     change.add_argument("profile", help="profile name, Google email or profile id")
     change.add_argument("plan", choices=plans.PLAN_IDS)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_positional_set_arguments(sys.argv[1:] if argv is None else argv))
     initialize_db()
 
     if args.command == "list":

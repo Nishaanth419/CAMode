@@ -99,7 +99,7 @@ cp .env.example .env
 | `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per Free-plan profile per day in `SNAPSHOT_TIMEZONE` (the hosted copy uses `5`); see [Plans and pricing](#plans-and-pricing) |
 | `PRICING_CONTACT_EMAIL` | – | Where the `/pricing` page's "Choose Individual" and "Contact us" buttons send an email; unset, the page says to ask whoever runs the copy |
 | `RATE_LIMITS_ENABLED` | `false` | Request rate limits per IP and per profile on chat, sign-up, sign-in and investigations |
-| `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP` (only when the app is reachable solely through Cloudflare) |
+| `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP`; `caddy`: from the last `X-Forwarded-For` entry. Only when the app is reachable solely through that proxy |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | – | Both set: sign-up asks for a Cloudflare Turnstile check |
 
 You can configure several providers and switch in the app. Provider keys stay in the server environment and are never sent to the browser. Leave `OPENAI_API_KEY` and `GROQ_API_KEY` empty to make sending data to an AI company impossible.
@@ -196,11 +196,21 @@ sudo mkdir -p /srv/ca-mode/data /srv/ca-mode/key /srv/ca-mode/backups
 docker compose up -d --build
 ```
 
-The master key is created in `/srv/ca-mode/key` on first start; keep a copy somewhere safe, away from the backups. Daily backups go to `/srv/ca-mode/backups`, on the same disk, so also copy them off the server, for example from the Mac: `rsync -a <server>:/srv/ca-mode/backups/ ~/ca-mode-backups/server/`. To update: `git pull && docker compose up -d --build` (everyone enters their PIN again after a restart).
+The master key is created in `/srv/ca-mode/key` on first start; keep a copy somewhere safe, away from the backups. Daily backups go to `/srv/ca-mode/backups`, on the same disk, so also copy them off the server. `deploy/pull-backups.sh` does that from the Mac over Tailscale: `sh deploy/pull-backups.sh --install` schedules it with launchd (09:30, 21:30 and at login), copies new backups to `~/ca-mode-backups/server/`, checks the newest with SQLite's integrity check, keeps the newest 30 and shows a notification when a copy fails (log: `~/ca-mode-backups/server/pull.log`; `CA_MODE_BACKUP_HOST` defaults to this project's server). A backup is only readable with the master key, so keep a copy of `/srv/ca-mode/key/master.key` on the Mac too, apart from the backups. To update: `git pull && docker compose up -d --build` (everyone enters their PIN again after a restart).
 
 **Moving your existing data (optional).** On the Mac, run `python -m scripts.backup now` and stop the local app for good: two copies would both refresh the same INDmoney tokens. Before the server's first start, copy the backup file to `/srv/ca-mode/data/codemode.sqlite3` and `~/.config/ca-mode/master.key` to `/srv/ca-mode/key/master.key`. Otherwise everyone creates a profile on the server and connects INDmoney again.
 
 The profile picker lists every profile to anyone who can open the site and the PIN is a lock, not network-grade sign-in, which is why Cloudflare Access must stay in front of it.
+
+**Without a domain or Cloudflare: Caddy.** Caddy can serve the app over HTTPS on the server's own ports, with a free Let's Encrypt certificate for a domain pointing at the server or for `<ip-with-dashes>.sslip.io` (a free DNS name that points at that IP, e.g. `129-225-97-229.sslip.io`). The site is then public with no Cloudflare Access in front, so use it only with `AUTH_MODE=google`. Open TCP 80 and 443 (and UDP 443) to the internet in the cloud firewall, then:
+
+```bash
+echo "SITE_ADDRESS=129-225-97-229.sslip.io" >> .env      # in deploy/
+# app.env: APP_ORIGIN=https://129-225-97-229.sslip.io and TRUSTED_PROXY=caddy
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build app caddy
+```
+
+Add `https://<SITE_ADDRESS>/auth/google/callback` as a redirect URI on the Google client. The address changes with the server's IP, so keep the IP (on Oracle Cloud an ephemeral public IP lasts as long as the instance; a reserved IP survives re-creating it).
 
 ### Automatic updates
 
@@ -472,6 +482,33 @@ python -m scripts.plans set Asha free                     # back to the daily li
 
 (In the hosted setup: `docker compose exec app python -m scripts.plans …`.) The plan is the `users.plan` column; paid plans skip the daily question cap, while request rate limits still apply to everyone. `/api/session` returns `usage` (`plan`, `planName`, `limit`, `used`, `remaining`, `resetsAt`; `limit` is `null` when nothing caps the profile), a counted answer carries `X-Questions-Remaining`, and the daily-limit `429` adds `pricingUrl`. The profile dialog shows "5 of 5 questions left today" or "Unlimited questions". A copy on one computer with no `DAILY_QUESTION_LIMIT` stays unlimited on every plan. To change a price, edit `PLANS` and `PRICES_UPDATED` (the sitemap date).
 
+## Admin page
+
+`/admin` is for whoever runs the copy: every profile with its name, Google email address, plan, questions asked today, when it joined and was last seen, whether it accepted the current privacy notice, whether INDmoney is connected (and whether the last snapshot failed), and whether its PIN is locked. From it you can change a plan, clear a PIN lock, sign a profile out on every device, delete a profile (type its name to confirm), and back up the database now. It also shows backup status and the last 7 days of anonymous page views.
+
+It never shows PIN-locked history: chats, goals, decisions, profile details and snapshot contents stay sealed, and no admin route opens them.
+
+1. Use a Google OAuth web client (the same one as [Google sign-in](#open-it-to-other-people-google-sign-in), with `APP_ORIGIN/auth/google/callback` as the redirect URI). Admin sign-in works in either `AUTH_MODE`.
+2. List the admins and restart:
+
+   ```bash
+   ADMIN_EMAILS=you@example.com,partner@example.com
+   GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...
+   ```
+
+   The app refuses to start with `ADMIN_EMAILS` set and no Google client.
+3. Open `https://your.domain/admin` and choose **Sign in with Google**.
+
+How it works:
+
+- Without `ADMIN_EMAILS`, every admin path is a 404.
+- Admin sign-in has its own cookie (`ca_admin`, 8 hours) and session row, never bound to a profile. Being an admin opens no profile, and signing in to a profile, even with the same Google account, gives no admin access.
+- The address is checked against `ADMIN_EMAILS` on every request, so removing an address ends that admin's access at once.
+- Every action is logged with the admin's email (`admin_plan_changed`, `admin_lockout_cleared`, `admin_profile_signed_out`, `admin_profile_deleted`, `admin_backup_created`).
+- The privacy notice (version 2026-10-22.2) tells profiles what the admin page shows and can do.
+- In the hosted setup, you can also put `/admin*` behind its own Cloudflare Access policy that allows only your email.
+
 ## Limits for a shared copy
 
 A copy on one computer has no limits. Before opening a hosted copy to other people, turn these on so one person or bot cannot monopolise the model (one Mac running Ollama answers one question at a time) or run up OpenAI or Groq costs. Each is independent and off unless set.
@@ -487,7 +524,7 @@ A copy on one computer has no limits. Before opening a hosted copy to other peop
   | `POST /api/investigations` | 20 per 10 minutes | 10 per 10 minutes |
 
   Over a limit the route returns `429` with `Retry-After` and `{"error": "Too many requests. Try again in 2 minutes.", "rateLimited": true, "retryAfterSeconds"}`. The counters live in the app's memory (they reset on restart and assume a single app process, which is how CA Mode runs); IPv6 addresses are grouped by /64. These sit on top of the five-wrong-PINs lockout.
-- **Client IP behind Cloudflare** (`TRUSTED_PROXY=cloudflare`). Behind a Cloudflare Tunnel every request reaches the app from `cloudflared`, so without this all visitors share one IP limit. With it the app reads `CF-Connecting-IP`. Set it only when the app's port is not reachable except through Cloudflare (the hosted Compose file publishes no ports); otherwise anyone can send the header and choose their own IP.
+- **Client IP behind Cloudflare** (`TRUSTED_PROXY=cloudflare`). Behind a Cloudflare Tunnel every request reaches the app from `cloudflared`, so without this all visitors share one IP limit. With it the app reads `CF-Connecting-IP`. Set it only when the app's port is not reachable except through Cloudflare (the hosted Compose file publishes no ports); otherwise anyone can send the header and choose their own IP. Behind Caddy (`deploy/docker-compose.caddy.yml`), `TRUSTED_PROXY=caddy` reads the last `X-Forwarded-For` entry, the address Caddy saw.
 - **Turnstile on sign-up** (`TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, from Cloudflare → Turnstile → Add widget, for your hostname). The sign-up form then loads the widget from `challenges.cloudflare.com` and the server checks each token with Cloudflare before creating the profile (`400 {"turnstileFailed": true}` when it fails, `503` when Cloudflare cannot be reached, so sign-up fails closed). Sign-in is not affected.
 
 ## Local data and privacy
@@ -523,7 +560,7 @@ Keep `.env`, `.data/`, and any database backups private; none of them should be 
 
 ### Backups
 
-While the app runs, it backs up the database once a day to `~/ca-mode-backups` (`BACKUP_DIR`) and keeps the last 14. **Back up now** under **Your data and privacy** makes one immediately. Backups use SQLite's online backup API, so they are consistent while the app is running, and each is checked with SQLite's integrity check before it is kept.
+While the app runs, it backs up the database once a day to `~/ca-mode-backups` (`BACKUP_DIR`) and keeps the last 14. **Back up now** under **Your data and privacy** makes one immediately. With the [admin page](#admin-page) on (`ADMIN_EMAILS` set), backups are the operator's job: the profile dialog hides them, `/api/backups` returns 404 to profiles, and **Back up now** is on `/admin` instead, so nobody else sees the server's backup folder or backs up every profile's data. Backups use SQLite's online backup API, so they are consistent while the app is running, and each is checked with SQLite's integrity check before it is kept.
 
 - Chats, snapshots, and profile details in a backup stay sealed with each profile's PIN, so the file is safe to copy to an external drive or cloud folder. Point `BACKUP_DIR` there for copies that survive losing this disk.
 - The master key (`~/.config/ca-mode/master.key`) is never copied into backups, because keeping it beside the database would undo the token encryption. Losing it only means reconnecting INDmoney; keep a copy in a password manager if you want to avoid that.
@@ -549,7 +586,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/session` | Current profile, INDmoney status, `usage` (plan and today's questions), `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), and `turnstileSiteKey` when sign-up uses Turnstile |
+| `GET /api/session` | Current profile, INDmoney status, `usage` (plan and today's questions), `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), `backupsInApp` (`false` with `ADMIN_EMAILS` set, so the profile dialog hides backups), and `turnstileSiteKey` when sign-up uses Turnstile |
 | `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`); with Google sign-in, only for a Google account just signed in (else `401 {"signInRequired": true}`), and linked to it |
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN (local mode only; `404` with Google sign-in); sign out |
 | `GET /auth/google/start`, `GET /auth/google/callback` | Google sign-in (`AUTH_MODE=google`); the callback redirects to `/`, or to `/?signInError=cancelled\|expired\|failed` |
@@ -578,16 +615,22 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `POST /api/chat` | Send a message; returns the answer as text and the trace in `X-Agent-Trace`; `429` over a [usage limit](#limits-for-a-shared-copy) |
 | `GET /api/snapshots?days=30` | Latest snapshot summary and net-worth history |
 | `POST /api/snapshots/refresh` | Capture a snapshot now |
+| `GET /api/backups`, `POST /api/backups` | Backup status (directory, count, latest, schedule) or back up the whole database now; any signed-in profile on a copy without an admin page, `404` with `ADMIN_EMAILS` set (use `/api/admin/backups`) |
 | `GET /api/providers` | Configured AI providers |
 | `GET /api/tools` | INDmoney tools available to the signed-in profile |
 | `GET /auth/indmoney/connect`, `GET /auth/indmoney/callback`, `POST /auth/indmoney/disconnect` | INDmoney OAuth |
 | `GET /healthz` | Health check |
 | `POST /api/page-views` | Count one anonymous page view (body: `{"route"}`, an app page name); returns `{"counted"}`, `false` in private mode, without current consent, or when disabled |
+| `GET /admin`, `GET /auth/admin/start` | The [admin page](#admin-page) and its Google sign-in (the shared callback redirects to `/admin`, or `/admin?error=not_admin\|cancelled\|expired\|failed`); `404` without `ADMIN_EMAILS` |
+| `GET /api/admin/session`, `POST /api/admin/sign-out` | The signed-in admin (`{"admin": {"email", "signedInAt"} \| null}`); end the admin session |
+| `GET /api/admin/overview` | Totals, plans, the daily cap, backup status, page views and every profile (no sealed history) |
+| `PUT /api/admin/profiles/{id}/plan`, `POST /api/admin/profiles/{id}/clear-lockout`, `POST /api/admin/profiles/{id}/sign-out`, `DELETE /api/admin/profiles/{id}` | Change a plan (`{"plan"}`), clear a PIN lock, end every session of a profile, delete a profile (`{"confirmName"}`, its name; `422` when it does not match) |
+| `POST /api/admin/backups` | Back up the database now |
 | `GET /privacy` | Privacy policy page, rendered from the same notice profiles accept (no profile needed) |
 | `GET /pricing` | Pricing page, rendered from `plans.PLANS` (no profile needed) |
-| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy` and `/pricing`; URLs use `APP_ORIGIN` |
+| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/`, `/auth/` and `/admin` disallowed) and a sitemap listing only `/privacy` and `/pricing`; URLs use `APP_ORIGIN` |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, and the public pages (`/`, `/privacy`, `/pricing`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
+Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, the admin routes (which need an admin session instead: `401 {"adminRequired": true}`), and the public pages (`/`, `/privacy`, `/pricing`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
 
 ## Troubleshooting
 
@@ -630,8 +673,9 @@ app/
   accounts.py      AUTH_MODE, Google sign-in (OpenID Connect) and the accounts linked to profiles
   privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
   page_views.py    Anonymous local page-view counts
+  admin.py         The operator's admin page: admin sign-in, profiles overview, plan/lockout/sign-out actions
   plans.py         Plans (Free, Individual, Team), the Free daily cap and today's usage
-  public_pages.py  App shell with absolute Open Graph URLs, privacy policy, pricing and 404 pages, robots.txt, sitemap.xml
+  public_pages.py  App shell with absolute Open Graph URLs, privacy policy, pricing, admin and 404 pages, robots.txt, sitemap.xml
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
@@ -672,6 +716,7 @@ tests/
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
   test_page_views.py   Page-view counting, retention and gates
+  test_admin.py        Admin page: off by default, its own sign-in, the overview, account actions
   test_plans.py        Plan caps, usage in the session, the pricing page, the plans CLI
   test_public_pages.py Meta tags, privacy page, robots/sitemap, HTML vs JSON 404s, icons and manifest
   test_mcp_client.py MCP protocol handling and tool filtering

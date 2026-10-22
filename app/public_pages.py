@@ -1,9 +1,9 @@
-"""Pages served without a profile: the app shell, privacy policy, pricing, 404 page, robots.txt and sitemap.xml.
+"""Pages served without a profile: the app shell, privacy policy, pricing, admin, 404 page, robots.txt and sitemap.xml.
 
 The privacy page renders ``privacy.NOTICE``, so it always matches what profiles accept in the
 app, and the pricing page renders ``plans.PLANS``. Only those two are listed for search engines: the app shell shows the names of the
 profiles on this computer, so it carries ``noindex`` (crawlers are still allowed to fetch it, or
-they could not read that tag). ``/api/`` and ``/auth/`` are disallowed outright.
+they could not read that tag). ``/api/``, ``/auth/`` and ``/admin`` are disallowed outright.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ def robots_txt(origin: str) -> str:
         "User-agent: *\n"
         "Disallow: /api/\n"
         "Disallow: /auth/\n"
+        "Disallow: /admin\n"
         "Allow: /\n"
         "\n"
         f"Sitemap: {origin}/sitemap.xml\n"
@@ -74,7 +75,9 @@ def is_api_path(path: str) -> bool:
     return path.startswith(API_PREFIXES)
 
 
-def _page(*, title: str, description: str, body: str, is_indexable: bool, is_wide: bool = False) -> str:
+def _page(
+    *, title: str, description: str, body: str, is_indexable: bool, is_wide: bool = False, head: str = "",
+) -> str:
     page_class = "public-page public-page-wide" if is_wide else "public-page"
     robots = "" if is_indexable else '  <meta name="robots" content="noindex" />\n'
     return f"""<!doctype html>
@@ -90,7 +93,7 @@ def _page(*, title: str, description: str, body: str, is_indexable: bool, is_wid
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="stylesheet" href="/css/public.css?v=2" />
-</head>
+{head}</head>
 <body>
   <main class="{page_class}">
     <a class="public-brand" href="/"><img src="/icon.svg" width="36" height="36" alt="" />CA Mode</a>
@@ -119,6 +122,21 @@ def privacy_page() -> str:
         description="What CA Mode saves on your computer, what it sends to the AI model you choose, and how to export or delete your data.",
         body=body,
         is_indexable=True,
+    )
+
+
+def admin_page() -> str:
+    """Return the operator's admin page; ``js/admin.js`` fills it from ``/api/admin/*``."""
+    body = """    <h1>Admin</h1>
+    <p class="public-lead">Profiles on this copy of CA Mode, their plans and usage. PIN-locked history is never shown here.</p>
+    <div id="admin" aria-live="polite"><p class="admin-muted">Loading…</p></div>"""
+    return _page(
+        title="Admin",
+        description="Manage CA Mode profiles and plans.",
+        body=body,
+        is_indexable=False,
+        is_wide=True,
+        head='  <link rel="stylesheet" href="/css/admin.css?v=1" />\n  <script src="/js/admin.js?v=1" defer></script>\n',
     )
 
 

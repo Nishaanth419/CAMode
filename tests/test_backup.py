@@ -121,6 +121,16 @@ def test_backup_api_requires_a_profile(client):
     assert client.post("/api/backups").status_code == 401
 
 
+def test_backup_api_is_for_the_operator_when_the_admin_page_is_on(client, signed_in, monkeypatch):
+    assert client.get("/api/session").json()["backupsInApp"] is True
+    monkeypatch.setenv("ADMIN_EMAILS", "owner@example.com")
+
+    assert client.get("/api/backups").status_code == 404
+    assert client.post("/api/backups").status_code == 404
+    assert client.get("/api/session").json()["backupsInApp"] is False
+    assert backup.list_backups() == []
+
+
 def test_scheduler_makes_the_daily_backup(monkeypatch):
     calls = []
 
