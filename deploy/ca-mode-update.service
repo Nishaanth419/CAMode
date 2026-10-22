@@ -1,0 +1,8 @@
+[Unit]
+Description=Update CA Mode to the newest published image
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ca-mode-update

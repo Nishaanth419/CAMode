@@ -1,0 +1,8 @@
+# Run the image the "Publish image" workflow builds from main, instead of building on the server.
+# deploy/update.sh pulls it and restarts the app when it changes (README: "Automatic updates").
+# Use it by listing it in COMPOSE_FILE in deploy/.env, e.g.
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.image.yml
+services:
+  app:
+    image: ${CA_MODE_IMAGE:-ghcr.io/nishaanth419/camode:main}
+    pull_policy: missing
