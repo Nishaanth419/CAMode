@@ -202,6 +202,24 @@ The master key is created in `/srv/ca-mode/key` on first start; keep a copy some
 
 The profile picker lists every profile to anyone who can open the site and the PIN is a lock, not network-grade sign-in, which is why Cloudflare Access must stay in front of it.
 
+### Automatic updates
+
+Instead of building on the server, the server can run the image GitHub builds from `main`:
+
+1. **GitHub publishes the image.** After CI passes on a push to `main`, the "Publish image" workflow (`.github/workflows/deploy.yml`) builds the image for x86 and Arm and publishes it as `ghcr.io/<owner>/<repo>:main` (and `:sha-<commit>`). The first time, make the package public on GitHub (your profile → Packages → the package → Package settings → Change visibility), so the server can pull it without a token. GitHub never connects to the server.
+2. **The server picks it up.** `deploy/update.sh` pulls the image, and when it differs from the running one, backs up the database, restarts the app on it and waits up to 2 minutes for it to be healthy. If it is not, it goes back to the previous image and skips that image from then on. A timer runs it every 5 minutes:
+
+   ```bash
+   # in deploy/.env
+   COMPOSE_FILE=docker-compose.yml:docker-compose.image.yml   # add :docker-compose.caddy.yml when serving through Caddy
+   sudo install -m 755 update.sh /usr/local/bin/ca-mode-update
+   sudo install -m 644 ca-mode-update.service ca-mode-update.timer /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now ca-mode-update.timer
+   journalctl -u ca-mode-update -f     # what each check did
+   ```
+
+A change on `main` is live about 5 to 10 minutes after CI passes; other branches and pull requests never deploy. Each update restarts the app, so everyone signed in enters their PIN again. `CA_MODE_IMAGE` (in `deploy/.env` or the environment) picks another image, for example a `:sha-<commit>` tag to stay on one version.
+
 ## First run
 
 1. **Create a profile.** The first screen asks "Who's using CA Mode?". Enter your name and a PIN of at least four characters. Other people on the same computer add their own profiles with **+ Add a profile**. You then see a **recovery code** once: write it down. It is the only way back into your saved history if you forget your PIN.
