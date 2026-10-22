@@ -291,6 +291,32 @@ def test_cloudflare_ip_is_used_only_behind_a_trusted_proxy(client, monkeypatch):
     assert create("F", "not-an-ip").status_code == 429
 
 
+def test_caddy_forwarded_ip_is_used_only_behind_a_trusted_proxy(client, monkeypatch):
+    monkeypatch.setenv("RATE_LIMITS_ENABLED", "true")
+    monkeypatch.setitem(limits.RATE_RULES, "sign_up", limits.GroupRules(limits.Rule(1, 3600), None))
+
+    def create(name, forwarded):
+        client.post("/api/session/logout")
+        return client.post("/api/users", json={"displayName": name, "pin": "2468"}, headers={"X-Forwarded-For": forwarded})
+
+    # Untrusted: the header is ignored, so every request comes from the same peer.
+    assert create("A", "203.0.113.1").status_code == 201
+    assert create("B", "203.0.113.2").status_code == 429
+
+    monkeypatch.setenv("TRUSTED_PROXY", "caddy")
+    assert create("C", "203.0.113.3").status_code == 201
+    # The last entry is the address Caddy saw; anything a client put before it is ignored.
+    assert create("D", "198.51.100.9, 203.0.113.4").status_code == 201
+    assert create("E", "198.51.100.10, 203.0.113.4").status_code == 429
+    # A forged, unparseable header falls back to the peer (already over its limit).
+    assert create("F", "not-an-ip").status_code == 429
+
+
+def test_unknown_trusted_proxy_is_ignored(monkeypatch):
+    monkeypatch.setenv("TRUSTED_PROXY", "nginx")
+    assert limits._trusted_proxy() is None
+
+
 def test_ipv6_clients_are_grouped_by_their_64_block():
     assert limits._client_key("2001:db8:1:2:aaaa::1") == limits._client_key("2001:db8:1:2:bbbb::9") == "2001:db8:1:2::/64"
     assert limits._client_key("::ffff:203.0.113.7") == "203.0.113.7"
