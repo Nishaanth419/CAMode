@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -56,6 +56,7 @@ __all__ = [
 initialize_db()
 vault.check_key()
 accounts.check_config()
+admin.check_config()
 users.encrypt_stored_secrets()
 
 
@@ -576,6 +577,9 @@ async def finish_google_sign_in(request: Request):
 
     The session id rotates either way. A linked profile's history stays locked until its PIN is entered.
     """
+    admin_sid = request.cookies.get(admin.ADMIN_COOKIE)
+    if admin.is_enabled() and admin.is_signing_in(admin_sid, request.query_params.get("state", "")):
+        return await finish_admin_sign_in(request, admin_sid)
     if not accounts.uses_google():
         raise HTTPException(404)
     sid = session_id(request)
@@ -895,12 +899,17 @@ async def delete_profile(body: ConfirmPinRequest, request: Request):
         return pin_error(exc)
     if not valid:
         return pin_error()
+    await remove_profile(user)
+    logger.info("profile_deleted", extra={"user_id": user["id"]})
+    return {"deleted": True}
+
+
+async def remove_profile(user: dict[str, Any]) -> None:
+    """Revoke the profile's INDmoney token and delete it with everything it owns."""
     await revoke_indmoney(user)
     users.delete_user(user["id"])
     chats.forget_private_chats(user["id"])
     unlock.forget_user(user["id"])
-    logger.info("profile_deleted", extra={"user_id": user["id"]})
-    return {"deleted": True}
 
 
 # ── Privacy: consent, storage mode, export ────────────────────────────────────
@@ -1491,6 +1500,154 @@ def _questions_left_header(question_day: date | None, user: dict[str, Any]) -> d
         return {}
     remaining = plans.usage(user, now=limits.local_now())["remaining"]
     return {"X-Questions-Remaining": str(remaining)} if remaining is not None else {}
+
+
+# ── Admin page (ADMIN_EMAILS) ──────────────────────────────────────────────────
+
+class PlanChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan: plans.PlanId
+
+
+class ConfirmDeletion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # The profile's name, typed again so a slip of the mouse deletes nothing.
+    confirmName: str = Field(min_length=1, max_length=200)
+
+
+def current_admin(request: Request) -> dict[str, Any] | None:
+    """The admin signed in on this browser's admin cookie. Every admin path is a 404 while admin is off."""
+    if not admin.is_enabled():
+        raise HTTPException(404)
+    return admin.admin_for_session(request.cookies.get(admin.ADMIN_COOKIE))
+
+
+def admin_required() -> JSONResponse:
+    return JSONResponse(
+        {"error": "Sign in as an admin to continue.", "adminRequired": True, "signInUrl": admin.START_PATH},
+        status_code=401,
+    )
+
+
+def admin_cookie_options(request: Request) -> dict[str, Any]:
+    return {**cookie_options(request), "key": admin.ADMIN_COOKIE, "max_age": admin.SESSION_SECONDS}
+
+
+def _admin_page(request: Request, query: str = "") -> RedirectResponse:
+    return RedirectResponse(request_origin(request) + admin.PAGE_PATH + query, status_code=302, headers={"Cache-Control": "no-store"})
+
+
+@app.get(admin.START_PATH)
+async def start_admin_sign_in(request: Request):
+    """Send the operator to Google; the callback signs them in to the admin page only, never to a profile."""
+    if not admin.is_enabled():
+        raise HTTPException(404)
+    url, values = accounts.start_sign_in(request_origin(request))
+    sid = users.start_unbound_session(request.cookies.get(admin.ADMIN_COOKIE), values)
+    response = RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
+    response.set_cookie(value=sid, **admin_cookie_options(request))
+    return response
+
+
+async def finish_admin_sign_in(request: Request, sid: str) -> RedirectResponse:
+    try:
+        new_sid, email = await admin.finish_sign_in(sid, dict(request.query_params))
+    except accounts.SignInError as exc:
+        logger.warning("admin_sign_in_failed: %s", exc)
+        return _admin_page(request, f"?error={exc.code}")
+    except admin.NotAnAdmin:
+        logger.warning("admin_sign_in_refused")
+        return _admin_page(request, "?error=not_admin")
+    logger.info("admin_signed_in", extra={"admin": email})
+    response = _admin_page(request)
+    response.set_cookie(value=new_sid, **admin_cookie_options(request))
+    return response
+
+
+@app.get(admin.PAGE_PATH, response_class=HTMLResponse)
+async def admin_page() -> HTMLResponse:
+    if not admin.is_enabled():
+        raise HTTPException(404)
+    return HTMLResponse(public_pages.admin_page())
+
+
+@app.get("/api/admin/session")
+async def admin_session(request: Request):
+    return {"admin": current_admin(request), "signInUrl": admin.START_PATH}
+
+
+@app.post("/api/admin/sign-out")
+async def admin_sign_out(request: Request):
+    current_admin(request)
+    if sid := request.cookies.get(admin.ADMIN_COOKIE):
+        admin.sign_out(sid)
+    response = JSONResponse({"admin": None})
+    response.delete_cookie(admin.ADMIN_COOKIE, path="/")
+    return response
+
+
+@app.get("/api/admin/overview")
+async def admin_overview(request: Request):
+    if not current_admin(request):
+        return admin_required()
+    return admin.overview(now=limits.local_now())
+
+
+@app.put("/api/admin/profiles/{user_id}/plan")
+async def admin_set_plan(user_id: str, body: PlanChange, request: Request):
+    if not (operator := current_admin(request)):
+        return admin_required()
+    if not plans.set_plan(user_id, body.plan):
+        return _not_found("Profile")
+    logger.info("admin_plan_changed", extra={"admin": operator["email"], "user_id": user_id, "plan": body.plan})
+    return {"id": user_id, "plan": body.plan}
+
+
+@app.post("/api/admin/profiles/{user_id}/clear-lockout")
+async def admin_clear_lockout(user_id: str, request: Request):
+    if not (operator := current_admin(request)):
+        return admin_required()
+    if not admin.clear_lockout(user_id):
+        return _not_found("Profile")
+    logger.info("admin_lockout_cleared", extra={"admin": operator["email"], "user_id": user_id})
+    return {"id": user_id, "lockedUntil": None}
+
+
+@app.post("/api/admin/profiles/{user_id}/sign-out")
+async def admin_sign_out_profile(user_id: str, request: Request):
+    if not (operator := current_admin(request)):
+        return admin_required()
+    if users.get_user(user_id) is None:
+        return _not_found("Profile")
+    ended = admin.sign_out_everywhere(user_id)
+    logger.info("admin_profile_signed_out", extra={"admin": operator["email"], "user_id": user_id, "sessions": ended})
+    return {"id": user_id, "sessionsEnded": ended}
+
+
+@app.delete("/api/admin/profiles/{user_id}")
+async def admin_delete_profile(user_id: str, body: ConfirmDeletion, request: Request):
+    if not (operator := current_admin(request)):
+        return admin_required()
+    user = users.get_user(user_id)
+    if user is None:
+        return _not_found("Profile")
+    if body.confirmName.strip().casefold() != user["displayName"].casefold():
+        return JSONResponse({"error": "The name typed does not match this profile."}, status_code=422)
+    await remove_profile(user)
+    logger.info("admin_profile_deleted", extra={"admin": operator["email"], "user_id": user_id})
+    return {"id": user_id, "deleted": True}
+
+
+@app.post("/api/admin/backups", status_code=201)
+async def admin_create_backup(request: Request):
+    if not (operator := current_admin(request)):
+        return admin_required()
+    try:
+        path = await asyncio.to_thread(backup.create_backup)
+    except backup.BackupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    logger.info("admin_backup_created", extra={"admin": operator["email"]})
+    return {"file": path.name, **backup.status()}
 
 
 # ── Public pages: app shell, privacy policy, pricing, crawler files, 404 ───────────────
