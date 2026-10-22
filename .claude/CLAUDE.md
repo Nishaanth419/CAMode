@@ -262,12 +262,12 @@ python -m compileall -q app tests && python -m pytest -q
 - Unlock routes: `POST /api/session/unlock`, `POST /api/session/recover`, `POST /api/users/me/recovery-code`; helper `history_gate()`
 - Privacy routes: `GET /api/privacy`, `POST /api/privacy/consent`, `POST /api/users/me/export`, `DELETE /api/users/me/history`
 - Helpers `consent_required()` and `pin_error()` build the 403 and PIN-failure responses
-- Profile routes: `GET /api/session` (current user, `consentRequired`, `storageMode`, `usage`, profile list), `POST /api/users` (create + sign in), `POST /api/session/login`, `POST /api/session/logout`, `GET`/`PUT /api/profile`, `DELETE /api/users/me`
+- Profile routes: `GET /api/session` (current user, `consentRequired`, `storageMode`, `usage`, `backupsInApp`, profile list), `POST /api/users` (create + sign in), `POST /api/session/login`, `POST /api/session/logout`, `GET`/`PUT /api/profile`, `DELETE /api/users/me`
 - Chat routes: `POST /api/chats`, `GET /api/chats`, `GET`/`DELETE /api/chats/{id}`, `POST /api/chat`
 - Snapshot routes: `GET /api/snapshots?days=`, `POST /api/snapshots/refresh`
 - Answer run routes: `GET /api/runs?limit=` (summaries), `GET`/`DELETE /api/runs/{id}` (unlocked). `POST /api/chat` saves the run and returns its id in `X-Agent-Run` (and `runId` in a 502 body); the chat's assistant message carries `runId`. Runs go with their chat, history clearing, private mode, INDmoney disconnect and profile deletion, and are in the export as `agentRuns`
 - Investigation routes: `POST /api/investigations` (consent + unlocked; `201` + `Location` when saved, `200` when not), `GET /api/investigations?limit=`, `GET`/`DELETE /api/investigations/{id}`
-- Backup routes: `GET /api/backups` (status), `POST /api/backups` (back up now)
+- Backup routes: `GET /api/backups` (status), `POST /api/backups` (back up now); both 404 when `admin.is_enabled()` (`main.backups_in_app()`), since they show the server path and back up every profile: the operator uses `POST /api/admin/backups`. `/api/session` returns `backupsInApp` and `app.js` hides the profile dialog's `.backup-row` when it is `false`
 - CAS routes: `GET /api/cas`, `POST /api/cas` (JSON `{password, pdfBase64}`; needs an unlocked session, consent, and `device` mode), `DELETE /api/cas/{id}`
 - Page routes: `GET /api/portfolio` (latest snapshot's `figures` plus every holding via `portfolio_math.all_holdings()`, or `{available: false}`)
 - Goal routes: `GET`/`POST /api/goals`, `GET`/`PUT`/`DELETE /api/goals/{id}` (each with `plan`), `POST /api/goals/plan` (stateless preview, optional `annualReturnPcts`), `GET /api/goals/{id}/funds` (INDmoney fund figures, `?category=`), `GET`/`POST /api/decisions`, `PUT`/`DELETE /api/decisions/{id}`, `GET`/`DELETE /api/context`. Goals are added, edited and deleted in one `#goal-dialog` opened from the Goals page, the rail and the goal planner (`openGoalDialog()` in `pages.js`); its preview calls `/api/goals/plan`. The Goals page's "What the assistant can use" panel lists and deletes saved context
@@ -364,7 +364,7 @@ Test coverage:
 - `test_plans.py`: Free capped and paid plans not, usage in the session and `X-Questions-Remaining`, `pricingUrl` on the 429, unknown plans, export, the pricing page (prices, free allowance, contact buttons and escaping), the plans CLI (name, id, email, ambiguous names)
 - `test_page_views.py`: counting, retention, table columns, route gates (no profile, private, no or stale consent, disabled), rejected routes, counts outliving profile deletion, notice wording
 - `test_public_pages.py`: absolute Open Graph URLs and escaping, noindex, privacy page content, robots and sitemap, HTML 404 for pages vs JSON for API paths, icon sizes, manifest icons
-- `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API, CLI
+- `test_backup.py`: backup file permissions and consistency, pruning, daily schedule, verify, restore (and refusing corrupt backups), API (404 for profiles when the admin page is on), CLI
 - `test_vault.py`: master key loading and creation, token and session encryption, startup migration, wrong-key handling
 - `test_portfolio_math.py`: computed figures on the fixture, P&L exclusions, broker split, USD separation, notes, Indian number formatting, holdings types to fetch
 - `test_number_check.py`: number matching (rounding, lakh/crore, negatives, skipped counts/years), the warning on portfolio answers

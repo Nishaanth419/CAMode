@@ -334,6 +334,8 @@ async def local_session(request: Request):
         "profiles": [] if google else users.list_profiles(),
         "authMode": accounts.auth_mode(),
         "account": _session_account(sid, user) if google else None,
+        # False when an admin page runs this copy: backups (server path, every profile) are the operator's.
+        "backupsInApp": backups_in_app(),
         # Only when sign-up asks for a Cloudflare Turnstile check.
         **({"turnstileSiteKey": site_key} if (site_key := limits.turnstile_site_key()) else {}),
     })
@@ -1049,8 +1051,15 @@ async def delete_cas(statement_id: str, request: Request):
 
 # ── Backups ────────────────────────────────────────────────────────────────────
 
+def backups_in_app() -> bool:
+    """Whether profiles may see and start backups; with an admin page they are the operator's job only."""
+    return not admin.is_enabled()
+
+
 @app.get("/api/backups")
 async def backup_status(request: Request):
+    if not backups_in_app():
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
     if not current_user(request):
         return profile_required()
     return backup.status()
@@ -1059,6 +1068,8 @@ async def backup_status(request: Request):
 @app.post("/api/backups", status_code=201)
 async def create_backup(request: Request):
     """Back up the whole database now (all profiles; history stays sealed with each PIN)."""
+    if not backups_in_app():
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
     user = current_user(request)
     if not user:
         return profile_required()

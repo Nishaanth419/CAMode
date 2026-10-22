@@ -85,6 +85,8 @@ let isLockedSession = false;
 let authMode = 'local';
 // Google mode: the signed-in account's email, or a Google account waiting to create or claim its profile.
 let sessionAccount = null;
+// False when this copy has an admin page: backups are the operator's job, so the profile dialog hides them.
+let backupsInApp = true;
 const SIGN_IN_ERRORS = {
   cancelled: 'Google sign-in was cancelled.',
   expired: 'That sign-in took too long or started in another browser. Try again.',
@@ -411,6 +413,7 @@ async function loadChats() {
     usage = session.usage || null;
     authMode = session.authMode === 'google' ? 'google' : 'local';
     sessionAccount = session.account || null;
+    backupsInApp = session.backupsInApp !== false;
     turnstileSiteKey = session.turnstileSiteKey || null;
     renderAccount();
     if (!currentUser) {
@@ -855,7 +858,8 @@ async function openProfileDialog() {
   profileForm.querySelector('.danger-zone').open = false;
   dataZone.open = false;
   const [response, privacy] = await Promise.all([fetch('/api/profile'), loadPrivacy()]);
-  loadBackupStatus();
+  document.querySelector('.backup-row').hidden = !backupsInApp;
+  if (backupsInApp) loadBackupStatus();
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not load your profile.');
   renderDataZone(privacy);
