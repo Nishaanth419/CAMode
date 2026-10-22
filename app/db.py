@@ -26,6 +26,7 @@ _USERS_COLUMNS = """(
     snapshot_attempted_at INTEGER NOT NULL DEFAULT 0,
     storage_mode TEXT NOT NULL DEFAULT 'device',
     snapshot_retention_days INTEGER NOT NULL DEFAULT 365,
+    plan TEXT NOT NULL DEFAULT 'free',
     history_public_key TEXT,
     history_key_pin TEXT,
     history_key_recovery TEXT,
@@ -153,6 +154,7 @@ _ADDED_USER_COLUMNS = {
     "history_public_key": "TEXT",
     "history_key_pin": "TEXT",
     "history_key_recovery": "TEXT",
+    "plan": "TEXT NOT NULL DEFAULT 'free'",
 }
 
 

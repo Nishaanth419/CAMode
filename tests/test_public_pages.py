@@ -8,7 +8,7 @@ from xml.etree import ElementTree
 
 import pytest
 
-from app import privacy, public_pages
+from app import plans, privacy, public_pages
 
 ORIGIN = "https://camode.example"
 
@@ -76,15 +76,21 @@ def test_robots_blocks_api_and_auth_and_points_to_the_sitemap(client, origin):
     assert f"Sitemap: {origin}/sitemap.xml" in lines
 
 
-def test_sitemap_lists_only_the_privacy_page(client, origin):
+def test_sitemap_lists_only_the_privacy_and_pricing_pages(client, origin):
     response = client.get("/sitemap.xml")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/xml")
     namespace = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ElementTree.fromstring(response.text)
-    assert [loc.text for loc in root.findall("s:url/s:loc", namespace)] == [f"{origin}/privacy"]
-    assert root.find("s:url/s:lastmod", namespace).text == public_pages.policy_updated_on().isoformat()
+    entries = {
+        url.find("s:loc", namespace).text: url.find("s:lastmod", namespace).text
+        for url in root.findall("s:url", namespace)
+    }
+    assert entries == {
+        f"{origin}/privacy": public_pages.policy_updated_on().isoformat(),
+        f"{origin}/pricing": plans.PRICES_UPDATED.isoformat(),
+    }
 
 
 @pytest.mark.parametrize("path", ["/does-not-exist", "/js/missing.js", "/privacy/extra"])

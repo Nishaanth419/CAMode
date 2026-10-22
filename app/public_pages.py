@@ -1,7 +1,7 @@
-"""Pages served without a profile: the app shell, privacy policy, 404 page, robots.txt and sitemap.xml.
+"""Pages served without a profile: the app shell, privacy policy, pricing, 404 page, robots.txt and sitemap.xml.
 
 The privacy page renders ``privacy.NOTICE``, so it always matches what profiles accept in the
-app. Only the privacy page is listed for search engines: the app shell shows the names of the
+app, and the pricing page renders ``plans.PLANS``. Only those two are listed for search engines: the app shell shows the names of the
 profiles on this computer, so it carries ``noindex`` (crawlers are still allowed to fetch it, or
 they could not read that tag). ``/api/`` and ``/auth/`` are disallowed outright.
 """
@@ -13,13 +13,15 @@ from datetime import date
 from html import escape
 from pathlib import Path
 from typing import Final
+from urllib.parse import quote
 from xml.sax.saxutils import escape as xml_escape
 
-from . import privacy
+from . import plans, privacy
 
 PUBLIC_DIR: Final = Path(__file__).resolve().parent.parent / "frontend"
 PRIVACY_PATH: Final = "/privacy"
-INDEXABLE_PATHS: Final = (PRIVACY_PATH,)
+PRICING_PATH: Final = "/pricing"
+INDEXABLE_PATHS: Final = (PRIVACY_PATH, PRICING_PATH)
 ORIGIN_PLACEHOLDER: Final = "{{origin}}"
 # Paths whose 404s stay JSON for API clients; everything else gets the HTML page.
 API_PREFIXES: Final = ("/api/", "/auth/")
@@ -51,10 +53,13 @@ def robots_txt(origin: str) -> str:
     )
 
 
+def _last_modified(path: str) -> date:
+    return plans.PRICES_UPDATED if path == PRICING_PATH else policy_updated_on()
+
+
 def sitemap_xml(origin: str) -> str:
-    lastmod = policy_updated_on().isoformat()
     urls = "".join(
-        f"  <url><loc>{xml_escape(origin + path)}</loc><lastmod>{lastmod}</lastmod></url>\n"
+        f"  <url><loc>{xml_escape(origin + path)}</loc><lastmod>{_last_modified(path).isoformat()}</lastmod></url>\n"
         for path in INDEXABLE_PATHS
     )
     return (
@@ -69,7 +74,8 @@ def is_api_path(path: str) -> bool:
     return path.startswith(API_PREFIXES)
 
 
-def _page(*, title: str, description: str, body: str, is_indexable: bool) -> str:
+def _page(*, title: str, description: str, body: str, is_indexable: bool, is_wide: bool = False) -> str:
+    page_class = "public-page public-page-wide" if is_wide else "public-page"
     robots = "" if is_indexable else '  <meta name="robots" content="noindex" />\n'
     return f"""<!doctype html>
 <html lang="en">
@@ -83,10 +89,10 @@ def _page(*, title: str, description: str, body: str, is_indexable: bool) -> str
   <link rel="icon" href="/favicon.ico" sizes="48x48" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/css/public.css?v=1" />
+  <link rel="stylesheet" href="/css/public.css?v=2" />
 </head>
 <body>
-  <main class="public-page">
+  <main class="{page_class}">
     <a class="public-brand" href="/"><img src="/icon.svg" width="36" height="36" alt="" />CA Mode</a>
 {body}
   </main>
@@ -107,7 +113,7 @@ def privacy_page() -> str:
       · Notice version {escape(privacy.POLICY_VERSION)}</p>
     <p class="public-lead">CA Mode runs on the computer it is installed on. This is the same notice each profile
       reads and accepts before it can chat, connect INDmoney or save history.</p>
-{sections}    <p><a class="public-button" href="/">Open CA Mode</a></p>"""
+{sections}    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRICING_PATH}">Pricing</a></p>"""
     return _page(
         title="Privacy policy",
         description="What CA Mode saves on your computer, what it sends to the AI model you choose, and how to export or delete your data.",
@@ -120,10 +126,76 @@ def not_found_page() -> str:
     body = """    <p class="public-code" aria-hidden="true">404</p>
     <h1>Page not found</h1>
     <p class="public-lead">This address is not part of CA Mode. It may have been mistyped, or the page has moved.</p>
-    <p><a class="public-button" href="/">Go to CA Mode</a> <a class="public-link" href="/privacy">Privacy policy</a></p>"""
+    <p><a class="public-button" href="/">Go to CA Mode</a> <a class="public-link" href="/pricing">Pricing</a>
+      <a class="public-link" href="/privacy">Privacy policy</a></p>"""
     return _page(
         title="Page not found",
         description="This address is not part of CA Mode.",
         body=body,
         is_indexable=False,
+    )
+
+
+def _plan_action(plan: plans.Plan, contact: str | None) -> str:
+    if plan.id == "free":
+        return '<a class="public-button" href="/">Start free</a>'
+    if contact is None:
+        return '<p class="plan-contact">Ask whoever runs this copy of CA Mode to change your plan.</p>'
+    subject = quote(f"CA Mode {plan.name} plan")
+    label = "Choose Individual" if plan.id == "individual" else "Contact us"
+    return f'<a class="public-button" href="mailto:{escape(contact, quote=True)}?subject={subject}">{label}</a>'
+
+
+def pricing_page() -> str:
+    """Return the pricing page: the plans in ``plans.PLANS`` and why a hosted team copy costs more."""
+    free_questions = plans.free_daily_questions()
+    zone = plans.reset_zone()
+    contact = plans.contact_email()
+    cards = ""
+    for plan in plans.PLANS.values():
+        features = "".join(
+            f"<li>{escape(feature.format(free_questions=free_questions, zone=zone))}</li>" for feature in plan.features
+        )
+        period = f' <span class="plan-period">{escape(plan.period)}</span>' if plan.period else ""
+        featured = " plan-featured" if plan.id == "individual" else ""
+        cards += f"""      <section class="plan{featured}" aria-labelledby="plan-{plan.id}">
+        <h2 id="plan-{plan.id}">{escape(plan.name)}</h2>
+        <p class="plan-price">{escape(plan.price)}{period}</p>
+        <p>{escape(plan.summary)}</p>
+        <ul>{features}</ul>
+        {_plan_action(plan, contact)}
+      </section>
+"""
+    body = f"""    <h1>Pricing</h1>
+    <p class="public-lead">Start free with {free_questions} questions a day. Pay for unlimited questions, or for a copy
+      of CA Mode hosted for your team.</p>
+    <div class="plans">
+{cards}    </div>
+    <section>
+      <h2>Why a team costs more than one person</h2>
+      <p>Individual plans share one copy of CA Mode whose answers come from a local open-source model, so there is no
+        cloud AI bill to pass on and the price stays low. A team or organisation gets its own hosted copy: a server, its
+        own database and a model sized for more people, which we set up, back up and keep running. That hosting is what
+        raises the price, so it depends on how many members you have and how much they ask.</p>
+    </section>
+    <section>
+      <h2>What counts as a question</h2>
+      <p>Each chat message that gets an answer. A question that gets no answer (the model failed, or INDmoney needs
+        reconnecting) is not counted. The free count starts again at midnight {escape(zone)}.</p>
+    </section>
+    <section>
+      <h2>How to upgrade</h2>
+      <p>There is no online checkout yet. Get in touch and we move your existing profile to the new plan, so your chats,
+        goals and snapshots stay where they are. Prices are in Indian rupees.</p>
+    </section>
+    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRIVACY_PATH}">Privacy policy</a></p>"""
+    return _page(
+        title="Pricing",
+        description=(
+            f"CA Mode is free for {free_questions} questions a day. Individual plans use a local model for a lower price; "
+            "teams and organisations get their own hosted copy."
+        ),
+        body=body,
+        is_indexable=True,
+        is_wide=True,
     )

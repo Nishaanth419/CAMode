@@ -83,7 +83,7 @@ def test_session_initialization_sets_http_only_cookie(client):
 
     assert response.json() == {
         "connected": False, "user": None, "locked": False, "consentRequired": False, "storageMode": None,
-        "profiles": [], "authMode": "local", "account": None,
+        "usage": None, "profiles": [], "authMode": "local", "account": None,
     }
     cookie = response.headers["set-cookie"].lower()
     assert "indmoney_session=" in cookie

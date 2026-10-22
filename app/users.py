@@ -193,6 +193,7 @@ def _user_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "snapshotAttemptedAt": row["snapshot_attempted_at"],
         "storageMode": row["storage_mode"],
         "snapshotRetentionDays": row["snapshot_retention_days"],
+        "plan": row["plan"],
         "failedLogins": row["failed_logins"],
         "lockedUntil": row["locked_until"],
     }

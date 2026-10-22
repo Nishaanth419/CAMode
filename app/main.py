@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -271,6 +271,7 @@ def daily_limit_reached(exc: limits.DailyLimitReached) -> JSONResponse:
         {
             "error": str(exc), "dailyLimitReached": True, "limit": exc.limit,
             "resetsAt": exc.resets_at.isoformat(timespec="minutes"), "retryAfterSeconds": retry_after,
+            "pricingUrl": public_pages.PRICING_PATH,
         },
         status_code=429, headers={"Retry-After": str(retry_after)},
     )
@@ -327,6 +328,7 @@ async def local_session(request: Request):
         "locked": locked,
         "consentRequired": bool(user) and not privacy.has_current_consent(user["id"]),
         "storageMode": user["storageMode"] if user else None,
+        "usage": plans.usage(user, now=limits.local_now()) if user else None,
         # The shared-computer picker only: with account sign-in nobody sees other profiles.
         "profiles": [] if google else users.list_profiles(),
         "authMode": accounts.auth_mode(),
@@ -1414,7 +1416,7 @@ async def chat(body: ChatRequest, request: Request):
         extra_tools += calculator
         context = snapshots.portfolio_context(user, extra_tools=extra_tools)
     try:
-        question_day = limits.reserve_question(user["id"], now=limits.local_now())
+        question_day = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
     except limits.DailyLimitReached as exc:
         return daily_limit_reached(exc)
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
@@ -1459,7 +1461,7 @@ async def chat(body: ChatRequest, request: Request):
             chats.append_turn(user, data, message, answer_text, trace, run_id=run_id)
         answered = bool(answer_text.strip())
         return PlainTextResponse(answer_text, headers={
-            "X-Agent-Trace": trace_header(trace), **_run_header(run_id),
+            "X-Agent-Trace": trace_header(trace), **_run_header(run_id), **_questions_left_header(question_day, user),
         })
     finally:
         if not answered:
@@ -1483,7 +1485,15 @@ def _run_header(run_id: str | None) -> dict[str, str]:
     return {"X-Agent-Run": run_id} if run_id else {}
 
 
-# ── Public pages: app shell, privacy policy, crawler files, 404 ───────────────
+def _questions_left_header(question_day: date | None, user: dict[str, Any]) -> dict[str, str]:
+    """Today's remaining questions after this answer, only when the daily cap counted it."""
+    if question_day is None:
+        return {}
+    remaining = plans.usage(user, now=limits.local_now())["remaining"]
+    return {"X-Questions-Remaining": str(remaining)} if remaining is not None else {}
+
+
+# ── Public pages: app shell, privacy policy, pricing, crawler files, 404 ───────────────
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
@@ -1494,6 +1504,11 @@ async def index(request: Request) -> HTMLResponse:
 @app.get(public_pages.PRIVACY_PATH, response_class=HTMLResponse)
 async def privacy_policy() -> HTMLResponse:
     return HTMLResponse(public_pages.privacy_page())
+
+
+@app.get(public_pages.PRICING_PATH, response_class=HTMLResponse)
+async def pricing() -> HTMLResponse:
+    return HTMLResponse(public_pages.pricing_page())
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)

@@ -1510,6 +1510,7 @@ a.tool-tile { text-decoration: none; }
 .connection-row span { display: grid; line-height: 1.35; }
 .connection-row strong { color: var(--text); font-size: 14px; }
 .connection-row small { color: var(--text-soft); font-size: 12px; }
+.plan-link { flex-shrink: 0; text-decoration: none; }
 
 .toast {
   position: fixed;

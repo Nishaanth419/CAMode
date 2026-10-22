@@ -65,6 +65,8 @@ const dataSummary = document.getElementById('data-summary');
 const dataStatus = document.getElementById('data-status');
 const settingsNotice = document.getElementById('settings-notice');
 const connectionStatus = document.getElementById('connection-status');
+const planName = document.getElementById('plan-name');
+const planUsage = document.getElementById('plan-usage');
 const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal'];
 // The sidebar lists this many recent chats; "See all" opens the full list.
 const SIDEBAR_CHATS = 6;
@@ -73,6 +75,8 @@ let isConnected = false;
 let isSessionReady = false;
 let currentUser = null;
 let storageMode = 'device';
+// The profile's plan and today's questions from /api/session (limit null: not capped).
+let usage = null;
 let privacyPolicyVersion = null;
 let unlockTarget = null;
 // True when the signed-in profile is locked after a restart (unlock with /api/session/unlock).
@@ -239,10 +243,30 @@ function renderAccount() {
   accountName.textContent = currentUser?.displayName || 'Guest';
   document.getElementById('switch-profile').textContent = authMode === 'google' ? 'Sign out' : 'Switch profile';
   accountAvatar.textContent = (currentUser?.displayName || '?').trim().charAt(0).toUpperCase();
-  accountPlan.textContent = [isConnected ? 'INDmoney connected' : 'INDmoney not connected', storageMode === 'private' ? 'Private' : '']
-    .filter(Boolean).join(' · ');
+  planName.textContent = `${usage?.planName || 'Free'} plan`;
+  planUsage.textContent = usageText();
+  accountPlan.textContent = [
+    usage?.planName,
+    isConnected ? 'INDmoney connected' : 'INDmoney not connected',
+    storageMode === 'private' ? 'Private' : '',
+  ].filter(Boolean).join(' · ');
   accountPlan.title = accountPlan.textContent;
   accountAvatar.classList.toggle('is-connected', isConnected);
+}
+
+function usageText() {
+  if (!usage) return '';
+  if (usage.limit == null) return 'Unlimited questions';
+  const left = Math.max(0, usage.remaining);
+  return `${left} of ${usage.limit} question${usage.limit === 1 ? '' : 's'} left today`;
+}
+
+// Today's remaining questions after an answer (X-Questions-Remaining) or a daily-limit refusal (0).
+function updateQuestionsLeft(remaining) {
+  if (!usage || usage.limit == null || !Number.isFinite(remaining)) return;
+  usage.remaining = Math.max(0, remaining);
+  usage.used = usage.limit - usage.remaining;
+  renderAccount();
 }
 
 /* ── Daily portfolio snapshots ──────────────────────────────────────── */
@@ -384,6 +408,7 @@ async function loadChats() {
     currentUser = session.user;
     isConnected = Boolean(session.connected);
     storageMode = session.storageMode || 'device';
+    usage = session.usage || null;
     authMode = session.authMode === 'google' ? 'google' : 'local';
     sessionAccount = session.account || null;
     turnstileSiteKey = session.turnstileSiteKey || null;
@@ -1310,7 +1335,11 @@ async function sendMessage(text) {
       if (res.status === 429 && (err.dailyLimitReached || err.rateLimited)) {
         // A limit, not a failure: say so plainly ("You've reached today's limit… resets at midnight IST").
         removeTypingIndicator();
-        addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}</p>`);
+        const plansLink = err.pricingUrl
+          ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">See plans with unlimited questions</a>`
+          : '';
+        addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}${plansLink}</p>`);
+        if (err.dailyLimitReached) updateQuestionsLeft(0);
         setStatus('online', err.dailyLimitReached ? 'Daily limit reached' : 'Too many requests');
         if (createdChatId) await discardEmptyChat(createdChatId);
         return;
@@ -1323,6 +1352,8 @@ async function sendMessage(text) {
     }
 
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
+    const questionsLeft = res.headers.get('X-Questions-Remaining');
+    if (questionsLeft !== null) updateQuestionsLeft(Number(questionsLeft));
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'));
     const bodyDiv = msgDiv.querySelector('.message-body');

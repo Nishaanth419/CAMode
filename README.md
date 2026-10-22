@@ -96,7 +96,8 @@ cp .env.example .env
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `PORT` | `8080` | Port inside the Docker container |
-| `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per profile per day in `SNAPSHOT_TIMEZONE`; see [Limits for a shared copy](#limits-for-a-shared-copy) |
+| `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per Free-plan profile per day in `SNAPSHOT_TIMEZONE` (the hosted copy uses `5`); see [Plans and pricing](#plans-and-pricing) |
+| `PRICING_CONTACT_EMAIL` | – | Where the `/pricing` page's "Choose Individual" and "Contact us" buttons send an email; unset, the page says to ask whoever runs the copy |
 | `RATE_LIMITS_ENABLED` | `false` | Request rate limits per IP and per profile on chat, sign-up, sign-in and investigations |
 | `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP` (only when the app is reachable solely through Cloudflare) |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | – | Both set: sign-up asks for a Cloudflare Turnstile check |
@@ -433,11 +434,31 @@ python -m scripts.eval_tasks --dataset evals/multi_step.jsonl --provider ollama 
 
 The first live run passed 3/12: the local model writes `name` for `tool`, refers to steps as "step1", "0" or by tool name, and sometimes ends a plan one character wrong, which Ollama rejects with HTTP 500. These are now accepted or repaired in code, and the plan is still checked in full. The one miss above was a 500 that could not be repaired; the usual loop then answered. Two intermediate runs scored 8/12 and 7/12 on the way, so treat single runs as noisy.
 
+## Plans and pricing
+
+`/pricing` (linked from the sign-in screen, the profile dialog and the daily-limit message) shows three plans, kept in `app/plans.py` `PLANS`:
+
+| Plan | Price | Questions | What it is |
+| --- | --- | --- | --- |
+| Free | ₹0 | `DAILY_QUESTION_LIMIT` a day (5 on the hosted copy) | The shared copy, every feature |
+| Individual | ₹199 a month | Unlimited | The shared copy; answers come from the local open-source model (gpt-oss via Ollama), so there is no cloud AI bill and the price stays low |
+| Team or organisation | Contact us | Unlimited | A dedicated hosted copy (own server, database and model, Google sign-in per member, backups); hosting costs more, so it is priced by size |
+
+There is no checkout yet. Every profile starts on Free; after someone pays, give their profile a plan on the server:
+
+```bash
+python -m scripts.plans list
+python -m scripts.plans set asha@example.com individual   # profile name, Google email or profile id
+python -m scripts.plans set Asha free                     # back to the daily limit
+```
+
+(In the hosted setup: `docker compose exec app python -m scripts.plans …`.) The plan is the `users.plan` column; paid plans skip the daily question cap, while request rate limits still apply to everyone. `/api/session` returns `usage` (`plan`, `planName`, `limit`, `used`, `remaining`, `resetsAt`; `limit` is `null` when nothing caps the profile), a counted answer carries `X-Questions-Remaining`, and the daily-limit `429` adds `pricingUrl`. The profile dialog shows "5 of 5 questions left today" or "Unlimited questions". A copy on one computer with no `DAILY_QUESTION_LIMIT` stays unlimited on every plan. To change a price, edit `PLANS` and `PRICES_UPDATED` (the sitemap date).
+
 ## Limits for a shared copy
 
 A copy on one computer has no limits. Before opening a hosted copy to other people, turn these on so one person or bot cannot monopolise the model (one Mac running Ollama answers one question at a time) or run up OpenAI or Groq costs. Each is independent and off unless set.
 
-- **Daily questions** (`DAILY_QUESTION_LIMIT=30`, for example). Each profile can get that many answers a day; the count starts again at midnight in `SNAPSHOT_TIMEZONE`. A question that gets no answer (the model failed, INDmoney needs reconnecting) does not count. Over the limit, `POST /api/chat` returns `429` with `Retry-After` and `{"error": "You've reached today's limit of 30 questions. It resets at midnight IST.", "dailyLimitReached": true, "limit", "resetsAt", "retryAfterSeconds"}`, and the chat shows that sentence. Counts are kept in the `question_counts` table (profile, date, number; today and yesterday only) and deleted with the profile.
+- **Daily questions** (`DAILY_QUESTION_LIMIT=5` for the Free plan). Each Free-plan profile can get that many answers a day (paid plans are not capped, see [Plans and pricing](#plans-and-pricing)); the count starts again at midnight in `SNAPSHOT_TIMEZONE`. A question that gets no answer (the model failed, INDmoney needs reconnecting) does not count. Over the limit, `POST /api/chat` returns `429` with `Retry-After` and `{"error": "You've reached today's limit of 5 questions. It resets at midnight IST.", "dailyLimitReached": true, "limit", "resetsAt", "retryAfterSeconds", "pricingUrl"}`, and the chat shows that sentence with a link to the plans. Counts are kept in the `question_counts` table (profile, date, number; today and yesterday only) and deleted with the profile.
 - **Request rate limits** (`RATE_LIMITS_ENABLED=true`). Sliding windows in `limits.RATE_RULES`:
 
   | Routes | Per IP | Per profile |
@@ -510,7 +531,7 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/session` | Current profile, INDmoney status, `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), and `turnstileSiteKey` when sign-up uses Turnstile |
+| `GET /api/session` | Current profile, INDmoney status, `usage` (plan and today's questions), `authMode` (`local` or `google`), `account` (Google mode: the signed-in email, or `{email, name, pending, canClaim}` for a Google account without a profile), the list of profiles (local mode only; always empty with Google sign-in), and `turnstileSiteKey` when sign-up uses Turnstile |
 | `POST /api/users` | Create a profile and sign in (body: `{"displayName", "pin", "turnstileToken"?}`); with Google sign-in, only for a Google account just signed in (else `401 {"signInRequired": true}`), and linked to it |
 | `POST /api/session/login`, `POST /api/session/logout` | Sign in to a profile with its PIN (local mode only; `404` with Google sign-in); sign out |
 | `GET /auth/google/start`, `GET /auth/google/callback` | Google sign-in (`AUTH_MODE=google`); the callback redirects to `/`, or to `/?signInError=cancelled\|expired\|failed` |
@@ -545,9 +566,10 @@ Then create (or unlock) a profile **in the browser you used before**: that brows
 | `GET /healthz` | Health check |
 | `POST /api/page-views` | Count one anonymous page view (body: `{"route"}`, an app page name); returns `{"counted"}`, `false` in private mode, without current consent, or when disabled |
 | `GET /privacy` | Privacy policy page, rendered from the same notice profiles accept (no profile needed) |
-| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy`; URLs use `APP_ORIGIN` |
+| `GET /pricing` | Pricing page, rendered from `plans.PLANS` (no profile needed) |
+| `GET /robots.txt`, `GET /sitemap.xml` | Crawler rules (`/api/` and `/auth/` disallowed) and a sitemap listing only `/privacy` and `/pricing`; URLs use `APP_ORIGIN` |
 
-Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, and the public pages (`/`, `/privacy`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
+Everything except `/healthz`, `/api/providers`, `/api/session`, the sign-up, sign-in, claim, and sign-out routes, the Google sign-in routes, and the public pages (`/`, `/privacy`, `/pricing`, `/robots.txt`, `/sitemap.xml`, static files) requires a signed-in profile. An unknown page returns an HTML 404 page; unknown `/api/` and `/auth/` paths keep the JSON `404 {"detail": "Not Found"}`. Creating chats, sending messages, saving goals and decisions, refreshing snapshots, listing tools, and connecting INDmoney also require the current privacy notice to be accepted; otherwise the API returns `403 {"consentRequired": true}`. Routes that read chats, snapshots, goals, decisions, or profile details return `403 {"unlockRequired": true}` until this browser session has entered the PIN. Profile creation, sign-in, and unlocking return `recoveryCode` when a new code was just created.
 
 ## Troubleshooting
 
@@ -590,7 +612,8 @@ app/
   accounts.py      AUTH_MODE, Google sign-in (OpenID Connect) and the accounts linked to profiles
   privacy.py       Privacy notice, consent records, storage modes, export, and history clearing
   page_views.py    Anonymous local page-view counts
-  public_pages.py  App shell with absolute Open Graph URLs, privacy policy and 404 pages, robots.txt, sitemap.xml
+  plans.py         Plans (Free, Individual, Team), the Free daily cap and today's usage
+  public_pages.py  App shell with absolute Open Graph URLs, privacy policy, pricing and 404 pages, robots.txt, sitemap.xml
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
   agent.py         Provider selection, request filtering, and the tool-calling agent loop
@@ -631,6 +654,7 @@ tests/
   test_snapshots.py  Capture, schedule, history, retention
   test_privacy.py    Consent gate, storage modes, export, history clearing, retention choices
   test_page_views.py   Page-view counting, retention and gates
+  test_plans.py        Plan caps, usage in the session, the pricing page, the plans CLI
   test_public_pages.py Meta tags, privacy page, robots/sitemap, HTML vs JSON 404s, icons and manifest
   test_mcp_client.py MCP protocol handling and tool filtering
   test_vault.py      Master key handling, token encryption, startup migration
