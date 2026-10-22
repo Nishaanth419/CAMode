@@ -28,11 +28,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=39" />
+  <link rel="stylesheet" href="/css/app.css?v=40" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
   <script src="/js/finance.js?v=6" defer></script>
   <script src="/js/trace.js?v=8" defer></script>
-  <script src="/js/app.js?v=31" defer></script>
+  <script src="/js/app.js?v=32" defer></script>
   <script src="/js/pages.js?v=19" defer></script>
   <script src="/js/rail.js?v=6" defer></script>
 </head>
@@ -603,7 +603,7 @@
 
       <p id="gate-error" class="gate-error" role="alert" hidden></p>
       <p id="gate-note" class="gate-note">Your PIN encrypts your saved history, so choose one other people can't guess. It is not a substitute for a device password.</p>
-      <p class="gate-legal"><a href="/privacy" target="_blank" rel="noopener">Privacy policy</a></p>
+      <p class="gate-legal"><a href="/pricing" target="_blank" rel="noopener">Pricing</a> · <a href="/privacy" target="_blank" rel="noopener">Privacy policy</a></p>
     </section>
   </div>
 
@@ -619,6 +619,10 @@
       <div class="connection-row">
         <span><strong>INDmoney</strong><small id="connection-status">Not connected</small></span>
         <button id="auth-button" class="gate-secondary" type="button">Connect</button>
+      </div>
+      <div class="connection-row">
+        <span><strong id="plan-name">Free plan</strong><small id="plan-usage"></small></span>
+        <a class="gate-secondary plan-link" href="/pricing" target="_blank" rel="noopener">See plans</a>
       </div>
       <p class="dialog-sub">Optional. Portfolio Analyzer uses this to relate its analysis to your goals. It is not personalised investment advice.</p>
       <div class="field-grid">
