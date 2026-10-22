@@ -24,7 +24,8 @@ from .db import connect_db
 # 2026-10-21.1: CA Mode may run on a server, with Ollama on another computer the operator controls.
 # 2026-10-21.2: optional usage limits (daily question counts, in-memory rate limits, Turnstile on sign-up).
 # 2026-10-21.3: Google sign-in (AUTH_MODE=google) stores the Google account id and email address.
-POLICY_VERSION: Final = "2026-10-21.3"
+# 2026-10-22.1: each profile's plan (Free, Individual or Team) is stored with it.
+POLICY_VERSION: Final = "2026-10-22.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -115,7 +116,9 @@ NOTICE: Final = (
         "title": "Usage limits",
         "body": (
             "A copy of CA Mode shared with other people may limit how much it can be used; a copy for one computer "
-            "has no limits unless whoever runs it sets them. With a daily question limit, the number of questions "
+            "has no limits unless whoever runs it sets them. Your profile's plan (Free, Individual or Team) is stored "
+            "with it, changed only by whoever runs this copy, and is part of your export; the daily question limit "
+            "applies only to the Free plan. With a daily question limit, the number of questions "
             "your profile asked today and yesterday is stored (never what you asked); it is not part of your export "
             "and is deleted with your profile. With request rate limits, the times of recent requests from your IP "
             "address and profile are kept in memory only, for about an hour at most, and never saved. If sign-up includes a "
@@ -244,6 +247,7 @@ def export_data(
         "profile": {"displayName": user["displayName"], "fields": users.profile_fields(user, user["keys"])},
         "account": accounts.account_for_user(user["id"]),
         "settings": {"storageMode": user["storageMode"], "snapshotRetentionDays": user["snapshotRetentionDays"]},
+        "plan": user["plan"],
         "indmoneyConnected": users.has_indmoney_tokens(user["indmoney"]),
         "consents": [
             {"policyVersion": row["policy_version"], "storageMode": row["storage_mode"],

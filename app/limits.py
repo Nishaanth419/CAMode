@@ -3,8 +3,8 @@
 Three independent protections, each off unless configured, so a copy on one computer
 behaves exactly as before:
 
-- ``DAILY_QUESTION_LIMIT``: answered chat questions per profile per local day (in
-  ``SNAPSHOT_TIMEZONE``), counted in the ``question_counts`` table. A slot is reserved
+- ``DAILY_QUESTION_LIMIT``: answered chat questions per Free-plan profile per local day (in
+  ``SNAPSHOT_TIMEZONE``; paid plans in ``plans.py`` are not capped), counted in the ``question_counts`` table. A slot is reserved
   before the model runs (in a ``BEGIN IMMEDIATE`` transaction, so concurrent requests
   cannot overshoot) and released when no answer comes back.
 - ``RATE_LIMITS_ENABLED``: sliding-window request limits per client IP and per profile
@@ -94,12 +94,13 @@ def next_reset(now: datetime) -> datetime:
     return datetime.combine(local.date() + timedelta(days=1), dt_time(0), tzinfo=SNAPSHOT_TIMEZONE)
 
 
-def reserve_question(user_id: str, *, now: datetime) -> date | None:
+def reserve_question(user_id: str, *, now: datetime, capped: bool = True) -> date | None:
     """Count one question for today, or raise ``DailyLimitReached``; return the day counted (None: no cap).
 
+    ``capped=False`` (a paid plan, ``plans.has_daily_cap()``) skips the cap and the count.
     Pass the returned day to ``release_question()`` when the question gets no answer.
     """
-    limit = daily_question_limit()
+    limit = daily_question_limit() if capped else None
     if limit is None:
         return None
     today = now.astimezone(SNAPSHOT_TIMEZONE).date()

@@ -33,7 +33,8 @@ def isolated_database(tmp_path, monkeypatch):
     # Production scrypt cost (~128 MiB per hash) would make every sign-in test slow.
     monkeypatch.setattr(users, "SCRYPT_N", 2**10)
     # Usage limits stay off (as on one computer) unless a test turns them on; tests/test_limits.py covers them.
-    for name in ("DAILY_QUESTION_LIMIT", "RATE_LIMITS_ENABLED", "TRUSTED_PROXY", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY"):
+    for name in ("DAILY_QUESTION_LIMIT", "RATE_LIMITS_ENABLED", "TRUSTED_PROXY", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY",
+                 "PRICING_CONTACT_EMAIL"):
         monkeypatch.delenv(name, raising=False)
     limits.limiter.clear()
     db.initialize_db()
