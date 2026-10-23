@@ -16,6 +16,13 @@ values of public scheme labels (category, risk, rating, benchmark, as-of keys), 
 describe funds, not the user:
 
     python -m scripts.inspect_indmoney_shapes --funds --labels
+
+``--brokers`` also prints, for each holdings response, how many rows each list
+holds and the distinct ``broker`` and ``asset_type`` values with row counts (no
+amounts or names), and the asset types ``networth_snapshot`` lists. ``--profile
+<id>`` picks the profile whose connection is used (default: the first connected):
+
+    python -m scripts.inspect_indmoney_shapes --brokers --profile <id>
 """
 
 from __future__ import annotations
@@ -79,6 +86,26 @@ def labels(value: Any, path: str = "", found: dict[str, set[str]] | None = None)
     return found
 
 
+def broker_counts(value: Any) -> None:
+    """Row counts per list, and per ``broker`` / ``asset_type`` label, in a holdings or snapshot response."""
+    body = value.get("result") if isinstance(value, dict) and isinstance(value.get("result"), dict) else value
+    if not isinstance(body, dict):
+        return
+    print("--- lists")
+    for key, item in body.items():
+        if isinstance(item, list):
+            print(f"{key}: {len(item)} rows")
+    for key in ("holdings", "investments"):
+        rows = [row for row in body.get(key) or [] if isinstance(row, dict)]
+        for label in ("broker", "asset_type"):
+            counts: dict[str, int] = {}
+            for row in rows:
+                if label in row:
+                    counts[str(row[label])] = counts.get(str(row[label]), 0) + 1
+            if counts:
+                print(f"{key}.{label}: {counts}")
+
+
 def first_fund_id(value: Any) -> str | None:
     """The scheme id of the first row in a get_mf_by_category response, whatever the id key is called."""
     if isinstance(value, dict):
@@ -134,6 +161,8 @@ async def run(name: str, arguments: dict[str, Any], session: dict[str, Any], tok
         print("(not JSON) outline:\n" + text_outline(text))
         return None
     print(json.dumps(shape(value), indent=2))
+    if "--brokers" in sys.argv:
+        broker_counts(value)
     if show_labels:
         print("--- labels")
         for path, values in sorted(labels(value).items()):
@@ -143,8 +172,11 @@ async def run(name: str, arguments: dict[str, Any], session: dict[str, Any], tok
 
 async def main() -> int:
     profiles = users.users_with_indmoney()
+    if "--profile" in sys.argv:
+        wanted = sys.argv[sys.argv.index("--profile") + 1]
+        profiles = [profile for profile in profiles if profile == wanted]
     if not profiles:
-        print("No profile has a usable INDmoney connection.")
+        print("No matching profile has a usable INDmoney connection.")
         return 1
     token = await users.user_access_token(profiles[0])
     if not token:

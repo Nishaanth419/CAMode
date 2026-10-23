@@ -125,7 +125,7 @@ def holding_rows():
 def test_every_fixture_holding_classifies_sensibly():
     classes = {(row["asset_type"], row["investment"]): classify_holding(row["asset_type"], row["assetclass_l2"])
                for row in holding_rows()}
-    assert classes[("IND_STOCK", "Infosys")] == "equity_direct"
+    assert classes[("STOCK", "Infosys")] == "equity_direct"  # INDmoney's row label for Indian stocks
     assert classes[("US_STOCK", "Apple")] == "equity_direct"
     assert classes[("MF", "Parag Parikh Flexi Cap Fund")] == "equity_fund"
     assert classes[("MF", "HDFC Index Fund Nifty 50")] == "equity_fund"

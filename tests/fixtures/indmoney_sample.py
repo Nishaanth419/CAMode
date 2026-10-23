@@ -2,7 +2,8 @@
 
 Totals are consistent: holdings sum to each asset type's ``asset_summary`` and the
 asset types sum to ``total_current_value``. Includes the known traps: a linked-broker
-stock with ``invested_amount`` 0, US stocks with USD fields, MF rows without a broker.
+stock with ``invested_amount`` 0, US stocks with USD fields, MF rows without a broker, and
+Indian stocks labelled ``STOCK`` in the summary and rows though the holdings call takes ``IND_STOCK``.
 """
 
 from __future__ import annotations
@@ -20,9 +21,9 @@ def _row(code, name, asset_type, invested, value, units, broker, **extra):
 
 
 IND_STOCK = [
-    _row("INFY", "Infosys", "IND_STOCK", 150000, 180000, 100, "INDmoney"),
-    _row("TCS", "Tata Consultancy Services", "IND_STOCK", 200000, 190000, 50, "INDmoney"),
-    _row("HDFCBANK", "HDFC Bank", "IND_STOCK", 0, 130000, 80, "Zerodha"),  # linked broker: no cost reported
+    _row("INFY", "Infosys", "STOCK", 150000, 180000, 100, "INDmoney"),
+    _row("TCS", "Tata Consultancy Services", "STOCK", 200000, 190000, 50, "INDmoney"),
+    _row("HDFCBANK", "HDFC Bank", "STOCK", 0, 130000, 80, "Zerodha"),  # linked broker: no cost reported
 ]
 MF = [
     _row("120503", "Parag Parikh Flexi Cap Fund", "MF", 300000, 375000, 4000.5, None),
@@ -38,7 +39,7 @@ SNAPSHOT = {
     "investments": [
         {"asset_type": "MF", "invested_value": 400000, "current_value": 500000, "return": 100000,
          "return_percentage": 25, "progress_value_percentage": 40},
-        {"asset_type": "IND_STOCK", "invested_value": 350000, "current_value": 500000, "return": 150000,
+        {"asset_type": "STOCK", "invested_value": 350000, "current_value": 500000, "return": 150000,
          "return_percentage": 42.86, "progress_value_percentage": 40},
         {"asset_type": "US_STOCK", "invested_value": 80000, "current_value": 100000, "return": 20000,
          "return_percentage": 25, "progress_value_percentage": 8},
