@@ -868,6 +868,9 @@ async function renderMarkets() {
   const previous = holdings.reduce((sum, item) => sum + (item.current_value_inr || 0), 0) - dayChange;
   const up = moved.filter((item) => item.one_day_change_inr > 0).sort((a, b) => b.one_day_change_inr - a.one_day_change_inr);
   const down = moved.filter((item) => item.one_day_change_inr < 0).sort((a, b) => a.one_day_change_inr - b.one_day_change_inr);
+  const flat = holdings.filter((item) => item.one_day_change_inr === 0).length;
+  const unreported = holdings.length - moved.length - flat;
+  const breadth = [`${flat} unchanged`, unreported ? `${unreported} not reported` : '', `${holdings.length} holdings`].filter(Boolean).join(' · ');
   const moverTable = (items) => items.length ? `<table class="data-table compact"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${items.slice(0, 5).map((item) => {
     const base = (item.current_value_inr || 0) - item.one_day_change_inr;
     return `<tr><td>${escHtml(item.name || item.code)}</td><td>${money(item.current_value_inr)}</td><td class="${toneOf(item.one_day_change_inr)}">${signedMoney(item.one_day_change_inr)}<small>${percent(base ? item.one_day_change_inr / base * 100 : NaN, { signed: true })}</small></td></tr>`;
@@ -875,10 +878,9 @@ async function renderMarkets() {
   const caps = (data.figures.by_market_cap_direct_stocks || []).map((row) => ({ label: row.market_cap || 'Other', value: row.current_value_inr }));
   document.getElementById('markets-asof').textContent = `Day moves from your snapshot of ${formatCaptured(data.capturedAt)}. Live prices come from INDmoney through Portfolio Analyzer.`;
   setHtml(body, `
-    <div class="stat-grid stat-grid-3">
+    <div class="stat-grid">
       ${statTile('Day change', moved.length ? signedMoney(dayChange) : '—', moved.length ? percent(previous ? dayChange / previous * 100 : NaN, { signed: true }) : 'No day change reported', toneOf(dayChange))}
-      ${statTile('Holdings up', String(up.length), `of ${holdings.length} holdings`, up.length ? 'is-up' : '')}
-      ${statTile('Holdings down', String(down.length), `of ${holdings.length} holdings`, down.length ? 'is-down' : '')}
+      <div class="stat-tile"><span class="stat-label">Holdings up / down</span><strong class="stat-value"><span class="${up.length ? 'is-up' : ''}">${up.length} up</span> · <span class="${down.length ? 'is-down' : ''}">${down.length} down</span></strong><small class="stat-sub">${escHtml(breadth)}</small></div>
     </div>
     <div class="page-columns">
       ${panel('Top gainers', moverTable(up))}
