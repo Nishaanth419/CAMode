@@ -58,7 +58,7 @@ def holding_key(asset_type: Any, code: Any, name: Any, broker: Any) -> str:
     """
     code_text = str(code).strip() if code not in (None, "") else None
     identity = code_text or "name:" + re.sub(r"[^a-z0-9]+", " ", str(name or "Unnamed holding").lower()).strip()
-    return f"{asset_type}|{identity}|{str(broker).strip() if broker else '-'}"
+    return f"{portfolio_math.canonical_asset_type(asset_type)}|{identity}|{str(broker).strip() if broker else '-'}"
 
 
 @dataclass(slots=True)

@@ -111,6 +111,17 @@ def test_holdings_types_to_fetch():
     assert snapshots.holdings_types_to_fetch(None) == list(snapshots.HOLDINGS_ASSET_TYPES)
 
 
+def test_indmoney_stock_label_maps_to_the_holdings_type(metrics):
+    # INDmoney labels Indian stocks "STOCK" in the summary and rows; networth_holdings only takes IND_STOCK.
+    assert {item["asset_type"] for item in metrics["by_asset_type"]} == {"MF", "IND_STOCK", "US_STOCK", "EPF"}
+    assert {item["asset_type"] for item in metrics["top_holdings"] if item["code"] in {"INFY", "HDFCBANK"}} == {"IND_STOCK"}
+    assert not any("IND_STOCK" in note or "STOCK holdings" in note for note in metrics["data_notes"])
+    assert metrics["data_notes"][-2:] == [
+        "Holdings were not fetched for: EPF; broker and per-holding figures exclude them.",
+        "USD amounts are shown separately and are never added to INR totals.",
+    ]
+
+
 def test_old_snapshots_fall_back_to_raw_text():
     snapshot = {"asOfDate": "2026-10-01", "capturedAt": 0, "results": {"networth_snapshot": "Net worth ₹10"}, "errors": {}}
 

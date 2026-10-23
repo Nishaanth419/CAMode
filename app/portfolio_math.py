@@ -73,13 +73,25 @@ def _json(text: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# networth_snapshot and the IND_STOCK holdings rows call Indian stocks "STOCK", but
+# networth_holdings only accepts "IND_STOCK"; the app uses the name the tool accepts.
+_ASSET_TYPE_ALIASES = {"STOCK": "IND_STOCK"}
+
+
+def canonical_asset_type(name: Any) -> str | None:
+    """INDmoney's asset type name as ``networth_holdings`` accepts it; None when blank."""
+    if not name:
+        return None
+    return _ASSET_TYPE_ALIASES.get(str(name), str(name))
+
+
 def asset_types_held(snapshot_text: str | None) -> list[str]:
     """Asset types with a non-zero current value in a ``networth_snapshot`` response."""
     snapshot = _json(snapshot_text) or {}
     held = []
     for item in snapshot.get("investments") or []:
         if isinstance(item, dict) and item.get("asset_type") and (_dec(item.get("current_value")) or _ZERO) > 0:
-            held.append(str(item["asset_type"]))
+            held.append(canonical_asset_type(item["asset_type"]))
     return held
 
 
@@ -96,7 +108,7 @@ def _holding_rows(results: dict[str, str]) -> tuple[list[dict[str, Any]], dict[s
             summaries[asset_type] = parsed["asset_summary"]
         for row in parsed.get("holdings") or []:
             if isinstance(row, dict):
-                rows.append({**row, "asset_type": row.get("asset_type") or asset_type})
+                rows.append({**row, "asset_type": canonical_asset_type(row.get("asset_type")) or asset_type})
     return rows, summaries
 
 
@@ -170,7 +182,7 @@ def compute_metrics(results: dict[str, str], *, include_all_holdings: bool = Fal
         value = _dec(item.get("current_value")) or _ZERO
         invested = _dec(item.get("invested_value")) or _ZERO
         by_type.append({
-            "asset_type": item.get("asset_type"),
+            "asset_type": canonical_asset_type(item.get("asset_type")),
             "current_value_inr": _money(value),
             "invested_inr": _money(invested) if invested > 0 else None,
             "share_of_portfolio_pct": _pct(value, portfolio_value),
@@ -206,7 +218,7 @@ def compute_metrics(results: dict[str, str], *, include_all_holdings: bool = Fal
         summed = sum((_dec(row.get("market_value")) or _ZERO for row in rows if row["asset_type"] == asset_type), _ZERO)
         if reported and abs(summed - reported) > reported * RECONCILE_TOLERANCE:
             notes.append(f"{asset_type} holdings add up to {inr(summed)} but INDmoney reports {inr(reported)}.")
-    held_types = {item.get("asset_type") for item in investments if (_dec(item.get("current_value")) or _ZERO) > 0}
+    held_types = {canonical_asset_type(item.get("asset_type")) for item in investments if (_dec(item.get("current_value")) or _ZERO) > 0}
     missing = sorted(str(t) for t in held_types - set(summaries))
     if missing:
         notes.append("Holdings were not fetched for: " + ", ".join(missing) + "; broker and per-holding figures exclude them.")

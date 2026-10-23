@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from .portfolio_math import HOLDINGS_PREFIX
+from .portfolio_math import HOLDINGS_PREFIX, canonical_asset_type
 
 ACCOUNT_SCOPE: Final = "indmoney:networth"
 VALUATION_CURRENCY: Final = "INR"
@@ -212,7 +212,7 @@ def _summary_maps(summary: Mapping[str, Any]) -> tuple[dict[str, Decimal], dict[
     for item in summary.get("investments") or []:
         if not isinstance(item, dict) or not item.get("asset_type"):
             continue
-        name = str(item["asset_type"])
+        name = canonical_asset_type(item["asset_type"])
         if (value := to_decimal(item.get("current_value"))) is not None:
             values[name] = values.get(name, _ZERO) + value
         if (cost := to_decimal(item.get("invested_value"))) is not None:
