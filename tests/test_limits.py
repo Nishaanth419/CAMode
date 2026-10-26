@@ -60,6 +60,18 @@ def test_daily_limit_ignores_unset_zero_and_invalid_values(monkeypatch, value):
     assert limits.daily_question_limit() is None
 
 
+def test_daily_limit_never_goes_above_the_free_plan_allowance_in_code(monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "50")
+
+    assert limits.daily_question_limit() == limits.FREE_DAILY_QUESTIONS
+
+
+def test_daily_limit_can_be_lower_than_the_free_plan_allowance(monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
+
+    assert limits.daily_question_limit() == 3
+
+
 # ── Daily question cap ─────────────────────────────────────────────────────────
 
 def test_daily_limit_returns_429_with_a_plain_message(client, signed_in, monkeypatch):

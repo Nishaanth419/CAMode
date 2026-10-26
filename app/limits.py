@@ -4,7 +4,10 @@ Three independent protections, each off unless configured, so a copy on one comp
 behaves exactly as before:
 
 - ``DAILY_QUESTION_LIMIT``: answered chat questions per Free-plan profile per local day (in
-  ``SNAPSHOT_TIMEZONE``; paid plans in ``plans.py`` are not capped), counted in the ``question_counts`` table. A slot is reserved
+  ``SNAPSHOT_TIMEZONE``; paid plans in ``plans.py`` are not capped), counted in the ``question_counts`` table.
+  The cap is never above ``FREE_DAILY_QUESTIONS``, the Free plan's allowance in code: a larger number
+  in a server's settings is lowered to it, so changing the allowance in code reaches a hosted copy with
+  the next image. A smaller number still lowers the cap for that copy. A slot is reserved
   before the model runs (in a ``BEGIN IMMEDIATE`` transaction, so concurrent requests
   cannot overshoot) and released when no answer comes back.
 - ``RATE_LIMITS_ENABLED``: sliding-window request limits per client IP and per profile
@@ -44,6 +47,9 @@ logger = logging.getLogger("ca_mode.limits")
 
 RateGroup = Literal["chat", "sign_up", "sign_in", "investigation"]
 
+# The Free plan's daily allowance, offered on the pricing page; DAILY_QUESTION_LIMIT is never above it.
+FREE_DAILY_QUESTIONS: Final = 10
+
 TURNSTILE_VERIFY_URL: Final = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 TURNSTILE_TIMEOUT_SECONDS: Final = 10
 # Distinct client keys kept in memory before the least recently seen are dropped.
@@ -74,7 +80,11 @@ class DailyLimitReached(Exception):
 
 
 def daily_question_limit() -> int | None:
-    """Return the configured cap, or None when questions are unlimited (unset, empty, 0 or invalid)."""
+    """Return the cap, or None when questions are unlimited (unset, empty, 0 or invalid).
+
+    Never more than ``FREE_DAILY_QUESTIONS``: the pricing page promises that allowance, and a hosted
+    copy's older, larger setting must not outlive a change to it in code.
+    """
     raw = os.getenv("DAILY_QUESTION_LIMIT", "").strip()
     if not raw:
         return None
@@ -83,7 +93,7 @@ def daily_question_limit() -> int | None:
     except ValueError:
         logger.warning("Ignoring DAILY_QUESTION_LIMIT=%r: not a whole number", raw)
         return None
-    return limit if limit > 0 else None
+    return min(limit, FREE_DAILY_QUESTIONS) if limit > 0 else None
 
 
 def local_now() -> datetime:

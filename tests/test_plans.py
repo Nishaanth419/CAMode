@@ -136,6 +136,12 @@ def test_pricing_page_lists_every_plan(client):
     assert "10 questions a day" in html
 
 
+def test_pricing_page_never_offers_more_than_the_code_allowance(client, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "50")
+
+    assert f"{plans.FREE_DAILY_QUESTIONS} questions a day, starting again at midnight IST" in client.get("/pricing").text
+
+
 def test_pricing_page_shows_this_copys_free_allowance(client, monkeypatch):
     monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
 
