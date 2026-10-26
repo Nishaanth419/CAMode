@@ -5,7 +5,9 @@ A contract names the tools that can satisfy the task, whether a clarifying quest
 acceptable outcome, and the call budgets. ``evaluate()`` checks a finished run against it.
 
 A message with more than one kind of task that needs tools gets a ``multi_step`` contract
-(``plan_contract()``) when the agent plans it (``planner``).
+(``plan_contract()``) when the agent plans it (``planner``). A financial workflow (``app.workflows``)
+gets a ``workflow`` contract (``workflow_contract()``): every one of its required tools must succeed and
+each required output must be present or reported unavailable (its ``required_outputs`` validation).
 
 Contracts observe; they do not change answers. The one rule the agent enforces from here is that
 an account-data request is satisfied only by an account tool (``ACCOUNT_LOCAL_TOOLS`` or an
@@ -19,7 +21,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
-TaskType = Literal["refusal", "general_finance", "goal_calculation", "account_data", "multi_step"]
+TaskType = Literal["refusal", "general_finance", "goal_calculation", "account_data", "multi_step", "workflow"]
 
 # Local tools that read the user's own account data (saved snapshots, CAS holdings, investigations, fund figures).
 ACCOUNT_LOCAL_TOOLS: Final = frozenset({
@@ -52,6 +54,9 @@ class TaskContract:
     max_model_calls: int = 3
     max_tool_calls: int = 2
     parts: tuple[TaskContract, ...] = ()
+    workflow: str | None = None
+    required_outputs: tuple[str, ...] = ()
+    require_all: bool = False  # Every required tool must succeed (workflows), not just one of them.
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -60,6 +65,7 @@ class TaskContract:
             "maxToolCalls": self.max_tool_calls,
             **({"parts": [{"task": part.task, "requiredTools": sorted(part.required_tools),
                            "clarificationOk": part.clarification_ok} for part in self.parts]} if self.parts else {}),
+            **({"workflow": self.workflow, "requiredOutputs": list(self.required_outputs)} if self.workflow else {}),
         }
 
 
@@ -100,6 +106,18 @@ def plan_contract(parts: Sequence[str], offered_tools: Collection[str]) -> TaskC
                         max_tool_calls=tool_calls, parts=tuple(pieces))
 
 
+def workflow_contract(
+    name: str, required_tools: Collection[str], required_outputs: Sequence[str], max_tool_calls: int,
+    offered_tools: Collection[str],
+) -> TaskContract:
+    """The contract for a financial workflow: all its required tools, its outputs, one narration model call."""
+    return TaskContract(
+        task="workflow", required_tools=frozenset(required_tools), allowed_tools=frozenset(offered_tools),
+        max_model_calls=1, max_tool_calls=max_tool_calls, workflow=name, required_outputs=tuple(required_outputs),
+        require_all=True,
+    )
+
+
 def is_account_tool(name: str, local_tools: Collection[str]) -> bool:
     """Whether calling ``name`` reads account or market data (every INDmoney tool does; some local tools do)."""
     return name in ACCOUNT_LOCAL_TOOLS or (name not in local_tools and name not in GOAL_TOOLS)
@@ -113,6 +131,7 @@ class RunFacts:
     model_calls: int = 0
     tool_results: list[dict[str, Any]] = field(default_factory=list)  # {"name", "ok", "errorKind"}
     number_check: str | None = None  # "passed" | "warning" | None when not run
+    validations: dict[str, str] = field(default_factory=dict)  # check → outcome of the last such validation
 
 
 # A clarifying question is often a numbered list of what is missing, with no question mark.
@@ -143,6 +162,10 @@ def evaluate(contract: TaskContract, facts: RunFacts) -> dict[str, Any]:
     outside = sorted({item["name"] for item in facts.tool_results} - contract.allowed_tools)
     if outside:
         check("allowed_tools", "failed", ", ".join(outside))
+    if contract.required_outputs:
+        outcome = facts.validations.get("required_outputs", "failed")
+        check("required_outputs", "passed" if outcome == "passed" else "failed",
+              ", ".join(contract.required_outputs))
     if facts.number_check is not None:
         check("numbers", "passed" if facts.number_check == "passed" else "warning")
     tool_calls = len(facts.tool_results)
@@ -156,6 +179,9 @@ def evaluate(contract: TaskContract, facts: RunFacts) -> dict[str, Any]:
 
 def _required_tool(contract: TaskContract, facts: RunFacts) -> tuple[str, str]:
     succeeded = [item["name"] for item in facts.tool_results if item["ok"] and item["name"] in contract.required_tools]
+    if contract.require_all:
+        absent = sorted(contract.required_tools - set(succeeded))
+        return ("failed", "no successful call to " + ", ".join(absent)) if absent else ("passed", ", ".join(sorted(set(succeeded))))
     if succeeded:
         return "passed", ", ".join(sorted(set(succeeded)))
     if contract.clarification_ok and asks_question(facts.answer):
@@ -174,6 +200,8 @@ def facts_from_events(events: Sequence[dict[str, Any]], answer: str) -> RunFacts
         elif kind == "tool_result":
             facts.tool_results.append({"name": event.get("name", ""), "ok": not event.get("errorKind"),
                                        "errorKind": event.get("errorKind")})
-        elif kind == "validation" and event.get("check") == "numbers":
-            facts.number_check = event.get("outcome")
+        elif kind == "validation":
+            facts.validations[str(event.get("check"))] = str(event.get("outcome"))
+            if event.get("check") == "numbers":
+                facts.number_check = event.get("outcome")
     return facts
