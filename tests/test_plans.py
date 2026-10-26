@@ -127,10 +127,13 @@ def test_pricing_page_lists_every_plan(client):
     for plan in plans.PLANS.values():
         assert escape(plan.name) in html
         assert escape(plan.price) in html
-    assert "₹199" in html
-    assert "local open-source model" in html
+    assert "₹599" in html
+    assert "excluding GST" in html
+    assert "privately hosted" in html
+    assert "Refund policy" in html
+    assert "Ask within 30 days of paying" in html
     assert "Why a team costs more than one person" in html
-    assert "5 questions a day" in html
+    assert "10 questions a day" in html
 
 
 def test_pricing_page_shows_this_copys_free_allowance(client, monkeypatch):

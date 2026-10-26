@@ -185,14 +185,14 @@ def pricing_page() -> str:
       </section>
 """
     body = f"""    <h1>Pricing</h1>
-    <p class="public-lead">Start free with {free_questions} questions a day. Pay for unlimited questions, or for a copy
-      of CA Mode hosted for your team.</p>
+    <p class="public-lead">Start free with {free_questions} questions a day. Pay for monthly credits on a privately
+      hosted model, or for a copy of CA Mode hosted for your team.</p>
     <div class="plans">
 {cards}    </div>
     <section>
       <h2>Why a team costs more than one person</h2>
-      <p>Individual plans share one copy of CA Mode whose answers come from a local open-source model, so there is no
-        cloud AI bill to pass on and the price stays low. A team or organisation gets its own hosted copy: a server, its
+      <p>Individual plans share one copy of CA Mode whose answers come from a privately hosted language model, and each
+        month comes with its own credits. A team or organisation gets its own hosted copy: a server, its
         own database and a model sized for more people, which we set up, back up and keep running. That hosting is what
         raises the price, so it depends on how many members you have and how much they ask.</p>
     </section>
@@ -202,16 +202,28 @@ def pricing_page() -> str:
         reconnecting) is not counted. The free count starts again at midnight {escape(zone)}.</p>
     </section>
     <section>
+      <h2>Credits and top-ups</h2>
+      <p>The Individual plan comes with credits for the month. Once they are used you can top up at any time.</p>
+    </section>
+    <section>
       <h2>How to upgrade</h2>
       <p>There is no online checkout yet. Get in touch and we move your existing profile to the new plan, so your chats,
-        goals and snapshots stay where they are. Prices are in Indian rupees.</p>
+        goals and snapshots stay where they are. Prices are in Indian rupees and exclude GST.</p>
+    </section>
+    <section>
+      <h2>Refund policy</h2>
+      <ul>
+        <li>Ask within 30 days of paying and we refund the full amount, whatever you have used.</li>
+        <li>One refund per user.</li>
+        <li>To ask, contact whoever runs this copy of CA Mode.</li>
+      </ul>
     </section>
     <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRIVACY_PATH}">Privacy policy</a></p>"""
     return _page(
         title="Pricing",
         description=(
-            f"CA Mode is free for {free_questions} questions a day. Individual plans use a local model for a lower price; "
-            "teams and organisations get their own hosted copy."
+            f"CA Mode is free for {free_questions} questions a day. Individual plans come with monthly credits on a "
+            "privately hosted model and a 30-day refund; teams and organisations get their own hosted copy."
         ),
         body=body,
         is_indexable=True,

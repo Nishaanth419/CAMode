@@ -25,9 +25,9 @@ PlanId = Literal["free", "individual", "team"]
 PLAN_IDS: Final[tuple[PlanId, ...]] = get_args(PlanId)
 DEFAULT_PLAN: Final[PlanId] = "free"
 # The free allowance the pricing page offers; the hosted copy sets DAILY_QUESTION_LIMIT to it.
-FREE_DAILY_QUESTIONS: Final = 5
+FREE_DAILY_QUESTIONS: Final = 10
 # Shown as the pricing page's sitemap date; change it with the prices.
-PRICES_UPDATED: Final = date(2026, 10, 22)
+PRICES_UPDATED: Final = date(2026, 10, 26)
 _EMAIL = re.compile(r"^[^@\s<>\"']+@[^@\s<>\"']+\.[^@\s<>\"']+$")
 
 
@@ -60,14 +60,16 @@ PLANS: Final[dict[PlanId, Plan]] = {
     "individual": Plan(
         id="individual",
         name="Individual",
-        price="₹199",
-        period="per month",
-        summary="For one person. Answers come from a local open-source model, which keeps the price low.",
+        price="₹599",
+        period="per month, excluding GST",
+        summary="For one person. Answers come from a privately hosted language model, and each month comes with its own credits.",
         features=(
-            "Unlimited questions",
-            "Local model (gpt-oss via Ollama) instead of a paid cloud AI service",
+            "Credits for the month, renewed each month",
+            "Top up any time once your monthly credits are used",
+            "Answers from a privately hosted LLM, not a shared cloud AI service",
             "Easy access: sign in and ask, no AI keys to buy or manage",
             "Everything in Free",
+            "Full refund within 30 days of paying",
         ),
         daily_cap=False,
     ),
