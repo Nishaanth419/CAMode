@@ -96,7 +96,7 @@ cp .env.example .env
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `PORT` | `8080` | Port inside the Docker container |
-| `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per Free-plan profile per day in `SNAPSHOT_TIMEZONE` (the hosted copy uses `5`); see [Plans and pricing](#plans-and-pricing) |
+| `DAILY_QUESTION_LIMIT` | – (unlimited) | Answered chat questions per Free-plan profile per day in `SNAPSHOT_TIMEZONE` (the hosted copy uses `10`); see [Plans and pricing](#plans-and-pricing) |
 | `PRICING_CONTACT_EMAIL` | – | Where the `/pricing` page's "Choose Individual" and "Contact us" buttons send an email; unset, the page says to ask whoever runs the copy |
 | `RATE_LIMITS_ENABLED` | `false` | Request rate limits per IP and per profile on chat, sign-up, sign-in and investigations |
 | `TRUSTED_PROXY` | – | `cloudflare`: take the client IP from `CF-Connecting-IP`; `caddy`: from the last `X-Forwarded-For` entry. Only when the app is reachable solely through that proxy |
@@ -515,8 +515,8 @@ Without the workflows the agent loop priced the weekly 3 Nov expiry instead of t
 
 | Plan | Price | Questions | What it is |
 | --- | --- | --- | --- |
-| Free | ₹0 | `DAILY_QUESTION_LIMIT` a day (5 on the hosted copy) | The shared copy, every feature |
-| Individual | ₹199 a month | Unlimited | The shared copy; answers come from the local open-source model (gpt-oss via Ollama), so there is no cloud AI bill and the price stays low |
+| Free | ₹0 | `DAILY_QUESTION_LIMIT` a day (10 on the hosted copy) | The shared copy, every feature |
+| Individual | ₹599 a month, excluding GST | Monthly credits, top up any time once they are used | The shared copy; answers come from a privately hosted language model. Full refund within 30 days of paying, one per user |
 | Team or organisation | Contact us | Unlimited | A dedicated hosted copy (own server, database and model, Google sign-in per member, backups); hosting costs more, so it is priced by size |
 
 There is no checkout yet. Every profile starts on Free; after someone pays, give their profile a plan on the server:
@@ -527,7 +527,7 @@ python -m scripts.plans set asha@example.com individual   # profile name, Google
 python -m scripts.plans set Asha free                     # back to the daily limit
 ```
 
-(In the hosted setup: `docker compose exec app python -m scripts.plans …`.) The plan is the `users.plan` column; paid plans skip the daily question cap, while request rate limits still apply to everyone. `/api/session` returns `usage` (`plan`, `planName`, `limit`, `used`, `remaining`, `resetsAt`; `limit` is `null` when nothing caps the profile), a counted answer carries `X-Questions-Remaining`, and the daily-limit `429` adds `pricingUrl`. The profile dialog shows "5 of 5 questions left today" or "Unlimited questions". A copy on one computer with no `DAILY_QUESTION_LIMIT` stays unlimited on every plan. To change a price, edit `PLANS` and `PRICES_UPDATED` (the sitemap date).
+(In the hosted setup: `docker compose exec app python -m scripts.plans …`.) The plan is the `users.plan` column; paid plans skip the daily question cap, while request rate limits still apply to everyone. `/api/session` returns `usage` (`plan`, `planName`, `limit`, `used`, `remaining`, `resetsAt`; `limit` is `null` when nothing caps the profile), a counted answer carries `X-Questions-Remaining`, and the daily-limit `429` adds `pricingUrl`. The profile dialog shows "10 of 10 questions left today" or "Unlimited questions". A copy on one computer with no `DAILY_QUESTION_LIMIT` stays unlimited on every plan. To change a price, edit `PLANS` and `PRICES_UPDATED` (the sitemap date).
 
 ## Admin page
 
@@ -560,7 +560,7 @@ How it works:
 
 A copy on one computer has no limits. Before opening a hosted copy to other people, turn these on so one person or bot cannot monopolise the model (one Mac running Ollama answers one question at a time) or run up OpenAI or Groq costs. Each is independent and off unless set.
 
-- **Daily questions** (`DAILY_QUESTION_LIMIT=5` for the Free plan). Each Free-plan profile can get that many answers a day (paid plans are not capped, see [Plans and pricing](#plans-and-pricing)); the count starts again at midnight in `SNAPSHOT_TIMEZONE`. A question that gets no answer (the model failed, INDmoney needs reconnecting) does not count. Over the limit, `POST /api/chat` returns `429` with `Retry-After` and `{"error": "You've reached today's limit of 5 questions. It resets at midnight IST.", "dailyLimitReached": true, "limit", "resetsAt", "retryAfterSeconds", "pricingUrl"}`, and the chat shows that sentence with a link to the plans. Counts are kept in the `question_counts` table (profile, date, number; today and yesterday only) and deleted with the profile.
+- **Daily questions** (`DAILY_QUESTION_LIMIT=10` for the Free plan). Each Free-plan profile can get that many answers a day (paid plans are not capped, see [Plans and pricing](#plans-and-pricing)); the count starts again at midnight in `SNAPSHOT_TIMEZONE`. A question that gets no answer (the model failed, INDmoney needs reconnecting) does not count. Over the limit, `POST /api/chat` returns `429` with `Retry-After` and `{"error": "You've reached today's limit of 10 questions. It resets at midnight IST.", "dailyLimitReached": true, "limit", "resetsAt", "retryAfterSeconds", "pricingUrl"}`, and the chat shows that sentence with a link to the plans. Counts are kept in the `question_counts` table (profile, date, number; today and yesterday only) and deleted with the profile.
 - **Request rate limits** (`RATE_LIMITS_ENABLED=true`). Sliding windows in `limits.RATE_RULES`:
 
   | Routes | Per IP | Per profile |
