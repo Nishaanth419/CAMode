@@ -4,6 +4,7 @@
     python -m scripts.plans set Asha individual         # by profile name, Google email or profile id
     python -m scripts.plans set asha@example.com team
     python -m scripts.plans set <profile-id> free       # back to the daily question limit
+    python -m scripts.plans topup Asha 500              # add 500 top-up credits (kept until used)
 
 Uses APP_DATA_DIR (and the master key, to read Google emails) like the app. A name that
 more than one profile uses (possible with Google sign-in) must be given as an email or id.
@@ -15,7 +16,7 @@ import argparse
 import sys
 from typing import Any
 
-from app import accounts, plans
+from app import accounts, credits, plans
 from app.db import connect_db, initialize_db
 
 
@@ -46,9 +47,9 @@ def find_profiles(who: str) -> list[dict[str, Any]]:
 
 
 def _positional_set_arguments(argv: list[str]) -> list[str]:
-    """Read everything after ``set`` as positional: a profile id can start with ``-`` (ids are URL-safe base64)."""
-    if argv[:1] == ["set"] and "--" not in argv and not {"-h", "--help"} & set(argv):
-        return ["set", "--", *argv[1:]]
+    """Read everything after ``set`` or ``topup`` as positional: a profile id can start with ``-`` (ids are URL-safe base64)."""
+    if argv[:1] in (["set"], ["topup"]) and "--" not in argv and not {"-h", "--help"} & set(argv):
+        return [argv[0], "--", *argv[1:]]
     return argv
 
 
@@ -59,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     change = commands.add_parser("set", help="change one profile's plan")
     change.add_argument("profile", help="profile name, Google email or profile id")
     change.add_argument("plan", choices=plans.PLAN_IDS)
+    top_up = commands.add_parser("topup", help="add top-up credits to a profile on a plan with monthly credits")
+    top_up.add_argument("profile", help="profile name, Google email or profile id")
+    top_up.add_argument("credits", type=int, help="credits to add (1 credit = 1,000 tokens)")
     args = parser.parse_args(_positional_set_arguments(sys.argv[1:] if argv is None else argv))
     initialize_db()
 
@@ -80,6 +84,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {profile['email'] or '-':<32} {profile['id']}", file=sys.stderr)
         return 1
     profile = matches[0]
+    if args.command == "topup":
+        plan = plans.PLANS.get(profile["plan"]) or plans.PLANS[plans.DEFAULT_PLAN]
+        if not plan.monthly_credits:
+            print(f"{profile['name']} is on the {plan.name} plan, which has no credits to top up.", file=sys.stderr)
+            return 1
+        if args.credits <= 0:
+            print("Top up a positive number of credits.", file=sys.stderr)
+            return 1
+        total = credits.add_top_up(profile["id"], args.credits)
+        print(f"Added {args.credits:,} credits to {profile['name']}; top-up balance {total:,}.")
+        return 0
     plans.set_plan(profile["id"], args.plan)
     print(f"{profile['name']} is now on the {plans.PLANS[args.plan].name} plan.")
     return 0

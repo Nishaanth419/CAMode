@@ -258,9 +258,31 @@ function renderAccount() {
 
 function usageText() {
   if (!usage) return '';
+  if (usage.credits) return creditsText(usage.credits);
   if (usage.limit == null) return 'Unlimited questions';
   const left = Math.max(0, usage.remaining);
   return `${left} of ${usage.limit} question${usage.limit === 1 ? '' : 's'} left today`;
+}
+
+// A paid plan's credits: "2,840 of 3,000 credits left · renews 14 Nov", plus any top-up credits.
+function creditsText(credits) {
+  const number = (value) => Number(value).toLocaleString('en-IN');
+  const renews = new Date(`${credits.renewsOn}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  const topUp = credits.topUp > 0 ? ` + ${number(credits.topUp)} top-up` : '';
+  return `${number(credits.monthlyRemaining)} of ${number(credits.monthly)} credits left${topUp} · renews ${renews}`;
+}
+
+// Credits left after an answer (X-Credits-Remaining, monthly plus top-up) or a refusal (0).
+// Monthly credits are used before top-ups, so the top-up part only shrinks once the month's are gone.
+function updateCreditsLeft(total) {
+  const credits = usage?.credits;
+  if (!credits || !Number.isFinite(total)) return;
+  const left = Math.max(0, total);
+  credits.topUp = Math.min(credits.topUp, left);
+  credits.monthlyRemaining = left - credits.topUp;
+  credits.used = credits.monthly - credits.monthlyRemaining;
+  credits.remaining = left;
+  renderAccount();
 }
 
 // Today's remaining questions after an answer (X-Questions-Remaining) or a daily-limit refusal (0).
@@ -1340,11 +1362,23 @@ async function sendMessage(text) {
         // A limit, not a failure: say so plainly ("You've reached today's limit… resets at midnight IST").
         removeTypingIndicator();
         const plansLink = err.pricingUrl
-          ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">See plans with unlimited questions</a>`
+          ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">See paid plans</a>`
           : '';
         addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}${plansLink}</p>`);
         if (err.dailyLimitReached) updateQuestionsLeft(0);
         setStatus('online', err.dailyLimitReached ? 'Daily limit reached' : 'Too many requests');
+        if (createdChatId) await discardEmptyChat(createdChatId);
+        return;
+      }
+      if (res.status === 402 && err.creditsExhausted) {
+        // Credits used up: say when they renew and where to top up, like the daily limit.
+        removeTypingIndicator();
+        const plansLink = err.pricingUrl
+          ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">How to top up</a>`
+          : '';
+        addMessage('assistant', `<p>${escHtml(err.error || "You've used this month's credits.")}${plansLink}</p>`);
+        updateCreditsLeft(0);
+        setStatus('online', 'Credits used up');
         if (createdChatId) await discardEmptyChat(createdChatId);
         return;
       }
@@ -1358,6 +1392,8 @@ async function sendMessage(text) {
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
     const questionsLeft = res.headers.get('X-Questions-Remaining');
     if (questionsLeft !== null) updateQuestionsLeft(Number(questionsLeft));
+    const creditsLeft = res.headers.get('X-Credits-Remaining');
+    if (creditsLeft !== null) updateCreditsLeft(Number(creditsLeft));
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'));
     const bodyDiv = msgDiv.querySelector('.message-body');

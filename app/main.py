@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, cas, chats, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -275,6 +275,17 @@ def daily_limit_reached(exc: limits.DailyLimitReached) -> JSONResponse:
             "pricingUrl": public_pages.PRICING_PATH,
         },
         status_code=429, headers={"Retry-After": str(retry_after)},
+    )
+
+
+def credits_exhausted(exc: credits.CreditsExhausted) -> JSONResponse:
+    """402: the month's credits and any top-ups are used up; the chat links to the plans for a top-up."""
+    return JSONResponse(
+        {
+            "error": str(exc), "creditsExhausted": True, "renewsOn": exc.renews_on.isoformat(),
+            "pricingUrl": public_pages.PRICING_PATH,
+        },
+        status_code=402,
     )
 
 
@@ -1439,6 +1450,13 @@ async def chat(body: ChatRequest, request: Request):
         question_day = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
     except limits.DailyLimitReached as exc:
         return daily_limit_reached(exc)
+    monthly_credits = plans.plan_of(user).monthly_credits
+    if monthly_credits:
+        try:
+            credits.ensure_available(user["id"], monthly_credits, now=limits.local_now())
+        except credits.CreditsExhausted as exc:
+            limits.release_question(user["id"], question_day)
+            return credits_exhausted(exc)
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
     answered = False
     try:
@@ -1482,6 +1500,7 @@ async def chat(body: ChatRequest, request: Request):
         answered = bool(answer_text.strip())
         return PlainTextResponse(answer_text, headers={
             "X-Agent-Trace": trace_header(trace), **_run_header(run_id), **_questions_left_header(question_day, user),
+            **(_charge_credits(user, monthly_credits, answer) if answered and monthly_credits else {}),
         })
     finally:
         if not answered:
@@ -1503,6 +1522,18 @@ def _save_agent_run(
 
 def _run_header(run_id: str | None) -> dict[str, str]:
     return {"X-Agent-Run": run_id} if run_id else {}
+
+
+def _charge_credits(user: dict[str, Any], monthly_credits: int, answer: Any) -> dict[str, str]:
+    """Charge an answer's tokens (``credits.py``) and return the balance left as ``X-Credits-Remaining``."""
+    cost = credits.credits_for_tokens(credits.tokens_used(getattr(answer, "events", None)))
+    try:
+        left = credits.charge(user["id"], monthly_credits, cost, now=limits.local_now())
+    except Exception:
+        # The answer is already written; a failed charge must not lose it.
+        logger.exception("Could not charge %s credits for an answer", cost)
+        return {}
+    return {"X-Credits-Remaining": str(left.remaining), "X-Credits-Charged": str(cost)}
 
 
 def _questions_left_header(question_day: date | None, user: dict[str, Any]) -> dict[str, str]:

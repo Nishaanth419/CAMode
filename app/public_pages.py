@@ -169,10 +169,12 @@ def pricing_page() -> str:
     free_questions = plans.free_daily_questions()
     zone = plans.reset_zone()
     contact = plans.contact_email()
+    individual_credits = f"{plans.PLANS['individual'].monthly_credits or 0:,}"
     cards = ""
     for plan in plans.PLANS.values():
         features = "".join(
-            f"<li>{escape(feature.format(free_questions=free_questions, zone=zone))}</li>" for feature in plan.features
+            f"<li>{escape(feature.format(free_questions=free_questions, zone=zone, monthly_credits=f'{plan.monthly_credits or 0:,}'))}</li>"
+            for feature in plan.features
         )
         period = f' <span class="plan-period">{escape(plan.period)}</span>' if plan.period else ""
         featured = " plan-featured" if plan.id == "individual" else ""
@@ -203,7 +205,10 @@ def pricing_page() -> str:
     </section>
     <section>
       <h2>Credits and top-ups</h2>
-      <p>The Individual plan comes with credits for the month. Once they are used you can top up at any time.</p>
+      <p>The Individual plan comes with {individual_credits} credits a month. One credit is 1,000 tokens of the
+        model's work (the question, the data it reads and the answer), so a typical answer costs a few credits; a
+        question that gets no answer costs nothing. Credits renew on the day of the month your plan started and
+        don't carry over. Once they are used you can top up at any time; top-up credits are kept until used.</p>
     </section>
     <section>
       <h2>How to upgrade</h2>

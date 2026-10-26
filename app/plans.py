@@ -5,7 +5,8 @@ There is no checkout: whoever runs the copy sets a profile's plan with
 page's buttons open an email to ``PRICING_CONTACT_EMAIL``. Free profiles are capped by
 ``DAILY_QUESTION_LIMIT`` (``limits.py``; never above ``FREE_DAILY_QUESTIONS``),
 so a copy on one computer stays unlimited unless its owner sets one. Paid plans skip the
-daily cap; the request rate limits still apply to everyone.
+daily cap; the Individual plan has monthly credits instead (``credits.py``), and the request rate
+limits still apply to everyone.
 
 Prices live in ``PLANS`` and are shown on ``/pricing`` (``public_pages.pricing_page()``).
 """
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Final, Literal, get_args
 
-from . import limits
+from . import credits, limits
 from .db import connect_db
 
 PlanId = Literal["free", "individual", "team"]
@@ -40,6 +41,8 @@ class Plan:
     summary: str
     features: tuple[str, ...]
     daily_cap: bool
+    # Credits each month (credits.py); None: not counted.
+    monthly_credits: int | None = None
 
 
 PLANS: Final[dict[PlanId, Plan]] = {
@@ -64,7 +67,7 @@ PLANS: Final[dict[PlanId, Plan]] = {
         period="per month, excluding GST",
         summary="For one person. Answers come from a privately hosted language model, and each month comes with its own credits.",
         features=(
-            "Credits for the month, renewed each month",
+            "{monthly_credits} credits a month (1 credit = 1,000 tokens), renewed on the day your plan started",
             "Top up any time once your monthly credits are used",
             "Answers from a privately hosted LLM, not a shared cloud AI service",
             "Easy access: sign in and ask, no AI keys to buy or manage",
@@ -72,6 +75,7 @@ PLANS: Final[dict[PlanId, Plan]] = {
             "Full refund within 30 days of paying",
         ),
         daily_cap=False,
+        monthly_credits=3_000,
     ),
     "team": Plan(
         id="team",
@@ -114,15 +118,22 @@ def free_daily_questions() -> int:
 
 
 def usage(user: dict[str, Any], *, now: datetime) -> dict[str, Any]:
-    """The profile's plan and today's questions; ``limit`` is None when nothing caps them."""
+    """The profile's plan, today's questions and, on a plan with them, its credits.
+
+    ``limit`` is None when no daily cap applies; ``credits`` is None on a plan without monthly credits.
+    """
     plan = plan_of(user)
     limit = limits.daily_question_limit() if plan.daily_cap else None
     if limit is None:
-        return {"plan": plan.id, "planName": plan.name, "limit": None, "used": None, "remaining": None, "resetsAt": None}
+        balance = credits.balance(user["id"], plan.monthly_credits, now=now) if plan.monthly_credits else None
+        return {
+            "plan": plan.id, "planName": plan.name, "limit": None, "used": None, "remaining": None, "resetsAt": None,
+            "credits": balance.as_json() if balance else None,
+        }
     used = min(limits.questions_used(user["id"], now=now), limit)
     return {
         "plan": plan.id, "planName": plan.name, "limit": limit, "used": used, "remaining": limit - used,
-        "resetsAt": limits.next_reset(now).isoformat(timespec="minutes"),
+        "resetsAt": limits.next_reset(now).isoformat(timespec="minutes"), "credits": None,
     }
 
 
@@ -131,7 +142,11 @@ def set_plan(user_id: str, plan: str) -> bool:
     if plan not in PLAN_IDS:
         raise UnknownPlan(f"Unknown plan {plan!r}; choose one of {', '.join(PLAN_IDS)}.")
     with connect_db() as connection:
+        previous = connection.execute("SELECT plan FROM users WHERE id = ?", (user_id,)).fetchone()
         changed = connection.execute("UPDATE users SET plan = ? WHERE id = ?", (plan, user_id)).rowcount
+        # A move onto a plan with credits starts a fresh month from today; setting the same plan again does not.
+        if changed and PLANS[plan].monthly_credits and (previous is None or previous["plan"] != plan):
+            credits.start_plan(connection, user_id, today=credits.local_today(limits.local_now()))
     return changed == 1
 
 

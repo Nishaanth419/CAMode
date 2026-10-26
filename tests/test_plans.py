@@ -19,6 +19,7 @@ def test_new_profiles_are_on_the_free_plan(client, signed_in):
     assert users.get_user(signed_in["id"])["plan"] == "free"
     assert client.get("/api/session").json()["usage"] == {
         "plan": "free", "planName": "Free", "limit": None, "used": None, "remaining": None, "resetsAt": None,
+        "credits": None,
     }
 
 
