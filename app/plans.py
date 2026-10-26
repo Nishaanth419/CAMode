@@ -3,7 +3,7 @@
 There is no checkout: whoever runs the copy sets a profile's plan with
 ``python -m scripts.plans set <profile> <plan>`` after the person pays, and the pricing
 page's buttons open an email to ``PRICING_CONTACT_EMAIL``. Free profiles are capped by
-``DAILY_QUESTION_LIMIT`` (``limits.py``; the hosted copy sets it to ``FREE_DAILY_QUESTIONS``),
+``DAILY_QUESTION_LIMIT`` (``limits.py``; never above ``FREE_DAILY_QUESTIONS``),
 so a copy on one computer stays unlimited unless its owner sets one. Paid plans skip the
 daily cap; the request rate limits still apply to everyone.
 
@@ -24,8 +24,8 @@ from .db import connect_db
 PlanId = Literal["free", "individual", "team"]
 PLAN_IDS: Final[tuple[PlanId, ...]] = get_args(PlanId)
 DEFAULT_PLAN: Final[PlanId] = "free"
-# The free allowance the pricing page offers; the hosted copy sets DAILY_QUESTION_LIMIT to it.
-FREE_DAILY_QUESTIONS: Final = 10
+# The free allowance the pricing page offers; kept in limits.py, which caps DAILY_QUESTION_LIMIT at it.
+FREE_DAILY_QUESTIONS: Final = limits.FREE_DAILY_QUESTIONS
 # Shown as the pricing page's sitemap date; change it with the prices.
 PRICES_UPDATED: Final = date(2026, 10, 26)
 _EMAIL = re.compile(r"^[^@\s<>\"']+@[^@\s<>\"']+\.[^@\s<>\"']+$")
