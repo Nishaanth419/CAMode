@@ -1,0 +1,644 @@
+[
+ {
+  "name": "lookup_ind_keys",
+  "description": "\n        Used to resolve stock, index, derivative, commodity, or mutual fund names into valid identifiers.\n\n        Always use this tool first when the user mentions a stock, index, ticker, derivative, or fund\n        by name. Do not guess ind_key values manually.\n\n        Use filter_type=\"IN_COMMODITY\" for MCX commodities — gold, silver, crude oil, natural gas and\n        the base metals. These are NOT covered by IN_STOCKS_FNO, which searches equity and index\n        derivatives only and will return unrelated equity options for a commodity name (a query for\n        \"crude oil\" matches HINDPETRO options there).\n\n        For a commodity, this returns the FUTURES contract, which is the key every downstream tool\n        takes — the option chain, details and candles all work on it. Ask for a strike or a side\n        (\"goldm 160000 call\") to get a specific option leg instead.\n\n        Returns the best matching identifiers for the provided names, along with readable display\n        names. Use the returned ind_key values in downstream tools. A name that could not be\n        searched comes back as {\"ind_key\": null, \"name\", \"error\"} saying how to retry it; the\n        other names in the call are unaffected.\n        ",
+  "inputSchema": {
+   "properties": {
+    "names": {
+     "description": "Names to resolve — up to 10 per call, each at most 120 characters. Each name is searched independently.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Names",
+     "type": "array"
+    },
+    "filter_type": {
+     "default": "IN_STOCKS",
+     "description": "Market scope: IN_STOCKS (Indian stocks, indices, ETFs), IN_STOCKS_FNO (Indian equity/index derivatives), US_STOCKS (US equities), MF (mutual funds), IN_COMMODITY (MCX commodities — gold, silver, crude oil, natural gas, copper, zinc, aluminium, nickel, and their mini/micro variants).",
+     "enum": [
+      "IN_STOCKS",
+      "IN_STOCKS_FNO",
+      "US_STOCKS",
+      "MF",
+      "IN_COMMODITY"
+     ],
+     "title": "Filter Type",
+     "type": "string"
+    }
+   },
+   "required": [
+    "names"
+   ],
+   "title": "lookup_ind_keysArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "networth_snapshot",
+  "description": "\n        Fetch the user's overall net worth snapshot across the full portfolio.\n\n        Use for:\n          - total net worth, total wealth, or broad portfolio summary\n          - total invested amount and current portfolio value\n          - allocation across investment types and asset classes\n          - market-cap split of directly held Indian and US stocks\n          - liabilities such as loans, EMIs, and credit card dues\n          - overall portfolio health, diversification, or total P&L\n\n        sector rows are always empty (the portfolio tracking backend has no\n        sector analytics), and market_cap covers directly held stocks only —\n        mutual fund underlying exposure is not included.\n\n        Pass family_member (a name from get_family_members) to fetch a family\n        member's snapshot instead of the user's own.\n\n        Call this immediately when the user refers to \"my net worth\", \"my portfolio\", \"my\n        wealth\", or wants an overall view of their holdings. The data lives in INDmoney — never\n        ask the user to paste or provide their portfolio; always fetch it here first.\n        ",
+  "inputSchema": {
+   "properties": {
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "title": "networth_snapshotArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "networth_allocation_breakdown",
+  "description": "\n        Analyze one specific asset type and return its allocation breakdown.\n\n        Use for:\n          - analysis of a specific asset type such as MF, IND_STOCK, or US_STOCK\n          - asset-class-wise breakdown for that asset type\n          - market-cap-wise breakdown of directly held stocks (IND_STOCK / US_STOCK)\n          - focused asset analysis instead of the full net worth snapshot\n\n        Sector breakdowns are no longer available (the portfolio tracking\n        backend has no sector analytics) and return empty rows with a\n        data_note. market_cap buckets only directly held stocks — for MF and\n        other indirect assets it returns empty rows with a data_note.\n\n        Pass family_member (a name from get_family_members) to analyze a family\n        member's allocation instead of the user's own.\n\n        Call this when the user asks to analyze a specific asset type — e.g. \"my MF allocation\"\n        or \"break down my equity/holdings\". The data lives in INDmoney — never ask the user to\n        paste or provide their holdings; always fetch it here.\n        ",
+  "inputSchema": {
+   "properties": {
+    "asset_type": {
+     "description": "Required asset type to analyze, such as IND_STOCK, MF, or US_STOCK.",
+     "enum": [
+      "IND_STOCK",
+      "MF",
+      "US_STOCK",
+      "BOND",
+      "EPF",
+      "NPS",
+      "SA",
+      "FD",
+      "CRYPTO",
+      "INSURANCE",
+      "VEHICLE",
+      "RE",
+      "RD",
+      "AIF",
+      "PMS",
+      "PPF"
+     ],
+     "title": "Asset Type",
+     "type": "string"
+    },
+    "breakdown_by": {
+     "description": "How to break down the selected asset type. 'assets' = by asset class (Equity, Retirement, Liquid, etc.). 'market_cap' = by market cap bucket (Large/Mid/Small Cap) — directly held stocks only. 'sector' is no longer served and always returns empty rows with a data_note. ",
+     "enum": [
+      "assets",
+      "sector",
+      "market_cap"
+     ],
+     "title": "Breakdown By",
+     "type": "string"
+    },
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "required": [
+    "asset_type",
+    "breakdown_by"
+   ],
+   "title": "networth_allocation_breakdownArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "networth_holdings",
+  "description": "\n        Return row-level holdings for one specific asset type.\n\n        Use for:\n          - listing holdings within a specific asset type such as IND_STOCK, MF, or BOND\n          - units held, unit price, current value, or broker per holding\n          - P&L, P&L %, and one-day change for each holding\n          - checking whether a specific stock, fund, or bond is present in that asset type\n          - comparing invested vs current value per instrument\n\n        The response carries asset_summary (total_value, invested, one-day change\n        for the requested asset type) plus per-row holdings. holding_percent is a\n        holding's share of the requested asset type's value, not of the whole\n        portfolio.\n\n        US_STOCK amounts come in BOTH currencies: INR (invested_amount,\n        market_value, one_day_change) and USD (invested_value_usd,\n        current_value_usd, one_day_change_usd per row; total_value_usd,\n        invested_usd, one_day_change_usd in asset_summary). Quote whichever\n        currency the user asks for — both are available — and never add INR and\n        USD figures together. For US_STOCK rows investment_code is the ticker\n        (e.g. META), usable directly with get_us_stocks_details and\n        get_us_stocks_ohlc; for MF rows it is the scheme code.\n\n        INSURANCE and RD are not served by the portfolio tracking backend and\n        return empty holdings with a data_note.\n\n        F&O / DERIVATIVES — asset_type=\"IND_STOCK\" is also the source for the user's\n        derivative book. There is no separate F&O asset type; use IND_STOCK for\n        futures and options positions. Alongside equity holdings it returns:\n          - derivative_positions        open + netted F&O legs (futures and options)\n          - drv_intra_day_positions     intraday derivative legs\n          - positions, intra_day_positions, mtf_positions, strategy_positions\n          - commodity_positions, commodity_intra_day_positions\n          - open_orders, open_derivative_orders\n        Any of these may be null or empty when the user holds nothing in that book.\n\n        Each derivative_positions row carries:\n          - position_id       identifier for this leg\n          - ind_stock_id      the instrument's ind_key\n          - instrument_type   the contract kind, e.g. FUTSTK for a stock future\n          - avg_price, buy_avg_price, sell_avg_price, buy_qty, sell_qty\n          - quantity          net open quantity; 0 means the leg is fully netted out\n          - netting_type      e.g. net_buy / net_sell\n          - realised_gains, day_realised_gains\n\n        To analyse a derivative leg, pass its ind_stock_id to get_indian_stocks_details —\n        that returns live_price (LTP), expiry_date, open_interest, underlying_parent_ind_key,\n        and, for options, greeks_data (delta, theta, vega, gamma, iv_vwap). This tool does\n        NOT return LTP or greeks; the two calls together give the full picture of a position.\n\n        For linked (non-INDmoney) brokers, invested_amount is often missing and returned as 0.\n        Pass family_member (a name from get_family_members) to fetch a family member's\n        holdings instead of the user's own.\n        Call this immediately when the user refers to \"my stocks\", \"my holdings\", \"my positions\",\n        \"my funds\", \"my F&O positions\", \"my options\", \"my futures\", or holdings within a specific\n        asset type. The data lives in INDmoney — never ask the user to paste or provide their\n        holdings or positions; always fetch it here first.\n        ",
+  "inputSchema": {
+   "properties": {
+    "asset_type": {
+     "description": "Required asset type whose holdings should be returned.",
+     "enum": [
+      "IND_STOCK",
+      "MF",
+      "US_STOCK",
+      "BOND",
+      "EPF",
+      "NPS",
+      "SA",
+      "FD",
+      "CRYPTO",
+      "INSURANCE",
+      "VEHICLE",
+      "RE",
+      "RD",
+      "AIF",
+      "PMS",
+      "PPF"
+     ],
+     "title": "Asset Type",
+     "type": "string"
+    },
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "required": [
+    "asset_type"
+   ],
+   "title": "networth_holdingsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_indian_stocks_ohlc",
+  "description": "\n        Use this tool to fetch historical and currently running OHLC candle data\n        for an Indian stock, F&O derivative, or index.\n\n        Use for:\n          - price history\n          - candle charting\n          - intraday movement\n          - running live candle\n          - trend analysis\n          - support/resistance\n          - breakout/reversal detection\n          - volatility expansion\n          - momentum confirmation\n\n        Each candle carries datetime_ist (IST wall clock), open, high, low,\n        close and volume. At most 250 candles are returned per call — enough\n        for a full year of daily candles. When the window holds more (1minute\n        over a whole session, for example) the MOST RECENT candles are kept:\n        candles_total then carries the full count and data_note says so. For\n        the whole window at that point choose a coarser interval (5minute for\n        a session, 1day for weeks) rather than paging.\n\n        Every call retrieves an upstream snapshot. retrieved_at_ist is when\n        this server received it, not the feed's update time; upstream does not\n        provide a source update timestamp for each candle. Call again to refresh.\n        On a 1minute call, last_candle_is_current_minute says only whether the\n        final candle starts in the minute containing query_end_ist. That candle\n        may be partial; its presence does not prove that its OHLCV fields are\n        current or updated together. Short windows may be empty when they do\n        not overlap a trading session.\n        ",
+  "inputSchema": {
+   "properties": {
+    "ind_key": {
+     "description": "ind_key of the instrument to fetch candles for. Supports stocks, indices, and derivatives (futures/options). Must be a key returned by lookup_ind_keys (e.g. INDS01052), not a ticker symbol.",
+     "title": "Ind Key",
+     "type": "string"
+    },
+    "interval": {
+     "description": "Candle interval. Minute intervals (1m-30m) support up to 7d range; hour intervals (60m-240m) up to 14d; 1day/1week/1month up to 1y.",
+     "enum": [
+      "1minute",
+      "5minute",
+      "15minute",
+      "30minute",
+      "60minute",
+      "240minute",
+      "1day",
+      "1week",
+      "1month"
+     ],
+     "title": "Interval",
+     "type": "string"
+    },
+    "lookback": {
+     "description": "Lookback window ending now. 1h/3h for an intraday read (minute intervals only; 1minute over 1h is about 60 candles), 1d/7d for minute and hour intervals, 14d/1y for daily and above. Must be compatible with the chosen interval.",
+     "enum": [
+      "1h",
+      "3h",
+      "1d",
+      "7d",
+      "14d",
+      "1y"
+     ],
+     "title": "Lookback",
+     "type": "string"
+    }
+   },
+   "required": [
+    "ind_key",
+    "interval",
+    "lookback"
+   ],
+   "title": "get_indian_stocks_ohlcArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_indian_stocks_details",
+  "description": "\n        Use this tool to fetch detailed live market information\n        for Indian stocks, indices, ETFs, futures, and options.\n\n        Use this tool when the user asks for:\n          - current stock details\n          - live price / LTP\n          - market stats\n          - analyst sentiment / ratings\n          - target price\n          - derivative greeks\n          - option/future details\n          - bid/ask depth\n          - underlying contract info\n          - multi-stock comparison\n\n        By default returns core price/market data only.\n\n        segments=[\"depth\"] adds market_depth per instrument: {\"NSE\": {\"bids\":\n        [{\"price\", \"qty\"}...], \"asks\": [...], \"total_bid_qty\", \"total_ask_qty\",\n        \"bid_pct\", \"ask_pct\"}} — up to 5 levels per exchange, NSE and BSE for a\n        stock, one book for a contract. This is the latest available upstream\n        snapshot, which can retain an earlier session's book. depth_retrieved_at_ist\n        records retrieval time, not feed freshness. Upstream supplies no book\n        timestamp: depth_source_updated_at_ist is null and depth_freshness is\n        \"unknown\" when a book is returned. price_updated_at_ist is the quote's\n        timestamp and does not date the book. depth_status distinguishes available,\n        empty, timeout, unavailable and unsupported; depth_note explains missing\n        depth without guessing market status or demat eligibility. The current\n        source does not support BSE-only cash instruments. segment_meta_data\n        (lot size, tick size, freeze qty)\n        rides along for contracts so quantities can be read in lots.\n        ",
+  "inputSchema": {
+   "properties": {
+    "ind_keys": {
+     "description": "List of ind_keys to fetch details for. Supports stocks, indices, ETFs, futures, and options. Max 10 per call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Ind Keys",
+     "type": "array"
+    },
+    "segments": {
+     "anyOf": [
+      {
+       "items": {
+        "enum": [
+         "analyst",
+         "news",
+         "depth"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional data sections to include beyond core price/market data. 'analyst' = analyst consensus, buy/hold/sell ratings, target price range. 'news' = recent news headlines and sentiment. 'depth' = latest available order book: top 5 bids and asks with quantities per exchange, plus total bid/ask quantity and their split (stocks, futures, options, MCX; not indices). Omit or pass [] for core market data only.",
+     "title": "Segments"
+    }
+   },
+   "required": [
+    "ind_keys"
+   ],
+   "title": "get_indian_stocks_detailsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_indian_stocks_option_chain",
+  "description": "\n        Use this tool to fetch the live option chain\n        for an Indian stock or index underlying.\n\n        Always use this tool when the user asks for:\n          - option chain\n          - strike-wise OI\n          - PCR\n          - expiry analysis\n          - max pain\n          - call vs put buildup\n          - support and resistance from OI\n          - IV analysis\n          - derivatives sentiment\n          - ATM / OTM strike comparison\n          - per-strike greeks: delta, theta, vega, gamma (both call and put)\n          - bid / ask per strike, for spread and liquidity checks\n          - per-strike OI reads: oi_shade_tag (SUPPORT / RESISTANCE) and\n            oi_trend_tag (short-build-Up / long-unwinding)\n\n        Works for NSE stock/index underlyings and for MCX commodities (gold,\n        silver, crude oil, natural gas, base metals) — resolve the commodity\n        with lookup_ind_keys(filter_type=\"IN_COMMODITY\") and pass the futures\n        key it returns.\n\n        On NSE underlyings each strike carries greeks for both sides, so a\n        multi-leg structure (spread, straddle, condor) can be assessed from ONE\n        call — do not loop get_indian_stocks_greeks_history per leg for current\n        values. MCX chains have NO greeks upstream: the keys are omitted and a\n        `greeks_note` says so. Do not substitute greeks_history for them, and do\n        not infer greeks from a commodity chain — report OI, volume, price and\n        bid/ask, which are complete.\n\n        Upstream field naming varies between responses: bid/ask arrive as either\n        ``bp``/``sp`` or ``buy_price``/``sell_price``, and volume as ``v`` or\n        ``volume``. Read whichever pair is present rather than assuming one, and\n        treat an absent pair as \"not quoted\" rather than zero.\n\n        Every call retrieves a snapshot; retrieved_at_ist is the retrieval time,\n        not a guarantee of feed freshness. Call again to refresh.\n        entity_details.price_updated_at_ist is the underlying's own price time\n        when available (live-overlaid, price_mode \"live\"); per-strike rows carry\n        no timestamp of their own. identity_fallback: true means upstream was\n        re-asked anonymously after an error, so user-specific fields are absent.\n\n        Choose `use_expiry_date=True` when the user specifies expiry.\n        Otherwise use nearest expiry automatically.\n\n        `expiry_date` must be an expiry this instrument actually has — take it\n        from the `expiry_list` of an earlier call. YYYY-MM-DD and YYYYMMDD are\n        both accepted; a date that is not on the list is rejected with the\n        valid ones listed, rather than answered with a different expiry.\n        ",
+  "inputSchema": {
+   "properties": {
+    "ind_key": {
+     "description": "ind_key of the underlying. For NSE, a stock or index (not a futures/options contract). For MCX commodities, the FUTURES contract key (INDCF...) that lookup_ind_keys returns for filter_type=IN_COMMODITY - the commodity root (INDCV...) has no option chain.",
+     "title": "Ind Key",
+     "type": "string"
+    },
+    "use_expiry_date": {
+     "description": "Set to True when the user specifies a particular expiry date. Set to False to use the nearest expiry automatically.",
+     "title": "Use Expiry Date",
+     "type": "boolean"
+    },
+    "expiry_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Expiry date, YYYY-MM-DD or YYYYMMDD (e.g. '2026-08-28'). Must be one of the expiry_list values a prior call returned. Required only when use_expiry_date is True.",
+     "title": "Expiry Date"
+    },
+    "strikes_around_atm": {
+     "default": 7,
+     "description": "Number of strikes to return on each side of the ATM strike. Default is 7.",
+     "title": "Strikes Around Atm",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "ind_key",
+    "use_expiry_date"
+   ],
+   "title": "get_indian_stocks_option_chainArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_indian_stocks_greeks_history",
+  "description": "\n        Use this tool whenever the user asks for analysis of an Indian options contract.\n\n        Returns time-series data sampled at 5-minute intervals including:\n          - delta, theta, vega (standard option Greeks)\n          - iv (implied volatility), iv_vwap (volume-weighted avg IV)\n          - charm, volga, veta (higher-order Greeks)\n          - tgr (total gamma risk), tv (time value)\n\n        Use for:\n          - IV trend analysis over time\n          - Greeks evolution across a trading session\n          - Theta decay visualization\n          - Delta hedging analysis\n          - Volatility surface research\n\n        `1d` returns every 5-minute sample. A `7d` window is too long to return\n        in full, so it is thinned to evenly spaced samples: `count` is what you\n        received, `total_samples` what upstream held, and\n        `sampling_interval_minutes` the resulting spacing. Both keys appear only\n        when thinning happened. The most recent sample is always the last\n        element, so read current values from there rather than assuming the\n        series ends at the requested window edge.\n\n        Returns an empty `greeks` list for MCX commodity legs — upstream\n        computes no greeks for them at all. Use get_indian_stocks_option_chain\n        for commodity OI, price and bid/ask instead.\n        ",
+  "inputSchema": {
+   "properties": {
+    "ind_key": {
+     "description": "ind_key of the options instrument to fetch historical Greeks for. Must be an option contract (e.g. INDON...).",
+     "title": "Ind Key",
+     "type": "string"
+    },
+    "lookback": {
+     "default": "1d",
+     "description": "Lookback window for Greeks data. 1d = last 1 day at full 5-minute resolution; 7d = last 7 days, evenly thinned to keep the response readable (sampling_interval_minutes reports the spacing when that happens).",
+     "enum": [
+      "1d",
+      "7d"
+     ],
+     "title": "Lookback",
+     "type": "string"
+    }
+   },
+   "required": [
+    "ind_key"
+   ],
+   "title": "get_indian_stocks_greeks_historyArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "user_watchlist",
+  "description": "\n        Fetch the user's own watchlisted instruments from their INDmoney account.\n\n        Pass family_member (a name from get_family_members) to fetch a family\n        member's watchlist instead of the user's own.\n\n        Call this tool immediately — without asking the user to paste, upload, or provide\n        anything — whenever the user refers to \"my watchlist\", \"my swing-trading watchlist\",\n        \"my tracked/saved stocks\", \"stocks I'm watching\", or asks to analyze \"from my watchlist\".\n        The watchlist lives in INDmoney; never ask the user to supply it manually — always fetch\n        it here first, then analyze.\n        ",
+  "inputSchema": {
+   "properties": {
+    "type": {
+     "default": "all",
+     "description": "Market filter for the watchlist. Use indian for Indian instruments, us for US instruments, and all to fetch the full combined watchlist.",
+     "enum": [
+      "indian",
+      "us",
+      "all"
+     ],
+     "title": "Type",
+     "type": "string"
+    },
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "title": "user_watchlistArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "indian_stocks_sips",
+  "description": "\n        Fetch the user's Indian stocks SIPs.\n\n        Use when the user asks about:\n          - active or registered SIPs\n          - SIP details or SIP summary\n          - monthly SIP execution status\n          - upcoming, in-progress, or failed SIP installments\n          - SIP amount or frequency\n          - next SIP execution date\n\n        Returns SIP data grouped per stock, including SIP amount, frequency,\n        next execution date, status, and the current month's installment breakdown.\n        Pass family_member (a name from get_family_members) to fetch a family\n        member's stock SIPs instead of the user's own.\n\n        Call this immediately when the user refers to \"my SIPs\", \"my stock SIPs\", or their SIP\n        status. The data lives in INDmoney — never ask the user to paste or provide their SIPs;\n        always fetch it here first.\n        ",
+  "inputSchema": {
+   "properties": {
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "title": "indian_stocks_sipsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mf_by_category",
+  "description": "\n        Search and rank mutual funds filtered by one or more category slugs.\n\n        Use when the user asks about:\n          - Top funds in a specific category (e.g. \"best index funds\", \"top flexi cap funds\")\n          - Comparing funds across categories\n          - Fund recommendations within a category\n          - Screening MFs by category with custom sort (by returns or AUM)\n\n        Returns one row per matching fund under `data`, carrying nav, aum,\n        expense ratio, 1/3/5-year returns, INDmoney's ranking and risk/rating,\n        and the SIP and lumpsum limits. Use `count` and `next_page` to page.\n        ",
+  "inputSchema": {
+   "properties": {
+    "categories": {
+     "description": "One or more MF category slugs to filter by. ",
+     "items": {
+      "enum": [
+       "index-funds",
+       "equity-other",
+       "liquid",
+       "index-funds-fixed-income",
+       "fund-of-funds",
+       "low-duration",
+       "overnight",
+       "ultra-short-duration",
+       "nifty-index-funds",
+       "money-market",
+       "arbitrage-fund",
+       "short-duration",
+       "other-bond",
+       "corporate-bond",
+       "dynamic-bond",
+       "fixed-maturity-intermediate-term-bond",
+       "large-cap",
+       "global-funds",
+       "aggressive-allocation",
+       "flexi-cap",
+       "banking-psu",
+       "elss-tax-savings",
+       "large-cap-index-funds",
+       "gilt-funds",
+       "dynamic-asset-allocation",
+       "equity-savings",
+       "sector-precious-metals",
+       "small-cap",
+       "large-mid-cap",
+       "mid-cap",
+       "conservative-allocation",
+       "sector-financial-services",
+       "multi-asset-allocation",
+       "multi-cap",
+       "focused-fund",
+       "fixed-maturity-short-term-bond",
+       "floating-rate",
+       "medium-duration",
+       "equity-consumption",
+       "credit-risk",
+       "medium-to-long-duration",
+       "value",
+       "mid-cap-index-funds",
+       "nifty-50-index-funds",
+       "other-index-funds",
+       "equity-infrastructure",
+       "small-cap-index-funds",
+       "retirement",
+       "sector-healthcare",
+       "long-duration",
+       "sector-technology",
+       "fixed-maturity-ultrashort-bond",
+       "nifty-next-50-index-funds",
+       "10-yr-government-bond",
+       "dividend-yield",
+       "nifty-midcap-index-funds",
+       "equity-esg",
+       "children",
+       "balanced-allocation",
+       "global-index-funds",
+       "nifty-smallcap-index-funds",
+       "sector-energy",
+       "contra",
+       "sector-fmcg"
+      ],
+      "type": "string"
+     },
+     "title": "Categories",
+     "type": "array"
+    },
+    "size": {
+     "default": 6,
+     "description": "Number of funds to return per page (1–20). Defaults to 6.",
+     "title": "Size",
+     "type": "integer"
+    },
+    "page": {
+     "default": 1,
+     "description": "Page number (1-based). Use with size to fetch more results beyond the first page.",
+     "title": "Page",
+     "type": "integer"
+    },
+    "sort_key": {
+     "default": "category_ind_rank",
+     "description": "Field to sort results by. 'category_ind_rank' returns top-ranked funds first.",
+     "enum": [
+      "category_ind_rank",
+      "returns_1yr",
+      "returns_3yr",
+      "returns_5yr",
+      "aum"
+     ],
+     "title": "Sort Key",
+     "type": "string"
+    },
+    "sort_asc": {
+     "default": true,
+     "description": "True = ascending order. False = descending.",
+     "title": "Sort Asc",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "categories"
+   ],
+   "title": "get_mf_by_categoryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mf_funds_details",
+  "description": "\n        Fetch detailed mutual fund data by scheme id.\n\n        Baseline response always covers: name, short name, nav, aum, expense_ratio, returns (1Y/3Y/5Y/inception),\n        ind_ranking, category, image_url, benchmark_name, strategy, SIP min/max, BSE min/max.\n\n        Add entries to `includes` only when the user's question needs heavier sections:\n          - AUM historical trend → 'fund_detail.aum_history'\n          - Fund vs benchmark, category rank, best/worst in category → 'fund_performance'\n          - Equity/debt/market-cap split → 'asset_allocation'\n          - Sector concentration → 'sector_allocation'\n          - Top stocks / individual positions → 'holdings'\n          - Peer comparison tables → 'category_tables'\n\n        Resolve the fund with lookup_ind_keys first, then pass fund_ids here.\n        ",
+  "inputSchema": {
+   "properties": {
+    "fund_ids": {
+     "description": "Scheme id from lookup_ind_keys (filter_type MF). Comma-separated for multiple funds, at most 10 per call.",
+     "title": "Fund Ids",
+     "type": "string"
+    },
+    "includes": {
+     "anyOf": [
+      {
+       "items": {
+        "enum": [
+         "fund_detail.aum_history",
+         "fund_performance",
+         "asset_allocation",
+         "sector_allocation",
+         "holdings",
+         "category_tables"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional extra sections to fetch beyond the baseline fund details. Baseline (always fetched) already includes: name, short name, nav, aum, expense_ratio, returns, ind_ranking, category, image_url, benchmark_name, strategy, SIP min/max, BSE min/max. Only add entries here when the user's question needs heavier data: 'fund_detail.aum_history' = AUM trend over time. 'fund_performance' = benchmark vs fund returns, category rank, best/worst in category. 'asset_allocation' = equity/debt/cash split with market-cap breakdown. 'sector_allocation' = sector-wise allocation percentages. 'holdings' = individual stock/bond holdings with weights. 'category_tables' = peer comparison tables by sector and asset class. Omit or pass [] when the baseline is enough — these sections are large and add latency.",
+     "title": "Includes"
+    }
+   },
+   "required": [
+    "fund_ids"
+   ],
+   "title": "get_mf_funds_detailsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "mf_sips",
+  "description": "\n        Fetch the user's currently-active mutual fund SIPs.\n\n        Use when the user asks about:\n          - their running / active mutual fund SIPs (\"my SIPs\", \"my mutual fund SIPs\")\n          - how much they invest via MF SIPs each cycle\n          - SIP amount, frequency, start date, or step-up for their active mutual fund SIPs\n\n        Returns one entry per fund that has at least one ACTIVE SIP, with fund name, category,\n        holding value, and the active SIP detail(s). Funds whose SIPs have stopped, completed,\n        or paused are NOT included — this is the live active-SIP view, not full SIP history,\n        and it does not cover per-installment execution status or next-due dates.\n        Pass family_member (a name from get_family_members) to fetch a family member's\n        active MF SIPs instead of the user's own.\n\n        Call this immediately when the user refers to \"my SIPs\", \"my mutual fund SIPs\", or their\n        active MF SIPs. The data lives in INDmoney — never ask the user to paste or provide their\n        SIPs; always fetch it here first.\n        ",
+  "inputSchema": {
+   "properties": {
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "title": "mf_sipsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_us_stocks_details",
+  "description": "\n        Use this tool to fetch detailed live market information for US stocks.\n\n        Use this tool when the user asks for:\n          - current US stock details\n          - live price / LTP for US stocks\n          - US stock market stats\n          - analyst sentiment / ratings for US stocks\n          - target price for US stocks\n          - US stock news and sentiment\n          - multi-stock comparison for US stocks\n\n        By default returns core price/market data only. In a partially successful\n        batch, an unknown symbol comes back as {\"<symbol>\": {\"error\": ...}}.\n        If every symbol fails, the call returns a service error.\n        Partial failures include error_type and, for HTTP errors, status_code;\n        a timeout or service failure is not an unknown-symbol lookup failure.\n        ",
+  "inputSchema": {
+   "properties": {
+    "symbols": {
+     "description": "List of US stock ticker symbols (e.g. ['TSLA', 'AAPL']). Max 10 per call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Symbols",
+     "type": "array"
+    },
+    "segments": {
+     "anyOf": [
+      {
+       "items": {
+        "enum": [
+         "analyst",
+         "news"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional data sections beyond core price/market data. 'analyst' = analyst consensus, buy/hold/sell ratings, target price. 'news' = recent news headlines and sentiment. Omit or pass [] for core market data only.",
+     "title": "Segments"
+    }
+   },
+   "required": [
+    "symbols"
+   ],
+   "title": "get_us_stocks_detailsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "us_stocks_sips",
+  "description": "\n        Fetch the user's US stock SIPs — both funding flows in one call: the Federal\n        flow (INR bank-mandate SIPs) and the Wallet flow (USD wallet-funded SIPs).\n\n        Use when the user asks about:\n          - their US stock SIPs (\"my US SIPs\", \"US stock SIP status\")\n          - US SIP amount, frequency, or next installment date\n          - monthly US SIP outlay\n          - a paused, cancelled, or stopped US stock SIP (pass status=\"all\")\n\n        IMPORTANT: FEDERAL rows and totals are in INR; WALLET rows and totals are in\n        USD. Never add amounts across funding sources — report the two subtotals\n        separately. The same stock can hold a SIP on both flows at once; those are\n        distinct SIPs, not duplicates.\n\n        Pass family_member (a name from get_family_members) to fetch a family\n        member's US stock SIPs instead of the user's own.\n\n        Call this immediately when the user refers to their US stock SIPs. The data\n        lives in INDmoney — never ask the user to paste or provide their SIPs;\n        always fetch it here first.\n        ",
+  "inputSchema": {
+   "properties": {
+    "status": {
+     "default": "active",
+     "description": "\"active\" (default) lists only running SIPs. \"all\" also lists paused and cancelled wallet-funded SIPs. The Federal (bank-mandate) flow reports active SIPs only either way.",
+     "enum": [
+      "active",
+      "all"
+     ],
+     "title": "Status",
+     "type": "string"
+    },
+    "family_member": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional: a family member's name (as listed by get_family_members) to view THEIR data instead of your own. Requires that member to have sharing enabled. Omit for your own account.",
+     "title": "Family Member"
+    }
+   },
+   "title": "us_stocks_sipsArguments",
+   "type": "object"
+  }
+ }
+]

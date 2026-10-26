@@ -14,8 +14,11 @@ Event kinds (camelCase keys, ``seq`` and ``atMs`` on every event):
 - ``tool_call`` / ``tool_result``: ``name``, ``source``, ``arguments``; the result adds ``errorKind``
   (``tool_results.ToolErrorKind``) and ``error``, or ``resultPreview``, plus ``durationMs``; in a planned
   run both carry the plan ``step`` id
-- ``plan``: ``stage`` (``initial``, ``added``), ``outcome`` (``accepted``, ``rejected``), ``steps``
-  (``id``, ``tool``, ``after``) or the ``reason`` it was rejected
+- ``plan``: ``stage`` (``initial``, ``added``; a workflow's ``workflow``, ``wave``, ``fix``), ``outcome``
+  (``accepted``, ``rejected``), ``steps`` (``id``, ``tool``, ``after``) or the ``reason`` it was rejected; a
+  workflow's plan events also carry ``workflow`` and ``wave``
+- ``calculation``: ``name``, ``inputs``, ``outputs`` (redacted, capped), ``problems`` (a workflow's
+  deterministic calculations)
 - ``plan_stop``: ``reason`` (``complete``, ``clarify``, ``partial``, ``budget``, ``deadline``, ``error``) and
   the planned calls still ``missing``
 - ``retry``: ``reason`` (``no_account_tool``, ``goal_calculator``, ``invalid_tool_call``,
@@ -152,7 +155,8 @@ class RunRecorder:
             error=_clean(p["error"], MAX_ERROR_CHARS) if failed else None,
             resultPreview=_clean(p["result"], MAX_PREVIEW_CHARS) if p.get("result") else None,
             investigationId=p.get("investigation_id"), step=p.get("step"),
-            durationMs=self._now_ms() - call["atMs"] if call else None,
+            # A workflow times each call itself (its calls run in parallel and report together).
+            durationMs=p["duration_ms"] if isinstance(p.get("duration_ms"), int) else (self._now_ms() - call["atMs"] if call else None),
         )
 
     def _on_retry(self, p: dict[str, Any]) -> dict[str, Any]:
@@ -164,9 +168,17 @@ class RunRecorder:
 
     def _on_plan(self, p: dict[str, Any]) -> dict[str, Any]:
         steps = [{key: (str(value)[:100] if key != "after" else [str(item)[:20] for item in value][:8])
-                  for key, value in step.items() if key in ("id", "tool", "after")} for step in p.get("steps", [])[:8]]
+                  for key, value in step.items() if key in ("id", "tool", "after")} for step in p.get("steps", [])[:24]]
         return self._append("plan", stage=p.get("stage"), outcome=p.get("outcome"), steps=steps or None,
-                            reason=_clean(p.get("reason", ""), 300) or None)
+                            reason=_clean(p.get("reason", ""), 300) or None, workflow=p.get("workflow"), wave=p.get("wave"))
+
+    def _on_calculation(self, p: dict[str, Any]) -> dict[str, Any]:
+        def text(value: Any, limit: int) -> str:
+            return _clean(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str), limit)
+
+        return self._append("calculation", name=str(p.get("name", ""))[:80], inputs=text(p.get("inputs", {}), MAX_ARGUMENT_CHARS),
+                            outputs=text(p.get("outputs", {}), MAX_PREVIEW_CHARS),
+                            problems=[_clean(item, 200) for item in p.get("problems", [])[:6]] or None)
 
     def _on_plan_stop(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._append("plan_stop", reason=p.get("reason"),

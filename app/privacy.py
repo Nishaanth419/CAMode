@@ -26,7 +26,8 @@ from .db import connect_db
 # 2026-10-21.3: Google sign-in (AUTH_MODE=google) stores the Google account id and email address.
 # 2026-10-22.1: each profile's plan (Free, Individual or Team) is stored with it.
 # 2026-10-22.2: the operator's admin page (admin.py) and what it shows.
-POLICY_VERSION: Final = "2026-10-22.2"
+# 2026-10-26.1: answer records of the financial workflows keep the figures calculated in code (app.workflows).
+POLICY_VERSION: Final = "2026-10-26.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -43,7 +44,7 @@ NOTICE: Final = (
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick, the holdings from any CAS statement you upload (the last 12; never the PDF, its "
             "password, or your name, PAN or contact details), and the portfolio change investigations you run (the "
-            "last 50: the snapshots compared, the figures computed from them, the checks and the result), and a record of the steps behind each chat answer (the last 200, none older than 30 days: the start of your question, which data was read and a short preview of it, the checks on the answer and how long each step took; never the answer itself or your PIN, tokens or PAN). Everything is in a SQLite file readable only by the account that runs CA Mode. INDmoney "
+            "last 50: the snapshots compared, the figures computed from them, the checks and the result), and a record of the steps behind each chat answer (the last 200, none older than 30 days: the start of your question, which data was read and a short preview of it, the figures CA Mode calculated from it for an options, hedge, health-check or watchlist analysis, the checks on the answer and how long each step took; never the answer itself or your PIN, tokens or PAN). Everything is in a SQLite file readable only by the account that runs CA Mode. INDmoney "
             "tokens are encrypted with a key kept outside that file."
         ),
     },

@@ -462,6 +462,53 @@ python -m scripts.eval_tasks --dataset evals/multi_step.jsonl --provider ollama 
 
 The first live run passed 3/12: the local model writes `name` for `tool`, refers to steps as "step1", "0" or by tool name, and sometimes ends a plan one character wrong, which Ollama rejects with HTTP 500. These are now accepted or repaired in code, and the plan is still checked in full. The one miss above was a 500 that could not be repaired; the usual loop then answered. Two intermediate runs scored 8/12 and 7/12 on the way, so treat single runs as noisy.
 
+## Financial workflows
+
+Four kinds of Portfolio Analyzer request run as fixed recipes instead of the usual model-driven loop: the read-only INDmoney calls, their order and their arguments are chosen in code, every figure is calculated in code (`Decimal`), and the model only writes up the computed result.
+
+| Workflow | Example | INDmoney calls (waves; calls in a wave run together) |
+| --- | --- | --- |
+| Nifty iron condor | "Build me an iron condor on Nifty for the next monthly expiry with 15-delta short legs..." | lookup NIFTY 50 → nearest chain (its expiry list) → monthly chain → the 4 legs' details ∥ the 2 short legs' greeks history |
+| Nifty put-spread hedge | "I'm long ₹50 lakh... suggest a Nifty put spread that hedges a 5% downside move" | lookup ∥ net worth → nearest chain → monthly chain → the 2 legs' details |
+| Portfolio health check | "Health-check my portfolio. Where am I over-concentrated?..." | net worth ∥ saved net-worth history → holdings per asset type → fund performance and sectors (10 funds a call) |
+| Watchlist swing scan | "Scan my Indian stock watchlist... 14-day high or multi-day support..." | watchlist → lookups for rows without a key → a year of daily candles per stock → analyst data for the top candidates |
+
+The rules, stated in every answer:
+
+- **Next monthly expiry**: INDmoney does not label monthly contracts, so it is the last expiry listed in each month (holiday moves included), the first one after today. An expiry the chain refuses is corrected once from the dates the refusal lists.
+- **Iron condor**: short legs are the out-of-the-money strikes whose delta, as INDmoney reports it, is nearest the target (0.15); with no deltas no legs are picked and the answer says why. Wings sit 200–300 points beyond (a preference: the nearest available distance is used, with a note). Premiums are the mid of each leg's live bid/ask; rupee amounts use the chain's lot size. Theta is today's theta held for the next 5 trading days at most: an estimate, never expected profit.
+- **Put-spread hedge**: buy the put nearest the Nifty level, sell the put nearest the level after the stated fall. Contract counts are shown for betas 0.8, 1.0 and 1.2 (or the one you give), with gross protection, cost and net protection for each, because no tool supplies beta. The amount you state is kept apart from the equity INDmoney reports, and sector claims cannot be checked (INDmoney returns no sector data for holdings).
+- **Health check**: a holding above 10% of the total current value is a concentration alert, not a recommendation. A fund is underperforming only when its 3-year return (1-year if that is missing) trails its own benchmark by more than 0.5 points, with both figures from the same INDmoney response. Sector shares are a mutual fund look-through and a lower bound. Current versus invested value is today's unrealised gain or loss; a trend comes only from saved snapshots.
+- **Watchlist scan**: a breakout is a completed session closing above the highest high of the 14 sessions before it (never a high that includes itself); support is the lowest low of those sessions, tested at least twice, with the close within 1.5% above it. Today's candle is left out until 15:30 IST. INDmoney's `14d` window is calendar days, so a year of daily candles is fetched. When fewer than three stocks qualify, the answer says how many did.
+
+Every wave is checked with the planner's rules (offered tools, valid arguments, no repeated call), runs with a per-call time limit (`WORKFLOW_STEP_TIMEOUT_SECONDS`, 60), retries a timeout or rate limit once, and stops at the workflow's call budget or `WORKFLOW_DEADLINE_SECONDS` (240). A failed call stays a failure (never an empty result) and the answer lists what is missing. The answer passes the usual figure check against the computed result, and if the model call fails the computed report is shown instead. Each answer's trace and Activity record show the workflow, its waves, every call with its time, each calculation and every check (instrument and expiry match, lot size, quote freshness, delta against the target, arithmetic). Requests that match none of these (or Bank Nifty and other indices) use the usual loop; `FINANCIAL_WORKFLOWS_ENABLED=false` turns the workflows off.
+
+```bash
+python -m scripts.eval_workflows                                         # 35 scripted cases, offline (also in the test suite)
+python -m scripts.eval_workflows --provider ollama --runs 3              # the 8 live cases, narrated by the real model
+python -m scripts.eval_workflows --provider ollama --runs 3 --baseline   # the same cases with the workflows off
+```
+
+The INDmoney responses are synthetic but in the layouts recorded from the live tools on 2026-10-26, with the real tool schemas (`tests/fixtures/indmoney_market.py`, `indmoney_tools.json`). The watchlist row layout could not be recorded (the account's watchlists were empty), so the scanner reads rows leniently and resolves names it cannot key.
+
+**Live results** (`ca-mode`, gpt-oss-20b, 8 cases × 3 runs, 2026-10-26, same fake INDmoney data, same grader). The baseline is the same requests with `FINANCIAL_WORKFLOWS_ENABLED=false`, answered by the usual agent loop:
+
+| Metric | Workflows | Baseline (agent loop) |
+| --- | --- | --- |
+| Runs passing every check | **16/24** | 1/24 |
+| Answered (no error) | **24/24** | 11/24 |
+| Task contract met | 24/24 | not applicable |
+| Expected figures stated (condor, hedge, health, scanner) | **12/12** | 0/12 |
+| Every figure traced to the computed result (number check) | **17/24** | 4/24 |
+| Required caveats stated (estimate, beta assumed, benchmark period, candidate count...) | **49/51** | 6/51 |
+| Forbidden claims (guarantees, "will rise", trades placed) | 0 | 0 |
+| Tool calls rejected for their arguments | 0 | 1 |
+| Model calls per answer | 1.0 | 3.5 |
+| Latency p50 / max | **16.1 s / 36.3 s** | 48.6 s / 148.4 s |
+| Tokens per answer (p50) | **3,713** | 33,446 |
+
+Without the workflows the agent loop priced the weekly 3 Nov expiry instead of the next monthly one, called tools that do not exist, and failed 13 of 24 runs on Ollama tool-call parse errors and empty replies. With them, the remaining misses are the model writing figures of its own around a correct computed result (a sum of shares, "58 %" for 58.62%, ₹50 lakh written as "₹5 cr"); the number check catches each one and the answer carries its warning. Treat single runs as noisy: on unchanged planner code, three runs of the multi-step eval scored 5/12, 8/12 and 9/12 on the same day.
+
 ## Plans and pricing
 
 `/pricing` (linked from the sign-in screen, the profile dialog and the daily-limit message) shows three plans, kept in `app/plans.py` `PLANS`:
@@ -751,6 +798,7 @@ python -m compileall -q app tests
 for file in frontend/js/*.js; do node --check "$file"; done
 python -m pytest -q
 node --test tests/js/*.test.js   # finance math, tax rules, rail insights, trace and Activity rendering (Node 18+)
+python -m scripts.eval_workflows # the financial workflows on scripted replies and fake INDmoney data, offline
 ```
 
 The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls.
@@ -793,6 +841,10 @@ app/
   investigation_math.py    Normalised snapshots, change and allocation calculations
   investigation_checks.py  Consistency checks for comparing two snapshots
   investigations.py        The investigation workflow, its storage, and its agent tool
+  options_math.py  Option chains, expiries, strike choice, iron condor and put-spread payoffs, hedge sizing, in Decimal
+  price_action.py  Breakout and support rules over daily candles, ranking, analyst target upside
+  health_math.py   Concentration, fund vs benchmark, sector look-through, unrealised gain and net-worth trend
+  workflows/       The financial workflows on LangGraph: engine (the graph), base, nifty, condor, hedge, health, scanner
   number_check.py  Checks that answer figures match tool data
   sealing.py       Per-profile keypairs, PIN and recovery-code key wrapping, sealing
   unlock.py        Key setup, unlocking, recovery, and the in-memory unlocked sessions

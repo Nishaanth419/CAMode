@@ -120,6 +120,8 @@
     goal_calculator: 'It worked out goal figures itself instead of using the calculator',
     invalid_tool_call: 'The AI provider rejected a malformed tool call',
     rerun_with_live_tools: 'Run again with the live INDmoney tools',
+    transient_tool_error: 'A data call timed out or was rate limited; it is tried once more',
+    fix_rejected_call: 'A data call was refused for its arguments; it is sent once more, corrected in code',
   };
 
   // Checks on the answer (agent.py "validation" events).
@@ -132,7 +134,7 @@
 
   const TASK_LABELS = {
     refusal: 'Declined request', general_finance: 'General finance', goal_calculation: 'Goal calculation',
-    account_data: 'Account data', multi_step: 'Several tasks, planned',
+    account_data: 'Account data', multi_step: 'Several tasks, planned', workflow: 'Financial workflow',
   };
 
   // Why a planned answer stopped gathering data (agent.py "plan_stop" events) and the row's status.
@@ -226,17 +228,29 @@
       view.purpose = 'Fixed rules from the request type and the data on offer, not the model';
       view.summary = parts.length
         ? parts.map((part) => `${TASK_LABELS[part.task] || String(part.task || '')}: one of ${(Array.isArray(part.requiredTools) ? part.requiredTools : []).map(String).join(', ')}${part.clarificationOk ? ', or a question to you' : ''}`).join(' · ')
-        : required.length ? `Needs one of: ${required.join(', ')}` : 'No account data needed';
+        : required.length ? `${item.task === 'workflow' ? 'Needs all of' : 'Needs one of'}: ${required.join(', ')}` : 'No account data needed';
     } else if (item.kind === 'plan') {
       const steps = Array.isArray(item.steps) ? item.steps.filter((entry) => entry && typeof entry === 'object') : [];
       const accepted = item.status !== 'warning' && item.status !== 'failed';
-      view.title = item.stage === 'added' ? 'Add steps to the plan' : 'Plan the steps';
+      view.title = item.stage === 'added' ? 'Add steps to the plan' : item.stage === 'workflow' ? 'Choose the workflow'
+        : item.stage === 'wave' ? 'Plan the next data calls' : item.stage === 'fix' ? 'Correct a refused call' : 'Plan the steps';
+      if (item.stage === 'workflow') {
+        view.tool = item.workflow ? String(item.workflow) : 'workflow';
+        view.purpose = 'A fixed recipe in code: which data to read, in which order, and every calculation';
+        view.summary = item.reason ? String(item.reason) : '';
+        return view;
+      }
       view.tool = accepted ? `${steps.length} step${steps.length === 1 ? '' : 's'}` : 'not used';
       view.purpose = 'Checked in code: offered tools, valid arguments, order, no repeats';
       view.summary = accepted
         ? steps.map((entry) => `${entry.tool}${Array.isArray(entry.after) && entry.after.length ? ` (after ${entry.after.join(', ')})` : ''}`).join(' · ')
         : `${item.reason ? String(item.reason) : 'The plan failed a check'}${item.stage === 'added' ? '' : '; answered step by step instead'}`;
       if (!accepted) view.status = 'warning';
+    } else if (item.kind === 'calculation') {
+      view.title = `Calculate: ${humanize(item.name)}`;
+      view.tool = 'in code';
+      view.purpose = 'Exact arithmetic on the data read, not done by the model';
+      view.summary = item.detail ? String(item.detail) : '';
     } else if (item.kind === 'plan_stop') {
       const known = PLAN_STOPS[item.reason];
       const missing = Array.isArray(item.missing) ? item.missing.map(String) : [];
@@ -697,7 +711,8 @@
       if (kind === 'route') steps.push({ kind, status: 'completed', category: event.category, source: event.source, model: event.model, duration_ms: event.durationMs });
       else if (kind === 'context') steps.push({ kind, status: 'completed', items: event.items });
       else if (kind === 'contract') steps.push({ kind, status: 'completed', task: event.task, requiredTools: event.requiredTools, parts: event.parts });
-      else if (kind === 'plan') steps.push({ kind, status: event.outcome === 'accepted' ? 'completed' : 'warning', stage: event.stage, steps: event.steps, reason: event.reason });
+      else if (kind === 'plan') steps.push({ kind, status: event.outcome === 'accepted' ? 'completed' : 'warning', stage: event.stage, steps: event.steps, reason: event.reason, workflow: event.workflow });
+      else if (kind === 'calculation') steps.push({ kind, status: Array.isArray(event.problems) && event.problems.length ? 'failed' : 'completed', name: event.name, detail: Array.isArray(event.problems) ? event.problems.join('; ') : '' });
       else if (kind === 'plan_stop') steps.push({ kind, status: (PLAN_STOPS[event.reason] || [])[1] || 'completed', reason: event.reason, missing: event.missing });
       else if (kind === 'model_call') {
         const step = { kind: 'model', provider: event.provider, model: event.model, attempt: event.attempt, status: 'running' };
