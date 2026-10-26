@@ -27,6 +27,10 @@ _USERS_COLUMNS = """(
     storage_mode TEXT NOT NULL DEFAULT 'device',
     snapshot_retention_days INTEGER NOT NULL DEFAULT 365,
     plan TEXT NOT NULL DEFAULT 'free',
+    plan_started_at TEXT,
+    credit_period_start TEXT,
+    credits_used INTEGER NOT NULL DEFAULT 0,
+    topup_credits INTEGER NOT NULL DEFAULT 0,
     history_public_key TEXT,
     history_key_pin TEXT,
     history_key_recovery TEXT,
@@ -155,6 +159,11 @@ _ADDED_USER_COLUMNS = {
     "history_key_pin": "TEXT",
     "history_key_recovery": "TEXT",
     "plan": "TEXT NOT NULL DEFAULT 'free'",
+    # Monthly credits for paid plans that have them (credits.py).
+    "plan_started_at": "TEXT",
+    "credit_period_start": "TEXT",
+    "credits_used": "INTEGER NOT NULL DEFAULT 0",
+    "topup_credits": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
