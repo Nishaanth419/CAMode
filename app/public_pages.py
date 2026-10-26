@@ -136,7 +136,7 @@ def admin_page() -> str:
         body=body,
         is_indexable=False,
         is_wide=True,
-        head='  <link rel="stylesheet" href="/css/admin.css?v=1" />\n  <script src="/js/admin.js?v=1" defer></script>\n',
+        head='  <link rel="stylesheet" href="/css/admin.css?v=1" />\n  <script src="/js/admin.js?v=2" defer></script>\n',
     )
 
 

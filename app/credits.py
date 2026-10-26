@@ -86,6 +86,17 @@ def local_today(now: datetime) -> date:
     return now.astimezone(SNAPSHOT_TIMEZONE).date()
 
 
+def from_row(row: Any, monthly: int, today: date) -> Balance:
+    """The balance a ``users`` row stands for today, without writing: a new month counts from zero,
+    and a plan with no start yet counts from today."""
+    started = date.fromisoformat(row["plan_started_at"]) if row["plan_started_at"] else today
+    period_start, renews_on = period_bounds(started, today)
+    used = int(row["credits_used"]) if row["credit_period_start"] == period_start.isoformat() else 0
+    return Balance(
+        monthly=monthly, used=used, top_up=int(row["topup_credits"]), period_start=period_start, renews_on=renews_on,
+    )
+
+
 def _current(connection: Any, user_id: str, monthly: int, today: date) -> Balance:
     """Read the balance, starting the plan today when it has no start and rolling into a new month."""
     row = connection.execute(
@@ -93,18 +104,13 @@ def _current(connection: Any, user_id: str, monthly: int, today: date) -> Balanc
     ).fetchone()
     if row is None:
         raise LookupError(user_id)
-    started = date.fromisoformat(row["plan_started_at"]) if row["plan_started_at"] else today
-    period_start, renews_on = period_bounds(started, today)
-    same_month = row["credit_period_start"] == period_start.isoformat()
-    used = int(row["credits_used"]) if same_month else 0
-    if row["plan_started_at"] is None or not same_month:
+    current = from_row(row, monthly, today)
+    if row["plan_started_at"] is None or row["credit_period_start"] != current.period_start.isoformat():
         connection.execute(
             "UPDATE users SET plan_started_at = ?, credit_period_start = ?, credits_used = ? WHERE id = ?",
-            (started.isoformat(), period_start.isoformat(), used, user_id),
+            (row["plan_started_at"] or today.isoformat(), current.period_start.isoformat(), current.used, user_id),
         )
-    return Balance(
-        monthly=monthly, used=used, top_up=int(row["topup_credits"]), period_start=period_start, renews_on=renews_on,
-    )
+    return current
 
 
 def balance(user_id: str, monthly: int, *, now: datetime) -> Balance:

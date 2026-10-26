@@ -225,6 +225,36 @@ def test_paid_plans_show_no_daily_cap(operator, monkeypatch):
     assert row["plan"] == "individual" and row["dailyLimit"] is None
 
 
+def test_individual_profiles_show_their_credits(operator):
+    user = users.create_user("Ravi", users.hash_pin("1357"))
+    users.create_user("Asha", users.hash_pin("2468"))
+    main.plans.set_plan(user["id"], "individual")
+    main.credits.charge(user["id"], 3_000, 160, now=limits.local_now())
+    main.credits.add_top_up(user["id"], 500)
+
+    overview = operator.get("/api/admin/overview").json()
+
+    rows = {row["name"]: row for row in overview["profiles"]}
+    balance = rows["Ravi"]["credits"]
+    assert (balance["monthly"], balance["used"], balance["monthlyRemaining"], balance["topUp"]) == (3_000, 160, 2_840, 500)
+    assert balance["renewsOn"]
+    assert rows["Asha"]["credits"] is None
+    assert overview["totals"]["creditsUsedThisMonth"] == 160
+
+
+def test_the_admin_page_reads_credits_without_starting_a_month(operator):
+    user = users.create_user("Ravi", users.hash_pin("1357"))
+    with main.connect_db() as connection:
+        connection.execute("UPDATE users SET plan = 'individual' WHERE id = ?", (user["id"],))
+
+    [row] = operator.get("/api/admin/overview").json()["profiles"]
+
+    assert row["credits"]["remaining"] == 3_000
+    with main.connect_db() as connection:
+        stored = connection.execute("SELECT plan_started_at FROM users WHERE id = ?", (user["id"],)).fetchone()
+    assert stored["plan_started_at"] is None
+
+
 def test_a_failed_snapshot_attempt_is_flagged(operator):
     user = users.create_user("Ravi", users.hash_pin("1357"))
     with main.connect_db() as connection:
