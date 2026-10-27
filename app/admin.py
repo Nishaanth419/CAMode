@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import hmac
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Final
 
-from . import accounts, backup, chats, limits, page_views, plans, privacy, unlock, users, vault
+from . import accounts, backup, chats, credits, limits, page_views, plans, privacy, unlock, users, vault
 from .db import connect_db
 
 ADMIN_COOKIE: Final = "ca_admin"
@@ -109,6 +109,7 @@ def sign_out(sid: str) -> None:
 
 _PROFILES_QUERY: Final = """
     SELECT u.id, u.display_name, u.plan, u.storage_mode, u.created_at, u.failed_logins, u.locked_until,
+           u.plan_started_at, u.credit_period_start, u.credits_used, u.topup_credits,
            u.snapshot_attempted_at, u.indmoney <> '{}' AS has_indmoney,
            a.email AS account_email, a.last_sign_in_at,
            (SELECT MAX(s.updated_at) FROM oauth_sessions s WHERE s.user_id = u.id) AS last_seen_at,
@@ -129,8 +130,9 @@ def _email(stored: str | None) -> str | None:
         return ""
 
 
-def _profile_row(row: Any, *, daily_limit: int | None, now_ms: int) -> dict[str, Any]:
+def _profile_row(row: Any, *, daily_limit: int | None, now_ms: int, today: date) -> dict[str, Any]:
     plan = plans.plan_of({"plan": row["plan"]})
+    balance = credits.from_row(row, plan.monthly_credits, today) if plan.monthly_credits else None
     last_snapshot = row["last_snapshot_at"]
     attempted = row["snapshot_attempted_at"] or 0
     return {
@@ -149,6 +151,8 @@ def _profile_row(row: Any, *, daily_limit: int | None, now_ms: int) -> dict[str,
         "snapshotFailing": attempted > (last_snapshot or 0) + SNAPSHOT_FAILURE_GRACE_MS,
         "questionsToday": row["questions_today"] or 0,
         "dailyLimit": daily_limit if plan.daily_cap else None,
+        # This month's credits on a plan that has them (credits.py); None otherwise.
+        "credits": balance.as_json() if balance else None,
         "failedPins": row["failed_logins"],
         "lockedUntil": row["locked_until"] if row["locked_until"] > now_ms else None,
     }
@@ -156,11 +160,11 @@ def _profile_row(row: Any, *, daily_limit: int | None, now_ms: int) -> dict[str,
 
 def profiles(*, now: datetime) -> list[dict[str, Any]]:
     """Every profile, newest first, with only the fields kept outside its sealed history."""
-    today = now.astimezone(limits.SNAPSHOT_TIMEZONE).date().isoformat()
+    today = now.astimezone(limits.SNAPSHOT_TIMEZONE).date()
     daily_limit, now_ms = limits.daily_question_limit(), users.now_ms()
     with connect_db() as connection:
-        rows = connection.execute(_PROFILES_QUERY, (today,)).fetchall()
-    return [_profile_row(row, daily_limit=daily_limit, now_ms=now_ms) for row in rows]
+        rows = connection.execute(_PROFILES_QUERY, (today.isoformat(),)).fetchall()
+    return [_profile_row(row, daily_limit=daily_limit, now_ms=now_ms, today=today) for row in rows]
 
 
 def overview(*, now: datetime) -> dict[str, Any]:
@@ -177,6 +181,7 @@ def overview(*, now: datetime) -> dict[str, Any]:
             "byPlan": by_plan,
             "activeLastWeek": sum(1 for row in rows if (row["lastSeenAt"] or 0) >= active_since),
             "questionsToday": sum(row["questionsToday"] for row in rows),
+            "creditsUsedThisMonth": sum(row["credits"]["used"] for row in rows if row["credits"]),
             "indmoneyConnected": sum(1 for row in rows if row["indmoneyConnected"]),
             "locked": sum(1 for row in rows if row["lockedUntil"]),
         },

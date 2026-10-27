@@ -534,7 +534,7 @@ python -m scripts.plans topup Asha 500                    # add 500 top-up credi
 
 ## Admin page
 
-`/admin` is for whoever runs the copy: every profile with its name, Google email address, plan, questions asked today, when it joined and was last seen, whether it accepted the current privacy notice, whether INDmoney is connected (and whether the last snapshot failed), and whether its PIN is locked. From it you can change a plan, clear a PIN lock, sign a profile out on every device, delete a profile (type its name to confirm), and back up the database now. It also shows backup status and the last 7 days of anonymous page views.
+`/admin` is for whoever runs the copy: every profile with its name, Google email address, plan, questions asked today, credits left this month on the Individual plan (with top-ups and the renewal day), when it joined and was last seen, whether it accepted the current privacy notice, whether INDmoney is connected (and whether the last snapshot failed), and whether its PIN is locked. From it you can change a plan, clear a PIN lock, sign a profile out on every device, delete a profile (type its name to confirm), and back up the database now. It also shows backup status and the last 7 days of anonymous page views.
 
 It never shows PIN-locked history: chats, goals, decisions, profile details and snapshot contents stay sealed, and no admin route opens them.
 

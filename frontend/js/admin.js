@@ -82,6 +82,7 @@
       tile('Profiles', totals.profiles, planNote),
       tile('Active in the last 7 days', totals.activeLastWeek),
       tile('Questions today', totals.questionsToday, dailyLimit ? `Free plan cap: ${dailyLimit} a day` : 'No daily cap set'),
+      tile('Credits used', number(totals.creditsUsedThisMonth), 'In each paid profile’s current month'),
       tile('INDmoney connected', totals.indmoneyConnected),
       tile('PIN locked now', totals.locked),
     );
@@ -163,6 +164,23 @@
     );
   }
 
+  function number(value) {
+    return Number(value || 0).toLocaleString('en-IN');
+  }
+
+  // "2,840 of 3,000 left" with top-ups and the renewal day underneath; a dash on plans without credits.
+  function credits(profile) {
+    const balance = profile.credits;
+    if (!balance) return el('span', { class: 'admin-muted' }, '—');
+    const renews = new Date(`${balance.renewsOn}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const topUp = balance.topUp > 0 ? `+ ${number(balance.topUp)} top-up · ` : '';
+    return el('div', {},
+      el('div', { class: balance.remaining === 0 ? 'admin-error' : '' },
+        `${number(balance.monthlyRemaining)} of ${number(balance.monthly)} left`),
+      el('div', { class: 'admin-muted' }, `${topUp}renews ${renews}`),
+    );
+  }
+
   function questions(profile) {
     if (profile.dailyLimit === null) return el('span', {}, `${profile.questionsToday}`, el('span', { class: 'admin-muted' }, ' · no cap'));
     return el('span', {}, `${profile.questionsToday} of ${profile.dailyLimit}`);
@@ -188,15 +206,16 @@
       el('td', {}, el('strong', {}, profile.name), el('div', { class: 'admin-muted' }, profile.email ?? 'Local profile (no Google account)')),
       el('td', {}, planSelect(profile, overview.plans)),
       el('td', {}, questions(profile)),
+      el('td', {}, credits(profile)),
       el('td', {}, when(profile.lastSeenAt), el('div', { class: 'admin-muted' }, 'Joined ', when(profile.createdAt))),
       el('td', {}, indmoney(profile)),
       el('td', {}, status(profile)),
       el('td', {}, profileActions(profile)),
-    )) : [el('tr', {}, el('td', { colspan: 7, class: 'admin-muted' }, overview.profiles.length ? 'No profile matches.' : 'No profiles yet.'))];
+    )) : [el('tr', {}, el('td', { colspan: 8, class: 'admin-muted' }, overview.profiles.length ? 'No profile matches.' : 'No profiles yet.'))];
     const section = el('section', { id: 'admin-profiles' },
       el('div', { class: 'admin-section-head' }, el('h2', {}, `Profiles (${overview.profiles.length})`), search),
       el('div', { class: 'admin-table-wrap' }, el('table', { class: 'admin-table' },
-        el('thead', {}, el('tr', {}, ['Profile', 'Plan', 'Questions today', 'Last seen', 'INDmoney', 'Status', ''].map((name) => el('th', { scope: 'col' }, name)))),
+        el('thead', {}, el('tr', {}, ['Profile', 'Plan', 'Questions today', 'Credits', 'Last seen', 'INDmoney', 'Status', ''].map((name) => el('th', { scope: 'col' }, name)))),
         el('tbody', {}, body),
       )),
     );
