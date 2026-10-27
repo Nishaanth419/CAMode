@@ -72,3 +72,24 @@ def argument_problems(schema: Mapping[str, Any] | None, arguments: Mapping[str, 
                 shown = ", ".join(str(choice) for choice in choices[:12])
                 problems.append(f"{name} must be one of {shown} (got {str(value)[:40]!r})")
     return problems
+
+
+# Fields of an error object a tool returns as an ordinary result, e.g. INDmoney's chain for an expiry it does not list:
+# {"error": "validation_error", "message": "... Available: 20261027, ...", "tool": "..."}.
+_ERROR_FIELDS: Final = frozenset({"error", "message", "tool", "error_type", "status_code", "errorKind", "next_step", "detail"})
+
+
+def returned_error(result: str) -> str | None:
+    """The message of a result made only of error fields, else ``None``.
+
+    A response with data beside an empty or non-empty ``error`` (``get_mf_by_category`` carries one) is data.
+    """
+    if not result.lstrip().startswith("{") or '"error"' not in result:
+        return None
+    try:
+        parsed = json.loads(result)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict) and parsed.get("error") and set(parsed) <= _ERROR_FIELDS:
+        return str(parsed.get("message") or parsed["error"])[:MAX_ERROR_CHARS]
+    return None
