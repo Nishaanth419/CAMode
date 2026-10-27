@@ -36,6 +36,8 @@ if __name__ == "__main__":
 
     os.environ.setdefault("APP_MASTER_KEY", Fernet.generate_key().decode())
     os.environ.setdefault("REQUEST_ROUTER", "keywords")  # Measure answers, not routing; REQUEST_ROUTER=model includes it.
+    # These cases script the previous loop and planner; scripts.eval_workflows measures the general agent.
+    os.environ.setdefault("AGENT_GRAPH_ENABLED", "false")
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402

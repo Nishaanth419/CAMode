@@ -447,24 +447,13 @@ test('saved runs turn plan events into the same rows', () => {
   assert.equal(trace.chatStepView(steps[2]).summary, 'Stopped at the time limit · Missing: calculate_goal_plan (not run)');
 });
 
-test('workflow runs show the chosen workflow, its waves and calculations', () => {
+test('the general agent analysis tools and retries have labels', () => {
   const steps = trace.runSteps([
-    { seq: 1, kind: 'contract', task: 'workflow', requiredTools: ['get_indian_stocks_option_chain', 'lookup_ind_keys'] },
-    { seq: 2, kind: 'plan', stage: 'workflow', outcome: 'accepted', workflow: 'nifty_iron_condor', reason: 'Nifty iron condor: deltaTarget=0.15' },
-    { seq: 3, kind: 'plan', stage: 'wave', outcome: 'accepted', workflow: 'nifty_iron_condor', wave: 1, steps: [{ id: 'w1-lookup', tool: 'lookup_ind_keys', after: [] }] },
-    { seq: 4, kind: 'plan', stage: 'fix', outcome: 'accepted', steps: [{ id: 'f1-chain_monthly', tool: 'get_indian_stocks_option_chain', after: ['w2-chain_nearest'] }] },
-    { seq: 5, kind: 'calculation', name: 'iron_condor', outputs: '{"netCreditPoints":63.33}' },
-    { seq: 6, kind: 'calculation', name: 'put_spread', problems: ['a leg has no premium'] },
-    { seq: 7, kind: 'retry', reason: 'fix_rejected_call', detail: 'get_indian_stocks_option_chain (w3-chain_monthly)' },
+    { seq: 1, kind: 'tool_call', name: 'option_strategy', source: 'local', arguments: '{"legs":[]}' },
+    { seq: 2, kind: 'tool_result', name: 'option_strategy', durationMs: 2 },
+    { seq: 3, kind: 'retry', reason: 'unverified_figures', detail: '₹9,999' },
   ]);
   const views = steps.map((step) => trace.chatStepView(step));
-  assert.equal(views[0].summary, 'Needs all of: get_indian_stocks_option_chain, lookup_ind_keys');
-  assert.equal(views[0].tool, 'Financial workflow');
-  assert.deepEqual([views[1].title, views[1].tool], ['Choose the workflow', 'nifty_iron_condor']);
-  assert.equal(views[2].title, 'Plan the next data calls');
-  assert.equal(views[3].title, 'Correct a refused call');
-  assert.equal(views[3].summary, 'get_indian_stocks_option_chain (after w2-chain_nearest)');
-  assert.deepEqual([views[4].title, views[4].status], ['Calculate: Iron condor', 'completed']);
-  assert.deepEqual([views[5].status, views[5].summary], ['failed', 'a leg has no premium']);
-  assert.match(views[6].purpose, /corrected in code/);
+  assert.deepEqual([views[0].title, views[0].purpose], ['Calculate an option position', 'Payoff, maximum profit and loss and breakevens, exactly, in code']);
+  assert.match(views[1].purpose, /figures no tool produced/);
 });

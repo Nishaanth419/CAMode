@@ -11,6 +11,9 @@ os.environ.setdefault("APP_DATA_DIR", tempfile.mkdtemp(prefix="camode-tests-"))
 os.environ["SNAPSHOT_SCHEDULER_ENABLED"] = "false"
 # Deterministic routing by default; tests/test_router.py exercises the model classifier.
 os.environ["REQUEST_ROUTER"] = "keywords"
+# The existing agent tests script the previous loop and planner (AGENT_GRAPH_ENABLED=false keeps them as the
+# fallback); tests of the general agent (app.agent_graph) turn it on themselves.
+os.environ["AGENT_GRAPH_ENABLED"] = "false"
 # Never read or create the developer's real master key file.
 os.environ["APP_MASTER_KEY"] = Fernet.generate_key().decode()
 

@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import charts, number_check, planner, router, tasks, tool_results, workflows
+from . import analysis_tools, charts, number_check, planner, router, tasks, tool_results
 from .agent_events import REDACTED, RunRecorder, redact_trace_text, summarize  # noqa: F401 (re-exported)
 from .mcp_client import (
     IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
@@ -1056,7 +1056,7 @@ async def _finish_plan(
     yield "done", {}
 
 
-# ── Financial workflows (app.workflows) ─────────────────────────────────────────
+# ── The general agent (app.agent_graph) ────────────────────────────────────────
 
 def _ist_now() -> datetime:
     """The current IST wall-clock time, naive (INDmoney's timestamps are IST)."""
@@ -1067,42 +1067,106 @@ def _ist_now() -> datetime:
     return datetime.now(zone).replace(tzinfo=None)
 
 
-async def _workflow_answer(
-    workflow: workflows.Workflow, *, message: str, messages: list[dict[str, Any]], current_user_index: int,
-    runner: _ToolRunner, client: httpx.AsyncClient, config: dict[str, Any], provider: str, agent_type: str,
-    saved_context: SavedContext | None, context_checked: bool,
+def _agent_graph_enabled() -> bool:
+    return os.getenv("AGENT_GRAPH_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+async def _provider_call(
+    client: httpx.AsyncClient, config: dict[str, Any], provider: str, messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None, attempt: int, current_user_index: int, checked: dict[str, bool],
 ) -> AsyncIterator[AgentEvent]:
-    """Run a workflow's graph with this answer's tool runner and provider; it ends with ``content`` or ``error``."""
-    from .workflows import engine  # LangGraph is imported only when a workflow runs.
+    """One model call; yields ``model_call`` / ``model_result`` and ends with ``("_completion", {...})``.
 
-    run = _PlannedRun(context_checked=context_checked)
+    The completion has ``ok`` and either ``message`` / ``content`` / ``finish_reason`` or ``error`` / ``code``;
+    ``malformed`` marks a tool call the provider could not parse (worth asking again).
+    """
+    try:
+        fitted = (_fit_groq_context(messages, tools or [], current_user_index=current_user_index)
+                  if provider == "groq" else messages)
+    except RuntimeError as exc:
+        yield "_completion", {"ok": False, "error": str(exc), "code": "request_too_large"}
+        return
+    payload: dict[str, Any] = {"model": config["model"], "messages": fitted}
+    if provider == "groq":
+        payload["max_tokens"] = GROQ_COMPLETION_TOKEN_LIMIT
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": attempt}
+    try:
+        response = await client.post(
+            f"{config['base_url']}/chat/completions",
+            headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
+            json=payload,
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        error = ("Could not reach the local model (Ollama). The computer that runs it may be asleep or offline; try "
+                 "again later or pick another provider.") if provider == "ollama" else f"Could not connect to {config['label']}: {_error_text(exc)}"
+        yield "_completion", {"ok": False, "error": error, "code": "provider_unreachable"}
+        return
+    except httpx.TimeoutException:
+        logger.warning("provider_timeout", extra={"provider": provider, "timeout_seconds": config["timeout"]})
+        yield "_completion", {"ok": False, "code": "provider_timeout", "error": (
+            f"{config['label']} did not finish answering within {config['timeout']} seconds. Try again, or ask a shorter question.")}
+        return
+    yield "model_result", _completion_summary(response, attempt)
+    if _failed_tool_generation(response) is not None or (response.status_code == 500 and "error parsing tool call" in response.text):
+        yield "_completion", {"ok": False, "malformed": True, "code": "provider_error",
+                              "error": f"{config['label']} could not read the model's tool call: {response.text[:300]}"}
+        return
+    if response.is_success and not checked["done"]:
+        checked["done"] = True
+        problem = await _ollama_context_problem(client, config)
+        if problem:
+            yield "_completion", {"ok": False, "error": problem, "code": "context_too_small"}
+            return
+    if not response.is_success:
+        yield "_completion", {"ok": False, "code": "provider_error",
+                              "error": f"{config['label']} request failed: HTTP {response.status_code} {response.text[:800]}"}
+        return
+    try:
+        completion = response.json()
+    except ValueError:
+        completion = None
+    message, finish_reason = _completion_message(completion if isinstance(completion, dict) else None)
+    if not message:
+        yield "_completion", {"ok": False, "code": "provider_bad_response",
+                              "error": f"{config['label']} returned an unexpected response with no message. Try again or select another provider."}
+        return
+    yield "_completion", {"ok": True, "message": message, "content": _message_text(message.get("content")) or "",
+                          "finish_reason": finish_reason}
 
-    async def narrate(work: list[dict[str, Any]]) -> AsyncIterator[AgentEvent]:
-        # A failed narration call is not a failed answer: the engine falls back to the computed report.
-        error = None
-        async for event, data in _plan_model_call(run, client, config, provider, work, [], None,
-                                                  current_user_index=current_user_index):
-            if event in ("error", "plan"):  # _plan_model_call reports a failed first call as a rejected plan.
-                error = data.get("message") or data.get("reason")
-                logger.warning("workflow_narration_failed", extra={"workflow": workflow.name, "code": data.get("code")})
-                continue
-            yield event, data
-        failed = run.stopped or run.fell_back
-        reply, finish_reason = _completion_message(run.completion) if not failed else ({}, None)
-        yield "_reply", {"content": _message_text(reply.get("content")) or "", "finish_reason": finish_reason,
-                         **({"error": error} if error else {})}
 
-    def guard(content: str, work: list[dict[str, Any]], finish_reason: Any) -> tuple[str, list[AgentEvent]]:
-        # No candlestick grounding: a workflow's answer has no chart, so any chart block shows the no-data note.
-        return _guarded_answer(content, work, agent_type=agent_type, message=message, saved_context=saved_context,
-                               goal_maths=False, ohlc_results=[], finish_reason=finish_reason)
+async def _graph_answer(
+    *, message: str, messages: list[dict[str, Any]], current_user_index: int, runner: _ToolRunner,
+    client: httpx.AsyncClient, config: dict[str, Any], provider: str, agent_type: str,
+    saved_context: SavedContext | None, context_checked: bool, model_tools: list[dict[str, Any]],
+    store: analysis_tools.ResultStore,
+) -> AsyncIterator[AgentEvent]:
+    """Answer an account question with the general agent (``agent_graph``); it ends with ``content`` or ``error``."""
+    from . import agent_graph  # LangGraph is imported only when the agent runs.
 
-    offered = {name: schema for name, schema in runner.tool_schemas.items()}
-    offered |= {name: tool.input_schema for name, tool in runner.local_tools.items()}
-    deps = engine.Deps(workflow=workflow, run_tool=runner.run, offered=offered, local_tools=frozenset(runner.local_tools),
-                       narrate=narrate, guard=guard, messages=messages)
-    now = _ist_now()
-    async for event in engine.run(deps, message=message, inputs=workflow.inputs(message), today=now.date(), now=now):
+    checked = {"done": context_checked}
+    attempts = [0]
+
+    async def model_call(work: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> AsyncIterator[AgentEvent]:
+        attempts[0] += 1
+        async for event in _provider_call(client, config, provider, work, tools, attempts[0], current_user_index, checked):
+            yield event
+
+    def guard(content: str, sources: list[dict[str, Any]], finish_reason: Any) -> tuple[str, list[AgentEvent]]:
+        return _guarded_answer(content, sources, agent_type=agent_type, message=message, saved_context=saved_context,
+                               goal_maths="calculate_goal_plan" in runner.local_tools, ohlc_results=runner.ohlc_results,
+                               finish_reason=finish_reason)
+
+    schemas = {**runner.tool_schemas, **{name: tool.input_schema for name, tool in runner.local_tools.items()}}
+    deps = agent_graph.Deps(
+        model_call=model_call, run_tool=runner.run, model_tools=model_tools, schemas=schemas,
+        local_tools=frozenset(runner.local_tools), is_account_tool=lambda name: tasks.is_account_tool(name, runner.local_tools),
+        store=store, guard=guard, unverified=lambda content, sources: _unverified_numbers(content, sources, message, saved_context),
+        requires_account_data=True,
+    )
+    async for event in agent_graph.run(deps, messages):
         yield event
 
 
@@ -1142,7 +1206,6 @@ async def stream_agent(
       • validation   – { check, outcome, detail? }   a check on the answer
       • plan         – { stage, outcome, steps?, reason? }  a proposed plan, accepted or rejected (planned runs)
       • plan_stop    – { reason, missing }            why a planned run stopped gathering data
-      • calculation  – { name, inputs, outputs, problems }  a financial workflow's calculation, done in code
       • content      – { text }                      final answer text
       • error        – { message, code, auth_failed? }  fatal error
       • done         – {}                            stream finished
@@ -1193,6 +1256,13 @@ async def stream_agent(
             yield "done", {}
             return
 
+    # Portfolio Analyzer answers account questions with the general agent (agent_graph), which also gets the
+    # general analysis tools; AGENT_GRAPH_ENABLED=false keeps the previous loop and planner.
+    graph = agent_type == "portfolio" and requires_indmoney_data and _agent_graph_enabled()
+    store = analysis_tools.ResultStore()
+    if graph:
+        local_tools = {**local_tools, **{spec.name: LocalTool(spec.name, spec.description, spec.input_schema, spec.handler)
+                                         for spec in analysis_tools.tools(store, _ist_now)}}
     tool_names = {tool["name"] for tool in tools}
     tool_schemas = {tool["name"]: tool.get("inputSchema") for tool in tools}
     model_tools = _model_tools(
@@ -1200,21 +1270,14 @@ async def stream_agent(
         + [tool for tool in tools if tool["name"] not in local_tools],
         provider,
     )
-    contract = tasks.contract_for(category, agent_type, [*local_tools, *tool_names])
-    # A request that clearly asks for one of the financial workflows runs it (and never the planner, whose
-    # goal-part heuristic misreads "next 5 trading days" or "₹50 lakh" as goal arithmetic).
-    workflow = workflows.select(message) if requires_indmoney_data and not force_account_data else None
-    if workflow is not None:
-        unavailable = sorted((workflow.needs_tools or workflow.required_tools) - tool_names - local_tools.keys())
-        if unavailable:
-            yield "validation", {"check": "workflow_tools", "outcome": "warning",
-                                 "detail": f"{workflow.name} not run; INDmoney does not offer {', '.join(unavailable)}"}
-            workflow = None
-    planned = (workflow is None and requires_indmoney_data and not force_account_data and len(plan_parts) > 1
+    if graph:
+        from .agent_graph import MAX_MODEL_CALLS, MAX_TOOL_CALLS
+
+        contract = tasks.contract_for(category, agent_type, [*local_tools, *tool_names], budgets=(MAX_MODEL_CALLS, MAX_TOOL_CALLS))
+    else:
+        contract = tasks.contract_for(category, agent_type, [*local_tools, *tool_names])
+    planned = (not graph and requires_indmoney_data and not force_account_data and len(plan_parts) > 1
                and bool(tasks.GOAL_TOOLS & local_tools.keys()))
-    if workflow is not None:
-        contract = tasks.workflow_contract(workflow.name, workflow.required_tools, workflow.required_outputs,
-                                           workflow.max_tool_calls, [*local_tools, *tool_names])
     yield "contract", {"contract": tasks.plan_contract(plan_parts, [*local_tools, *tool_names]) if planned else contract}
 
     if agent_type == "portfolio":
@@ -1225,6 +1288,10 @@ async def stream_agent(
     if FINANCE_LOCAL_TOOL_NAMES & local_tools.keys():
         funds = "get_goal_fund_comparison" in local_tools
         prompt += "\n\n" + GOAL_TOOL_RULES + " " + (FUND_COMPARISON_RULES if funds else NO_FUND_DATA_RULE)
+    if graph:
+        from .agent_graph import guide
+
+        prompt += "\n\n" + guide(_ist_now())
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend({"role": item["role"],
                      "content": charts.strip_chart_blocks(item["content"]) if item["role"] == "assistant" else item["content"]}
@@ -1250,11 +1317,11 @@ async def stream_agent(
                 offers_live_tools=bool(tools), context=context, session=session, mcp_client=mcp_client,
             )
             first_attempt = 1
-            if workflow is not None:
-                async for event in _workflow_answer(
-                    workflow, message=message, messages=messages, current_user_index=current_user_index, runner=runner,
-                    client=client, config=config, provider=provider, agent_type=agent_type, saved_context=saved_context,
-                    context_checked=context_checked,
+            if graph:
+                async for event in _graph_answer(
+                    message=message, messages=messages, current_user_index=current_user_index, runner=runner, client=client,
+                    config=config, provider=provider, agent_type=agent_type, saved_context=saved_context,
+                    context_checked=context_checked, model_tools=model_tools, store=store,
                 ):
                     yield event
                 return
@@ -1564,11 +1631,7 @@ class _TraceBuilder:
             self.finish_model_step("completed")
             # A rejected plan is not a failed answer: the ordinary loop (or the final answer) takes over.
             self.steps.append({"kind": "plan", "status": "completed" if recorded.get("outcome") == "accepted" else "warning",
-                               **{key: recorded[key] for key in ("stage", "steps", "reason", "workflow") if recorded.get(key)}})
-        elif event_type == "calculation" and recorded:
-            problems = recorded.get("problems") or []
-            self.steps.append({"kind": "calculation", "status": "failed" if problems else "completed", "name": recorded["name"],
-                               **({"detail": "; ".join(problems)} if problems else {})})
+                               **{key: recorded[key] for key in ("stage", "steps", "reason") if recorded.get(key)}})
         elif event_type == "plan_stop" and recorded:
             self.steps.append({"kind": "plan_stop", "status": _PLAN_STOP_STATUS.get(recorded.get("reason", ""), "completed"),
                                "reason": recorded.get("reason", ""),
