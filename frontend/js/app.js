@@ -153,11 +153,12 @@ function applyTheme(theme) {
   themeToggleIcon.innerHTML = selected === 'dark'
     ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>'
     : '<path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z"/>';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', selected === 'dark' ? '#0d1613' : '#f4f7f5');
-  localStorage.setItem('code-mode-theme', selected);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', selected === 'dark' ? '#070a08' : '#f4f7f5');
+  localStorage.setItem('ca-mode-theme', selected);
 }
 
-applyTheme(localStorage.getItem('code-mode-theme') || 'light');
+// Dark is the default look; a new key so everyone sees it once, then their own choice sticks.
+applyTheme(localStorage.getItem('ca-mode-theme') || 'dark');
 themeToggle.addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   // Plotly bakes colors into each chart, so redraw open charts for the new theme.
@@ -1717,7 +1718,9 @@ function plotlyLayout(spec, view) {
     autosize: true, height: 360, margin: { l: 64, r: 24, t: 56, b: 58 },
     paper_bgcolor: surface, plot_bgcolor: surface,
     font: { family: 'Inter, sans-serif', color: text, size: 12 },
-    colorway: ['#27835e', '#5d88b5', '#d09b4f', '#a56d9a', '#d16f62', '#4b9bb1', '#8aa657', '#8973af'],
+    colorway: document.documentElement.dataset.theme === 'dark'
+      ? ['#8fdc4e', '#f2d64b', '#5ec8f2', '#c9a7ff', '#ff9f6b', '#5fe0b5', '#f27aa6', '#9aa59d']
+      : ['#27835e', '#5d88b5', '#d09b4f', '#a56d9a', '#d16f62', '#4b9bb1', '#8aa657', '#8973af'],
     legend: { orientation: 'h', y: -0.22, font: { color: muted } },
     xaxis: { gridcolor: border, zerolinecolor: border, automargin: true },
     yaxis: { gridcolor: border, zerolinecolor: border, automargin: true, title: { text: unit.trim() } },
