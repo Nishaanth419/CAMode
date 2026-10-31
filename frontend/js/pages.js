@@ -268,6 +268,7 @@ function renderRoute() {
   chatScroll.hidden = !isChat;
   inputArea.hidden = !isChat;
   pageView.hidden = isChat;
+  document.body.classList.toggle('route-home', route === 'home');
   pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
   updateRouteMeta(route, sub);
   countPageView(route);
@@ -305,7 +306,7 @@ document.addEventListener('ca:session-ended', () => {
   latestHoldings = [];
   reportPoints = [];
   resetActivity();
-  for (const id of ['home-stats', 'home-chats', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
+  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
   for (const id of ['portfolio-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
@@ -352,38 +353,212 @@ document.addEventListener('click', async (event) => {
 });
 
 /* ── Home ───────────────────────────────────────────────────────────── */
+// Dashboard colours for the allocation ring, in order of size.
+const DASH_COLORS = ['#8fdc4e', '#f2d64b', '#e9eef0', '#c9a7ff', '#5ec8f2', '#ff9f6b', '#5fe0b5', '#9aa59d'];
+let homeRange = 365;
+
 async function renderHome() {
   const isCurrent = startRender('home');
   document.getElementById('home-name').textContent = currentUser ? `, ${currentUser.displayName}` : '';
+  document.querySelectorAll('.js-goal-agent').forEach((chip) => { chip.dataset.agent = goalAgent(); });
   updateGreeting();
   renderHomeChats();
   const stats = document.getElementById('home-stats');
+  const parts = ['home-allocation', 'home-performance', 'home-holdings', 'home-insights'].map((id) => document.getElementById(id));
   const goalsPromise = getGoals().catch(() => []);
+  renderHomeGoals(goalsPromise, isCurrent);
   const access = portfolioAccess();
-  let worth = statTile('Net worth', isConnected ? 'Live only' : 'Not connected', isConnected ? 'Private mode saves no snapshots' : 'Connect INDmoney to track it');
-  let pnl = statTile('Invested P&L', '—', 'Needs a portfolio snapshot');
-  if (access === 'ok') {
-    stats.innerHTML = loadingBlock();
-    const [portfolio, trend] = await Promise.all([getPortfolio().catch(() => null), getHistory(30).catch(() => null)]);
-    if (portfolio?.available) {
-      const values = (trend?.history || []).map((point) => point.networthInr).filter(Number.isFinite);
-      const change = values.length > 1 ? values[values.length - 1] - values[0] : NaN;
-      const changePct = values.length > 1 && values[0] ? change / values[0] * 100 : NaN;
-      worth = statTile('Net worth', moneyShort(portfolio.figures.totals.net_worth_inr ?? portfolio.networthInr),
-        Number.isFinite(change) ? `${signedMoney(change)} (${percent(changePct, { signed: true })}) in ${values.length} days` : `As of ${formatDate(portfolio.asOfDate)}`, toneOf(change));
-      const p = portfolio.figures.pnl;
-      pnl = statTile('Invested P&L', signedShort(p.pnl_inr), `${percent(p.pnl_pct, { signed: true })} on ${p.holdings_counted} holdings`, toneOf(p.pnl_inr));
-    } else {
-      worth = statTile('Net worth', '—', 'First snapshot on its way');
-    }
+  if (access !== 'ok') {
+    stats.innerHTML = dashStat('Portfolio Value', access === 'private' ? 'Live only' : 'Not connected',
+      access === 'private' ? 'Private mode saves no snapshots' : 'Connect INDmoney to track it')
+      + dashStat('Total Invested', '—', 'Needs a portfolio snapshot')
+      + dashStat('Today\'s Change', '—', 'Needs a portfolio snapshot')
+      + dashStat('Total Returns', '—', 'Needs a portfolio snapshot');
+    const message = access === 'private'
+      ? '<p class="page-muted">Private mode keeps no snapshots. Portfolio Analyzer can still read INDmoney live.</p>'
+      : `<p class="page-muted">Connect INDmoney to see this. Access is read-only.</p>${CONNECT_BUTTON}`;
+    parts.forEach((part) => { part.innerHTML = message; });
+    return;
   }
-  const goals = await goalsPromise;
-  const onTrack = goals.filter(goalIsOnTrack).length;
+  stats.innerHTML = dashStat('Portfolio Value', '…') + dashStat('Total Invested', '…') + dashStat('Today\'s Change', '…') + dashStat('Total Returns', '…');
+  parts.forEach((part) => { part.innerHTML = loadingBlock(); });
+  const [portfolio, trend] = await Promise.all([getPortfolio().catch((error) => ({ error })), getHistory(homeRange).catch(() => null)]);
   if (!isCurrent()) return;
-  stats.innerHTML = worth + pnl
-    + statTile('Goals on track', goals.length ? `${onTrack} of ${goals.length}` : 'None yet', goals.length ? 'Under each goal\'s own assumption' : 'Add one on the Goals page')
-    + statTile('Saved chats', String(chats.length), storageMode === 'private' ? 'Private: cleared at sign-out' : 'Kept for 30 days');
+  if (portfolio.error || !portfolio.available) {
+    const message = portfolio.error ? errorBlock(portfolio.error) : `<p class="page-muted">Your first daily snapshot is on its way.</p>${REFRESH_BUTTON}`;
+    stats.innerHTML = dashStat('Portfolio Value', '—', 'First snapshot on its way') + dashStat('Total Invested', '—') + dashStat('Today\'s Change', '—') + dashStat('Total Returns', '—');
+    parts.forEach((part) => { part.innerHTML = message; });
+    return;
+  }
+  const figures = portfolio.figures;
+  const points = (trend?.history || []).filter((point) => Number.isFinite(point.networthInr));
+  const netWorth = figures.totals.net_worth_inr ?? portfolio.networthInr;
+  const change = historyChange(points);
+  const pnl = figures.pnl;
+  const day = dayChange(portfolio.holdings || []);
+  const investedShare = pnl.current_value_inr > 0 ? Math.min(100, pnl.invested_inr / pnl.current_value_inr * 100) : 0;
+  stats.innerHTML = dashStat('Portfolio Value', money(netWorth),
+    change ? `${signedMoney(change.change)} (${percent(change.pct, { signed: true })}) · ${change.label}` : `As of ${formatDate(portfolio.asOfDate)}`,
+    { tone: change ? toneOf(change.change) : '', art: dashSpark(points, 'stat') })
+    + dashStat('Total Invested', money(pnl.invested_inr), `${signedShort(pnl.pnl_inr)} (${percent(pnl.pnl_pct, { signed: true })}) over ${pnl.holdings_counted} holdings`,
+      { tone: toneOf(pnl.pnl_inr), art: `<span class="dash-meter" aria-hidden="true"><span style="width:${investedShare.toFixed(1)}%"></span></span>` })
+    + dashStat('Today\'s Change', day ? signedMoney(day.change) : '—', day ? `${percent(day.pct, { signed: true })} · ${day.up} up, ${day.down} down` : 'No moves in the latest snapshot',
+      { tone: day ? toneOf(day.change) : '', art: day ? dashBars(portfolio.holdings) : '' })
+    + dashStat('Total Returns', percent(pnl.pnl_pct, { signed: true }), `${signedShort(pnl.pnl_inr)} on holdings with a cost`,
+      { tone: toneOf(pnl.pnl_inr), art: dashSpark(points, 'mini') });
+  parts[0].innerHTML = allocationRing(figures.by_asset_type || [], netWorth);
+  parts[1].innerHTML = performanceChart(points);
+  parts[2].innerHTML = topHoldingsList(figures.top_holdings || []);
+  parts[3].innerHTML = insightList(portfolio);
 }
+
+function dashStat(label, value, sub = '', { tone = '', art = '' } = {}) {
+  return `<div class="dash-stat"><span class="stat-label">${escHtml(label)}</span><strong class="dash-stat-value">${escHtml(value)}</strong>${sub ? `<small class="stat-sub ${tone}">${escHtml(sub)}</small>` : ''}${art}</div>`;
+}
+
+// The latest snapshot's one-day moves summed over holdings, as the rail's insight does.
+function dayChange(holdings) {
+  const moved = holdings.filter((item) => Number.isFinite(item.one_day_change_inr) && item.one_day_change_inr !== 0);
+  if (!moved.length) return null;
+  const change = moved.reduce((sum, item) => sum + item.one_day_change_inr, 0);
+  const base = holdings.reduce((sum, item) => sum + (item.current_value_inr || 0), 0) - change;
+  const up = moved.filter((item) => item.one_day_change_inr > 0).length;
+  return { change, pct: base > 0 ? change / base * 100 : NaN, up, down: moved.length - up };
+}
+
+function dashSpark(points, kind) {
+  const values = thin(points, 60).map((point) => point.networthInr);
+  if (values.length < 2) return '';
+  const width = 160;
+  const height = 48;
+  const min = Math.min(...values);
+  const range = Math.max(...values) - min || 1;
+  const line = values.map((value, index) => `${(index / (values.length - 1) * width).toFixed(1)} ${(height - 4 - (value - min) / range * (height - 10)).toFixed(1)}`).join(' L');
+  const down = values[values.length - 1] < values[0];
+  return `<svg class="dash-spark-chart dash-spark-${kind} ${down ? 'is-down' : ''}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M${line} V${height} H0 Z" class="dash-area"/><path d="M${line}" class="dash-line"/></svg>`;
+}
+
+// One bar per holding that moved, largest moves on the right.
+function dashBars(holdings) {
+  const moves = holdings.map((item) => item.one_day_change_inr).filter((value) => Number.isFinite(value) && value !== 0)
+    .sort((a, b) => Math.abs(a) - Math.abs(b)).slice(-8);
+  const peak = Math.max(...moves.map(Math.abs)) || 1;
+  return `<span class="dash-bars" aria-hidden="true">${moves.map((value) =>
+    `<span class="${value < 0 ? 'is-down' : ''}" style="height:${Math.max(12, Math.abs(value) / peak * 100).toFixed(0)}%"></span>`).join('')}</span>`;
+}
+
+function allocationRing(rows, netWorth) {
+  const shown = rows.filter((row) => row.current_value_inr > 0).sort((a, b) => b.current_value_inr - a.current_value_inr);
+  const total = shown.reduce((sum, row) => sum + row.current_value_inr, 0);
+  if (!total) return '<p class="page-muted">No holdings in the latest snapshot.</p>';
+  const radius = 15.9155;
+  let offset = 25;
+  const arcs = shown.map((row, index) => {
+    const share = row.current_value_inr / total * 100;
+    const arc = `<circle cx="21" cy="21" r="${radius}" fill="none" stroke="${DASH_COLORS[index % DASH_COLORS.length]}" stroke-width="5.2" stroke-dasharray="${Math.max(share - 0.6, 0.1).toFixed(2)} ${(100 - share + 0.6).toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"/>`;
+    offset -= share;
+    return arc;
+  }).join('');
+  const legend = shown.map((row, index) => `<li><span class="dash-dot" style="background:${DASH_COLORS[index % DASH_COLORS.length]}"></span>
+    <span>${escHtml(assetTypeLabel(row.asset_type))}</span><strong>${percent(row.current_value_inr / total * 100)}</strong></li>`).join('');
+  return `<div class="dash-alloc">
+    <div class="dash-ring"><svg viewBox="0 0 42 42" role="img" aria-label="Allocation by asset type">${arcs}</svg>
+      <span class="dash-ring-label"><strong>${escHtml(moneyShort(netWorth))}</strong><small>Total</small></span></div>
+    <ul class="dash-legend">${legend}</ul></div>`;
+}
+
+function performanceChart(points) {
+  const series = thin(points, 120);
+  if (series.length < 2) return '<p class="page-muted">The trend appears after a second daily snapshot.</p>';
+  const width = 520;
+  const height = 250;
+  const left = 50;
+  const bottom = 22;
+  const values = series.map((point) => point.networthInr);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const pad = (max - min) * 0.12 || max * 0.02 || 1;
+  const low = min - pad;
+  const span = max + pad - low;
+  const x = (index) => left + index / (series.length - 1) * (width - left - 6);
+  const y = (value) => 8 + (1 - (value - low) / span) * (height - bottom - 8);
+  const line = series.map((point, index) => `${x(index).toFixed(1)} ${y(point.networthInr).toFixed(1)}`).join(' L');
+  const ticks = [0, 1, 2, 3].map((step) => low + span * (step / 3));
+  const grid = ticks.map((value) => `<line x1="${left}" x2="${width}" y1="${y(value).toFixed(1)}" y2="${y(value).toFixed(1)}"/>
+    <text x="${left - 8}" y="${(y(value) + 3).toFixed(1)}" text-anchor="end">${escHtml(moneyShort(value))}</text>`).join('');
+  const labelEvery = Math.max(1, Math.floor(series.length / 6));
+  const labels = series.map((point, index) => (index % labelEvery === 0 ? `<text x="${x(index).toFixed(1)}" y="${height - 4}" text-anchor="middle">${escHtml(shortDay(point.date))}</text>` : '')).join('');
+  const down = values[values.length - 1] < values[0];
+  return `<svg class="dash-perf ${down ? 'is-down' : ''}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Net worth from ${escHtml(formatDate(series[0].date))} to ${escHtml(formatDate(series[series.length - 1].date))}">
+    <defs><linearGradient id="dash-perf-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".38"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+    <g class="dash-grid-lines">${grid}</g><g class="dash-axis">${labels}</g>
+    <path d="M${line} V${height - bottom} H${left} Z" fill="url(#dash-perf-fill)"/><path d="M${line}" class="dash-line"/></svg>`;
+}
+
+function shortDay(isoDate) {
+  return new Date(`${isoDate}T00:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+function topHoldingsList(rows) {
+  if (!rows.length) return '<p class="page-muted">No holdings in the latest snapshot.</p>';
+  return `<ul class="dash-list">${rows.slice(0, 5).map((row, index) => {
+    const name = row.name || row.code || 'Holding';
+    const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase();
+    const pct = Number.isFinite(row.pnl_pct) ? `<strong class="${toneOf(row.pnl_pct)}">${percent(row.pnl_pct, { signed: true })}</strong>` : '<strong class="page-muted">—</strong>';
+    return `<li><span class="dash-badge" style="--badge:${DASH_COLORS[index % DASH_COLORS.length]}" aria-hidden="true">${escHtml(initials)}</span>
+      <span class="dash-list-body"><span>${escHtml(name)}</span><small>${escHtml(money(row.current_value_inr))}</small></span>${pct}</li>`;
+  }).join('')}</ul>`;
+}
+
+function insightList(portfolio) {
+  const insights = portfolioInsights(portfolio, 3);
+  if (!insights.length) return '<p class="page-muted">Nothing stood out in your latest snapshot.</p>';
+  const icons = { up: '<path d="M7 17 17 7M9 7h8v8"/>', down: '<path d="M7 7l10 10M17 9v8H9"/>', other: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3Z"/>' };
+  return `<ul class="dash-insights">${insights.map((insight) => {
+    const kind = insight.tone === 'up' ? 'up' : insight.tone === 'down' ? 'down' : 'other';
+    return `<li><button type="button" data-agent="portfolio" data-prompt="${escHtml(insight.prompt)}">
+      <span class="dash-insight-icon is-${kind}" aria-hidden="true"><svg viewBox="0 0 24 24">${icons[kind]}</svg></span>
+      <span class="dash-list-body"><span>${escHtml(insight.title)}</span><small>${escHtml(insight.detail)}</small></span>
+      <span class="dash-chevron" aria-hidden="true">›</span></button></li>`;
+  }).join('')}</ul>`;
+}
+
+async function renderHomeGoals(goalsPromise, isCurrent) {
+  const box = document.getElementById('home-goals');
+  box.innerHTML = loadingBlock();
+  const goals = await goalsPromise;
+  if (!isCurrent()) return;
+  const shown = goals.filter((goal) => !isDraft(goal)).slice(0, 3);
+  if (!shown.length) {
+    box.innerHTML = '<p class="page-muted">Set what you are saving for and track it here.</p><button class="rail-button inline-button" type="button" data-add-goal>Add a goal</button>';
+    return;
+  }
+  box.innerHTML = `<ul class="dash-list dash-goals">${shown.map((goal, index) => {
+    const progress = Number.isFinite(goal.plan?.progressPct) ? goal.plan.progressPct : 0;
+    const target = headlineTarget(goal);
+    return `<li><button type="button" data-edit-goal="${escHtml(goal.id)}">
+      ${goalIconHtml(goal, GOAL_TONES[index % GOAL_TONES.length], 'dash-goal-icon')}
+      <span class="dash-list-body"><span>${escHtml(goal.name)}</span><small>${target.amount != null ? `${escHtml(amount(target.amount, goal.currency))} target` : 'No target yet'}</small>
+        <span class="dash-meter" aria-hidden="true"><span style="width:${Math.min(100, progress).toFixed(1)}%"></span></span></span>
+      <strong>${Math.floor(progress)}%</strong></button></li>`;
+  }).join('')}</ul>`;
+}
+
+document.querySelectorAll('[data-home-range]').forEach((button) => button.addEventListener('click', () => {
+  homeRange = Number(button.dataset.homeRange);
+  document.querySelectorAll('[data-home-range]').forEach((other) => other.setAttribute('aria-pressed', String(other === button)));
+  if (currentRoute === 'home') renderHome();
+}));
+
+document.getElementById('home-ask').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = document.getElementById('home-ask-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  runPrompt(text).catch(showError);
+});
 
 function renderHomeChats() {
   const list = document.getElementById('home-chats');
@@ -1382,6 +1557,7 @@ async function deleteGoal(goal) {
 
 document.addEventListener('ca:goals', () => {
   if (currentRoute === 'goals' && sessionReady()) renderGoals();
+  if (currentRoute === 'home' && sessionReady()) renderHome();
 });
 
 document.getElementById('add-goal').addEventListener('click', () => openGoalDialog());

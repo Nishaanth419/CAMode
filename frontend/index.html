@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#f4f7f5" />
+  <meta name="theme-color" content="#070a08" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="description" content="Ask finance questions and analyse your INDmoney portfolio with an assistant that runs on your own computer." />
@@ -28,12 +28,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=40" />
+  <link rel="stylesheet" href="/css/app.css?v=41" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
   <script src="/js/finance.js?v=6" defer></script>
   <script src="/js/trace.js?v=9" defer></script>
-  <script src="/js/app.js?v=33" defer></script>
-  <script src="/js/pages.js?v=20" defer></script>
+  <script src="/js/app.js?v=34" defer></script>
+  <script src="/js/pages.js?v=21" defer></script>
   <script src="/js/rail.js?v=6" defer></script>
 </head>
 <body>
@@ -222,53 +222,90 @@
       </div>
 
       <div id="page-view" hidden>
-        <section class="page" data-page="home" aria-labelledby="home-title">
-          <div class="page-hero">
-            <div>
-              <p class="hero-eyebrow">Home</p>
-              <h1 id="home-title" class="page-title"><span class="js-greeting">Hello</span><span id="home-name"></span></h1>
-              <p class="page-sub">Here is where your money stands today.</p>
+        <section class="page page-dashboard" data-page="home" aria-labelledby="home-title">
+          <div class="dash-hero">
+            <div class="dash-hero-copy">
+              <p class="dash-greeting"><span class="js-greeting">Hello</span><span id="home-name"></span> <span aria-hidden="true">👋</span></p>
+              <h1 id="home-title" class="dash-title">Your AI wealth assistant</h1>
+              <p class="page-sub">Track, analyse and grow your investments with AI.</p>
             </div>
-            <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>Start a new chat</button>
+            <div class="dash-ask">
+              <form id="home-ask" class="dash-ask-box" autocomplete="off">
+                <svg class="dash-ask-spark" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 1.8 4.9L18.5 11l-4.7 1.9L12 18l-1.8-5.1L5.5 11l4.7-2.1Z"/><path d="M18.5 3.5v3M17 5h3"/></svg>
+                <input id="home-ask-input" type="text" placeholder="Ask CA Mode anything…" aria-label="Ask CA Mode anything" />
+                <button type="submit" aria-label="Ask">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                </button>
+              </form>
+              <div class="dash-chips" aria-label="Suggested questions">
+                <button class="chip" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">Analyze my portfolio</button>
+                <button class="chip js-goal-agent" type="button" data-agent="finance" data-prompt="Which kinds of funds suit my saved goals, given their horizon and my risk?">Suggest funds for a goal</button>
+                <button class="chip" type="button" data-agent="finance" data-prompt="How should I compare two mutual funds? What figures matter most?">Compare funds</button>
+                <button class="chip" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">Tax saving ideas</button>
+              </div>
+            </div>
           </div>
-          <div id="home-stats" class="stat-grid"></div>
-          <div class="page-columns">
-            <section class="panel">
-              <div class="rail-head"><h2>Jump to</h2></div>
-              <div class="shortcut-grid">
-                <a class="shortcut tone-green" href="#/portfolio"><strong>Portfolio Overview</strong><small>Net worth, allocation and trend</small></a>
-                <a class="shortcut tone-blue" href="#/investments"><strong>Investments</strong><small>Every holding with its P&amp;L</small></a>
-                <a class="shortcut tone-amber" href="#/planning"><strong>Planning Tools</strong><small>SIP, lumpsum, goal and EMI calculators</small></a>
-                <a class="shortcut tone-violet" href="#/goals"><strong>Goals</strong><small>Track progress towards your targets</small></a>
-                <a class="shortcut tone-red" href="#/markets"><strong>Market Insights</strong><small>Today's movers and live prices</small></a>
-                <a class="shortcut tone-green" href="#/reports"><strong>Reports</strong><small>Net worth changes and downloads</small></a>
+
+          <div id="home-stats" class="dash-stats"></div>
+
+          <div class="dash-grid">
+            <section class="panel dash-card" aria-labelledby="home-allocation-title">
+              <div class="rail-head"><h2 id="home-allocation-title">Asset Allocation</h2></div>
+              <div id="home-allocation"></div>
+            </section>
+            <section class="panel dash-card" aria-labelledby="home-performance-title">
+              <div class="rail-head">
+                <h2 id="home-performance-title">Portfolio Performance</h2>
+                <div class="dash-range" role="group" aria-label="Period">
+                  <button type="button" data-home-range="30">1M</button>
+                  <button type="button" data-home-range="90">3M</button>
+                  <button type="button" data-home-range="180">6M</button>
+                  <button type="button" data-home-range="365" aria-pressed="true">1Y</button>
+                </div>
+              </div>
+              <div id="home-performance"></div>
+            </section>
+            <section class="panel dash-card" aria-labelledby="home-holdings-title">
+              <div class="rail-head"><h2 id="home-holdings-title">Top Holdings</h2><a class="panel-link" href="#/investments">View all <span aria-hidden="true">→</span></a></div>
+              <div id="home-holdings"></div>
+            </section>
+          </div>
+
+          <div class="dash-grid">
+            <section class="panel dash-card" aria-labelledby="home-goals-title">
+              <div class="rail-head"><h2 id="home-goals-title">Goals</h2><a class="panel-link" href="#/goals">View all <span aria-hidden="true">→</span></a></div>
+              <div id="home-goals"></div>
+            </section>
+            <section class="panel dash-card" aria-labelledby="home-insights-title">
+              <div class="rail-head"><h2 id="home-insights-title"><span class="dash-spark" aria-hidden="true">✦</span> AI Insights</h2><a class="panel-link" href="#/markets">See all <span aria-hidden="true">→</span></a></div>
+              <div id="home-insights"></div>
+            </section>
+            <section class="panel dash-card" aria-labelledby="home-actions-title">
+              <div class="rail-head"><h2 id="home-actions-title">Quick Actions</h2></div>
+              <div class="dash-actions">
+                <button class="dash-action" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">
+                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 19v-6M11 19V9M16 19v-4M21 19V5"/></svg></span>
+                  <strong>Analyze Portfolio</strong><small>Get AI insights</small>
+                </button>
+                <a class="dash-action" href="#/markets/funds">
+                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></span>
+                  <strong>Find Funds</strong><small>Look up any mutual fund</small>
+                </a>
+                <a class="dash-action" href="#/planning/goal">
+                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg></span>
+                  <strong>Plan a Goal</strong><small>See what it takes each month</small>
+                </a>
+                <a class="dash-action" href="#/planning/tax">
+                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7Z"/><path d="M13.5 3.5v4.5H18M10 12h5M10 16h5"/></svg></span>
+                  <strong>Income Tax</strong><small>Compare both regimes</small>
+                </a>
               </div>
             </section>
-            <section class="panel">
-              <div class="rail-head"><h2>Continue a chat</h2><a class="panel-link" href="#/chats">See all</a></div>
-              <div id="home-chats" class="mini-chat-list"></div>
-            </section>
           </div>
-          <section class="panel">
-            <div class="rail-head"><h2>Ask CA Mode</h2></div>
-            <div class="feature-cards">
-              <button class="feature-card tone-green" type="button" data-agent="portfolio" data-prompt="Summarize my portfolio allocation by asset class.">
-                <span class="feature-copy"><strong>Portfolio Analysis</strong><small>Review how your investments are allocated</small></span>
-                <span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-              <button class="feature-card tone-blue" type="button" data-agent="portfolio" data-prompt="Show my top holdings by current value and explain the largest concentration.">
-                <span class="feature-copy"><strong>Top Holdings</strong><small>Find your largest positions and exposure</small></span>
-                <span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-              <button class="feature-card tone-amber" type="button" data-agent="finance" data-prompt="How should I plan a long-term financial goal like buying a home? Walk me through the steps.">
-                <span class="feature-copy"><strong>Goal Planning</strong><small>Plan for future goals step by step</small></span>
-                <span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-              <button class="feature-card tone-violet" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
-                <span class="feature-copy"><strong>Tax Optimization</strong><small>Learn about tax-saving opportunities</small></span>
-                <span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-            </div>
+
+          <section class="panel" aria-labelledby="home-chats-title">
+            <div class="rail-head"><h2 id="home-chats-title">Continue a chat</h2><a class="panel-link" href="#/chats">See all <span aria-hidden="true">→</span></a></div>
+            <div id="home-chats" class="mini-chat-list"></div>
           </section>
         </section>
 
