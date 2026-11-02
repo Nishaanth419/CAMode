@@ -8,6 +8,7 @@
 - [Activity and the answer trace](#activity-and-the-answer-trace)
 - [Goals and saved context](#goals-and-saved-context)
 - [Holdings at other brokers (CAS)](#holdings-at-other-brokers-cas)
+- [Demo without signing in](#demo-without-signing-in)
 
 ## Use the agents
 
@@ -129,3 +130,15 @@ flowchart LR
 ```
 
 The PDF is read in memory with [`casparser`](https://github.com/codereverser/casparser), offline. Only the holdings are kept (name, ISIN, broker, units, price, value, and cost where the statement gives one), sealed with your PIN like snapshots; the last 12 statements are kept. The PDF, its password, and your name, PAN, address, contact details, and DP/client IDs are never stored. CAS figures are as of the statement date, not live, and overlap INDmoney's, so the agent never adds the two together. Demat statements usually give no purchase cost for shares, so their P&L covers only holdings with a cost.
+
+## Demo without signing in
+
+Open the app with `?demo` (for example `https://<your host>/?demo`) to try it on a made-up investor: no Google account, PIN or INDmoney connection, so it also works inside another site's page. A bar at the top says it is a demo and links to the real sign-in.
+
+`frontend/js/demo.js` answers the app's API calls in the browser from `frontend/demo/data.json`, so nothing reaches the server and nothing is saved. Every page shows the made-up portfolio, goals and four saved chats with their traces. New questions get a fixed reply saying the demo only shows saved answers, and edits (goals, profile, INDmoney) show a message that nothing is saved. Chats started in the demo stay until the tab is reloaded.
+
+`data.json` is recorded from the real server: `scripts/build_demo_data.py` creates the investor in a throwaway database (120 days of snapshots, goals, a decision), answers INDmoney's portfolio tools from those snapshots, asks the configured model the four questions, keeps only answers the number check raised nothing on, and saves every response the app reads. Run it again after changing the API or the pages, or to bring the demo's dates up to date:
+
+```bash
+OLLAMA_MODEL=ca-mode python -m scripts.build_demo_data   # a few minutes; read the new answers before committing
+```
