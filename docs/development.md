@@ -89,13 +89,15 @@ app/
   context.py       Picks the saved context relevant to a request and renders it for the prompt
 frontend/
   index.html       App shell, profile picker, and profile dialog
-  js/finance.js    Pure money, goal, tax and insight helpers (loaded first)
+  js/demo.js       Demo mode (?demo): answers the API in the browser from demo/data.json (loaded first)
+  js/finance.js    Pure money, goal, tax and insight helpers
   js/app.js        Chat UI, profiles, snapshot card, Markdown and Plotly charts
   js/pages.js      Hash routes: Home, Activity, Portfolio, Investments, Planning, Markets, Goals, Reports
   js/trace.js      Answer trace timeline, investigation evidence card, Activity list helpers
   js/rail.js       The right rail: portfolio, goals, market insights, quick tools
   css/app.css      Styles and light/dark themes
   sw.js            Service worker (offline app shell)
+  demo/data.json   The demo's recorded API responses, built by scripts/build_demo_data.py
 docs/              This documentation
 evals/             Versioned eval datasets (JSONL)
 scripts/           Evals, backups, plans, page views, icon build, INDmoney shape inspection
