@@ -95,6 +95,15 @@ _SCHEMA = """
         PRIMARY KEY (user_id, broker)
     );
     CREATE INDEX IF NOT EXISTS broker_connections_by_user ON broker_connections(user_id);
+    -- One sealed row per profile, broker and local day (broker_history.py): holdings rows and the computed total.
+    CREATE TABLE IF NOT EXISTS broker_snapshots (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        broker TEXT NOT NULL,
+        local_date TEXT NOT NULL,
+        captured_at INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (user_id, broker, local_date)
+    );
     CREATE TABLE IF NOT EXISTS investigations (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

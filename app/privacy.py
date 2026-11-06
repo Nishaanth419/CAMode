@@ -28,7 +28,8 @@ from .db import connect_db
 # 2026-10-22.2: the operator's admin page (admin.py) and what it shows.
 # 2026-10-26.1: answer records keep the figures CA Mode calculated for an analysis (analysis_tools).
 # 2026-11-06.1: broker connections (Zerodha) and the holdings fetched from them.
-POLICY_VERSION: Final = "2026-11-06.2"
+# 2026-11-06.3: a daily history of each broker's holdings, kept for the snapshot retention period.
+POLICY_VERSION: Final = "2026-11-06.3"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -152,12 +153,14 @@ NOTICE: Final = (
             "token and refresh token the broker issues and the sign-in registration CA Mode made with it, encrypted "
             "with your server's key; tokens are never exported, never shown and never sent to the AI model. If you "
             "save history, the latest holdings fetched from a broker are also kept, sealed under your PIN key, so "
-            "they can still be shown after the login ends; holdings are not saved in private mode. Only read-only "
+            "they can still be shown after the login ends, and once a day while the login works (or when you refresh) the holdings and their "
+            "total are added to a daily history, sealed the same way and kept for your snapshot retention period, "
+            "which draws the combined net worth history; none of this is saved in private mode. Only read-only "
             "tools are used: CA Mode cannot place or change an order. When Portfolio Analyzer reads broker data for "
             "an answer, it goes to the AI model you select, like INDmoney data. Disconnecting removes the session or "
-            "tokens and the saved holdings (CA Mode cannot revoke a token at the broker, so also remove CA Mode in "
+            "tokens, the saved holdings and that broker's holdings history (CA Mode cannot revoke a token at the broker, so also remove CA Mode in "
             "the broker's own app list if you want that), clearing your history or switching to private mode "
-            "removes the saved holdings, and deleting your profile removes everything. Answer records keep their "
+            "removes the saved holdings and holdings history, and deleting your profile removes everything. Answer records keep their "
             "usual short, capped previews of what was read until the chat or history is cleared; disconnecting a "
             "broker does not delete them."
         ),
@@ -226,6 +229,7 @@ def _delete_saved_history(connection: Any, user_id: str) -> None:
     connection.execute("DELETE FROM cas_statements WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM agent_runs WHERE user_id = ?", (user_id,))
+    connection.execute("DELETE FROM broker_snapshots WHERE user_id = ?", (user_id,))
     # Broker connections stay (the login is not history); the holdings fetched through them go.
     connection.execute("UPDATE broker_connections SET holdings = NULL, holdings_at = NULL WHERE user_id = ?", (user_id,))
     connection.execute("UPDATE users SET snapshot_attempted_at = 0 WHERE id = ?", (user_id,))

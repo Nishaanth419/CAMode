@@ -2005,3 +2005,10 @@ a.tool-tile { text-decoration: none; }
 .broker-tool-write { color: var(--red); }
 .broker-tool-not_enabled { color: var(--text-soft); }
 .broker-ucc { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); color: inherit; font: inherit; text-transform: uppercase; }
+
+.rail-note { display: block; font-size: 11px; opacity: 0.7; margin-top: 2px; }
+
+.broker-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid #d9a441; border-radius: 10px; background: rgba(217, 164, 65, 0.12); font-size: 14px; }
+.broker-banner-actions { display: inline-flex; align-items: center; gap: 8px; }
+.broker-banner-dismiss { border: 0; background: none; color: inherit; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.rail-note.is-warn { color: #b7791f; opacity: 1; }

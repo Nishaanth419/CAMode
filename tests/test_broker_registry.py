@@ -618,7 +618,7 @@ def test_export_never_holds_oauth_tokens(client, signed_in, mcp):
 
 def test_the_notice_explains_stored_tokens_and_the_version_is_bumped():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-06.2"
+    assert privacy.POLICY_VERSION == "2026-11-06.3"
     body = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")["body"]
     for word in ("refresh token", "encrypted", "never exported", "read-only", "Upstox", "Kotak"):
         assert word in body
