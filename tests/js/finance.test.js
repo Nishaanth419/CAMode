@@ -287,3 +287,26 @@ test('fund figures carry their source and date, and only dated fresh figures rea
   assert.equal(finance.fundMetricValue('return5yPct', undefined), '—');
   assert.equal(finance.fundMetricNote(undefined, day), '');
 });
+
+test('holdingsTabs lists All first only when there is a combined total', () => {
+  const sources = [
+    { id: 'indmoney', name: 'INDmoney', available: true, stale: false, asOf: 1 },
+    { id: 'zerodha', name: 'Zerodha', available: true, stale: true, asOf: 2 },
+  ];
+  const tabs = finance.holdingsTabs({ sources, combined: { available: true } });
+  assert.deepEqual(tabs.map((tab) => tab.id), ['all', 'indmoney', 'zerodha']);
+  assert.equal(tabs[2].stale, true);
+  assert.deepEqual(finance.holdingsTabs({ sources, combined: { available: false } }).map((tab) => tab.id), ['indmoney', 'zerodha']);
+  assert.deepEqual(finance.holdingsTabs({ sources: [], combined: { available: false } }), []);
+  assert.deepEqual(finance.holdingsTabs(null), []);
+});
+
+test('brokerStatusLabel never shows an expired login as current', () => {
+  const now = Date.UTC(2026, 10, 6, 12);
+  assert.equal(finance.brokerStatusLabel('connected', null, now), 'Connected');
+  assert.match(finance.brokerStatusLabel('pending', null, now), /Waiting for you to log in/);
+  assert.match(finance.brokerStatusLabel('needs_login', now - 3 * 3600000, now), /Login expired.*Showing holdings from 3h ago/);
+  assert.match(finance.brokerStatusLabel('needs_login', null, now), /^Login expired/);
+  assert.match(finance.brokerStatusLabel('unavailable', null, now), /Could not reach/);
+  assert.equal(finance.brokerStatusLabel('disconnected', null, now), 'Not connected');
+});

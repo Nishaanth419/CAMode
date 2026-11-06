@@ -3,12 +3,13 @@
    Goals, Reports, Activity and All chats. Loaded after app.js and uses its state
    (currentUser, isConnected, storageMode, chats) and helpers. */
 
-const ROUTES = ['home', 'chat', 'portfolio', 'investments', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
+const ROUTES = ['home', 'chat', 'portfolio', 'holdings', 'investments', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
 // Tab title and meta description for each page; `not-found` is any hash that names no page.
 const ROUTE_META = {
   home: ['Home', 'Where your money stands today: net worth, goals and recent chats.'],
   chat: ['Ask AI', 'Ask finance questions or ask about your INDmoney portfolio.'],
   portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
+  holdings: ['Holdings', 'Holdings from INDmoney and each connected broker, with a combined total that counts nothing twice.'],
   investments: ['Investments', 'Every holding from your latest snapshot, with CSV download and CAS upload.'],
   planning: ['Planning tools', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
   markets: ['Market insights', 'Mutual fund figures from INDmoney for your goals.'],
@@ -288,7 +289,7 @@ function renderRoute() {
 async function renderPage(route) {
   if (!sessionReady()) return;
   const renderers = {
-    home: renderHome, portfolio: renderPortfolio, investments: renderInvestments, planning: renderPlanning,
+    home: renderHome, portfolio: renderPortfolio, holdings: renderHoldings, investments: renderInvestments, planning: renderPlanning,
     markets: renderMarkets, goals: renderGoals, reports: renderReports, activity: renderActivity, chats: renderAllChats,
   };
   await renderers[route]?.();
@@ -306,10 +307,10 @@ document.addEventListener('ca:session-ended', () => {
   latestHoldings = [];
   reportPoints = [];
   resetActivity();
-  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
+  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
-  for (const id of ['portfolio-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
+  for (const id of ['portfolio-asof', 'holdings-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
   if (goalDialog.open) goalDialog.close();
 });
 document.addEventListener('ca:snapshot', () => {
@@ -636,7 +637,7 @@ async function renderPortfolio() {
         ${caps ? panel('Direct stocks by market cap', `<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`) : ''}
       </div>
     </div>
-    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/investments">All investments</a>' })}
+    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/investments">All investments</a> <a class="panel-link" href="#/holdings">With brokers</a>' })}
     ${notes.length ? panel('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
     ${promptChips([
       ['Explain my allocation', 'Explain my current asset allocation and what stands out.'],
@@ -699,6 +700,87 @@ function holdingsTable(holdings, { compact = false } = {}) {
       <th>Holding</th><th>Value</th>${compact ? '' : '<th>Invested</th>'}<th>P&amp;L</th><th>Share</th>${compact ? '' : '<th>1 day</th><th><span class="sr-only">Ask AI</span></th>'}
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+
+/* ── Holdings (INDmoney and connected brokers) ──────────────────────── */
+function holdingsTotals(figures) {
+  if (!figures) return '';
+  const t = figures.totals || {};
+  const pnl = figures.pnl || {};
+  return `<div class="stat-grid stat-grid-3">
+    ${statTile('Current value', moneyShort(t.current_value_inr), 'Holdings only')}
+    ${statTile('Holdings', String(figures.concentration?.holdings_count ?? 0))}
+    ${pnl.pnl_inr === null || pnl.pnl_inr === undefined ? '' : statTile('P&L', signedMoney(pnl.pnl_inr), percent(pnl.pnl_pct, { signed: true }), toneOf(pnl.pnl_inr))}
+  </div>`;
+}
+
+function holdingsSourceNote(tab, source, data) {
+  if (tab.id === 'all') {
+    const replaced = Object.entries(data.combined.deduplicated || {})
+      .map(([name, count]) => `${count} INDmoney ${count === 1 ? 'row' : 'rows'} for ${name} replaced by ${name}'s own`).join('; ');
+    return `Holdings only: INDmoney's net worth outside holdings is not included.${replaced ? ` ${replaced}, so nothing is counted twice.` : ''}`;
+  }
+  if (!source.available) return 'No holdings to show yet.';
+  const when = source.asOf ? `As of ${formatCaptured(source.asOf)}.` : '';
+  return source.stale ? `${when} The login has ended, so these are the last holdings fetched.` : when;
+}
+
+async function renderHoldings() {
+  const isCurrent = startRender('holdings');
+  const body = document.getElementById('holdings-body');
+  const asOf = document.getElementById('holdings-asof');
+  asOf.textContent = '';
+  setHtml(body, loadingBlock());
+  let data;
+  try {
+    data = await cached('combined', () => fetchJson('/api/holdings/combined'));
+  } catch (error) {
+    if (isCurrent()) setHtml(body, errorBlock(error));
+    return;
+  }
+  if (!isCurrent()) return;
+  const tabs = holdingsTabs(data);
+  if (!tabs.length) {
+    setHtml(body, notice('No holdings yet', 'Connect INDmoney, or connect a broker from your profile, to see your holdings here. Access is read-only.', CONNECT_BUTTON));
+    return;
+  }
+  const tab = tabs.find((item) => item.id === currentSub) || tabs[0];
+  const source = tab.id === 'all' ? data.combined : data.sources.find((item) => item.id === tab.id);
+  const isBroker = tab.id !== 'all' && data.sources.find((item) => item.id === tab.id)?.kind === 'broker';
+  asOf.textContent = holdingsSourceNote(tab, source, data);
+  const stale = tab.stale ? ' <span class="pill">Stale</span>' : '';
+  setHtml(body, `
+    <div class="table-controls">
+      <div class="seg seg-small" role="group" aria-label="Holdings source">
+        ${tabs.map((item) => `<button type="button" data-holdings-tab="${escHtml(item.id)}" aria-pressed="${item.id === tab.id}">${escHtml(item.label)}${item.stale ? ' (stale)' : ''}</button>`).join('')}
+      </div>
+      ${isBroker ? `<button class="gate-secondary" type="button" data-broker-refresh="${escHtml(tab.id)}">Refresh from ${escHtml(tab.label)}</button>` : ''}
+    </div>
+    ${source.available === false ? notice('No holdings to show', 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.') : `
+      ${holdingsTotals(source.figures)}
+      <section class="panel"><div class="rail-head"><h2>${escHtml(tab.label)}${stale}</h2></div>${holdingsTable(source.holdings || [])}</section>`}`);
+}
+
+document.addEventListener('click', async (event) => {
+  const tab = event.target.closest('[data-holdings-tab]');
+  if (tab) {
+    navigate('holdings', tab.dataset.holdingsTab === 'all' ? '' : tab.dataset.holdingsTab);
+    return;
+  }
+  const refresh = event.target.closest('[data-broker-refresh]');
+  if (!refresh) return;
+  refresh.disabled = true;
+  try {
+    await fetchJson(`/api/brokers/${encodeURIComponent(refresh.dataset.brokerRefresh)}/holdings?refresh=1`);
+  } catch (error) {
+    toast(error.message);
+  }
+  pageCache.delete('combined');
+  if (currentRoute === 'holdings') renderPage('holdings');
+});
+document.addEventListener('ca:holdings', () => {
+  pageCache.delete('combined');
+  if (currentRoute === 'holdings') renderPage('holdings');
+});
 
 /* ── Investments ────────────────────────────────────────────────────── */
 const holdingsView = { type: 'ALL', query: '', sort: 'value' };

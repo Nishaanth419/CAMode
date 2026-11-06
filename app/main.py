@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -986,7 +986,7 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
         privacy.export_data(
             user, snapshots.all_snapshots(user["id"], keys), cas.all_statements(user["id"], keys),
             investigations.all_investigations(user["id"], keys), memory.export_context(user["id"], keys),
-            agent_runs.all_runs(user["id"], keys),
+            agent_runs.all_runs(user["id"], keys), brokers.export_brokers(user["id"], keys),
         ),
         headers={"Content-Disposition": 'attachment; filename="ca-mode-export.json"'},
     )
@@ -1205,6 +1205,110 @@ async def disconnect_indmoney(request: Request):
     return {"connected": False}
 
 
+# ── Broker connections ─────────────────────────────────────────────────────────
+
+def unknown_broker() -> JSONResponse:
+    return JSONResponse({"error": "That broker is not available."}, status_code=404)
+
+
+@app.get("/api/brokers")
+async def list_brokers(request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    return {"brokers": brokers.brokers_overview(user["id"])}
+
+
+@app.post("/api/brokers/{broker_id}/connect")
+async def connect_broker(broker_id: str, request: Request):
+    """Start a broker login: returns the broker's own login link for the user to open."""
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    broker = brokers.get_broker(broker_id)
+    if broker is None:
+        return unknown_broker()
+    if blocked := rate_limited(request, "broker", user["id"]):
+        return blocked
+    try:
+        started = await brokers.start_login(user["id"], broker)
+    except brokers.BrokerError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    except Exception as exc:
+        logger.warning("broker_connect_failed", extra={"broker": broker.id, "error": type(exc).__name__})
+        return JSONResponse({"error": f"Could not reach {broker.name}. Try again in a moment."}, status_code=502)
+    return started
+
+
+@app.get("/api/brokers/{broker_id}/status")
+async def broker_status(broker_id: str, request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    if not privacy.has_current_consent(user["id"]):
+        return consent_required()
+    broker = brokers.get_broker(broker_id)
+    if broker is None:
+        return unknown_broker()
+    if blocked := rate_limited(request, "broker", user["id"]):
+        return blocked
+    return await brokers.check_status(user["id"], broker)
+
+
+@app.post("/api/brokers/{broker_id}/disconnect")
+async def disconnect_broker(broker_id: str, request: Request):
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    if brokers.get_broker(broker_id) is None:
+        return unknown_broker()
+    brokers.delete_connection(user["id"], broker_id)
+    return {"connected": False}
+
+
+async def broker_holdings_payloads(user: dict[str, Any], *, refresh: bool, only: str | None = None) -> list[dict[str, Any]]:
+    """Each connected broker's holdings: live when ``refresh`` and the session works, else the stored copy."""
+    store = snapshots.snapshots_allowed(user)
+    found = [item for item in brokers.connections(user["id"]) if only in (None, item["broker"])]
+    payloads = await asyncio.gather(*(
+        brokers.fetch_holdings(user["id"], user["keys"], brokers.BROKERS[item["broker"]], live=refresh, store=store)
+        for item in found
+    ))
+    return list(payloads)
+
+
+@app.get("/api/brokers/{broker_id}/holdings")
+async def broker_holdings(broker_id: str, request: Request, refresh: bool = False):
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    broker = brokers.get_broker(broker_id)
+    if broker is None:
+        return unknown_broker()
+    if refresh and (blocked := rate_limited(request, "broker", user["id"])):
+        return blocked
+    if not brokers.has_connection(user["id"]):
+        return {"available": False, "broker": broker.id, "name": broker.name, "status": "disconnected"}
+    # A page load shows the last copy; "refresh" asks the broker, which needs a live login.
+    payloads = await broker_holdings_payloads(user, refresh=refresh, only=broker.id)
+    if not payloads:
+        return {"available": False, "broker": broker.id, "name": broker.name, "status": "disconnected"}
+    return brokers.public(payloads[0])
+
+
+@app.get("/api/holdings/combined")
+async def combined_holdings(request: Request, refresh: bool = False):
+    """INDmoney's latest snapshot and every connected broker side by side, with one deduplicated total."""
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    if refresh and (blocked := rate_limited(request, "broker", user["id"])):
+        return blocked
+    snapshot = snapshots.latest_snapshot(user["id"], keys=user["keys"])
+    payloads = await broker_holdings_payloads(user, refresh=refresh)
+    return await asyncio.to_thread(brokers.combined, snapshot, payloads)
+
+
 # ── Portfolio snapshots ────────────────────────────────────────────────────────
 
 def _snapshot_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1397,13 +1501,15 @@ async def list_tools(request: Request):
         return consent_required()
     token = await users.user_access_token(user["id"])
     if not token:
-        return {"mcpServer": MCP_RESOURCE, "connected": False, "toolCount": 0, "tools": [], "loginUrl": "/auth/indmoney/connect"}
+        return {"mcpServer": MCP_RESOURCE, "connected": False, "toolCount": 0, "tools": [], "loginUrl": "/auth/indmoney/connect",
+                "brokers": brokers.brokers_overview(user["id"])}
     try:
         session = await fetch_mcp_session(MCP_RESOURCE, token)
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc
     tools = filter_portfolio_tools(session["tools"])
-    return {"mcpServer": MCP_RESOURCE, "connected": True, "toolCount": len(tools), "tools": [{"name": tool["name"], "description": tool.get("description", "")} for tool in tools]}
+    return {"mcpServer": MCP_RESOURCE, "connected": True, "toolCount": len(tools), "tools": [{"name": tool["name"], "description": tool.get("description", "")} for tool in tools],
+            "brokers": brokers.brokers_overview(user["id"])}
 
 
 @app.post("/api/chat")
@@ -1439,13 +1545,13 @@ async def chat(body: ChatRequest, request: Request):
             context = PortfolioContext(local_tools=tuple([*goal_tools, *calculator]))
     if body.agentType == "portfolio":
         token = await users.user_access_token(user["id"])
-        if not token:
+        if not token and not brokers.has_connection(user["id"]):
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
         extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
         if has_goals:
             extra_tools += [*goal_portfolio.goal_tools(user, include_holdings=True), fund_data.fund_comparison_tool(user)]
-        extra_tools += calculator
-        context = snapshots.portfolio_context(user, extra_tools=extra_tools)
+        extra_tools += calculator + brokers.broker_tools(user)
+        context = snapshots.portfolio_context(user, extra_tools=extra_tools, extra_profile_context=brokers.context_line(user["id"]))
     try:
         question_day = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
     except limits.DailyLimitReached as exc:

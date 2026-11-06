@@ -430,11 +430,33 @@
     return `no date given${fetched} · ${source}`;
   }
 
+  // Holdings page tabs from GET /api/holdings/combined: "All" (when there is a combined total), then each source.
+  function holdingsTabs(payload) {
+    const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+    if (!sources.length) return [];
+    const tabs = sources.map((source) => ({
+      id: source.id, label: source.name || source.id, available: Boolean(source.available), stale: Boolean(source.stale), asOf: source.asOf ?? null,
+    }));
+    return payload.combined?.available ? [{ id: 'all', label: 'All', available: true, stale: false, asOf: null }, ...tabs] : tabs;
+  }
+
+  // The status line for a broker in the profile dialog.
+  function brokerStatusLabel(status, holdingsAt, now = Date.now()) {
+    const saved = holdingsAt ? ` Showing holdings from ${timeAgo(holdingsAt, now)}.` : '';
+    switch (status) {
+      case 'connected': return 'Connected';
+      case 'pending': return 'Waiting for you to log in. Open the login link, then come back.';
+      case 'needs_login': return `Login expired (logins end daily around 6 AM, or after 12 hours).${saved}`;
+      case 'unavailable': return `Could not reach the broker right now.${saved}`;
+      default: return 'Not connected';
+    }
+  }
+
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
-    spanLabel, historyChange, portfolioInsights, fundMetricValue, fundMetricNote,
+    spanLabel, historyChange, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

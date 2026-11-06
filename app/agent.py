@@ -55,6 +55,7 @@ _FINANCE_TOPIC_RE = re.compile(
     r"expense\s+ratio|category|large.?cap|mid.?cap|small.?cap|elss|ppf|epf|nps|fixed\s+deposit|"
     r"real\s+estate|margin|breakeven|risk.?reward|call\s+oi|put\s+oi|"
     r"parag\s+parikh|flexi.?cap|ifsc|swift|isin|bic|micr|hsn|cheque\w*|"
+    r"zerodha|kite|upstox|groww|dhan|angel\s+one|"
     # Savings goals, which the Goals page saves and both agents can use.
     r"goals?|down\s?payment|corpus|earmark\w*|lakhs?|lacs?|crores?)\b",
     re.IGNORECASE,
@@ -80,6 +81,7 @@ TRUNCATION_NOTICE = "\n\n_(This response was cut off at the model's length limit
 _INDMONEY_DATA_REQUEST_RE = re.compile(
     r"\b(?:my\s+(?:portfolio|net\s+worth|holdings?|stocks?|funds?|sips?|watchlist|accounts?|investments?|"
     r"shares|positions?|demat|mutual\s+funds?|brokers?|brokerage\s+accounts?)|(?:grouped\s+)?by\s+broker|"
+    r"zerodha|kite|upstox|groww|dhan|angel\s+one|"
     r"portfolio|holdings|net\s+worth|allocation|watchlist|sips?|option\s+chain|options?|"
     r"derivatives?|f\s*&\s*o|iron\s+condor|put\s+spread|call\s+spread|strangle|straddle|"
     r"greeks?|ohlc|candles?|chart|price|quotes?|analyst|target\s+price|sentiment|news|"
@@ -1232,11 +1234,13 @@ async def stream_agent(
     # Portfolio Analyzer always gets its local snapshot tools; live INDmoney tools are added for account questions.
     requires_indmoney_data = agent_type == "portfolio" and category == "account_data"
     if requires_indmoney_data:
-        if not token:
+        if not token and "get_broker_holdings" not in local_tools:
             yield "error", {"message": "Connect your INDmoney account to use Portfolio Analyzer.", "code": "indmoney_not_connected"}
             yield "done", {}
             return
-        if context and context.cached_mcp_tools:
+        if not token:
+            pass  # only a broker is connected: its local tools answer, and no INDmoney session is opened
+        elif context and context.cached_mcp_tools:
             tools = filter_portfolio_tools(context.cached_mcp_tools)
         else:
             try:

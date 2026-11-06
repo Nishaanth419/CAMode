@@ -595,12 +595,19 @@ def fresh_cached_mcp_tools(user: dict[str, Any]) -> list[dict[str, Any]] | None:
     return None
 
 
-def portfolio_context(user: dict[str, Any], *, extra_tools: Sequence[LocalTool] = ()) -> PortfolioContext:
+def _with_line(text: str | None, line: str | None) -> str | None:
+    return text if not line else (f"{text}\n{line}" if text else line)
+
+
+def portfolio_context(
+    user: dict[str, Any], *, extra_tools: Sequence[LocalTool] = (), extra_profile_context: str | None = None,
+) -> PortfolioContext:
     """Assemble the snapshot tools, profile text and cached MCP tool list for one chat request.
 
     ``user["keys"]`` must be unlocked when the profile's data is sealed. ``extra_tools``
     are other local tools for this request (``investigations`` imports this module, so
-    it passes its tool in rather than being imported here).
+    it passes its tool in rather than being imported here); ``extra_profile_context`` is a line
+    for the prompt from a module that imports this one (the connected brokers).
     """
     keys = user.get("keys") or ProfileKeys()
     local_tools = snapshot_tools(user["id"], keys)
@@ -609,7 +616,7 @@ def portfolio_context(user: dict[str, Any], *, extra_tools: Sequence[LocalTool] 
     local_tools.extend(extra_tools)
     return PortfolioContext(
         local_tools=tuple(local_tools),
-        profile_context=snapshot_context(latest_snapshot(user["id"], keys=keys)),
+        profile_context=_with_line(snapshot_context(latest_snapshot(user["id"], keys=keys)), extra_profile_context),
         cached_mcp_tools=fresh_cached_mcp_tools(user),
         on_mcp_tools=lambda tools: users.cache_mcp_tools(user["id"], filter_portfolio_tools(tools)),
     )

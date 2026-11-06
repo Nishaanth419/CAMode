@@ -83,6 +83,18 @@ _SCHEMA = """
         data TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS cas_statements_by_user ON cas_statements(user_id, uploaded_at DESC);
+    CREATE TABLE IF NOT EXISTS broker_connections (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        broker TEXT NOT NULL,
+        session TEXT NOT NULL DEFAULT '{{}}',
+        status TEXT NOT NULL,
+        session_started_at INTEGER NOT NULL,
+        checked_at INTEGER,
+        holdings TEXT,
+        holdings_at INTEGER,
+        PRIMARY KEY (user_id, broker)
+    );
+    CREATE INDEX IF NOT EXISTS broker_connections_by_user ON broker_connections(user_id);
     CREATE TABLE IF NOT EXISTS investigations (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

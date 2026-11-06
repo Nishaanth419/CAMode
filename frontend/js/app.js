@@ -881,6 +881,8 @@ async function openProfileDialog() {
   profileForm.querySelector('.danger-zone').open = false;
   dataZone.open = false;
   const [response, privacy] = await Promise.all([fetch('/api/profile'), loadPrivacy()]);
+  brokersStatus.textContent = '';
+  loadBrokers();
   document.querySelector('.backup-row').hidden = !backupsInApp;
   if (backupsInApp) loadBackupStatus();
   const data = await response.json().catch(() => ({}));
@@ -1075,6 +1077,113 @@ async function toggleConnection() {
 }
 
 authButton.addEventListener('click', toggleConnection);
+
+/* ── Brokers (profile dialog) ───────────────────────────────────────── */
+// A broker login happens on the broker's own site: the server returns its link, the user opens it, and we poll
+// the status until it reads connected. The link is shown as an anchor because a tab opened after an await is blocked.
+const brokersSection = document.getElementById('brokers-section');
+const brokersList = document.getElementById('brokers-list');
+const brokersStatus = document.getElementById('brokers-status');
+const BROKER_POLL_MS = 3000;
+const BROKER_MAX_POLLS = 100;
+let brokerPollTimer = null;
+const brokerLoginLinks = {};
+let pendingBrokers = [];
+
+function stopBrokerPolling() {
+  clearTimeout(brokerPollTimer);
+  brokerPollTimer = null;
+}
+
+function brokerButtons(broker) {
+  const id = escHtml(broker.broker);
+  const link = brokerLoginLinks[broker.broker];
+  const button = (action, label) => `<button class="gate-secondary" type="button" data-broker-action="${action}" data-broker="${id}">${label}</button>`;
+  if (broker.status === 'pending') {
+    return (link ? `<a class="gate-secondary" href="${escHtml(link)}" target="_blank" rel="noopener noreferrer">Open ${escHtml(broker.name)} login</a>` : button('connect', 'Get login link'))
+      + button('disconnect', 'Cancel');
+  }
+  if (broker.status === 'connected') return button('disconnect', 'Disconnect');
+  if (broker.status === 'needs_login' || broker.status === 'unavailable') return button('connect', 'Reconnect') + button('disconnect', 'Disconnect');
+  return button('connect', 'Connect');
+}
+
+function renderBrokers(brokers) {
+  brokersSection.hidden = !brokers.length;
+  brokersList.innerHTML = brokers.map((broker) => `<div class="connection-row">
+      <span><strong>${escHtml(broker.name)}</strong><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span>
+      <span class="broker-actions">${brokerButtons(broker)}</span>
+    </div>`).join('');
+  pendingBrokers = brokers.filter((broker) => broker.status === 'pending').map((broker) => broker.broker);
+  if (pendingBrokers.length) pollBrokers(0);
+}
+
+async function loadBrokers() {
+  try {
+    const response = await fetch('/api/brokers');
+    if (!response.ok) {
+      brokersSection.hidden = true;  // Not offered here (for example in the demo).
+      return;
+    }
+    renderBrokers((await response.json()).brokers || []);
+  } catch {
+    brokersSection.hidden = true;
+  }
+}
+
+function pollBrokers(count) {
+  stopBrokerPolling();
+  if (count >= BROKER_MAX_POLLS) return;
+  brokerPollTimer = setTimeout(async () => {
+    if (!profileDialog.open || document.hidden) return;
+    let settled = true;
+    for (const id of pendingBrokers) {
+      try {
+        const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/status`);
+        const status = response.ok ? (await response.json()).status : 'pending';
+        if (status === 'pending') settled = false;
+        else if (status === 'connected') {
+          delete brokerLoginLinks[id];
+          // Fetch and save the first holdings, then let the pages show them.
+          fetch(`/api/brokers/${encodeURIComponent(id)}/holdings?refresh=1`).finally(() => document.dispatchEvent(new CustomEvent('ca:holdings')));
+        }
+      } catch { settled = false; }
+    }
+    if (settled) await loadBrokers();
+    else pollBrokers(count + 1);
+  }, BROKER_POLL_MS);
+}
+
+brokersList.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-broker-action]');
+  if (!button) return;
+  const id = button.dataset.broker;
+  brokersStatus.textContent = '';
+  button.disabled = true;
+  try {
+    if (button.dataset.brokerAction === 'disconnect') {
+      await fetch(`/api/brokers/${encodeURIComponent(id)}/disconnect`, { method: 'POST' });
+      delete brokerLoginLinks[id];
+      document.dispatchEvent(new CustomEvent('ca:holdings'));
+    } else {
+      const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/connect`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not start the login.');
+      if (data.loginUrl) brokerLoginLinks[id] = data.loginUrl;
+    }
+    await loadBrokers();
+  } catch (error) {
+    brokersStatus.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+profileDialog.addEventListener('close', stopBrokerPolling);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopBrokerPolling();
+  else if (profileDialog.open && pendingBrokers.length) pollBrokers(0);
+});
 
 function relativeDay(timestamp) {
   if (!Number.isFinite(Number(timestamp))) return '';

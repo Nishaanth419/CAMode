@@ -231,7 +231,8 @@ def main_build() -> None:
         session = record(client, "/api/session")
         session["profiles"] = []
         for path in ("/api/providers", "/api/profile", "/api/privacy", "/api/portfolio", "/api/goals", "/api/goals/allocations",
-                     "/api/decisions", "/api/context", "/api/cas", "/api/backups", "/api/tools"):
+                     "/api/decisions", "/api/context", "/api/cas", "/api/backups", "/api/tools", "/api/brokers",
+                     "/api/holdings/combined"):
             record(client, path)
         for days in (7, 30, 90, 180, 365):
             record(client, f"/api/snapshots?days={days}")
