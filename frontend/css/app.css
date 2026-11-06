@@ -1986,3 +1986,9 @@ a.tool-tile { text-decoration: none; }
   background: transparent;
   font-size: 12px;
 }
+
+/* Broker connections (profile dialog) and the Holdings page */
+.brokers-section { display: grid; gap: 8px; }
+.brokers-title { margin: 0; font-size: 14px; color: var(--text); }
+.broker-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+.broker-actions a.gate-secondary { text-decoration: none; }

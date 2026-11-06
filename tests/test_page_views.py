@@ -132,3 +132,7 @@ def test_notice_describes_the_counts():
     assert "daily count each time you open one of its pages" in text
     assert "never sent anywhere" in text
     assert "Private mode is never counted" in text
+
+
+def test_the_holdings_page_is_counted(client, signed_in):
+    assert client.post("/api/page-views", json={"route": "holdings"}).json() == {"counted": True}

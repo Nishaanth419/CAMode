@@ -179,7 +179,7 @@ async def test_tool_errors_are_retryable_unless_they_read_as_auth_failures(monke
 @pytest.mark.parametrize(("status", "body", "error_type"), [
     (401, "", mcp_client.McpAuthError),
     (401, '{"error":"token expired"}', mcp_client.McpAuthError),
-    (503, "Service Unavailable", RuntimeError),
+    (503, "Service Unavailable", mcp_client.McpHttpError),
 ])
 async def test_a_failed_tool_call_is_an_auth_error_only_for_http_401(monkeypatch, status, body, error_type):
     class FakeClient:
@@ -201,7 +201,7 @@ async def test_a_failed_tool_call_is_an_auth_error_only_for_http_401(monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("status", "error_type"), [(401, mcp_client.McpAuthError), (500, RuntimeError)])
+@pytest.mark.parametrize(("status", "error_type"), [(401, mcp_client.McpAuthError), (500, mcp_client.McpHttpError)])
 async def test_session_setup_is_an_auth_error_only_for_http_401(monkeypatch, status, error_type):
     class FakeClient:
         async def __aenter__(self):
@@ -219,3 +219,51 @@ async def test_session_setup_is_an_auth_error_only_for_http_401(monkeypatch, sta
         await mcp_client.fetch_mcp_session("https://mcp.example/mcp", "token")
 
     assert type(raised.value) is error_type
+
+
+def test_headers_leave_out_authorization_without_a_token():
+    assert "Authorization" not in mcp_client._headers(None)
+    assert "Authorization" not in mcp_client._headers("")
+    assert mcp_client._headers("abc")["Authorization"] == "Bearer abc"
+
+
+def _fake_client(status, headers=None):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return httpx.Response(status, text="gone", headers=headers or {}, request=httpx.Request("POST", "https://mcp.example/mcp"))
+
+    return FakeClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 404, 410, 502])
+async def test_http_errors_carry_their_status_code(monkeypatch, status):
+    monkeypatch.setattr(mcp_client.httpx, "AsyncClient", lambda **kwargs: _fake_client(status)())
+
+    with pytest.raises(mcp_client.McpHttpError) as raised:
+        await mcp_client.call_mcp_tool("https://mcp.example/mcp", None, "v", "sid", "get_profile", {})
+    assert raised.value.status_code == status
+    assert isinstance(raised.value, RuntimeError)
+
+    with pytest.raises(mcp_client.McpHttpError) as raised:
+        await mcp_client.fetch_mcp_session("https://mcp.example/mcp", None, service="Zerodha")
+    assert raised.value.status_code == status
+
+
+@pytest.mark.asyncio
+async def test_indmoney_401_hint_is_unchanged_and_service_name_is_configurable(monkeypatch):
+    monkeypatch.setattr(mcp_client.httpx, "AsyncClient", lambda **kwargs: _fake_client(401)())
+
+    with pytest.raises(mcp_client.McpAuthError) as raised:
+        await mcp_client.fetch_mcp_session("https://mcp.example/mcp", "token")
+    assert "INDmoney rejected the saved OAuth token; reconnect the account." in str(raised.value)
+
+    with pytest.raises(mcp_client.McpAuthError) as raised:
+        await mcp_client.fetch_mcp_session("https://mcp.example/mcp", None, service="Zerodha")
+    assert "Zerodha requires OAuth sign-in" in str(raised.value)

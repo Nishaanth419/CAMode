@@ -28,13 +28,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=42" />
+  <link rel="stylesheet" href="/css/app.css?v=43" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=2" defer></script>
-  <script src="/js/finance.js?v=6" defer></script>
+  <script src="/js/finance.js?v=7" defer></script>
   <script src="/js/trace.js?v=9" defer></script>
-  <script src="/js/app.js?v=34" defer></script>
-  <script src="/js/pages.js?v=21" defer></script>
+  <script src="/js/app.js?v=35" defer></script>
+  <script src="/js/pages.js?v=23" defer></script>
   <script src="/js/rail.js?v=6" defer></script>
 </head>
 <body>
@@ -76,6 +76,10 @@
         <a class="nav-item" href="#/investments" data-route="investments">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 15 3-3 2 2 3-4"/><path d="M14 10h2v2"/></svg>
           <span>Investments</span>
+        </a>
+        <a class="nav-item" href="#/holdings" data-route="holdings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M4 10h16M9 10v9"/></svg>
+          <span>Holdings</span>
         </a>
         <a class="nav-item" href="#/planning" data-route="planning">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="3.5" width="15" height="17" rx="3"/><path d="M8 8h8M8 12h2.5M13.5 12H16M8 16h2.5M13.5 16H16"/></svg>
@@ -319,6 +323,16 @@
             <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
           </header>
           <div id="portfolio-body"></div>
+        </section>
+
+        <section class="page" data-page="holdings" aria-labelledby="holdings-title">
+          <header class="page-head">
+            <div>
+              <h1 id="holdings-title" class="page-title">Holdings</h1>
+              <p class="page-sub" id="holdings-asof"></p>
+            </div>
+          </header>
+          <div id="holdings-body"></div>
         </section>
 
         <section class="page" data-page="investments" aria-labelledby="investments-title">
@@ -658,6 +672,12 @@
         <span><strong>INDmoney</strong><small id="connection-status">Not connected</small></span>
         <button id="auth-button" class="gate-secondary" type="button">Connect</button>
       </div>
+      <section id="brokers-section" class="brokers-section" aria-labelledby="brokers-title" hidden>
+        <h3 id="brokers-title" class="brokers-title">Brokers</h3>
+        <p class="dialog-sub">Read-only. You log in on the broker's own site; CA Mode never sees your password.</p>
+        <div id="brokers-list"></div>
+        <p id="brokers-status" class="dialog-status" role="status"></p>
+      </section>
       <div class="connection-row">
         <span><strong id="plan-name">Free plan</strong><small id="plan-usage"></small></span>
         <a class="gate-secondary plan-link" href="/pricing" target="_blank" rel="noopener">See plans</a>

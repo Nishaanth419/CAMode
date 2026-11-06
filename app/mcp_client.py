@@ -36,13 +36,14 @@ def filter_portfolio_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [by_name[name] for name in IMPORTANT_PORTFOLIO_TOOL_NAMES if name in by_name]
 
 
-def _headers(token: str, protocol: str = DEFAULT_PROTOCOL_VERSION, session_id: str | None = None) -> dict[str, str]:
+def _headers(token: str | None, protocol: str = DEFAULT_PROTOCOL_VERSION, session_id: str | None = None) -> dict[str, str]:
     result = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
-        "Authorization": f"Bearer {token}",
         "MCP-Protocol-Version": protocol,
     }
+    if token:
+        result["Authorization"] = f"Bearer {token}"
     if session_id:
         result["mcp-session-id"] = session_id
     return result
@@ -88,7 +89,15 @@ class McpAuthError(RuntimeError):
     """
 
 
-async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
+class McpHttpError(RuntimeError):
+    """A non-2xx response other than 401; ``status_code`` lets callers tell a gone session from a server fault."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def fetch_mcp_session(url: str, token: str | None, *, service: str = "INDmoney") -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=45) as client:
         init = await _post(client, url, _headers(token), {
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -100,14 +109,17 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
         })
         if not init.is_success:
             challenge = init.headers.get("www-authenticate")
-            hint = " INDmoney rejected the saved OAuth token; reconnect the account." if init.status_code == 401 else ""
+            hint = f" {service} rejected the saved OAuth token; reconnect the account." if init.status_code == 401 else ""
             if init.status_code == 401 and not token:
-                hint = " INDmoney requires OAuth sign-in; this request has no user token."
-            raise (McpAuthError if init.status_code == 401 else RuntimeError)(
+                hint = f" {service} requires OAuth sign-in; this request has no user token."
+            message = (
                 f"MCP initialize failed: {init.status_code} {init.reason_phrase}.{hint}"
                 f"{f' WWW-Authenticate: {challenge}.' if challenge else ''}"
                 f"{f' Response: {init.text[:500]}' if init.text else ''}"
             )
+            if init.status_code == 401:
+                raise McpAuthError(message)
+            raise McpHttpError(message, init.status_code)
         result = _rpc_body(init)
         if not result or "result" not in result:
             raise RuntimeError(f"MCP initialize returned unexpected result: {result!r}")
@@ -119,9 +131,10 @@ async def fetch_mcp_session(url: str, token: str) -> dict[str, Any]:
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
         })
         if not tools_response.is_success:
-            raise (McpAuthError if tools_response.status_code == 401 else RuntimeError)(
-                f"MCP tools/list failed: {tools_response.status_code} {tools_response.text[:500]}"
-            )
+            message = f"MCP tools/list failed: {tools_response.status_code} {tools_response.text[:500]}"
+            if tools_response.status_code == 401:
+                raise McpAuthError(message)
+            raise McpHttpError(message, tools_response.status_code)
         tools_result = _rpc_body(tools_response)
         tools = (tools_result or {}).get("result", {}).get("tools")
         if not isinstance(tools, list):
@@ -145,7 +158,7 @@ def _reads_as_auth_failure(text: str) -> bool:
 
 async def call_mcp_tool(
     url: str,
-    token: str,
+    token: str | None,
     protocol: str,
     session_id: str | None,
     name: str,
@@ -162,9 +175,10 @@ async def call_mcp_tool(
     else:
         response = await _post(client, url, headers, payload)
     if not response.is_success:
-        raise (McpAuthError if response.status_code == 401 else RuntimeError)(
-            f'MCP tools/call failed for "{name}": {response.status_code} {response.text[:500]}'
-        )
+        message = f'MCP tools/call failed for "{name}": {response.status_code} {response.text[:500]}'
+        if response.status_code == 401:
+            raise McpAuthError(message)
+        raise McpHttpError(message, response.status_code)
     rpc = _rpc_body(response) or {}
     if rpc.get("error"):
         message = f'MCP tools/call error for "{name}": {rpc["error"].get("message", rpc["error"])}'

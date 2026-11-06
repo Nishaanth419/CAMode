@@ -27,7 +27,8 @@ from .db import connect_db
 # 2026-10-22.1: each profile's plan (Free, Individual or Team) is stored with it.
 # 2026-10-22.2: the operator's admin page (admin.py) and what it shows.
 # 2026-10-26.1: answer records keep the figures CA Mode calculated for an analysis (analysis_tools).
-POLICY_VERSION: Final = "2026-10-26.1"
+# 2026-11-06.1: broker connections (Zerodha) and the holdings fetched from them.
+POLICY_VERSION: Final = "2026-11-06.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -141,6 +142,21 @@ NOTICE: Final = (
         ),
     },
     {
+        "title": "Broker connections",
+        "body": (
+            "If you connect Zerodha, CA Mode talks to Zerodha's hosted Kite server. You log in on Zerodha's own "
+            "site, so CA Mode never sees your Zerodha password or access token; it keeps only the encrypted "
+            "session id Kite gives it, and Zerodha ends that login within a day. If you save history, the latest "
+            "holdings fetched from Zerodha are also kept, sealed under your PIN key, so they can still be shown "
+            "after the login ends; holdings are not saved in private mode. Only Zerodha's read-only tools are used: "
+            "CA Mode cannot place or change an order. When Portfolio Analyzer reads Zerodha data for an answer, it "
+            "goes to the AI model you select, like INDmoney data. Disconnecting removes the session and the saved "
+            "holdings, clearing your history or switching to private mode removes the saved holdings, and deleting "
+            "your profile removes everything. Answer records keep their usual short, capped previews of what was "
+            "read until the chat or history is cleared; disconnecting a broker does not delete them."
+        ),
+    },
+    {
         "title": "Your controls",
         "body": (
             "From your profile you can change these choices at any time, export your data, clear your saved history, "
@@ -204,6 +220,8 @@ def _delete_saved_history(connection: Any, user_id: str) -> None:
     connection.execute("DELETE FROM cas_statements WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
     connection.execute("DELETE FROM agent_runs WHERE user_id = ?", (user_id,))
+    # Broker connections stay (the login is not history); the holdings fetched through them go.
+    connection.execute("UPDATE broker_connections SET holdings = NULL, holdings_at = NULL WHERE user_id = ?", (user_id,))
     connection.execute("UPDATE users SET snapshot_attempted_at = 0 WHERE id = ?", (user_id,))
 
 
@@ -246,6 +264,7 @@ def export_data(
     investigations: list[dict[str, Any]] | None = None,
     saved_context: dict[str, list[dict[str, Any]]] | None = None,
     agent_runs: list[dict[str, Any]] | None = None,
+    brokers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return everything stored for the profile except its PIN hash, keys, INDmoney tokens and account id.
 
@@ -273,6 +292,7 @@ def export_data(
         "casStatements": cas_statements or [],
         "investigations": investigations or [],
         "agentRuns": agent_runs or [],
+        "brokers": brokers or [],
         "goals": (saved_context or {}).get("goals", []),
         "decisions": (saved_context or {}).get("decisions", []),
         "goalAllocations": (saved_context or {}).get("goalAllocations", []),
