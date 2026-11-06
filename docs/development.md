@@ -18,6 +18,8 @@ python -m scripts.eval_tasks     # task contracts on scripted replies, offline
 python -m scripts.eval_workflows # the general agent on scripted replies and fake INDmoney data, offline
 ```
 
+Two read-only scripts print a live layout with every value removed, for writing a holdings reader from a real response: `python -m scripts.inspect_indmoney_shapes` (add `--codes` for `investment_code` patterns and ISIN-shaped codes per asset type and broker label) and `python -m scripts.inspect_broker_shapes [--profile ID] [--broker ID]` (a connected broker's holdings and status tools; an ended login prints "reconnect <broker> first"). `tests/test_inspect_scripts.py` checks that neither prints a fixture value.
+
 The tests use mocked AI, INDmoney, and OAuth responses and a temporary database, so they make no live calls. `tests/conftest.py` sets `REQUEST_ROUTER=keywords`, `AGENT_GRAPH_ENABLED=false` (scripted cases follow the previous loop; `test_agent_graph.py` turns it on), a generated `APP_MASTER_KEY`, a lower scrypt cost, and a temporary `BACKUP_DIR`. Never point tests at `.data/codemode.sqlite3`, which holds live data.
 
 ```mermaid
@@ -58,6 +60,9 @@ app/
   public_pages.py  App shell with absolute Open Graph URLs, privacy policy, pricing, admin and 404 pages, robots.txt, sitemap.xml
   chats.py         Chat storage: SQLite rows, or process memory in private mode
   snapshots.py     Daily snapshots, history, scheduler, and the agent's snapshot tools
+  brokers.py       The broker registry, read-only rule, connections, holdings, combined view, the Free plan's broker limit and the agent's broker tools
+  broker_oauth.py  MCP OAuth 2.1 for Upstox, Dhan and Groww (discovery, registration, PKCE, refresh)
+  broker_history.py  Daily broker holdings history and the combined net-worth value
   router.py        The request classifier (one model call) and its prompt
   agent.py         Provider selection, request filtering, the previous tool-calling loop and the answer checks
   agent_graph.py   The general Portfolio Analyzer agent on LangGraph: think, act, check, finish
@@ -90,7 +95,7 @@ app/
 frontend/
   index.html       App shell, profile picker, and profile dialog
   js/demo.js       Demo mode (?demo): answers the API in the browser from demo/data.json (loaded first)
-  js/finance.js    Pure money, goal, tax and insight helpers
+  js/finance.js    Pure money, goal, tax, insight and broker helpers (tabs, reconnect reminders, logos, the connect limit)
   js/app.js        Chat UI, profiles, snapshot card, Markdown and Plotly charts
   js/pages.js      Hash routes: Home, Activity, Portfolio, Investments, Planning, Markets, Goals, Reports
   js/trace.js      Answer trace timeline, investigation evidence card, Activity list helpers
@@ -98,6 +103,7 @@ frontend/
   css/app.css      Styles and light/dark themes
   sw.js            Service worker (offline app shell)
   demo/data.json   The demo's recorded API responses, built by scripts/build_demo_data.py
+  brokers/         Each broker's own site icon (64x64 PNG), shown beside its name
 docs/              This documentation
 evals/             Versioned eval datasets (JSONL)
 scripts/           Evals, backups, plans, page views, icon build, INDmoney shape inspection

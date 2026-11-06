@@ -391,3 +391,34 @@ test('brokerStatusLabel never shows an expired login as current', () => {
   assert.match(finance.brokerStatusLabel('unavailable', null, now), /Could not reach/);
   assert.equal(finance.brokerStatusLabel('disconnected', null, now), 'Not connected');
 });
+
+test('monogram, logo markup and the connect limit', () => {
+  const f = require('../../frontend/js/finance.js');
+  assert.equal(f.monogram('upstox'), 'U');
+  assert.equal(f.monogram('  '), '?');
+  const html = f.brokerLogoHtml('zerodha', 'Zerodha', '/brokers/zerodha.png');
+  assert.match(html, /src="\/brokers\/zerodha\.png"/);
+  assert.match(html, /alt=""/);
+  assert.match(html, /loading="lazy"/);
+  assert.match(html, /data-monogram="Z"/);
+  assert.match(f.brokerLogoHtml('x"><b>', 'X', 'https://evil.example/a.png'), /src="\/brokers\/x%22%3E%3Cb%3E\.png"/);
+  assert.match(f.monogramHtml('<'), /&lt;/);
+  assert.equal(f.brokerConnectBlocked({ status: 'disconnected' }, 2, 2), true);
+  assert.equal(f.brokerConnectBlocked({ status: 'disconnected' }, 2, 1), false);
+  assert.equal(f.brokerConnectBlocked({ status: 'connected' }, 2, 3), false);
+  assert.equal(f.brokerConnectBlocked({ status: 'disconnected' }, null, 9), false);
+  assert.match(f.LIMIT_NOTE, /up to 2 brokers/);
+});
+
+test('INDmoney comes first in the tabs and is reconnected through its own route', () => {
+  const f = require('../../frontend/js/finance.js');
+  const tabs = f.holdingsTabs({ sources: [{ id: 'zerodha', name: 'Zerodha', available: true }, { id: 'indmoney', name: 'INDmoney', available: true, logo: '/brokers/indmoney.png' }], combined: { available: true } });
+  assert.deepEqual(tabs.map((tab) => tab.id), ['all', 'indmoney', 'zerodha']);
+  assert.equal(tabs[0].logo, null);
+  assert.equal(tabs[2].logo, '/brokers/zerodha.png');
+  assert.deepEqual(f.brokerReconnectAction({ broker: 'indmoney', auth: 'indmoney_oauth' }), { type: 'link', href: '/auth/indmoney/connect' });
+  const now = 10 * 24 * 3600 * 1000;
+  const stale = { broker: 'indmoney', auth: 'indmoney_oauth', status: 'connected', holdingsAt: 1 };
+  assert.deepEqual(f.brokersNeedingAttention([stale, { broker: 'indmoney', auth: 'indmoney_oauth', status: 'needs_login' }], now).map((b) => b.status), ['needs_login']);
+  assert.deepEqual(f.brokersToCheck([stale, { broker: 'zerodha', status: 'connected' }], {}, now), ['zerodha']);
+});

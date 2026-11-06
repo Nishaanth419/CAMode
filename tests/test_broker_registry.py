@@ -502,8 +502,9 @@ def test_login_tool_brokers_list_tools_without_a_connection(client, signed_in, m
 
 def test_every_registry_broker_is_listed_with_its_auth(client, signed_in):
     listed = client.get("/api/brokers").json()["brokers"]
+    assert listed[0]["broker"] == "indmoney"  # INDmoney is listed first, as one broker among the rest
     assert {item["broker"]: item["auth"] for item in listed} == {
-        "zerodha": "mcp_login_tool", "fyers": "mcp_login_tool", "kotak": "mcp_login_qr",
+        "indmoney": "indmoney_oauth", "zerodha": "mcp_login_tool", "fyers": "mcp_login_tool", "kotak": "mcp_login_qr",
         "upstox": "oauth", "dhan": "oauth", "groww": "oauth"}
 
 
@@ -695,3 +696,175 @@ def test_token_exchange_sends_pkce_and_refuses_errors():
 
     assert run(go())["access_token"] == "a"
     assert seen[0]["code_verifier"] == ["ver"] and seen[0]["client_secret"] == ["s"] and "client_secret" not in seen[1]
+
+
+# ── Logos, INDmoney as a broker, the Free plan's 2-broker limit ────────────────
+
+import pathlib
+
+from app import plans
+
+ALL_SEVEN = ["indmoney", "zerodha", "fyers", "kotak", "upstox", "dhan", "groww"]
+LIMIT_BODY_KEYS = {"error", "brokerLimitReached", "limit", "connected", "pricingUrl"}
+
+
+def connect_indmoney_tokens(user_id, **values):
+    users.save_indmoney(user_id, {"accessToken": "tok", "refreshToken": "ref", "expiresAt": users.now_ms() + 3_600_000, **values})
+
+
+def seed(user_id, *ids):
+    for broker_id in ids:
+        if broker_id == "indmoney":
+            connect_indmoney_tokens(user_id)
+        else:
+            brokers.save_connection(user_id, broker_id, session_id="s", protocol="2025-03-26", status="connected")
+
+
+def test_every_broker_has_a_logo_file_and_the_registry_carries_its_path(client, signed_in):
+    root = pathlib.Path(__file__).resolve().parent.parent / "frontend" / "brokers"
+    assert all((root / f"{broker_id}.png").is_file() for broker_id in ALL_SEVEN)
+    listed = client.get("/api/brokers").json()["brokers"]
+    assert [item["broker"] for item in listed][0] == "indmoney" and {item["broker"] for item in listed} == set(ALL_SEVEN)
+    assert all(item["logo"] == f"/brokers/{item['broker']}.png" for item in listed)
+    assert client.get("/brokers/zerodha.png").status_code == 200
+
+
+def test_indmoney_is_listed_first_with_its_own_status(client, signed_in):
+    first = client.get("/api/brokers").json()["brokers"][0]
+    assert first["broker"] == "indmoney" and first["name"] == "INDmoney" and first["auth"] == "indmoney_oauth"
+    assert first["status"] == "disconnected" and first["needsAttention"] is False and first["holdingsAt"] is None
+    connect_indmoney_tokens(signed_in["id"])
+    assert client.get("/api/brokers").json()["brokers"][0]["status"] == "connected"
+    connect_indmoney_tokens(signed_in["id"], refreshToken=None, expiresAt=1)
+    ended = client.get("/api/brokers").json()["brokers"][0]
+    assert ended["status"] == "needs_login" and ended["needsAttention"] is True
+    assert "tok" not in client.get("/api/brokers").text
+
+
+def test_indmoney_tools_route_marks_the_allowlist(client, signed_in, monkeypatch):
+    assert client.get("/api/brokers/indmoney/tools").json() == {
+        "broker": "indmoney", "name": "INDmoney", "tools": [], "needsConnection": True}
+    connect_indmoney_tokens(signed_in["id"])
+    read = sorted(mcp_client.IMPORTANT_PORTFOLIO_TOOL_NAMES)[0]
+    listing = [{"name": read, "description": "reads"}, {"name": "place_order", "description": "writes"},
+               {"name": "mystery_tool", "description": "?"}]
+
+    async def fetch(url, token, **kwargs):
+        assert token == "tok"
+        return {"tools": listing}
+
+    monkeypatch.setattr(brokers.mcp_client, "fetch_mcp_session", fetch)
+    brokers._tools_cache.clear()
+    tools = {item["name"]: item["access"] for item in client.get("/api/brokers/indmoney/tools").json()["tools"]}
+    assert tools == {read: "read", "place_order": "write", "mystery_tool": "not_enabled"}
+
+
+def test_free_plan_refuses_a_third_broker_on_every_connect_route(client, signed_in, oauth):
+    seed(signed_in["id"], "indmoney", "zerodha")
+    listed = client.get("/api/brokers").json()
+    assert listed["limit"] == 2 and listed["connected"] == 2
+    for broker_id, body in (("fyers", None), ("upstox", None), ("kotak", {"ucc": "AB123"})):
+        response = client.post(f"/api/brokers/{broker_id}/connect", json=body)
+        assert response.status_code == 403, broker_id
+        assert set(response.json()) == LIMIT_BODY_KEYS and response.json()["limit"] == 2
+        assert response.json()["connected"] == 2 and response.json()["pricingUrl"] == "/pricing"
+    assert client.get("/auth/brokers/upstox/connect", follow_redirects=False).headers["location"].endswith("/?brokerError=limit")
+    assert client.get("/auth/indmoney/connect", follow_redirects=False).status_code == 302  # already connected: allowed
+
+
+def test_indmoney_as_the_third_broker_is_refused(client, signed_in):
+    seed(signed_in["id"], "zerodha", "fyers")
+    response = client.get("/auth/indmoney/connect", follow_redirects=False)
+    assert response.headers["location"].endswith("/?brokerError=limit")
+
+
+def test_reconnecting_an_existing_broker_is_never_blocked(client, signed_in, oauth):
+    seed(signed_in["id"], "upstox", "zerodha")
+    assert client.get("/auth/brokers/upstox/connect", follow_redirects=False).headers["location"].startswith("https://auth.example")
+    assert client.post("/api/brokers/zerodha/connect").status_code != 403
+    assert brokers.connected_count(signed_in["id"]) == 2
+
+
+def test_the_oauth_callback_rechecks_the_limit_so_a_race_ends_with_two(client, signed_in, oauth):
+    query = parse_qs(urlsplit(start_oauth(client, "dhan").headers["location"]).query)
+    seed(signed_in["id"], "indmoney", "zerodha")  # two other logins finished while this one was open
+    response = client.get("/auth/brokers/dhan/callback", params={"code": "c", "state": query["state"][0]}, follow_redirects=False)
+    assert response.headers["location"].endswith("/?brokerError=limit")
+    assert brokers.get_connection(signed_in["id"], "dhan") is None and brokers.connected_count(signed_in["id"]) == 2
+
+
+def test_the_indmoney_callback_rechecks_the_limit(client, signed_in, monkeypatch):
+    seed(signed_in["id"], "zerodha", "fyers")
+    sid = client.cookies.get(main.SESSION_COOKIE)
+    main.save_session(sid, {"state": "s1", "verifier": "v", "clientId": "c", "clientSecret": "x", "redirectUri": "http://t/cb"})
+
+    class Reply:
+        is_success = True
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"access_token": "a", "refresh_token": "r", "expires_in": 3600}
+
+    class Fake:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, data):
+            return Reply()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: Fake())
+    response = client.get("/auth/indmoney/callback?code=c&state=s1", follow_redirects=False)
+    assert response.headers["location"].endswith("/?brokerError=limit")
+    assert users.get_indmoney(signed_in["id"]) == {}
+
+
+def test_a_pending_login_counts_and_save_connection_is_atomic(signed_in):
+    user_id = signed_in["id"]
+    brokers.save_connection(user_id, "zerodha", session_id="s", protocol="p", status="pending")
+    seed(user_id, "indmoney")
+    assert brokers.connected_count(user_id) == 2
+    with pytest.raises(brokers.BrokerLimitReached):
+        brokers.save_connection(user_id, "groww", session_id="s", protocol="p", status="pending")
+    brokers.save_connection(user_id, "zerodha", session_id="s2", protocol="p", status="connected")  # reconnect
+
+
+@pytest.mark.parametrize("plan", ["individual", "team"])
+def test_paid_plans_connect_any_number(client, signed_in, plan):
+    plans.set_plan(signed_in["id"], plan)
+    seed(signed_in["id"], *ALL_SEVEN)
+    assert brokers.connected_count(signed_in["id"]) == 7
+    body = client.get("/api/brokers").json()
+    assert body["limit"] is None and body["connected"] == 7
+    assert client.post("/api/brokers/zerodha/connect").status_code != 403
+
+
+def test_a_profile_over_the_limit_keeps_its_connections_but_adds_none(client, signed_in):
+    plans.set_plan(signed_in["id"], "individual")
+    seed(signed_in["id"], "indmoney", "zerodha", "fyers")
+    plans.set_plan(signed_in["id"], "free")
+    assert brokers.connected_count(signed_in["id"]) == 3
+    assert client.post("/api/brokers/upstox/connect").status_code == 403
+    assert client.post("/api/brokers/fyers/connect").status_code != 403
+    brokers.delete_connection(signed_in["id"], "fyers")
+    brokers.delete_connection(signed_in["id"], "zerodha")
+    assert brokers.can_connect(users.get_user(signed_in["id"]), "dhan")
+
+
+def test_usage_reports_the_broker_limit_and_count(client, signed_in):
+    assert client.get("/api/session").json()["usage"]["brokerLimit"] == 2
+    seed(signed_in["id"], "indmoney")
+    usage = client.get("/api/session").json()["usage"]
+    assert usage["brokersConnected"] == 1 and usage["brokerLimit"] == 2
+    plans.set_plan(signed_in["id"], "individual")
+    assert client.get("/api/session").json()["usage"]["brokerLimit"] is None
+
+
+def test_plan_data_and_pricing_page_state_the_limit(client):
+    assert plans.PLANS["free"].max_brokers == 2
+    assert plans.PLANS["individual"].max_brokers is None and plans.PLANS["team"].max_brokers is None
+    page = client.get("/pricing").text
+    assert "Connect up to 2 brokers" in page and "Connect any number of brokers" in page

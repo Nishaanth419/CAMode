@@ -7,6 +7,7 @@
 - [Portfolio change investigations](#portfolio-change-investigations)
 - [Activity and the answer trace](#activity-and-the-answer-trace)
 - [Goals and saved context](#goals-and-saved-context)
+- [Brokers](#brokers)
 - [Holdings at other brokers (CAS)](#holdings-at-other-brokers-cas)
 - [Demo without signing in](#demo-without-signing-in)
 
@@ -112,9 +113,31 @@ flowchart LR
 
 Before each answer, `app/context.py` picks what bears on the question with fixed keyword rules (no model, no vector store). It picks goals named in the question, or all goals when it is about goals or saving for something, plus related decisions and, for risk or allocation questions, your profile details. The earlier turns count only when the question reads as a follow-up. The selection goes into the prompt as "Confirmed by the user" and "Calculated in code" sections, and the answer trace shows a **Use your saved goals and details** step naming each item. CA Mode never saves anything the assistant infers from a chat. Goals saved by earlier versions (inside the profile, with a target year) move to the new store the next time you enter your PIN, with the target date set to 31 December of that year.
 
+## Brokers
+
+Connect any broker you use from **Your profile, Brokers**: INDmoney, Zerodha, FYERS, Kotak Neo, Upstox, Dhan and Groww. INDmoney is one broker in the list like the others, listed first; each row shows the broker's logo on the left, its status, and **Connect**, **Reconnect** or **Disconnect**. Access is read-only, you log in on the broker's own site, and CA Mode never sees your password.
+
+| Broker | How you sign in |
+| --- | --- |
+| INDmoney | Its OAuth page (the same connection as before; daily net-worth snapshots, fund figures and live prices come from it) |
+| Zerodha, FYERS | The broker's MCP server returns a login link; you open it and log in, and CA Mode waits for the status to read connected |
+| Kotak Neo | Enter your 5-character client code (UCC); you get a link and a QR code to scan in the Neo app, then select "I've scanned the QR" |
+| Upstox, Dhan, Groww | The broker's own OAuth 2.1 sign-in page (CA Mode registers itself with the broker, uses PKCE and keeps the tokens encrypted) |
+
+- **Free plan: up to 2 brokers.** Individual and Team connect any number. A profile that already has more than 2 (for example one an admin moved to Free) keeps them working and cannot add another until it is under the limit; the profile dialog shows "Brokers: 1 of 2" and disables **Connect** at the limit with a link to the plans.
+- **Tool panel.** Select a broker's name to see the tools its MCP server exposes. Each is marked **Read-only** (CA Mode may call it), **Not enabled** (not reviewed, never called) or **Blocked** (it changes the account: orders, watchlists, alerts). Order-changing tools are never called, whatever the model asks for.
+- **Holdings page.** `#/holdings` has a tab for each connected source, INDmoney first, and an **All** tab with one combined total. A broker's own rows replace INDmoney's rows for that broker (matched by INDmoney's broker label), and INDmoney rows with no real label are matched to the broker's by ISIN, so nothing is counted twice. INDmoney rows labelled with a broker that its own data does not contain are left out and counted in a note. **Refresh from** the broker's tab asks the broker for fresh holdings; without a live login you see the last saved copy marked stale.
+- **Reconnect reminder.** A banner on Home and Holdings (and a line in the right rail) appears when a login has ended, or a connected broker's holdings are over a day old. Each connected broker's status is checked at most once an hour on load. INDmoney appears here when its saved token has expired and cannot be refreshed. Dismiss it for the day with the cross.
+- **Broker history.** Each successful live fetch is also kept as that day's holdings for the broker, and the scheduler refreshes connected brokers once a day while their login lasts. The portfolio trend then uses a **combined value**: INDmoney's net worth, minus the INDmoney rows a broker's own data replaced, plus each broker's total. A missing figure never counts as zero: a day without one gives no combined value. Logins end daily (Zerodha around 6 AM) or after 12 hours, so some days have no fresh broker data; the last copy within 3 days is carried and marked.
+- **Portfolio Analyzer** can read connected brokers with `get_broker_holdings` and call a broker's read-only tools with `call_broker_tool`; it works with only a broker connected and no INDmoney token.
+
+The logos in `frontend/brokers/` are each broker's own site icon, used only to identify the broker in the list. If one fails to load, a letter badge shows instead.
+
+Not done yet: reading each broker's holdings from its real response layout. Zerodha is normalised from Kite's documented layout; FYERS, Kotak, Upstox, Dhan and Groww go through a generic reader that refuses to show a figure it cannot find rather than show zero. `python -m scripts.inspect_broker_shapes` prints a connected broker's layout with every value removed, so the readers can be written from real responses.
+
 ## Holdings at other brokers (CAS)
 
-INDmoney may not see every broker you use. A **Consolidated Account Statement (CAS)** does: NSDL and CDSL email one each month listing every demat account at every broker, plus mutual fund folios and NPS. CAMS and KFintech statements (mutual funds only) are also accepted.
+INDmoney may not see every broker you use, and you may not want to connect them all. A **Consolidated Account Statement (CAS)** does: NSDL and CDSL email one each month listing every demat account at every broker, plus mutual fund folios and NPS. CAMS and KFintech statements (mutual funds only) are also accepted.
 
 1. Find the latest CAS email from NSDL or CDSL (or request one on their websites) and save the PDF.
 2. In the **Other brokers** card on the right (shown on windows at least 1280px wide), choose the PDF, enter its password (usually your PAN in capital letters), and select **Upload statement**.

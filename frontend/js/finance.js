@@ -452,10 +452,13 @@
   function holdingsTabs(payload) {
     const sources = Array.isArray(payload?.sources) ? payload.sources : [];
     if (!sources.length) return [];
-    const tabs = sources.map((source) => ({
+    // INDmoney first, like the Brokers list; the others keep the order they came in.
+    const ordered = [...sources.filter((source) => source.id === 'indmoney'), ...sources.filter((source) => source.id !== 'indmoney')];
+    const tabs = ordered.map((source) => ({
       id: source.id, label: source.name || source.id, available: Boolean(source.available), stale: Boolean(source.stale), asOf: source.asOf ?? null,
+      logo: source.logo || `/brokers/${source.id}.png`,
     }));
-    return payload.combined?.available ? [{ id: 'all', label: 'All', available: true, stale: false, asOf: null }, ...tabs] : tabs;
+    return payload.combined?.available ? [{ id: 'all', label: 'All', available: true, stale: false, asOf: null, logo: null }, ...tabs] : tabs;
   }
 
   // The status line for a broker in the profile dialog.
@@ -470,6 +473,34 @@
     }
   }
 
+  /* ── Broker logos and the plan's broker limit ─────────────────────── */
+  const LIMIT_NOTE = 'Free plan: up to 2 brokers. Disconnect one or see plans.';
+
+  function monogram(name) {
+    const letter = String(name || '').trim().charAt(0);
+    return letter ? letter.toUpperCase() : '?';
+  }
+
+  function escapeText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+  }
+
+  // The broker's own site icon on the left of its name. `alt` is empty because the name is written next to it; if the
+  // image fails to load, app.js swaps it for the monogram tile (data-monogram) so no broken-image icon shows.
+  function brokerLogoHtml(id, name, logo) {
+    const src = typeof logo === 'string' && logo.startsWith('/brokers/') ? logo : `/brokers/${encodeURIComponent(id)}.png`;
+    return `<img class="broker-logo" src="${escapeText(src)}" alt="" width="24" height="24" loading="lazy" data-monogram="${escapeText(monogram(name))}">`;
+  }
+
+  function monogramHtml(letter) {
+    return `<span class="broker-logo broker-monogram" aria-hidden="true">${escapeText(letter)}</span>`;
+  }
+
+  // Whether Connect is disabled for a broker: not connected yet, a plan with a limit, and the limit already used.
+  function brokerConnectBlocked(broker, limit, connected) {
+    return broker?.status === 'disconnected' && Number.isFinite(limit) && Number.isFinite(connected) && connected >= limit;
+  }
+
   /* ── Reconnect reminders ──────────────────────────────────────────── */
   const BROKER_STALE_MS = 24 * 60 * 60 * 1000;
   const BROKER_CHECK_MS = 60 * 60 * 1000;
@@ -478,7 +509,7 @@
   // page left open keeps counting). Brokers that are not connected, or are still waiting for a login, are skipped.
   function brokersNeedingAttention(brokers, now = Date.now()) {
     return (brokers || []).filter((broker) => broker.status === 'needs_login'
-      || (broker.status === 'connected' && Number.isFinite(broker.holdingsAt) && now - broker.holdingsAt > BROKER_STALE_MS));
+      || (broker.status === 'connected' && broker.auth !== 'indmoney_oauth' && Number.isFinite(broker.holdingsAt) && now - broker.holdingsAt > BROKER_STALE_MS));
   }
 
   function brokerBannerText(broker, now = Date.now()) {
@@ -490,6 +521,7 @@
   // What the Reconnect button does: a login-tool broker asks the server for a link, an OAuth broker goes to its
   // connect route, Kotak (QR) opens the Brokers section of the profile dialog.
   function brokerReconnectAction(broker) {
+    if (broker.auth === 'indmoney_oauth') return { type: 'link', href: '/auth/indmoney/connect' };
     if (broker.auth === 'oauth') return { type: 'link', href: `/auth/brokers/${encodeURIComponent(broker.broker)}/connect` };
     if (broker.auth === 'mcp_login_qr') return { type: 'dialog' };
     return { type: 'login-link' };
@@ -517,7 +549,7 @@
 
   // Brokers whose status is worth asking the broker for: connected, and not asked in the last hour.
   function brokersToCheck(brokers, checkedAt, now = Date.now()) {
-    return (brokers || []).filter((broker) => broker.status === 'connected'
+    return (brokers || []).filter((broker) => broker.status === 'connected' && broker.auth !== 'indmoney_oauth'
       && !(Number.isFinite((checkedAt || {})[broker.broker]) && now - checkedAt[broker.broker] < BROKER_CHECK_MS))
       .map((broker) => broker.broker);
   }
@@ -526,7 +558,7 @@
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
-    spanLabel, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel,
+    spanLabel, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };

@@ -16,6 +16,7 @@ flowchart LR
         B2["Better clarifying questions"]
         B3["Model availability when the Mac sleeps"]
         B4["Checkout for paid plans"]
+        B5["Per-broker holdings readers"]
     end
     subgraph Later["Later"]
         C1["Several account scopes"]
@@ -45,7 +46,9 @@ flowchart LR
 | **Several account scopes** | Investigations check "same account scope", but the app has one scope today; the eval injects the second | `app/investigation_math.py`, `snapshots.py` |
 | **Fund overlap between holdings** | Reported as not assessable: it needs each scheme's holdings, which are not fetched | `app/fund_data.py`, `goal_suitability.py` |
 | **Sourced explanations of a change** | Investigations report what changed, never why. Linking a mover to dated news from `get_indian_stocks_details` (quoted, with its source) would answer "why" without guessing | `app/investigations.py` |
-| **CAS and INDmoney side by side** | CAS figures are never added to INDmoney's because they overlap; matching holdings by ISIN would allow one de-duplicated view | `app/cas.py`, `portfolio_math.py` |
+| **Per-broker holdings readers from real layouts** | Only Zerodha is read from a known layout; FYERS, Kotak, Upstox, Dhan and Groww use a generic reader that refuses what it cannot find. Record each with `scripts.inspect_broker_shapes`, then write its normaliser and fixture | `app/brokers.py`, `scripts/inspect_broker_shapes.py`, `tests/fixtures/` |
+| **CAS in the combined view** | Brokers and INDmoney are now de-duplicated by label and ISIN, but CAS figures are still never added because they overlap; the same ISIN match would allow it | `app/cas.py`, `app/brokers.py` `combined()` |
+| **Broker holdings beyond the daily login** | Logins end daily or after 12 hours, so days without a live login carry the last copy (up to 3 days) and the combined value is missing after that; a broker offering refresh tokens would keep the history unbroken | `app/broker_history.py` |
 
 ## Hosting and operations
 
@@ -61,6 +64,7 @@ flowchart LR
 
 | Enhancement | Why | Where |
 | --- | --- | --- |
+| **Per-profile broker limit override** | The Free limit is one number in `Plan.max_brokers`; a plan with a different count is a one-line change, but there is no per-profile override yet | `app/plans.py`, `app/brokers.py` |
 | **Checkout for paid plans** | There is no checkout; an operator sets plans with `scripts.plans` or the admin page | `app/plans.py`, `/pricing` |
 | **Turn off profile claims automatically** | `ALLOW_PROFILE_CLAIMS` must be switched off by hand once everyone has claimed their profile | `app/accounts.py` |
 | **More sign-in providers** | Only Google is supported in `AUTH_MODE=google` | `app/accounts.py` |

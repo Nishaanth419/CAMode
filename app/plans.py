@@ -43,6 +43,9 @@ class Plan:
     daily_cap: bool
     # Credits each month (credits.py); None: not counted.
     monthly_credits: int | None = None
+    # Brokers (INDmoney included) that can be connected at once; None: no limit. A profile already above it
+    # keeps what it has and cannot add more.
+    max_brokers: int | None = None
 
 
 PLANS: Final[dict[PlanId, Plan]] = {
@@ -55,10 +58,12 @@ PLANS: Final[dict[PlanId, Plan]] = {
         features=(
             "{free_questions} questions a day, starting again at midnight {zone}",
             "Finance Agent and Portfolio Analyzer",
-            "INDmoney connection, goals and daily portfolio snapshots",
+            "Connect up to 2 brokers",
+            "Goals and daily portfolio snapshots",
             "History encrypted with your PIN",
         ),
         daily_cap=True,
+        max_brokers=2,
     ),
     "individual": Plan(
         id="individual",
@@ -71,6 +76,7 @@ PLANS: Final[dict[PlanId, Plan]] = {
             "Top up any time once your monthly credits are used",
             "Answers from a privately hosted LLM, not a shared cloud AI service",
             "Easy access: sign in and ask, no AI keys to buy or manage",
+            "Connect any number of brokers",
             "Everything in Free",
             "Full refund within 30 days of paying",
         ),
@@ -87,6 +93,7 @@ PLANS: Final[dict[PlanId, Plan]] = {
             "Its own server, database and model, run by us",
             "Each member signs in with their own Google account",
             "Unlimited questions for every member",
+            "Connect any number of brokers",
             "Daily backups and updates",
         ),
         daily_cap=False,
@@ -122,18 +129,21 @@ def usage(user: dict[str, Any], *, now: datetime) -> dict[str, Any]:
 
     ``limit`` is None when no daily cap applies; ``credits`` is None on a plan without monthly credits.
     """
+    from . import brokers  # imported here: brokers needs this module for the plan limits
+
     plan = plan_of(user)
     limit = limits.daily_question_limit() if plan.daily_cap else None
+    held = {"brokerLimit": plan.max_brokers, "brokersConnected": brokers.connected_count(user["id"])}
     if limit is None:
         balance = credits.balance(user["id"], plan.monthly_credits, now=now) if plan.monthly_credits else None
         return {
             "plan": plan.id, "planName": plan.name, "limit": None, "used": None, "remaining": None, "resetsAt": None,
-            "credits": balance.as_json() if balance else None,
+            "credits": balance.as_json() if balance else None, **held,
         }
     used = min(limits.questions_used(user["id"], now=now), limit)
     return {
         "plan": plan.id, "planName": plan.name, "limit": limit, "used": used, "remaining": limit - used,
-        "resetsAt": limits.next_reset(now).isoformat(timespec="minutes"), "credits": None,
+        "resetsAt": limits.next_reset(now).isoformat(timespec="minutes"), "credits": None, **held,
     }
 
 

@@ -2012,3 +2012,11 @@ a.tool-tile { text-decoration: none; }
 .broker-banner-actions { display: inline-flex; align-items: center; gap: 8px; }
 .broker-banner-dismiss { border: 0; background: none; color: inherit; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
 .rail-note.is-warn { color: #b7791f; opacity: 1; }
+
+.broker-head { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.broker-logo { width: 24px; height: 24px; flex: none; border-radius: 6px; object-fit: cover; }
+.broker-head, .connection-row .broker-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gate-secondary:disabled { opacity: .45; cursor: not-allowed; }
+.broker-monogram { display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2, #e6e8ec); color: var(--muted, #555); font-size: 13px; font-weight: 600; }
+.holdings-tab { display: inline-flex; align-items: center; gap: 6px; }
+.holdings-tab .broker-logo { width: 18px; height: 18px; border-radius: 4px; }

@@ -1127,6 +1127,8 @@ async def connect_indmoney(request: Request):
         # The connection belongs to a profile that has accepted the privacy notice;
         # the app shows the profile picker or the notice.
         return RedirectResponse(request_origin(request) + "/", status_code=302, headers={"Cache-Control": "no-store"})
+    if not brokers.can_connect({"id": user_id}, brokers.INDMONEY_ID):
+        return broker_error_redirect(request, "limit")
     redirect_uri = f"{request_origin(request)}/auth/indmoney/callback"
     state, verifier = random_token(), random_token()
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
@@ -1183,11 +1185,15 @@ async def finish_indmoney_login(request: Request, background_tasks: BackgroundTa
         token = None
     if not isinstance(token, dict) or not token.get("access_token"):
         return PlainTextResponse("INDmoney sign-in did not return an access token. Please connect again.", status_code=502)
-    users.save_indmoney(user_id, {
-        "clientId": stored["clientId"], "clientSecret": stored["clientSecret"],
-        "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),
-        "expiresAt": users.now_ms() + int(token.get("expires_in", 3600)) * 1000,
-    })
+    try:
+        brokers.save_indmoney_connection(user_id, {
+            "clientId": stored["clientId"], "clientSecret": stored["clientSecret"],
+            "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),
+            "expiresAt": users.now_ms() + int(token.get("expires_in", 3600)) * 1000,
+        })
+    except brokers.BrokerLimitReached:
+        save_session(sid, {})
+        return broker_error_redirect(request, "limit")
     save_session(sid, {})
     user = users.get_user(user_id)
     if user and snapshots.snapshots_allowed(user):
@@ -1224,6 +1230,8 @@ async def connect_broker_oauth(broker_id: str, request: Request):
     user = current_user(request)
     if not user or history_gate(user, needs_consent=True):
         return RedirectResponse(request_origin(request) + "/", status_code=302, headers={"Cache-Control": "no-store"})
+    if not brokers.can_connect(user, broker.id):
+        return broker_error_redirect(request, "limit")
     redirect_uri = f"{request_origin(request)}/auth/brokers/{broker.id}/callback"
     state = random_token()
     verifier, challenge = broker_oauth.pkce()
@@ -1279,10 +1287,13 @@ async def finish_broker_oauth(broker_id: str, request: Request):
         expires_in = int(token.get("expires_in") or 3600)
     except (TypeError, ValueError):
         expires_in = 3600
-    brokers.save_oauth(user["id"], broker.id, {
-        "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),
-        "expiresAt": users.now_ms() + expires_in * 1000, "client": pending["client"], "tokenEndpoint": pending["tokenEndpoint"],
-    })
+    try:
+        brokers.save_oauth(user["id"], broker.id, {
+            "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),
+            "expiresAt": users.now_ms() + expires_in * 1000, "client": pending["client"], "tokenEndpoint": pending["tokenEndpoint"],
+        })
+    except brokers.BrokerLimitReached:
+        return broker_error_redirect(request, "limit")
     return RedirectResponse(f"{request_origin(request)}/#/holdings/{broker.id}", status_code=302, headers={"Cache-Control": "no-store"})
 
 
@@ -1297,7 +1308,12 @@ async def list_brokers(request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
-    return {"brokers": brokers.brokers_overview(user["id"])}
+    return {"brokers": brokers.broker_list(user["id"]), "limit": brokers.broker_limit(user["id"]),
+            "connected": brokers.connected_count(user["id"])}
+
+
+def broker_limit_response(user: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(brokers.limit_error(user["id"]), status_code=403)
 
 
 @app.post("/api/brokers/{broker_id}/connect")
@@ -1309,6 +1325,8 @@ async def connect_broker(broker_id: str, request: Request):
     broker = brokers.get_broker(broker_id)
     if broker is None:
         return unknown_broker()
+    if not brokers.can_connect(user, broker.id):
+        return broker_limit_response(user)
     if broker.auth == "oauth":
         return {"broker": broker.id, "name": broker.name, "status": "disconnected", "auth": broker.auth,
                 "authorizeUrl": f"/auth/brokers/{broker.id}/connect"}
@@ -1325,6 +1343,8 @@ async def connect_broker(broker_id: str, request: Request):
         return blocked
     try:
         started = await brokers.start_login(user["id"], broker, ucc=ucc)
+    except brokers.BrokerLimitReached:
+        return broker_limit_response(user)
     except brokers.BrokerError as exc:
         return JSONResponse({"error": str(exc)}, status_code=502)
     except Exception as exc:
@@ -1365,12 +1385,29 @@ async def broker_status(broker_id: str, request: Request):
     return await brokers.check_status(user["id"], broker)
 
 
+async def indmoney_tool_list(user: dict[str, Any], request: Request) -> Any:
+    """INDmoney's MCP tools in the brokers' shape; ``read`` only for the read-only allowlist."""
+    if blocked := rate_limited(request, "broker", user["id"]):
+        return blocked
+    name = {"broker": brokers.INDMONEY_ID, "name": "INDmoney"}
+    token = await users.user_access_token(user["id"])
+    if not token:
+        return {**name, "tools": [], "needsConnection": True}
+    try:
+        return {**name, "tools": await brokers.indmoney_tools(user["id"], token)}
+    except Exception as exc:
+        logger.warning("broker_tools_failed", extra={"broker": brokers.INDMONEY_ID, "error": type(exc).__name__})
+        return JSONResponse({"error": "Could not read INDmoney's tool list right now. Try again in a moment."}, status_code=502)
+
+
 @app.get("/api/brokers/{broker_id}/tools")
 async def broker_tools_list(broker_id: str, request: Request):
     """The tools the broker's MCP server exposes, and which of them CA Mode may call (read-only)."""
     user = current_user(request)
     if not user:
         return profile_required()
+    if broker_id == brokers.INDMONEY_ID:
+        return await indmoney_tool_list(user, request)
     broker = brokers.get_broker(broker_id)
     if broker is None:
         return unknown_broker()
