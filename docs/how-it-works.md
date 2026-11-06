@@ -262,3 +262,29 @@ flowchart TD
 ```
 
 Because it checks the wall clock (macOS monotonic time pauses during sleep), it catches up after the app starts or the laptop wakes. Partial results are kept. Snapshots are SQLite rows, not vector-database chunks: net worth and holdings are exact numbers that need latest-value, date-range and sorting queries, which similarity search cannot answer reliably.
+
+## Brokers
+
+```mermaid
+flowchart TD
+    UI["Profile dialog: Brokers list<br/>INDmoney first, then six brokers"] --> Limit{"New broker and Free plan<br/>already at 2?"}
+    Limit -->|"yes"| Refuse["403 brokerLimitReached<br/>(redirects: /?brokerError=limit)"]
+    Limit -->|"no"| How{"auth"}
+    How -->|"indmoney_oauth"| IND["main.py OAuth<br/>users.indmoney tokens"]
+    How -->|"mcp_login_tool / mcp_login_qr"| Login["Broker's login tool<br/>link (and QR) on its own host"]
+    How -->|"oauth"| OAuth["broker_oauth.py<br/>discover, register, PKCE, tokens"]
+    Login --> Conn[("broker_connections<br/>session encrypted")]
+    OAuth --> Conn
+    Conn --> Fetch["brokers.fetch_holdings()<br/>read-only tools, normalised rows"]
+    Fetch --> Seal[("sealed holdings copy<br/>+ broker_snapshots, one per day")]
+    Seal --> Combined["combined(): dedupe by label, then ISIN"]
+    IND --> Snap[("portfolio_snapshots")] --> Combined
+```
+
+`app/brokers.py` holds the registry (one `Broker` entry and a normaliser per broker, `<ID>_MCP_URL` overrides each server) and the read-only rule: `read_tools` is an explicit allowlist that can never overlap `WRITE_TOOLS`, and an OAuth broker's tools are read only when its live `tools/list` marks them `readOnlyHint` or names them `get_`, `search_`, `list_` or `fetch_` with no write word. A login link is accepted only when it is https on the broker's own hosts. INDmoney is not in that registry, because it keeps its own backend (OAuth in `main.py`, tokens in `users.indmoney`, daily snapshots, fund data); `brokers.broker_list()` puts it first in `GET /api/brokers` with the same fields (`status`, `logo`, `holdingsAt`, `needsAttention`). Its status is worked out from the stored token with no call to INDmoney: `needs_login` when the token has expired and there is no refresh token.
+
+**Limit.** `plans.Plan.max_brokers` is 2 on Free and `None` elsewhere. `brokers.connected_count()` counts INDmoney if connected plus every stored connection of a registry broker in any status (a pending login counts, so it cannot be used to get around the limit). `can_connect()` is true for a broker the profile already has (reconnecting is never blocked), when the plan has no limit, or when the count is under it. Every entry point checks first (`POST /api/brokers/{id}/connect`, `GET /auth/brokers/{id}/connect`, `GET /auth/indmoney/connect`), and the writes check again inside a `BEGIN IMMEDIATE` transaction (`save_connection()`, `save_indmoney_connection()`), so two logins finishing together cannot end with three.
+
+**Combining.** `combined()` makes INDmoney's latest snapshot and each broker's holdings sources, then one deduplicated total (`brokers.split_indmoney_rows()`): a connected broker's own rows replace INDmoney rows whose broker label contains one of its `indmoney_labels`, and INDmoney rows with an empty or generic label are replaced when their ISIN (an ISIN-shaped `investment_code`) equals a row of that broker with the same asset type. Never by name, never another named broker's row. `broker_history.combine_day()` does the same arithmetic per day in `Decimal` for the trend (`combinedInr`).
+
+`python -m scripts.inspect_indmoney_shapes --codes` counts `investment_code` patterns and ISIN-shaped codes per asset type and broker label, and `python -m scripts.inspect_broker_shapes [--profile ID] [--broker ID]` prints a connected broker's holdings and status layout; neither prints names, codes, amounts, tokens or session ids.

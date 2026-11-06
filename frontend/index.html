@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#070a08" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="description" content="Ask finance questions and analyse your INDmoney portfolio with an assistant that runs on your own computer." />
+  <meta name="description" content="Ask finance questions and analyse your portfolio from any broker you connect, with an assistant that runs on your own computer." />
   <!-- The sign-in screen lists this computer's profiles, so keep the app out of search results. -->
   <meta name="robots" content="noindex" />
   <title>CA Mode · Finance Assistant</title>
@@ -14,7 +14,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="CA Mode" />
   <meta property="og:title" content="CA Mode · Your Financial Co-Pilot" />
-  <meta property="og:description" content="Finance answers and INDmoney portfolio analysis, running on your own computer." />
+  <meta property="og:description" content="Finance answers and portfolio analysis across your brokers, running on your own computer." />
   <meta property="og:url" content="{{origin}}/" />
   <meta property="og:image" content="{{origin}}/og-image.jpg" />
   <meta property="og:image:width" content="1200" />
@@ -28,13 +28,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=46" />
+  <link rel="stylesheet" href="/css/app.css?v=48" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8" defer></script>
-  <script src="/js/demo.js?v=2" defer></script>
-  <script src="/js/finance.js?v=8" defer></script>
+  <script src="/js/demo.js?v=3" defer></script>
+  <script src="/js/finance.js?v=9" defer></script>
   <script src="/js/trace.js?v=9" defer></script>
-  <script src="/js/app.js?v=39" defer></script>
-  <script src="/js/pages.js?v=25" defer></script>
+  <script src="/js/app.js?v=40" defer></script>
+  <script src="/js/pages.js?v=27" defer></script>
   <script src="/js/rail.js?v=7" defer></script>
 </head>
 <body>
@@ -206,7 +206,7 @@
       <div id="input-area">
         <div class="agent-switch" role="group" aria-label="Choose an agent">
           <button class="agent-option" type="button" data-agent="finance" aria-pressed="false" title="General finance questions">Finance Agent</button>
-          <button class="agent-option" type="button" data-agent="portfolio" aria-pressed="false" title="Questions about your INDmoney holdings">Portfolio Analyzer</button>
+          <button class="agent-option" type="button" data-agent="portfolio" aria-pressed="false" title="Questions about the holdings at your connected brokers">Portfolio Analyzer</button>
         </div>
         <div id="follow-ups" class="follow-ups" aria-label="Follow-up suggestions" hidden>
           <button class="chip" type="button" data-prompt="Can you explain that in more detail?">Show more detail</button>
@@ -562,7 +562,7 @@
         </svg>
       </span>
       <h1 id="gate-title" class="gate-title">Who's using CA Mode?</h1>
-      <p id="gate-sub" class="gate-sub">Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.</p>
+      <p id="gate-sub" class="gate-sub">Each person gets their own chats, broker connections, and daily portfolio snapshots.</p>
 
       <p id="gate-account" class="gate-account" hidden></p>
 
@@ -670,18 +670,15 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
         </button>
       </header>
-      <div class="connection-row">
-        <span><strong>INDmoney</strong><small id="connection-status">Not connected</small></span>
-        <button id="auth-button" class="gate-secondary" type="button">Connect</button>
-      </div>
       <section id="brokers-section" class="brokers-section" aria-labelledby="brokers-title" hidden>
         <h3 id="brokers-title" class="brokers-title">Brokers</h3>
-        <p class="dialog-sub">Read-only. You log in on the broker's own site; CA Mode never sees your password.</p>
+        <p class="dialog-sub">Connect any broker you use. Read-only. You log in on the broker's own site; CA Mode never sees your password.</p>
+        <p id="brokers-limit" class="dialog-sub" hidden></p>
         <div id="brokers-list"></div>
         <p id="brokers-status" class="dialog-status" role="status"></p>
       </section>
       <div class="connection-row">
-        <span><strong id="plan-name">Free plan</strong><small id="plan-usage"></small></span>
+        <span><strong id="plan-name">Free plan</strong><small id="plan-usage"></small><small id="plan-brokers"></small></span>
         <a class="gate-secondary plan-link" href="/pricing" target="_blank" rel="noopener">See plans</a>
       </div>
       <p class="dialog-sub">Optional. Portfolio Analyzer uses this to relate its analysis to your goals. It is not personalised investment advice.</p>
@@ -738,7 +735,7 @@
       </details>
       <details class="danger-zone">
         <summary>Delete this profile</summary>
-        <p>Deletes this profile's chats, snapshots, and INDmoney connection from CA Mode.</p>
+        <p>Deletes this profile's chats, snapshots, and broker connections from CA Mode.</p>
         <label class="field"><span>Confirm with your PIN</span><input id="delete-pin" type="password" autocomplete="current-password" /></label>
         <button id="delete-profile" class="danger-button" type="button">Delete profile</button>
       </details>

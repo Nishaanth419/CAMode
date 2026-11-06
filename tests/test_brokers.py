@@ -158,7 +158,7 @@ def test_connect_returns_the_validated_link_and_stores_pending(client, signed_in
     assert body["status"] == "pending" and body["loginUrl"].startswith("https://mcp.kite.trade/authorize")
     assert body["expiresInSeconds"] == 300
     assert brokers.get_connection(signed_in["id"], "zerodha")["status"] == "pending"
-    assert client.get("/api/brokers").json()["brokers"][0]["status"] == "pending"
+    assert client.get("/api/brokers").json()["brokers"][1]["status"] == "pending"
 
 
 @pytest.mark.parametrize("text", ["http://mcp.kite.trade/authorize", "https://evil.example/x", "nothing to see"])
@@ -236,7 +236,7 @@ def test_another_profile_never_sees_a_connection(client, signed_in, fake_kite):
     connect(client)
     client.post("/api/session/logout")
     sign_up(client, name="Ben", pin="1357")
-    assert client.get("/api/brokers").json()["brokers"][0]["status"] == "disconnected"
+    assert client.get("/api/brokers").json()["brokers"][1]["status"] == "disconnected"
     assert client.get("/api/brokers/zerodha/status").json()["status"] == "disconnected"
 
 
@@ -394,19 +394,19 @@ def test_needs_attention_for_an_ended_login_or_day_old_holdings():
 
 
 def test_broker_list_carries_checked_at_and_needs_attention(client, signed_in, fake_kite, monkeypatch):
-    first = client.get("/api/brokers").json()["brokers"][0]
+    first = client.get("/api/brokers").json()["brokers"][1]
     assert first["needsAttention"] is False and first["checkedAt"] is None
     logged_in(client, fake_kite)
     client.get("/api/brokers/zerodha/holdings?refresh=1")
-    item = client.get("/api/brokers").json()["brokers"][0]
+    item = client.get("/api/brokers").json()["brokers"][1]
     assert item["status"] == "connected" and item["checkedAt"] and item["needsAttention"] is False
     real = users.now_ms()
     monkeypatch.setattr(users, "now_ms", lambda: real + brokers.HOLDINGS_STALE_MS + 1000)
-    assert client.get("/api/brokers").json()["brokers"][0]["needsAttention"] is True
+    assert client.get("/api/brokers").json()["brokers"][1]["needsAttention"] is True
     monkeypatch.setattr(users, "now_ms", lambda: real)
     fake_kite.logged_in = False
     client.get("/api/brokers/zerodha/status")
-    ended = client.get("/api/brokers").json()["brokers"][0]
+    ended = client.get("/api/brokers").json()["brokers"][1]
     assert ended["status"] == "needs_login" and ended["needsAttention"] is True
 
 

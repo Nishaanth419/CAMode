@@ -115,7 +115,7 @@ How it works:
 
 | Plan | Price | Questions | What it is |
 | --- | --- | --- | --- |
-| Free | ₹0 | `DAILY_QUESTION_LIMIT` a day (10 on the hosted copy) | The shared copy, every feature |
+| Free | ₹0 | `DAILY_QUESTION_LIMIT` a day (10 on the hosted copy); up to 2 connected brokers | The shared copy, every feature |
 | Individual | ₹599 a month, excluding GST | 3,000 credits a month (1 credit = 1,000 tokens), top up any time once they are used | The shared copy; answers come from a privately hosted language model. Full refund within 30 days of paying, one per user |
 | Team or organisation | Contact us | Unlimited | A dedicated hosted copy (own server, database and model, Google sign-in per member, backups); hosting costs more, so it is priced by size |
 
@@ -141,6 +141,8 @@ flowchart LR
     Run -->|"no answer"| Free["nothing charged"]
     Plan -->|"Team"| Run
 ```
+
+**Brokers.** The Free plan connects up to 2 brokers (INDmoney counts as one); Individual and Team connect any number (`Plan.max_brokers`). The limit applies only to new connections: a profile above it (for example moved to Free by an admin) keeps what it has until it disconnects some. `usage` also has `brokerLimit` (`null` for no limit) and `brokersConnected`, and the profile dialog shows "Brokers: 1 of 2". See [Brokers](how-it-works.md#brokers).
 
 (In the hosted setup: `docker compose exec app python -m scripts.plans …`, or the admin page.) The plan is the `users.plan` column; paid plans skip the daily question cap, while request rate limits still apply to everyone. `/api/session` returns `usage` (`plan`, `planName`, `limit`, `used`, `remaining`, `resetsAt`; `limit` is `null` when nothing caps the profile), a counted answer carries `X-Questions-Remaining`, and the daily-limit `429` adds `pricingUrl`. The profile dialog shows "10 of 10 questions left today", the Individual plan's credits, or "Unlimited questions" (Team). A copy on one computer with no `DAILY_QUESTION_LIMIT` stays unlimited on every plan. To change a price, edit `PLANS` and `PRICES_UPDATED` (the sitemap date). To change the free allowance, edit `FREE_DAILY_QUESTIONS` in `app/limits.py`: the cap never goes above it, so a lower allowance reaches the hosted copy with the next image. To raise it there, also raise `DAILY_QUESTION_LIMIT` in `app.env` (or set it high and let the code decide).
 

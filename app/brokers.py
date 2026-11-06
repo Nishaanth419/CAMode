@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import broker_history, broker_oauth, cas, mcp_client, portfolio_math, snapshots, tool_results, users
+from . import broker_history, broker_oauth, cas, mcp_client, plans, portfolio_math, snapshots, tool_results, users
 from .agent import LocalTool
 from .db import connect_db
 from .sealing import LockedError, ProfileKeys
@@ -56,8 +56,26 @@ class BrokerError(Exception):
     """A broker problem whose message is safe to show the user."""
 
 
+class BrokerLimitReached(BrokerError):
+    """The profile's plan connects fewer brokers than it already has (``limit`` of them, ``connected`` now)."""
+
+    def __init__(self, limit: int, connected: int) -> None:
+        super().__init__(LIMIT_MESSAGE)
+        self.limit = limit
+        self.connected = connected
+
+
 class BrokerDataError(BrokerError):
     """A broker returned holdings in a layout this app does not recognise."""
+
+
+INDMONEY_ID: Final = "indmoney"
+LIMIT_MESSAGE: Final = "The Free plan connects up to 2 brokers. Disconnect one or see the plans."
+
+
+def logo_path(broker_id: str) -> str:
+    """Where the app serves a broker's icon (``frontend/brokers/<id>.png``)."""
+    return f"/brokers/{broker_id}.png"
 
 
 def _number(value: Any) -> Decimal | None:
@@ -344,13 +362,16 @@ def save_connection(
 ) -> None:
     """Start (or restart) a connection; a new session drops the holdings of the old one's login.
 
-    ``extra`` joins the encrypted session (Kotak's login session, a broker's OAuth tokens).
+    ``extra`` joins the encrypted session (Kotak's login session, a broker's OAuth tokens). Raises
+    ``BrokerLimitReached`` when this would be a new connection beyond the plan's broker limit.
     """
     now = users.now_ms()
     values: dict[str, Any] = {"sessionId": session_id, "protocolVersion": protocol} if session_id else {}
     values.update(extra or {})
     session = users._encode_secret(values)
     with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")  # the count and the insert cannot interleave with another connect
+        check_limit(connection, user_id, broker_id)
         connection.execute(
             "INSERT INTO broker_connections(user_id, broker, session, status, session_started_at, checked_at) "
             "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, broker) DO UPDATE SET "
@@ -386,6 +407,71 @@ def delete_connection(user_id: str, broker_id: str) -> bool:
         ).rowcount > 0
 
 
+# ── Broker limit (Free: 2) ─────────────────────────────────────────────────────
+
+def _indmoney_connected(connection: Any, user_id: str) -> bool:
+    row = connection.execute("SELECT indmoney FROM users WHERE id = ?", (user_id,)).fetchone()
+    return bool(row) and users.has_indmoney_tokens(users._decode_secret(row["indmoney"]))
+
+
+def _limit_state(connection: Any, user_id: str, broker_id: str) -> tuple[int | None, int, bool]:
+    """``(limit, connected, already)``: the plan's limit, brokers counted now (INDmoney, then every stored
+    connection of a registry broker in any status, so a pending login cannot slip past), and whether
+    ``broker_id`` is one of them."""
+    row = connection.execute("SELECT plan FROM users WHERE id = ?", (user_id,)).fetchone()
+    limit = plans.PLANS.get((row["plan"] if row else None) or plans.DEFAULT_PLAN, plans.PLANS[plans.DEFAULT_PLAN]).max_brokers
+    held = {r["broker"] for r in connection.execute(
+        "SELECT broker FROM broker_connections WHERE user_id = ?", (user_id,)).fetchall() if r["broker"] in BROKERS}
+    if _indmoney_connected(connection, user_id):
+        held.add(INDMONEY_ID)
+    return limit, len(held), broker_id in held
+
+
+def check_limit(connection: Any, user_id: str, broker_id: str) -> None:
+    """Raise ``BrokerLimitReached`` for a new connection at the limit; reconnecting an existing one is allowed.
+
+    A profile above the limit (moved to Free) keeps what it has and cannot add more.
+    """
+    limit, count, already = _limit_state(connection, user_id, broker_id)
+    if limit is not None and not already and count >= limit:
+        raise BrokerLimitReached(limit, count)
+
+
+def connected_count(user_id: str) -> int:
+    with connect_db() as connection:
+        return _limit_state(connection, user_id, "")[1]
+
+
+def broker_limit(user_id: str) -> int | None:
+    with connect_db() as connection:
+        return _limit_state(connection, user_id, "")[0]
+
+
+def can_connect(user: dict[str, Any], broker_id: str) -> bool:
+    """True when the profile already has this broker, its plan has no limit, or it is under the limit."""
+    with connect_db() as connection:
+        limit, count, already = _limit_state(connection, user["id"], broker_id)
+    return already or limit is None or count < limit
+
+
+def limit_error(user_id: str) -> dict[str, Any]:
+    """The JSON body of a refused connection."""
+    with connect_db() as connection:
+        limit, count, _ = _limit_state(connection, user_id, "")
+    return {"error": LIMIT_MESSAGE, "brokerLimitReached": True, "limit": limit, "connected": count, "pricingUrl": "/pricing"}
+
+
+def save_indmoney_connection(user_id: str, values: dict[str, Any]) -> None:
+    """Store INDmoney's tokens unless that would be a new connection beyond the plan's limit (atomic)."""
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        check_limit(connection, user_id, INDMONEY_ID)
+        connection.execute(
+            "UPDATE users SET indmoney = ?, updated_at = ? WHERE id = ?",
+            (users._encode_secret(values), users.now_ms(), user_id),
+        )
+
+
 # ── Connect, status ────────────────────────────────────────────────────────────
 
 def _view(broker: Broker, status: str, connection: dict[str, Any] | None) -> dict[str, Any]:
@@ -393,7 +479,7 @@ def _view(broker: Broker, status: str, connection: dict[str, Any] | None) -> dic
     holdings_at = connection["holdingsAt"] if connection else None
     return {
         "broker": broker.id, "name": broker.name, "status": status, "auth": broker.auth,
-        "sessionStartedAt": started,
+        "logo": logo_path(broker.id), "sessionStartedAt": started,
         "expiresAt": None if started is None or broker.auth == "oauth" else started + SESSION_MAX_MS,
         "holdingsAt": holdings_at,
         "checkedAt": connection["checkedAt"] if connection else None,
@@ -413,6 +499,62 @@ def brokers_overview(user_id: str) -> list[dict[str, Any]]:
     stored = {found["broker"]: found for found in connections(user_id)}
     return [_view(broker, stored[broker.id]["status"] if broker.id in stored else "disconnected", stored.get(broker.id))
             for broker in BROKERS.values()]
+
+
+def indmoney_item(user_id: str) -> dict[str, Any]:
+    """INDmoney as a broker in the list: its stored token and latest snapshot, no call to INDmoney.
+
+    ``needs_login`` when a token is stored but has expired with no way to refresh it (the rejection INDmoney
+    would give); otherwise ``connected``.
+    """
+    with connect_db() as connection:
+        stored = users._decode_secret((connection.execute(
+            "SELECT indmoney FROM users WHERE id = ?", (user_id,)).fetchone() or {"indmoney": "{}"})["indmoney"])
+        row = connection.execute(
+            "SELECT captured_at FROM portfolio_snapshots WHERE user_id = ? ORDER BY as_of_date DESC LIMIT 1", (user_id,),
+        ).fetchone()
+    status = "disconnected"
+    if users.has_indmoney_tokens(stored):
+        usable = bool(stored.get("refreshToken")) or int(stored.get("expiresAt") or 0) > users.now_ms()
+        status = "connected" if usable else "needs_login"
+    return {
+        "broker": INDMONEY_ID, "name": "INDmoney", "status": status, "auth": "indmoney_oauth",
+        "logo": logo_path(INDMONEY_ID), "holdingsAt": row["captured_at"] if row and status != "disconnected" else None,
+        "needsAttention": status == "needs_login", "checkedAt": None,
+    }
+
+
+def broker_list(user_id: str) -> list[dict[str, Any]]:
+    """What ``GET /api/brokers`` lists: INDmoney first, then each registry broker."""
+    return [indmoney_item(user_id), *brokers_overview(user_id)]
+
+
+def describe_indmoney_tools(tools: list[Any]) -> list[dict[str, Any]]:
+    """INDmoney's ``tools/list`` in the shape of ``describe_tools``: ``read`` only for the allowlist."""
+    described = []
+    for tool in tools:
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            continue
+        name = tool["name"]
+        text = " ".join(str(tool.get("description") or "").split())
+        if len(text) > MAX_TOOL_DESCRIPTION:
+            text = text[: MAX_TOOL_DESCRIPTION - 1].rstrip() + "…"
+        access = "read" if name in mcp_client.IMPORTANT_PORTFOLIO_TOOL_NAMES else ("write" if name in WRITE_TOOLS or is_write_name(name) else "not_enabled")
+        described.append({"name": name, "description": text, "access": access})
+    order = {"read": 0, "not_enabled": 1, "write": 2}
+    return sorted(described, key=lambda item: (order[item["access"]], item["name"]))
+
+
+async def indmoney_tools(user_id: str, token: str) -> list[dict[str, Any]]:
+    """INDmoney's whole tool list as ``describe_indmoney_tools`` shows it, cached an hour in memory."""
+    cached = _tools_cache.get((user_id, INDMONEY_ID))
+    now = datetime.now(timezone.utc).timestamp()
+    if cached and now - cached[0] < TOOLS_CACHE_SECONDS:
+        return cached[1]
+    session = await mcp_client.fetch_mcp_session(users.MCP_RESOURCE, token)
+    tools = describe_indmoney_tools(session.get("tools") or [])
+    _tools_cache[(user_id, INDMONEY_ID)] = (now, tools)
+    return tools
 
 
 UCC_RE: Final = re.compile(r"^[A-Za-z0-9]{5}$")
@@ -961,7 +1103,7 @@ def combined(
             continue
         rows = payload.get("_rows") or []
         broker_sources.append({
-            "id": broker.id, "name": broker.name, "kind": "broker", "status": payload.get("status"),
+            "id": broker.id, "name": broker.name, "logo": logo_path(broker.id), "kind": "broker", "status": payload.get("status"),
             "asOf": payload.get("asOf"), "stale": bool(payload.get("stale")), "available": bool(payload.get("available")),
             "figures": payload.get("figures"), "holdings": payload.get("holdings", []),
             **({"problem": payload["problem"]} if payload.get("problem") else {}),
@@ -977,7 +1119,7 @@ def combined(
         indmoney_rows = rows
         view = rows_view(rows) if rows else {"figures": None, "holdings": []}
         sources.append({
-            "id": "indmoney", "name": "INDmoney", "kind": "indmoney", "status": "connected", "asOf": snapshot["capturedAt"],
+            "id": "indmoney", "name": "INDmoney", "logo": logo_path(INDMONEY_ID), "kind": "indmoney", "status": "connected", "asOf": snapshot["capturedAt"],
             "stale": False, "available": True, **view, "movedTo": dict(deduplicated),
         })
     sources.extend(broker_sources)

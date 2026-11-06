@@ -19,6 +19,7 @@ It runs its AI model on your computer through [Ollama](https://ollama.com), so y
 - Chats you can return to, each tied to Finance Agent or Portfolio Analyzer, and an Activity page with every answer's recorded steps.
 - Read-only INDmoney access: net worth, allocation, holdings, SIPs, watchlists, stock and fund details, OHLC candles, option chains, and option Greeks. CA Mode cannot trade or move money.
 - Charts (bar, donut, line, candlestick) when the data supports them. Candlestick charts are drawn from INDmoney's OHLC data by the app; candles the model typed out are replaced.
+- Connect any broker, read-only: INDmoney, Zerodha, FYERS, Kotak Neo, Upstox, Dhan and Groww, each with its logo, a tool panel showing which tools CA Mode may call, a Holdings page with a tab per broker and a combined total that counts nothing twice, a reminder when a login ends, and a combined net-worth trend. The Free plan connects up to 2.
 - Holdings at other brokers from a CAS statement, parsed offline.
 - Light and dark themes, and an installable web app (PWA).
 

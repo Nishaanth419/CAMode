@@ -20,7 +20,6 @@ const messages   = document.getElementById('messages');
 const chatScroll = document.getElementById('chat-scroll');
 const userInput  = document.getElementById('user-input');
 const sendBtn    = document.getElementById('send-btn');
-const authButton = document.getElementById('auth-button');
 const themeToggle = document.getElementById('theme-toggle');
 const themeToggleIcon = document.getElementById('theme-toggle-icon');
 const agentNavItems = document.querySelectorAll('.agent-option[data-agent]');
@@ -64,7 +63,7 @@ const dataZone = document.getElementById('data-zone');
 const dataSummary = document.getElementById('data-summary');
 const dataStatus = document.getElementById('data-status');
 const settingsNotice = document.getElementById('settings-notice');
-const connectionStatus = document.getElementById('connection-status');
+const planBrokers = document.getElementById('plan-brokers');
 const planName = document.getElementById('plan-name');
 const planUsage = document.getElementById('plan-usage');
 const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal'];
@@ -111,7 +110,9 @@ let signInError = (() => {
   const query = params.toString();
   window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
   window.addEventListener('load', () => {
-    const message = `Could not connect ${broker.slice(0, 20)}. Open your profile and try Connect again.`;
+    const message = broker === 'limit'
+      ? 'The Free plan connects up to 2 brokers. Disconnect one, or see the plans at /pricing.'
+      : `Could not connect ${broker.slice(0, 20)}. Open your profile and try Connect again.`;
     setTimeout(() => (typeof toast === 'function' ? toast(message) : alert(message)), 1500);
   });
 })();
@@ -216,7 +217,7 @@ function setAgent(agent) {
   agentNavItems.forEach((item) => item.setAttribute('aria-pressed', String(item.dataset.agent === selectedAgent)));
   welcomeAgentName.textContent = agentName();
   welcomeDescription.textContent = isPortfolio
-    ? 'Ask about your INDmoney investments, holdings, allocations, and account activity.'
+    ? 'Ask about your holdings, allocations, and account activity at the brokers you connected.'
     : 'Ask basic finance questions and get clear explanations in plain language.';
   userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask anything about your finances…';
   localStorage.setItem('ca-mode-agent', selectedAgent);
@@ -253,17 +254,15 @@ function setBusy(busy) {
 }
 
 function renderAccount() {
-  authButton.textContent = isConnected ? 'Disconnect' : 'Connect';
-  authButton.title = isConnected ? 'Disconnect your INDmoney account' : 'Connect your INDmoney account for portfolio analysis';
-  connectionStatus.textContent = isConnected ? 'Connected. Portfolio Analyzer can read your holdings.' : 'Not connected';
   accountName.textContent = currentUser?.displayName || 'Guest';
   document.getElementById('switch-profile').textContent = authMode === 'google' ? 'Sign out' : 'Switch profile';
   accountAvatar.textContent = (currentUser?.displayName || '?').trim().charAt(0).toUpperCase();
   planName.textContent = `${usage?.planName || 'Free'} plan`;
   planUsage.textContent = usageText();
+  planBrokers.textContent = usage && usage.brokersConnected != null ? `Brokers: ${usage.brokersConnected} of ${usage.brokerLimit == null ? 'any number' : usage.brokerLimit}` : '';
   accountPlan.textContent = [
     usage?.planName,
-    isConnected ? 'INDmoney connected' : 'INDmoney not connected',
+    isConnected ? 'INDmoney connected' : '',
     storageMode === 'private' ? 'Private' : '',
   ].filter(Boolean).join(' · ');
   accountPlan.title = accountPlan.textContent;
@@ -509,8 +508,8 @@ function showGateError(message) {
 }
 
 const GATE_TEXT = {
-  default: ["Who's using CA Mode?", 'Each person gets their own chats, INDmoney connection, and daily portfolio snapshots.'],
-  google: ['Welcome to CA Mode', 'Sign in with your Google account. Your PIN then unlocks your own chats, INDmoney connection and portfolio history.'],
+  default: ["Who's using CA Mode?", 'Each person gets their own chats, broker connections, and daily portfolio snapshots.'],
+  google: ['Welcome to CA Mode', 'Sign in with your Google account. Your PIN then unlocks your own chats, broker connections and portfolio history.'],
   'account-create': ['Create your profile', 'Choose a name and a PIN. The PIN encrypts your saved history, and you enter it each time you sign in.'],
   claim: ['Claim your profile', 'Enter the name and PIN of the profile you used on the shared computer. From now on it signs in with this Google account.'],
   locked: ['Welcome back', 'Enter your PIN to unlock your saved chats and portfolio history.'],
@@ -1040,7 +1039,7 @@ document.getElementById('backup-now').addEventListener('click', async (event) =>
 });
 
 document.getElementById('clear-history').addEventListener('click', async () => {
-  if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and INDmoney connection are kept.')) return;
+  if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and broker connections are kept.')) return;
   const response = await fetch('/api/users/me/history', { method: 'DELETE' });
   if (!response.ok) {
     dataStatus.textContent = 'Could not clear your history.';
@@ -1074,22 +1073,19 @@ document.getElementById('delete-profile').addEventListener('click', async () => 
   await loadChats();
 });
 
-async function toggleConnection() {
-  if (!isConnected) {
-    window.location.assign('/auth/indmoney/connect');
-    return;
-  }
-  if (!window.confirm('Disconnect INDmoney? Saved portfolio snapshots for this profile will be deleted; your chats are kept.')) return;
-  authButton.disabled = true;
-  try {
-    await fetch('/auth/indmoney/disconnect', { method: 'POST' });
-    await loadChats();
-  } finally {
-    authButton.disabled = false;
-  }
+// Opens the profile dialog at its Brokers list, where every broker (INDmoney included) is connected.
+async function openBrokers() {
+  await openProfileDialog();
+  brokersSection.scrollIntoView?.({ block: 'start' });
 }
 
-authButton.addEventListener('click', toggleConnection);
+// INDmoney keeps its own sign-in and disconnect routes; the list treats it like any other broker.
+async function disconnectIndmoney() {
+  if (!window.confirm('Disconnect INDmoney? Saved portfolio snapshots for this profile will be deleted; your chats are kept.')) return false;
+  await fetch('/auth/indmoney/disconnect', { method: 'POST' });
+  await loadChats();
+  return true;
+}
 
 /* ── Brokers (profile dialog) ───────────────────────────────────────── */
 // A broker login happens on the broker's own site: the server returns its link, the user opens it, and we poll
@@ -1101,6 +1097,8 @@ const BROKER_POLL_MS = 3000;
 const BROKER_MAX_POLLS = 100;
 let brokerPollTimer = null;
 let lastBrokers = [];
+let brokerLimit = null;
+let brokersConnected = 0;
 const brokerLoginLinks = {};
 let pendingBrokers = [];
 
@@ -1114,6 +1112,12 @@ function brokerButtons(broker) {
   const link = brokerLoginLinks[broker.broker];
   const button = (action, label) => `<button class="gate-secondary" type="button" data-broker-action="${action}" data-broker="${id}">${label}</button>`;
   const oauthLink = (label) => `<a class="gate-secondary" href="/auth/brokers/${encodeURIComponent(broker.broker)}/connect">${label}</a>`;
+  if (broker.auth === 'indmoney_oauth') {
+    const link = (label) => `<a class="gate-secondary" href="/auth/indmoney/connect">${label}</a>`;
+    if (broker.status === 'connected') return button('disconnect', 'Disconnect');
+    if (broker.status === 'needs_login') return link('Reconnect') + button('disconnect', 'Disconnect');
+    return link('Connect');
+  }
   if (broker.auth === 'oauth') {
     if (broker.status === 'connected') return button('disconnect', 'Disconnect');
     if (broker.status === 'needs_login' || broker.status === 'unavailable') return oauthLink('Reconnect') + button('disconnect', 'Disconnect');
@@ -1155,7 +1159,7 @@ function renderBrokerTools(data) {
   if (data.needsConnection) return `<p class="dialog-sub">Connect ${escHtml(data.name)} to see the tools its server offers.</p>`;
   if (!tools.length) return `<p class="dialog-sub">${escHtml(data.name)}'s server lists no tools.</p>`;
   const usable = tools.filter((tool) => tool.access === 'read').length;
-  return `<p class="dialog-sub">${tools.length} tools on ${escHtml(data.name)}'s MCP server; CA Mode uses the ${usable} read-only ones.</p>
+  return `<p class="dialog-sub broker-head">${brokerLogoHtml(data.broker, data.name, null)}<span>${tools.length} tools on ${escHtml(data.name)}'s MCP server; CA Mode uses the ${usable} read-only ones.</span></p>
     <ul class="broker-tool-list">${tools.map((tool) => {
       const [label, why] = BROKER_TOOL_ACCESS[tool.access] || BROKER_TOOL_ACCESS.not_enabled;
       return `<li><span class="broker-tool-head"><code>${escHtml(tool.name)}</code><span class="pill broker-tool-${escHtml(tool.access)}" title="${escHtml(why)}">${label}</span></span>${tool.description ? `<small>${escHtml(tool.description)}</small>` : ''}</li>`;
@@ -1180,13 +1184,21 @@ async function loadBrokerTools(id) {
 
 function renderBrokers(brokers) {
   brokersSection.hidden = !brokers.length;
+  const blocked = (broker) => brokerConnectBlocked(broker, brokerLimit, brokersConnected);
   brokersList.innerHTML = brokers.map((broker) => {
     const open = brokerToolsOpen.has(broker.broker);
+    const actions = blocked(broker)
+      ? `<button class="gate-secondary" type="button" disabled title="${escHtml(LIMIT_NOTE)}">Connect</button>`
+      : brokerButtons(broker);
     return `<div class="broker-item"><div class="connection-row">
-      <span><button class="broker-name" type="button" data-broker-tools="${escHtml(broker.broker)}" aria-expanded="${open}" title="Show the tools ${escHtml(broker.name)}'s server exposes"><strong>${escHtml(broker.name)}</strong><span aria-hidden="true">${open ? '▾' : '▸'}</span></button><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span>
-      <span class="broker-actions">${brokerButtons(broker)}</span>
+      <span class="broker-head">${brokerLogoHtml(broker.broker, broker.name, broker.logo)}<span><button class="broker-name" type="button" data-broker-tools="${escHtml(broker.broker)}" aria-expanded="${open}" title="Show the tools ${escHtml(broker.name)}'s server exposes"><strong>${escHtml(broker.name)}</strong><span aria-hidden="true">${open ? '▾' : '▸'}</span></button><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span></span>
+      <span class="broker-actions">${actions}</span>
     </div>${open ? brokerToolsPanel(broker.broker) : ''}</div>`;
   }).join('');
+  const limitLine = document.getElementById('brokers-limit');
+  const atLimit = brokers.some(blocked);
+  limitLine.hidden = !atLimit;
+  limitLine.innerHTML = atLimit ? `${escHtml(LIMIT_NOTE.replace(' or see plans.', ' or '))}<a href="/pricing" target="_blank" rel="noopener">see plans</a>.` : '';
   pendingBrokers = brokers.filter((broker) => broker.status === 'pending' && broker.auth !== 'mcp_login_qr').map((broker) => broker.broker);
   if (pendingBrokers.length) pollBrokers(0);
 }
@@ -1198,7 +1210,10 @@ async function loadBrokers() {
       brokersSection.hidden = true;  // Not offered here (for example in the demo).
       return;
     }
-    lastBrokers = (await response.json()).brokers || [];
+    const body = await response.json();
+    lastBrokers = body.brokers || [];
+    brokerLimit = body.limit ?? null;
+    brokersConnected = body.connected ?? 0;
     renderBrokers(lastBrokers);
   } catch {
     brokersSection.hidden = true;
@@ -1245,7 +1260,11 @@ brokersList.addEventListener('click', async (event) => {
   button.disabled = true;
   try {
     if (button.dataset.brokerAction === 'disconnect') {
-      await fetch(`/api/brokers/${encodeURIComponent(id)}/disconnect`, { method: 'POST' });
+      if (id === 'indmoney') {
+        if (!(await disconnectIndmoney())) return;
+      } else {
+        await fetch(`/api/brokers/${encodeURIComponent(id)}/disconnect`, { method: 'POST' });
+      }
       delete brokerLoginLinks[id];
       document.dispatchEvent(new CustomEvent('ca:holdings'));
     } else {
@@ -1270,6 +1289,13 @@ brokersList.addEventListener('click', async (event) => {
     button.disabled = false;
   }
 });
+
+// A logo that fails to load becomes a monogram tile (error events do not bubble, so listen while capturing).
+document.addEventListener('error', (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.classList.contains('broker-logo')) return;
+  image.replaceWith(Object.assign(document.createElement('span'), { className: 'broker-logo broker-monogram', textContent: image.dataset.monogram || '?', ariaHidden: 'true' }));
+}, true);
 
 profileDialog.addEventListener('close', stopBrokerPolling);
 document.addEventListener('visibilitychange', () => {
@@ -1330,7 +1356,7 @@ function renderBrokerBanners() {
       const action = link
         ? `<a class="gate-secondary" href="${escHtml(link)}" target="_blank" rel="noopener noreferrer">Open ${escHtml(broker.name)} login</a>`
         : `<button class="gate-secondary" type="button" data-banner-reconnect="${id}">Reconnect</button>`;
-      return `<div class="broker-banner" role="status"><span>${escHtml(brokerBannerText(broker, now))}</span>
+      return `<div class="broker-banner" role="status"><span class="broker-head">${brokerLogoHtml(broker.broker, broker.name, broker.logo)}<span>${escHtml(brokerBannerText(broker, now))}</span></span>
         <span class="broker-banner-actions">${action}<button class="broker-banner-dismiss" type="button" data-banner-dismiss="${id}" aria-label="Dismiss for today" title="Dismiss for today">×</button></span></div>`;
     }).join('');
   document.querySelectorAll('[data-broker-banners]').forEach((element) => { element.innerHTML = html; });

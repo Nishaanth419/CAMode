@@ -41,6 +41,10 @@ The PIN is a local lock for people sharing one computer, not internet-grade auth
 
 Keep `.env`, `.data/`, and any database backups private; none of them should be committed to Git.
 
+## Brokers and what is stored
+
+Connecting a broker stores only what is needed to read it again: the MCP session id, or the OAuth tokens and registered client of Upstox, Dhan and Groww, or Kotak's login session, all encrypted with the master key; the latest holdings fetched and one holdings record per day, sealed with your PIN like snapshots. Passwords are never seen by CA Mode: you log in on the broker's own site. Tokens and session ids are never exported or shown (the export has each broker's holdings and history under `brokers`). Disconnecting a broker deletes its connection, holdings and history; private mode keeps none of them. INDmoney's tokens are still in `users.indmoney` and its snapshots in `portfolio_snapshots`, as before. The Free plan's 2-broker limit and the broker logos (static icons served from the app) store and share nothing new, so they needed no change to the privacy notice: `POLICY_VERSION` stays 2026-11-06.3, the version that added the daily broker holdings history (2026-11-06.1 added broker connections and 2026-11-06.2 the OAuth tokens).
+
 ## Consent and storage modes
 
 Each profile must accept the privacy notice before it can chat, connect INDmoney, or have snapshots captured. Every acceptance, including a later change of storage settings, is recorded in the `consents` table with the notice version and a timestamp. When the notice changes (`POLICY_VERSION` in `app/privacy.py`), every profile is asked again, and its snapshots pause until it accepts.
@@ -138,6 +142,8 @@ erDiagram
 | `investigations` | portfolio change investigation | `id`, `user_id`, `kind`, `status`, `created_at`, `updated_at` | the record: snapshots compared, figures, checks, findings | newest 50 |
 | `financial_goals` | goal | `id`, `user_id` (primary key together), `created_at`, `updated_at` | name, kind, currency, amounts, dates, assumptions, suitability inputs, `source: user_entered` | at most 10 |
 | `financial_decisions` | recorded decision | `id`, `user_id` (primary key together), `created_at`, `updated_at` | text, date, linked goal, `source: user_entered` | at most 50 |
+| `broker_connections` | profile and broker | `user_id`, `broker` (primary key together), `status` (`pending`, `connected`, `needs_login`), `session_started_at`, `checked_at`, `holdings_at` | the connection (`session`, master key): the broker's MCP session id, Kotak's login session, or an OAuth broker's tokens and client; `holdings`: the latest holdings fetched, sealed | removed by disconnect, history clearing, private mode and profile deletion |
+| `broker_snapshots` | profile, broker and local day | `user_id`, `broker`, `local_date` (primary key together), `captured_at` | `{rows, totalInr}`: that day's holdings and their computed total (no plain value column) | the profile's retention choice, like INDmoney snapshots; removed by broker disconnect, history clearing, private mode and profile deletion (INDmoney disconnect keeps them) |
 | `goal_allocations` | profile | `user_id` (primary key), `updated_at` | `{holdingKey: {name, assetType, broker, goals: {goalId: pct}, generalWealthPct}}` | one row |
 
 **Counts not tied to history**

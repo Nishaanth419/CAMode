@@ -122,7 +122,7 @@
 
   // Connecting INDmoney and switching profile leave the page, so the demo answers them here instead.
   document.addEventListener('click', (event) => {
-    const target = event.target.closest('#auth-button, #switch-profile, [data-connect]');
+    const target = event.target.closest('#switch-profile, [data-connect]');
     if (!target) return;
     event.preventDefault();
     event.stopImmediatePropagation();

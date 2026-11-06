@@ -7,7 +7,7 @@ const ROUTES = ['home', 'chat', 'portfolio', 'holdings', 'investments', 'plannin
 // Tab title and meta description for each page; `not-found` is any hash that names no page.
 const ROUTE_META = {
   home: ['Home', 'Where your money stands today: net worth, goals and recent chats.'],
-  chat: ['Ask AI', 'Ask finance questions or ask about your INDmoney portfolio.'],
+  chat: ['Ask AI', 'Ask finance questions or ask about the portfolio at your connected brokers.'],
   portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
   holdings: ['Holdings', 'Holdings from INDmoney and each connected broker, with a combined total that counts nothing twice.'],
   investments: ['Investments', 'Every holding from your latest snapshot, with CSV download and CAS upload.'],
@@ -125,12 +125,12 @@ function notice(title, body, actionHtml = '') {
   return `<section class="panel empty-panel"><h2>${escHtml(title)}</h2><p>${escHtml(body)}</p>${actionHtml}</section>`;
 }
 
-const CONNECT_BUTTON = '<button class="rail-button inline-button" type="button" data-connect>Connect INDmoney</button>';
+const CONNECT_BUTTON = '<button class="rail-button inline-button" type="button" data-connect>Connect a broker</button>';
 const REFRESH_BUTTON = '<button class="rail-button inline-button" type="button" data-refresh-snapshot>Save a snapshot now</button>';
 
 function accessNotice(access) {
   if (access === 'disconnected') {
-    return notice('Connect INDmoney', 'Link your INDmoney account to see your net worth, holdings and how they change each day. Access is read-only.', CONNECT_BUTTON);
+    return notice('Connect a broker', 'Connect a broker to see your net worth, holdings and how they change each day (daily net-worth snapshots come from INDmoney). Access is read-only.', CONNECT_BUTTON);
   }
   return notice('Private mode', 'Private mode saves no portfolio snapshots, so there is nothing to chart here. Ask Portfolio Analyzer for live figures instead, or turn on saving from your profile.',
     '<button class="rail-button inline-button" type="button" data-agent="portfolio" data-prompt="Give me a snapshot of my current net worth.">Ask Portfolio Analyzer</button>');
@@ -332,7 +332,7 @@ document.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-connect], [data-go], [data-refresh-snapshot], .js-snapshot-refresh');
   if (!target || target.disabled) return;
   if (target.matches('[data-connect]')) {
-    if (!isConnected) toggleConnection();
+    openBrokers();
     return;
   }
   if (target.matches('[data-go]')) {
@@ -371,13 +371,13 @@ async function renderHome() {
   const access = portfolioAccess();
   if (access !== 'ok') {
     stats.innerHTML = dashStat('Portfolio Value', access === 'private' ? 'Live only' : 'Not connected',
-      access === 'private' ? 'Private mode saves no snapshots' : 'Connect INDmoney to track it')
+      access === 'private' ? 'Private mode saves no snapshots' : 'Connect a broker to track it')
       + dashStat('Total Invested', '—', 'Needs a portfolio snapshot')
       + dashStat('Today\'s Change', '—', 'Needs a portfolio snapshot')
       + dashStat('Total Returns', '—', 'Needs a portfolio snapshot');
     const message = access === 'private'
-      ? '<p class="page-muted">Private mode keeps no snapshots. Portfolio Analyzer can still read INDmoney live.</p>'
-      : `<p class="page-muted">Connect INDmoney to see this. Access is read-only.</p>${CONNECT_BUTTON}`;
+      ? '<p class="page-muted">Private mode keeps no snapshots. Portfolio Analyzer can still read your connected brokers live.</p>'
+      : `<p class="page-muted">Connect a broker to see this. Access is read-only.</p>${CONNECT_BUTTON}`;
     parts.forEach((part) => { part.innerHTML = message; });
     return;
   }
@@ -745,7 +745,7 @@ async function renderHoldings() {
   if (!isCurrent()) return;
   const tabs = holdingsTabs(data);
   if (!tabs.length) {
-    setHtml(body, notice('No holdings yet', 'Connect INDmoney, or connect a broker from your profile, to see your holdings here. Access is read-only.', CONNECT_BUTTON));
+    setHtml(body, notice('No holdings yet', 'Connect a broker from your profile to see your holdings here. Access is read-only.', CONNECT_BUTTON));
     return;
   }
   const tab = tabs.find((item) => item.id === currentSub) || tabs[0];
@@ -756,7 +756,7 @@ async function renderHoldings() {
   setHtml(body, `
     <div class="table-controls">
       <div class="seg seg-small" role="group" aria-label="Holdings source">
-        ${tabs.map((item) => `<button type="button" data-holdings-tab="${escHtml(item.id)}" aria-pressed="${item.id === tab.id}">${escHtml(item.label)}${item.stale ? ' (stale)' : ''}</button>`).join('')}
+        ${tabs.map((item) => `<button type="button" class="holdings-tab" data-holdings-tab="${escHtml(item.id)}" aria-pressed="${item.id === tab.id}">${item.logo ? brokerLogoHtml(item.id, item.label, item.logo) : ''}<span>${escHtml(item.label)}${item.stale ? ' (stale)' : ''}</span></button>`).join('')}
       </div>
       ${isBroker ? `<button class="gate-secondary" type="button" data-broker-refresh="${escHtml(tab.id)}">Refresh from ${escHtml(tab.label)}</button>` : ''}
     </div>
