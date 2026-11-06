@@ -378,7 +378,108 @@ def test_combined_without_brokers_equals_indmoney_only(client, signed_in):
 def test_combined_with_nothing_is_unavailable_not_an_error(client, signed_in):
     response = client.get("/api/holdings/combined")
     assert response.status_code == 200
-    assert response.json() == {"sources": [], "combined": {"available": False, "deduplicated": {}}}
+    assert response.json() == {"sources": [], "combined": {"available": False, "deduplicated": {}, "onlyInIndmoney": {}}}
+
+
+# ── Needs attention ────────────────────────────────────────────────────────────
+
+def test_needs_attention_for_an_ended_login_or_day_old_holdings():
+    day = brokers.HOLDINGS_STALE_MS
+    assert brokers.needs_attention("needs_login", None) is True
+    assert brokers.needs_attention("connected", 1000, now=1000 + day) is False
+    assert brokers.needs_attention("connected", 1000, now=1001 + day) is True
+    assert brokers.needs_attention("connected", None) is False  # nothing fetched yet is not an old copy
+    for status in ("pending", "unavailable", "disconnected"):
+        assert brokers.needs_attention(status, 1, now=10 * day) is False
+
+
+def test_broker_list_carries_checked_at_and_needs_attention(client, signed_in, fake_kite, monkeypatch):
+    first = client.get("/api/brokers").json()["brokers"][0]
+    assert first["needsAttention"] is False and first["checkedAt"] is None
+    logged_in(client, fake_kite)
+    client.get("/api/brokers/zerodha/holdings?refresh=1")
+    item = client.get("/api/brokers").json()["brokers"][0]
+    assert item["status"] == "connected" and item["checkedAt"] and item["needsAttention"] is False
+    real = users.now_ms()
+    monkeypatch.setattr(users, "now_ms", lambda: real + brokers.HOLDINGS_STALE_MS + 1000)
+    assert client.get("/api/brokers").json()["brokers"][0]["needsAttention"] is True
+    monkeypatch.setattr(users, "now_ms", lambda: real)
+    fake_kite.logged_in = False
+    client.get("/api/brokers/zerodha/status")
+    ended = client.get("/api/brokers").json()["brokers"][0]
+    assert ended["status"] == "needs_login" and ended["needsAttention"] is True
+
+
+def test_the_holdings_tool_tells_the_model_to_say_when_and_suggest_reconnecting(signed_in, fake_kite):
+    brokers.save_connection(signed_in["id"], "zerodha", session_id="s", protocol="2025-03-26", status="connected")
+    tools = brokers.broker_tools(agent_user(signed_in["id"]))
+    description = tool(tools, "get_broker_holdings").description
+    assert "stale" in description and "reconnect" in description
+
+
+# ── ISIN matching in the combined view ─────────────────────────────────────────
+
+ACME, SAMPLE = "INE000A01011", "INE000B01012"
+
+
+def im_row(code, broker, asset_type="IND_STOCK", name="Some Name"):
+    return {"investment_code": code, "investment": name, "asset_type": asset_type, "broker": broker,
+            "market_value": "100", "total_units": "1", "invested_amount": "0"}
+
+
+def split(rows, broker_rows=None):
+    broker_rows = broker_rows if broker_rows is not None else ZERODHA.normalise("get_holdings", kite.HOLDINGS)
+    return brokers.split_indmoney_rows(rows, [(ZERODHA, broker_rows)])
+
+
+def test_isin_of_accepts_only_isin_shaped_codes():
+    assert brokers.isin_of({"investment_code": " ine000a01011 "}) == ACME
+    for code in ["INFY", "120503", "", None, "INE000A0101", "XX000A010111", "INE000A0101X"]:
+        assert brokers.isin_of({"investment_code": code}) is None
+
+
+def test_label_rule_is_unchanged_and_counts_unconfirmed_isins():
+    kept, dedup, only_in = split([im_row("HDFCBANK", "Zerodha"), im_row(ACME, "Zerodha"), im_row("INE999Z01019", "Zerodha"),
+                                  im_row("TCS", "INDmoney")])
+    assert [row["investment_code"] for row in kept] == ["TCS"]
+    assert dedup == {"Zerodha": 3}
+    assert only_in == {"Zerodha": 1}  # only the ISIN-shaped code Zerodha does not list
+
+
+@pytest.mark.parametrize("label", [None, "", "others", "Other", "unknown", "NA"])
+def test_a_generic_label_with_a_matching_isin_is_the_same_holding(label):
+    kept, dedup, only_in = split([im_row(ACME, label), im_row("INE999Z01019", label)])
+    assert [row["investment_code"] for row in kept] == ["INE999Z01019"]
+    assert dedup == {"Zerodha": 1} and only_in == {}
+
+
+def test_a_generic_label_needs_the_same_asset_type():
+    kept, dedup, _ = split([im_row(ACME, None, asset_type="MF")])
+    assert len(kept) == 1 and dedup == {}
+
+
+def test_a_holding_at_two_named_brokers_is_never_dropped():
+    kept, dedup, only_in = split([im_row(ACME, "INDstocks")])
+    assert len(kept) == 1 and dedup == {} and only_in == {}
+
+
+def test_names_never_match_and_non_isin_codes_stay():
+    kept, dedup, _ = split([im_row("ACMEBANK", None, name="ACMEBANK"), im_row("", "others", name="ACMEBANK")])
+    assert len(kept) == 2 and dedup == {}
+
+
+def test_combined_reports_isin_matches_and_only_in_indmoney():
+    snapshot = {"capturedAt": 1, "results": {"networth_holdings:IND_STOCK": json.dumps({"holdings": [
+        im_row(ACME, "others"), im_row("INE999Z01019", "Zerodha"), im_row(SAMPLE, "INDstocks"), im_row("TCS", "INDmoney")]})}}
+    rows = ZERODHA.normalise("get_holdings", kite.HOLDINGS)
+    payload = {"broker": "zerodha", "available": True, "status": "connected", "asOf": 5, "stale": False,
+               "figures": None, "holdings": [], "_rows": rows}
+    result = brokers.combined(snapshot, [payload])
+    assert result["combined"]["deduplicated"] == {"Zerodha": 2}
+    assert result["combined"]["onlyInIndmoney"] == {"Zerodha": 1}
+    indmoney = next(source for source in result["sources"] if source["id"] == "indmoney")
+    assert indmoney["movedTo"] == {"Zerodha": 2}
+    assert len(indmoney["holdings"]) == 2  # INDstocks' and INDmoney's own rows stay
 
 
 # ── Privacy paths ──────────────────────────────────────────────────────────────
@@ -390,7 +491,7 @@ def holdings_stored(client, fake_kite):
 
 def test_the_notice_and_policy_version_cover_brokers():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-06.2"
+    assert privacy.POLICY_VERSION == "2026-11-06.3"
     section = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")
     assert "Zerodha" in section["body"] and "read-only" in section["body"]
 

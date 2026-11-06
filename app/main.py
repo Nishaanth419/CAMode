@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, broker_oauth, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -1453,9 +1453,16 @@ async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, l
     if blocked := history_gate(user):
         return blocked
     history = snapshots.networth_history(user["id"], days, keys=user["keys"])
+    combined = broker_history.with_combined(user["id"], history, days, keys=user["keys"])
+    has_combined = combined is not history
     return {
         "latest": _snapshot_summary(snapshots.latest_snapshot(user["id"], keys=user["keys"])),
-        "history": [{"date": point["date"], "networthInr": point["networthInr"]} for point in history],
+        "history": [
+            {"date": point["date"], "networthInr": point["networthInr"],
+             **({"combinedInr": point["combinedInr"], "combined": point["combined"]} if has_combined else {})}
+            for point in combined
+        ],
+        "includesBrokers": has_combined,
         "schedule": f"{snapshots.SNAPSHOT_TIME:%H:%M} {snapshots.SNAPSHOT_TIMEZONE_NAME}",
     }
 

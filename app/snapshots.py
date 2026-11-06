@@ -157,6 +157,7 @@ def _prune(connection: Any, user_id: str, today: date) -> None:
     days = min(row["snapshot_retention_days"], SNAPSHOT_RETENTION_DAYS) if row else SNAPSHOT_RETENTION_DAYS
     cutoff = (today - timedelta(days=days)).isoformat()
     connection.execute("DELETE FROM portfolio_snapshots WHERE user_id = ? AND as_of_date < ?", (user_id, cutoff))
+    connection.execute("DELETE FROM broker_snapshots WHERE user_id = ? AND local_date < ?", (user_id, cutoff))
 
 
 def prune_snapshots(user_id: str, *, today: date | None = None) -> None:
@@ -272,6 +273,7 @@ def networth_history(
             "capturedAt": row["captured_at"],
             "networthInr": networth,
             "_snapshot": payload.get("results", {}).get("networth_snapshot"),
+            "_results": payload.get("results", {}),
         })
     return points
 
@@ -434,6 +436,12 @@ async def run_scheduler(
         except Exception:
             logger.exception("snapshot_scheduler_tick_failed")
         try:
+            from . import broker_history  # imports snapshots, so only here
+
+            await broker_history.refresh_due(clock())
+        except Exception:
+            logger.exception("broker_history_tick_failed")
+        try:
             await asyncio.to_thread(backup.backup_if_due)
         except Exception:
             logger.exception("backup_failed")
@@ -491,15 +499,34 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
             days = min(365, max(1, int(arguments.get("days", 30))))
         except (TypeError, ValueError):
             return json.dumps({"error": "days must be a whole number from 1 to 365"})
-        points = _sample(networth_history(user_id, days, keys=keys), MAX_HISTORY_POINTS)
+        from . import broker_history  # imports snapshots, so only here
+
+        raw = networth_history(user_id, days, keys=keys)
+        merged = broker_history.with_combined(user_id, raw, days, keys=keys)
+        has_combined = merged is not raw
+        points = _sample(merged, MAX_HISTORY_POINTS)
         parsed = any(point["networthInr"] is not None for point in points)
         history = []
         for point in points:
             item = {"date": point["date"], "capturedAt": _iso(point["capturedAt"]), "networthInr": point["networthInr"]}
+            if has_combined:
+                item["combinedInr"] = point["combinedInr"]
+                if point["combined"].get("partial"):
+                    item["partial"] = True
+                if any(source.get("carried") for source in point["combined"]["sources"]):
+                    item["carried"] = True
             if not parsed and point["_snapshot"]:
                 item["networthSnapshot"] = point["_snapshot"][:600]
             history.append(item)
-        return json.dumps({"days": days, "points": history}, ensure_ascii=False)
+        result: dict[str, Any] = {"days": days, "points": history}
+        if has_combined:
+            result["combinedNote"] = (
+                "combinedInr is INDmoney's net worth that day, minus the INDmoney rows that a directly connected broker's "
+                "own holdings replace, plus each broker's own holdings total that day (carried: the broker's latest "
+                "snapshot from up to 3 days earlier; partial: some part was unavailable, so treat it as incomplete). "
+                "Quote combinedInr when asked about total wealth across brokers; null means it could not be worked out."
+            )
+        return json.dumps(result, ensure_ascii=False)
 
     return [
         LocalTool(

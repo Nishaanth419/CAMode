@@ -244,6 +244,24 @@
     };
   }
 
+  // The points a history chart draws: with broker history, each point's combined value (a day whose combined
+  // value could not be worked out is left out, never drawn as zero); otherwise INDmoney's net worth.
+  function historySeries(data) {
+    const history = (data && data.history) || [];
+    const withBrokers = Boolean(data && data.includesBrokers);
+    const points = withBrokers
+      ? history.map((point) => ({ ...point, networthInr: point.combinedInr })).filter((point) => Number.isFinite(point.networthInr))
+      : history.filter((point) => Number.isFinite(point.networthInr));
+    return {
+      points,
+      includesBrokers: withBrokers,
+      partial: withBrokers && history.some((point) => point.combined && point.combined.partial),
+      note: withBrokers
+        ? 'Includes holdings fetched directly from your brokers; INDmoney rows those brokers replace are left out. Days marked partial are incomplete.'
+        : '',
+    };
+  }
+
   /* ── Insights from the latest snapshot ────────────────────────────── */
   function holdingLabel(item) {
     return String(item.name || item.code || 'A holding');
@@ -452,11 +470,64 @@
     }
   }
 
+  /* ── Reconnect reminders ──────────────────────────────────────────── */
+  const BROKER_STALE_MS = 24 * 60 * 60 * 1000;
+  const BROKER_CHECK_MS = 60 * 60 * 1000;
+
+  // Connected brokers whose login has ended, or whose holdings are over a day old (worked out from `now`, so a
+  // page left open keeps counting). Brokers that are not connected, or are still waiting for a login, are skipped.
+  function brokersNeedingAttention(brokers, now = Date.now()) {
+    return (brokers || []).filter((broker) => broker.status === 'needs_login'
+      || (broker.status === 'connected' && Number.isFinite(broker.holdingsAt) && now - broker.holdingsAt > BROKER_STALE_MS));
+  }
+
+  function brokerBannerText(broker, now = Date.now()) {
+    const from = Number.isFinite(broker.holdingsAt) ? ` Holdings shown are from ${timeAgo(broker.holdingsAt, now)}.` : ' Reconnect to see your holdings.';
+    if (broker.status === 'needs_login') return `Your ${broker.name} login has ended.${from}`;
+    return `Your ${broker.name} holdings were last fetched ${timeAgo(broker.holdingsAt, now)}. Refresh them by reconnecting.`;
+  }
+
+  // What the Reconnect button does: a login-tool broker asks the server for a link, an OAuth broker goes to its
+  // connect route, Kotak (QR) opens the Brokers section of the profile dialog.
+  function brokerReconnectAction(broker) {
+    if (broker.auth === 'oauth') return { type: 'link', href: `/auth/brokers/${encodeURIComponent(broker.broker)}/connect` };
+    if (broker.auth === 'mcp_login_qr') return { type: 'dialog' };
+    return { type: 'login-link' };
+  }
+
+  function localDay(now = Date.now()) {
+    const date = new Date(now);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
+  // Dismissal lasts for the local day. `storage` may be missing or throw (private browsing): then nothing is remembered.
+  function bannerDismissed(storage, brokerId, now = Date.now()) {
+    try {
+      return storage.getItem(`ca-broker-banner:${brokerId}`) === localDay(now);
+    } catch {
+      return false;
+    }
+  }
+
+  function dismissBanner(storage, brokerId, now = Date.now()) {
+    try {
+      storage.setItem(`ca-broker-banner:${brokerId}`, localDay(now));
+    } catch { /* not remembered */ }
+  }
+
+  // Brokers whose status is worth asking the broker for: connected, and not asked in the last hour.
+  function brokersToCheck(brokers, checkedAt, now = Date.now()) {
+    return (brokers || []).filter((broker) => broker.status === 'connected'
+      && !(Number.isFinite((checkedAt || {})[broker.broker]) && now - checkedAt[broker.broker] < BROKER_CHECK_MS))
+      .map((broker) => broker.broker);
+  }
+
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
-    spanLabel, historyChange, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel,
+    spanLabel, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel,
+    brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

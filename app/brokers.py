@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import broker_oauth, cas, mcp_client, portfolio_math, snapshots, tool_results, users
+from . import broker_history, broker_oauth, cas, mcp_client, portfolio_math, snapshots, tool_results, users
 from .agent import LocalTool
 from .db import connect_db
 from .sealing import LockedError, ProfileKeys
@@ -33,6 +33,7 @@ SESSION_MAX_MS: Final = 12 * 60 * 60 * 1000  # Kite's MCP sessions end 12 hours 
 LOGIN_WAIT_MS: Final = 5 * 60 * 1000  # a login link is valid for 5 minutes
 LOGIN_EXPIRES_SECONDS: Final = 300
 MAX_AGENT_HOLDINGS: Final = 60
+HOLDINGS_STALE_MS: Final = 24 * 60 * 60 * 1000  # a connected broker whose holdings are older than this needs a look
 
 WRITE_TOOLS: Final = frozenset({
     "place_order", "modify_order", "cancel_order", "place_gtt_order", "modify_gtt_order", "delete_gtt_order",
@@ -378,6 +379,7 @@ def has_credentials(connection: dict[str, Any] | None, broker: Broker) -> bool:
 
 def delete_connection(user_id: str, broker_id: str) -> bool:
     _tools_cache.pop((user_id, broker_id), None)
+    broker_history.delete_for_broker(user_id, broker_id)
     with connect_db() as connection:
         return connection.execute(
             "DELETE FROM broker_connections WHERE user_id = ? AND broker = ?", (user_id, broker_id),
@@ -388,12 +390,22 @@ def delete_connection(user_id: str, broker_id: str) -> bool:
 
 def _view(broker: Broker, status: str, connection: dict[str, Any] | None) -> dict[str, Any]:
     started = connection["sessionStartedAt"] if connection else None
+    holdings_at = connection["holdingsAt"] if connection else None
     return {
         "broker": broker.id, "name": broker.name, "status": status, "auth": broker.auth,
         "sessionStartedAt": started,
         "expiresAt": None if started is None or broker.auth == "oauth" else started + SESSION_MAX_MS,
-        "holdingsAt": connection["holdingsAt"] if connection else None,
+        "holdingsAt": holdings_at,
+        "checkedAt": connection["checkedAt"] if connection else None,
+        "needsAttention": needs_attention(status, holdings_at),
     }
+
+
+def needs_attention(status: str, holdings_at: int | None, now: int | None = None) -> bool:
+    """True when the login has ended, or it is connected but the holdings fetched are over 24 hours old."""
+    if status == "needs_login":
+        return True
+    return status == "connected" and holdings_at is not None and (now or users.now_ms()) - holdings_at > HOLDINGS_STALE_MS
 
 
 def brokers_overview(user_id: str) -> list[dict[str, Any]]:
@@ -776,6 +788,15 @@ def stored_rows(user_id: str, broker_id: str, keys: ProfileKeys) -> tuple[list[d
         return None
 
 
+def _store_day(user_id: str, broker_id: str, rows: list[dict[str, Any]], payload: dict[str, Any], keys: ProfileKeys, as_of: int) -> None:
+    """Today's history row for the broker; a failure here never loses the holdings just fetched."""
+    totals = (payload.get("figures") or {}).get("totals") or {}
+    try:
+        broker_history.store_day(user_id, broker_id, rows, totals.get("current_value_inr"), keys, as_of)
+    except Exception:
+        logger.warning("broker_history_store_failed", extra={"broker": broker_id}, exc_info=True)
+
+
 def holdings_targets(broker: Broker, opened: _Opened) -> dict[str, str]:
     """Holdings tool -> asset type: the broker's own, or for an OAuth broker the read tools named for holdings."""
     if broker.auth != "oauth":
@@ -848,7 +869,10 @@ async def fetch_holdings(
             as_of = _store_rows(user_id, broker.id, rows, keys) if store else users.now_ms()
             if connection["status"] != "connected":
                 set_status(user_id, broker.id, "connected")
-            return _holdings_payload(broker, "connected", rows, as_of, stale=False, include_all_holdings=include_all_holdings)
+            payload = _holdings_payload(broker, "connected", rows, as_of, stale=False, include_all_holdings=include_all_holdings)
+            if store:
+                _store_day(user_id, broker.id, rows, payload, keys, as_of)
+            return payload
         if status == "needs_login":
             set_status(user_id, broker.id, status)
     saved = stored_rows(user_id, broker.id, keys)
@@ -864,15 +888,69 @@ def public(payload: dict[str, Any]) -> dict[str, Any]:
 
 # ── Combined view ──────────────────────────────────────────────────────────────
 
+ISIN_RE: Final = re.compile(r"^IN[A-Z0-9]{9}[0-9]$")
+GENERIC_LABELS: Final = frozenset({"", "others", "other", "unknown", "na"})
+
+
+def isin_of(row: dict[str, Any]) -> str | None:
+    """The row's ``investment_code`` upper-cased when it is ISIN-shaped, else None. Names never count."""
+    code = str(row.get("investment_code") or "").strip().upper()
+    return code if ISIN_RE.match(code) else None
+
+
+def _generic_label(row: dict[str, Any]) -> bool:
+    return str(row.get("broker") or "").strip().lower() in GENERIC_LABELS
+
+
+def split_indmoney_rows(
+    rows: list[dict[str, Any]], direct: list[tuple[Broker, list[dict[str, Any]]]],
+) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, int]]:
+    """INDmoney rows the combined view keeps, how many each broker took over, and the ones it cannot confirm.
+
+    1. A row whose broker label names a direct broker (``indmoney_labels``) belongs to that broker; when its
+       ISIN is not among the broker's own rows it is counted in the third result (still left out).
+    2. A row with an empty or generic label whose ISIN is the ISIN of a row of a direct broker, same asset
+       type, is the same holding and is left out too.
+    A row labelled with another named broker, or without an ISIN-shaped code, is never matched by ISIN.
+    """
+    deduplicated: dict[str, int] = {}
+    only_in_indmoney: dict[str, int] = {}
+    for broker, broker_rows in direct:
+        labels = tuple(label.lower() for label in broker.indmoney_labels)
+        own = {isin for isin in (isin_of(item) for item in broker_rows) if isin}
+        kept = []
+        for row in rows:
+            if any(label in str(row.get("broker") or "").lower() for label in labels):
+                isin = isin_of(row)
+                if isin and isin not in own:
+                    only_in_indmoney[broker.name] = only_in_indmoney.get(broker.name, 0) + 1
+                deduplicated[broker.name] = deduplicated.get(broker.name, 0) + 1
+            else:
+                kept.append(row)
+        rows = kept
+    for broker, broker_rows in direct:
+        held = {(isin, item.get("asset_type")) for item in broker_rows if (isin := isin_of(item))}
+        kept = []
+        for row in rows:
+            isin = isin_of(row)
+            if isin and _generic_label(row) and (isin, row.get("asset_type")) in held:
+                deduplicated[broker.name] = deduplicated.get(broker.name, 0) + 1
+            else:
+                kept.append(row)
+        rows = kept
+    return rows, deduplicated, only_in_indmoney
+
+
 def combined(
     snapshot: dict[str, Any] | None, broker_payloads: list[dict[str, Any]], *, include_all_holdings: bool = False,
 ) -> dict[str, Any]:
     """INDmoney's latest snapshot and each broker's holdings as sources, plus one deduplicated total.
 
-    A broker with holdings of its own replaces INDmoney's rows labelled with that broker (INDmoney's
-    ``investment_code`` format is undocumented, so matching single rows could miss and double count).
+    A broker with holdings of its own replaces INDmoney's rows labelled with that broker, and INDmoney rows
+    with no real broker label whose ISIN matches one of the broker's rows (``split_indmoney_rows``).
     Those rows then show only on the broker's own tab: the INDmoney source leaves them out and says
-    how many moved (``movedTo``). A broker with nothing fetched yet takes nothing away from INDmoney.
+    how many moved (``movedTo``). ``onlyInIndmoney`` counts labelled rows the broker's own data does not
+    contain (left out as well: the broker's data wins). A broker with nothing fetched yet takes nothing away.
     """
     sources: list[dict[str, Any]] = []
     broker_sources: list[dict[str, Any]] = []
@@ -892,14 +970,10 @@ def combined(
             direct.append((broker, rows))
     indmoney_rows: list[dict[str, Any]] = []
     deduplicated: dict[str, int] = {}
+    only_in_indmoney: dict[str, int] = {}
     if snapshot:
         rows, _ = portfolio_math._holding_rows(snapshot["results"])
-        for broker, _ in direct:
-            labels = tuple(label.lower() for label in broker.indmoney_labels)
-            kept = [row for row in rows if not any(label in str(row.get("broker") or "").lower() for label in labels)]
-            if len(kept) != len(rows):
-                deduplicated[broker.name] = deduplicated.get(broker.name, 0) + len(rows) - len(kept)
-            rows = kept
+        rows, deduplicated, only_in_indmoney = split_indmoney_rows(rows, direct)
         indmoney_rows = rows
         view = rows_view(rows) if rows else {"figures": None, "holdings": []}
         sources.append({
@@ -910,20 +984,23 @@ def combined(
     merged = list(indmoney_rows)
     for _, rows in direct:
         merged += rows
+    extra = {"deduplicated": deduplicated, "onlyInIndmoney": only_in_indmoney}
     if not merged:
-        return {"sources": sources, "combined": {"available": False, "deduplicated": deduplicated}}
+        return {"sources": sources, "combined": {"available": False, **extra}}
     return {"sources": sources, "combined": {
-        "available": True, **rows_view(merged, include_all_holdings=include_all_holdings), "deduplicated": deduplicated}}
+        "available": True, **rows_view(merged, include_all_holdings=include_all_holdings), **extra}}
 
 
 def export_brokers(user_id: str, keys: ProfileKeys) -> list[dict[str, Any]]:
     """Each connection with its stored holdings, for the profile export. Never the session id."""
     result = []
+    history = broker_history.export_history(user_id, keys)
     for found in connections(user_id):
         saved = stored_rows(user_id, found["broker"], keys)
         result.append({
             "broker": found["broker"], "status": found["status"], "connectedAt": found["sessionStartedAt"],
             "holdingsAt": found["holdingsAt"], "holdings": saved[0] if saved else [],
+            "history": history.get(found["broker"], []),
         })
     return result
 
@@ -990,6 +1067,7 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
                 return json.dumps({
                     "broker": "all", "figures": (merged["combined"].get("figures")),
                     "deduplicated": merged["combined"]["deduplicated"],
+                    "onlyInIndmoney": merged["combined"]["onlyInIndmoney"],
                     "sources": [{"id": item["id"], "status": item["status"], "asOf": _iso(item["asOf"]), "stale": item["stale"]}
                                 for item in merged["sources"]],
                     "note": "Holdings only (INDmoney's net worth outside holdings is not included). A broker's own rows "
@@ -1004,7 +1082,7 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
             return json.dumps({
                 "broker": choice, "status": payload["status"], "stale": payload["stale"], "asOf": _iso(payload["asOf"]),
                 "figures": payload["figures"],
-                "note": f"Stale: the {BROKERS[choice].name} login has ended, so these are the last holdings fetched; say when they are from."
+                "note": f"Stale: the {BROKERS[choice].name} login has ended, so these are the last holdings fetched; say when they are from and suggest reconnecting."
                         if payload["stale"] else "Live from the broker just now.",
             }, ensure_ascii=False, separators=(",", ":"))
         except Exception as exc:  # holdings failures must never end the answer
@@ -1043,7 +1121,8 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
                 f"Holdings and portfolio figures fetched directly from a connected broker ({names}); 'all' merges them "
                 "with INDmoney's latest snapshot with each broker's own rows replacing INDmoney's rows for that broker. "
                 "INDmoney may also list the same broker account, so never add INDmoney and broker figures together. "
-                "Quote the figures; state the asOf time and say so when stale."
+                "Quote the figures; state the asOf time. When a result says stale (the broker login has ended), say when "
+                "the holdings are from and suggest the user reconnect the broker in Profile > Brokers."
             ),
             input_schema={
                 "type": "object",

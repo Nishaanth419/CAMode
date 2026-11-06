@@ -112,6 +112,87 @@ test('historyChange measures first to last point and labels the span', () => {
   assert.equal(finance.spanLabel(7), '7D');
 });
 
+test('historySeries uses the combined value only when broker history exists', () => {
+  const plain = { history: [{ date: '2026-11-01', networthInr: 10 }, { date: '2026-11-02', networthInr: null }] };
+  const same = finance.historySeries(plain);
+  assert.deepEqual(same.points, [{ date: '2026-11-01', networthInr: 10 }]);
+  assert.equal(same.includesBrokers, false);
+  assert.equal(same.note, '');
+  const withBrokers = finance.historySeries({
+    includesBrokers: true,
+    history: [
+      { date: '2026-11-01', networthInr: 10, combinedInr: 12, combined: { partial: false } },
+      { date: '2026-11-02', networthInr: null, combinedInr: 7, combined: { partial: true } },
+      { date: '2026-11-03', networthInr: 11, combinedInr: null, combined: { partial: true } },
+    ],
+  });
+  assert.deepEqual(withBrokers.points.map((point) => point.networthInr), [12, 7]);  // null is dropped, never zero
+  assert.equal(withBrokers.partial, true);
+  assert.match(withBrokers.note, /brokers/);
+  assert.deepEqual(finance.historySeries(null).points, []);
+});
+
+const HOUR = 3600 * 1000;
+
+test('brokersNeedingAttention flags ended logins and day-old holdings only for connected brokers', () => {
+  const now = Date.UTC(2026, 10, 6, 12);
+  const brokers = [
+    { broker: 'zerodha', name: 'Zerodha', status: 'needs_login', holdingsAt: now - 2 * HOUR },
+    { broker: 'fyers', name: 'FYERS', status: 'connected', holdingsAt: now - 25 * HOUR },
+    { broker: 'dhan', name: 'Dhan', status: 'connected', holdingsAt: now - 23 * HOUR },
+    { broker: 'groww', name: 'Groww', status: 'connected', holdingsAt: null },
+    { broker: 'kotak', name: 'Kotak Neo', status: 'pending', holdingsAt: null },
+    { broker: 'upstox', name: 'Upstox', status: 'disconnected', holdingsAt: null },
+    { broker: 'x', name: 'X', status: 'unavailable', holdingsAt: now - 90 * HOUR },
+  ];
+  assert.deepEqual(finance.brokersNeedingAttention(brokers, now).map((item) => item.broker), ['zerodha', 'fyers']);
+  assert.deepEqual(finance.brokersNeedingAttention(null, now), []);
+});
+
+test('brokerBannerText says when the holdings are from', () => {
+  const now = Date.UTC(2026, 10, 6, 12);
+  const ended = finance.brokerBannerText({ name: 'Zerodha', status: 'needs_login', holdingsAt: now - 3 * HOUR }, now);
+  assert.match(ended, /^Your Zerodha login has ended\. Holdings shown are from /);
+  assert.match(finance.brokerBannerText({ name: 'Zerodha', status: 'needs_login', holdingsAt: null }, now), /Reconnect to see your holdings/);
+  assert.match(finance.brokerBannerText({ name: 'FYERS', status: 'connected', holdingsAt: now - 30 * HOUR }, now), /^Your FYERS holdings were last fetched /);
+});
+
+test('brokerReconnectAction depends on how the broker signs in', () => {
+  assert.deepEqual(finance.brokerReconnectAction({ broker: 'upstox', auth: 'oauth' }), { type: 'link', href: '/auth/brokers/upstox/connect' });
+  assert.deepEqual(finance.brokerReconnectAction({ broker: 'kotak', auth: 'mcp_login_qr' }), { type: 'dialog' });
+  assert.deepEqual(finance.brokerReconnectAction({ broker: 'zerodha', auth: 'mcp_login_tool' }), { type: 'login-link' });
+});
+
+test('banner dismissal lasts the local day and survives broken storage', () => {
+  const store = new Map();
+  const storage = { getItem: (key) => (store.has(key) ? store.get(key) : null), setItem: (key, value) => store.set(key, value) };
+  const morning = new Date(2026, 10, 6, 9).getTime();
+  const night = new Date(2026, 10, 6, 23).getTime();
+  const tomorrow = new Date(2026, 10, 7, 9).getTime();
+  assert.equal(finance.bannerDismissed(storage, 'zerodha', morning), false);
+  finance.dismissBanner(storage, 'zerodha', morning);
+  assert.equal(finance.bannerDismissed(storage, 'zerodha', night), true);
+  assert.equal(finance.bannerDismissed(storage, 'fyers', night), false);
+  assert.equal(finance.bannerDismissed(storage, 'zerodha', tomorrow), false);
+  const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  assert.doesNotThrow(() => finance.dismissBanner(broken, 'zerodha', morning));
+  assert.equal(finance.bannerDismissed(broken, 'zerodha', morning), false);
+  assert.doesNotThrow(() => finance.dismissBanner(null, 'zerodha', morning));
+  assert.equal(finance.bannerDismissed(null, 'zerodha', morning), false);
+});
+
+test('brokersToCheck asks each connected broker at most once an hour', () => {
+  const now = Date.UTC(2026, 10, 6, 12);
+  const brokers = [
+    { broker: 'zerodha', status: 'connected' }, { broker: 'fyers', status: 'connected' },
+    { broker: 'dhan', status: 'needs_login' }, { broker: 'groww', status: 'disconnected' },
+  ];
+  assert.deepEqual(finance.brokersToCheck(brokers, {}, now), ['zerodha', 'fyers']);
+  assert.deepEqual(finance.brokersToCheck(brokers, { zerodha: now - 10 * 60 * 1000 }, now), ['fyers']);
+  assert.deepEqual(finance.brokersToCheck(brokers, { zerodha: now - 61 * 60 * 1000 }, now), ['zerodha', 'fyers']);
+  assert.deepEqual(finance.brokersToCheck(undefined, undefined, now), []);
+});
+
 function portfolio(overrides = {}) {
   return {
     available: true,

@@ -1277,6 +1277,147 @@ document.addEventListener('visibilitychange', () => {
   else if (profileDialog.open && pendingBrokers.length) pollBrokers(0);
 });
 
+/* ── Reconnect reminders ───────────────────────────────────────────────
+   A banner on Home and Holdings (and a line in the rail) when a connected broker's login has ended or its holdings
+   are over a day old. On load each connected broker's status is asked for at most once an hour, so an ended login
+   is noticed. Dismissal lasts for the local day (localStorage, with a fallback when it is not available). */
+const BROKER_CHECKED_KEY = 'ca-broker-status-checked';
+let brokerAttention = [];
+const brokerChecksMemory = {};
+const dismissedBanners = new Set();
+const bannerLinks = {};
+
+function safeStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readBrokerChecks() {
+  let stored = {};
+  try {
+    stored = JSON.parse(safeStorage().getItem(BROKER_CHECKED_KEY) || '{}') || {};
+  } catch { /* none remembered */ }
+  return { ...stored, ...brokerChecksMemory };
+}
+
+function writeBrokerChecks(checked) {
+  Object.assign(brokerChecksMemory, checked);
+  try {
+    safeStorage().setItem(BROKER_CHECKED_KEY, JSON.stringify(checked));
+  } catch { /* the in-memory copy still limits this page */ }
+}
+
+async function fetchBrokerList() {
+  try {
+    const response = await fetch('/api/brokers');
+    if (!response.ok) return null;  // not offered here (for example in the demo)
+    return (await response.json()).brokers || [];
+  } catch {
+    return null;
+  }
+}
+
+function renderBrokerBanners() {
+  const now = Date.now();
+  const html = brokerAttention
+    .filter((broker) => !dismissedBanners.has(broker.broker) && !bannerDismissed(safeStorage(), broker.broker, now))
+    .map((broker) => {
+      const id = escHtml(broker.broker);
+      const link = bannerLinks[broker.broker];
+      const action = link
+        ? `<a class="gate-secondary" href="${escHtml(link)}" target="_blank" rel="noopener noreferrer">Open ${escHtml(broker.name)} login</a>`
+        : `<button class="gate-secondary" type="button" data-banner-reconnect="${id}">Reconnect</button>`;
+      return `<div class="broker-banner" role="status"><span>${escHtml(brokerBannerText(broker, now))}</span>
+        <span class="broker-banner-actions">${action}<button class="broker-banner-dismiss" type="button" data-banner-dismiss="${id}" aria-label="Dismiss for today" title="Dismiss for today">×</button></span></div>`;
+    }).join('');
+  document.querySelectorAll('[data-broker-banners]').forEach((element) => { element.innerHTML = html; });
+}
+
+async function refreshBrokerAttention({ check = false } = {}) {
+  let list = await fetchBrokerList();
+  if (!list) {
+    brokerAttention = [];
+    renderBrokerBanners();
+    return;
+  }
+  if (check) {
+    const now = Date.now();
+    const checked = readBrokerChecks();
+    const ids = brokersToCheck(list, checked, now);
+    if (ids.length) {
+      ids.forEach((id) => { checked[id] = now; });
+      writeBrokerChecks(checked);
+      await Promise.all(ids.map((id) => fetch(`/api/brokers/${encodeURIComponent(id)}/status`).catch(() => null)));
+      list = (await fetchBrokerList()) || list;
+    }
+  }
+  brokerAttention = brokersNeedingAttention(list);
+  renderBrokerBanners();
+  document.dispatchEvent(new CustomEvent('ca:brokers'));
+}
+
+async function pollBannerLogin(id, count = 0) {
+  if (count >= BROKER_MAX_POLLS) return;
+  await new Promise((resolve) => setTimeout(resolve, BROKER_POLL_MS));
+  if (document.hidden) return;
+  try {
+    const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/status`);
+    const status = response.ok ? (await response.json()).status : 'pending';
+    if (status === 'connected') {
+      delete bannerLinks[id];
+      await fetch(`/api/brokers/${encodeURIComponent(id)}/holdings?refresh=1`).catch(() => null);
+      document.dispatchEvent(new CustomEvent('ca:holdings'));
+      await refreshBrokerAttention();
+      return;
+    }
+  } catch { /* keep waiting */ }
+  await pollBannerLogin(id, count + 1);
+}
+
+document.addEventListener('click', async (event) => {
+  const dismiss = event.target.closest('[data-banner-dismiss]');
+  if (dismiss) {
+    dismissedBanners.add(dismiss.dataset.bannerDismiss);
+    dismissBanner(safeStorage(), dismiss.dataset.bannerDismiss);
+    renderBrokerBanners();
+    return;
+  }
+  const reconnect = event.target.closest('[data-banner-reconnect]');
+  if (!reconnect) return;
+  const broker = brokerAttention.find((item) => item.broker === reconnect.dataset.bannerReconnect);
+  if (!broker) return;
+  const action = brokerReconnectAction(broker);
+  if (action.type === 'link') {
+    window.location.href = action.href;
+  } else if (action.type === 'dialog') {
+    openProfileDialog();
+  } else {
+    reconnect.disabled = true;
+    try {
+      const response = await fetch(`/api/brokers/${encodeURIComponent(broker.broker)}/connect`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not start the login.');
+      if (data.loginUrl) bannerLinks[broker.broker] = data.loginUrl;
+      renderBrokerBanners();
+      pollBannerLogin(broker.broker);
+    } catch (error) {
+      reconnect.disabled = false;
+      reconnect.textContent = 'Try again';
+      reconnect.title = error.message;
+    }
+  }
+});
+
+document.addEventListener('ca:session', () => { refreshBrokerAttention({ check: true }); });
+document.addEventListener('ca:holdings', () => { refreshBrokerAttention(); });
+document.addEventListener('ca:session-ended', () => {
+  brokerAttention = [];
+  renderBrokerBanners();
+});
+
 function relativeDay(timestamp) {
   if (!Number.isFinite(Number(timestamp))) return '';
   const startOfDay = (value) => new Date(value).setHours(0, 0, 0, 0);

@@ -63,6 +63,14 @@ function sparkline(points, tone) {
 }
 
 /* ── Portfolio card ─────────────────────────────────────────────────── */
+// One line when a connected broker's login has ended or its holdings are old (brokerAttention is set in app.js).
+function attentionLine() {
+  const found = typeof brokerAttention === 'undefined' ? [] : brokerAttention;
+  if (!found.length) return '';
+  const first = brokerBannerText(found[0]);
+  return `<small class="rail-note is-warn">${escHtml(first)}${found.length > 1 ? ` (+${found.length - 1} more)` : ''}</small>`;
+}
+
 async function renderRailPortfolio(isCurrent) {
   const access = portfolioAccess();
   if (access === 'disconnected') {
@@ -93,7 +101,8 @@ async function renderRailPortfolio(isCurrent) {
   const totals = portfolio.figures.totals;
   const pnl = portfolio.figures.pnl;
   const netWorth = totals.net_worth_inr ?? portfolio.networthInr;
-  const points = (history?.history || []).filter((point) => Number.isFinite(point.networthInr));
+  const series = historySeries(history);
+  const points = series.points;
   const change = historyChange(points);
   const tone = change && change.change < 0 ? 'is-down' : 'is-up';
   const changeHtml = change
@@ -109,6 +118,8 @@ async function renderRailPortfolio(isCurrent) {
     </div>
     <span class="sr-only">${escHtml(updated)}.</span>
     ${sparkline(points, tone)}
+    ${series.includesBrokers ? '<small class="rail-note">Trend includes your connected brokers.</small>' : ''}
+    ${attentionLine()}
     <dl class="rail-metrics" title="${escHtml(basis)}">
       <div><dt>Total Invested</dt><dd>${railAmount(pnl.invested_inr)}</dd></div>
       <div><dt>Total Returns</dt><dd class="${returnsTone}">${railAmount(pnl.pnl_inr)}</dd></div>
@@ -224,6 +235,7 @@ function clearRail() {
 
 document.addEventListener('ca:session', renderRail);
 document.addEventListener('ca:snapshot', renderRail);
+document.addEventListener('ca:brokers', () => { if (sessionReady()) renderRail(); });
 document.addEventListener('ca:session-ended', () => {
   railToken += 1;
   clearRail();

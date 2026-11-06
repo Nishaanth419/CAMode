@@ -662,15 +662,16 @@ async function renderTrend() {
     setHtml(container, errorBlock(error));
     return;
   }
-  const points = (data.history || []).filter((point) => Number.isFinite(point.networthInr));
+  const series = historySeries(data);
+  const points = series.points;
   if (points.length < 2) {
     setHtml(container, '<p class="page-muted">The trend appears once there are two days of snapshots.</p>');
     return;
   }
   setHtml(container, chartHtml({
-    type: 'line', title: `Net worth, last ${trendDays} days`, unit: '₹',
+    type: 'line', title: `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${trendDays} days`, unit: '₹',
     series: netWorthSeries(points),
-  }));
+  }) + (series.note ? `<p class="page-muted small">${escHtml(series.note)}</p>` : ''));
 }
 
 document.addEventListener('click', (event) => {
@@ -717,7 +718,9 @@ function holdingsSourceNote(tab, source, data) {
   if (tab.id === 'all') {
     const replaced = Object.entries(data.combined.deduplicated || {})
       .map(([name, count]) => `${count} INDmoney ${count === 1 ? 'row' : 'rows'} for ${name} replaced by ${name}'s own`).join('; ');
-    return `Holdings only: INDmoney's net worth outside holdings is not included.${replaced ? ` ${replaced}, so nothing is counted twice.` : ''}`;
+    const missing = Object.entries(data.combined.onlyInIndmoney || {})
+      .map(([name, count]) => `${count} ${count === 1 ? 'holding' : 'holdings'} INDmoney lists at ${name} ${count === 1 ? 'was' : 'were'} not found in ${name}'s own data, so ${count === 1 ? 'it is' : 'they are'} left out`).join('; ');
+    return `Holdings only: INDmoney's net worth outside holdings is not included.${replaced ? ` ${replaced}, so nothing is counted twice.` : ''}${missing ? ` ${missing}.` : ''}`;
   }
   if (!source.available) return 'No holdings to show yet.';
   const when = source.asOf ? `As of ${formatCaptured(source.asOf)}.` : '';

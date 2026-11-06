@@ -23,6 +23,12 @@ amounts or names), and the asset types ``networth_snapshot`` lists. ``--profile
 <id>`` picks the profile whose connection is used (default: the first connected):
 
     python -m scripts.inspect_indmoney_shapes --brokers --profile <id>
+
+``--codes`` prints, for the holdings rows, how many ``investment_code`` values have each
+pattern (letters as ``A``, digits as ``9``) and how many are ISIN-shaped, per asset type and
+broker label. No codes, names or amounts:
+
+    python -m scripts.inspect_indmoney_shapes --codes --profile <id>
 """
 
 from __future__ import annotations
@@ -106,6 +112,44 @@ def broker_counts(value: Any) -> None:
                 print(f"{key}.{label}: {counts}")
 
 
+ISIN_SHAPE = re.compile(r"^IN[A-Z0-9]{9}[0-9]$")
+
+
+def code_pattern(code: Any) -> str:
+    """A code with letters turned into A and digits into 9 (anything else kept); ``(none)`` when blank."""
+    text = str(code or "").strip()
+    return re.sub(r"\d", "9", re.sub(r"[A-Za-z]", "A", text)) if text else "(none)"
+
+
+def code_counts(value: Any) -> dict[str, dict[str, Any]]:
+    """Per ``asset_type | broker`` label: row count, ISIN-shaped count and pattern counts. No values."""
+    body = value.get("result") if isinstance(value, dict) and isinstance(value.get("result"), dict) else value
+    found: dict[str, dict[str, Any]] = {}
+    if not isinstance(body, dict):
+        return found
+    for key in ("holdings", "investments"):
+        for row in body.get(key) or []:
+            if not isinstance(row, dict):
+                continue
+            label = f"{row.get('asset_type')} | {row.get('broker')}"
+            entry = found.setdefault(label, {"rows": 0, "isin_shaped": 0, "patterns": {}})
+            code = str(row.get("investment_code") or "").strip().upper()
+            entry["rows"] += 1
+            entry["isin_shaped"] += bool(ISIN_SHAPE.match(code))
+            pattern = code_pattern(row.get("investment_code"))
+            entry["patterns"][pattern] = entry["patterns"].get(pattern, 0) + 1
+    return found
+
+
+def print_codes(value: Any) -> None:
+    print("--- investment_code shapes")
+    counts = code_counts(value)
+    if not counts:
+        print("(no holdings rows)")
+    for label, entry in sorted(counts.items()):
+        print(f"{label}: rows={entry['rows']} isin_shaped={entry['isin_shaped']} patterns={entry['patterns']}")
+
+
 def first_fund_id(value: Any) -> str | None:
     """The scheme id of the first row in a get_mf_by_category response, whatever the id key is called."""
     if isinstance(value, dict):
@@ -163,6 +207,8 @@ async def run(name: str, arguments: dict[str, Any], session: dict[str, Any], tok
     print(json.dumps(shape(value), indent=2))
     if "--brokers" in sys.argv:
         broker_counts(value)
+    if "--codes" in sys.argv:
+        print_codes(value)
     if show_labels:
         print("--- labels")
         for path, values in sorted(labels(value).items()):
