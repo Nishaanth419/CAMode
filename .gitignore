@@ -17,3 +17,4 @@ ui-debug.log
 .agent-loop/
 ca_mode_agentic_financial_copilot_plan.md
 deploy/app.env
+.archify/

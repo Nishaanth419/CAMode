@@ -24,19 +24,12 @@ It runs its AI model on your computer through [Ollama](https://ollama.com), so y
 
 ## How it works
 
-```mermaid
-flowchart LR
-    Browser["Browser<br/>frontend/ (vanilla JS PWA)"] -->|"cookie: profile session"| API["FastAPI<br/>app/main.py"]
-    API --> Users["Profiles and sessions<br/>app/users.py"]
-    API --> Agent["Routing and answers<br/>app/agent.py + agent_graph.py"]
-    API --> Snap["Snapshots and scheduler<br/>app/snapshots.py"]
-    Users --> DB[("SQLite<br/>.data/codemode.sqlite3")]
-    Snap --> DB
-    Agent -->|"chat completions"| LLM["Ollama on this computer<br/>(or OpenAI / Groq)"]
-    Agent -->|"snapshot tools"| Snap
-    Agent -->|"live read-only tools"| MCP["INDmoney MCP<br/>app/mcp_client.py"]
-    Snap -->|"09:00 IST daily"| MCP
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
+  <img alt="CA Mode architecture: browser, FastAPI chat route, agent routing, LangGraph general agent, local model, tool runner, INDmoney MCP, snapshot scheduler and sealed SQLite" src="docs/images/architecture-light.png">
+</picture>
+
+**Interactive version:** [docs/architecture.html](docs/architecture.html) (download and open it in a browser for zoom, search, dark/light themes and source links to each component).
 
 A chat question goes through these stages:
 
