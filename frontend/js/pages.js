@@ -721,7 +721,9 @@ function holdingsSourceNote(tab, source, data) {
   }
   if (!source.available) return 'No holdings to show yet.';
   const when = source.asOf ? `As of ${formatCaptured(source.asOf)}.` : '';
-  return source.stale ? `${when} The login has ended, so these are the last holdings fetched.` : when;
+  const moved = Object.entries(source.movedTo || {})
+    .map(([name, count]) => ` ${count} ${name} ${count === 1 ? 'holding is' : 'holdings are'} shown on the ${name} tab instead.`).join('');
+  return source.stale ? `${when} The login has ended, so these are the last holdings fetched.${moved}` : `${when}${moved}`;
 }
 
 async function renderHoldings() {

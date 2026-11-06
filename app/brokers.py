@@ -429,36 +429,44 @@ def combined(
 
     A broker with holdings of its own replaces INDmoney's rows labelled with that broker (INDmoney's
     ``investment_code`` format is undocumented, so matching single rows could miss and double count).
+    Those rows then show only on the broker's own tab: the INDmoney source leaves them out and says
+    how many moved (``movedTo``). A broker with nothing fetched yet takes nothing away from INDmoney.
     """
     sources: list[dict[str, Any]] = []
-    indmoney_rows: list[dict[str, Any]] = []
-    if snapshot:
-        rows, _ = portfolio_math._holding_rows(snapshot["results"])
-        indmoney_rows = rows
-        view = rows_view(rows) if rows else {"figures": None, "holdings": []}
-        sources.append({
-            "id": "indmoney", "name": "INDmoney", "kind": "indmoney", "status": "connected", "asOf": snapshot["capturedAt"],
-            "stale": False, "available": True, **view,
-        })
-    merged = list(indmoney_rows)
-    deduplicated: dict[str, int] = {}
+    broker_sources: list[dict[str, Any]] = []
+    direct: list[tuple[Broker, list[dict[str, Any]]]] = []
     for payload in broker_payloads:
         broker = BROKERS.get(payload.get("broker", ""))
         if broker is None:
             continue
         rows = payload.get("_rows") or []
-        sources.append({
+        broker_sources.append({
             "id": broker.id, "name": broker.name, "kind": "broker", "status": payload.get("status"),
             "asOf": payload.get("asOf"), "stale": bool(payload.get("stale")), "available": bool(payload.get("available")),
             "figures": payload.get("figures"), "holdings": payload.get("holdings", []),
         })
-        if not (payload.get("available") and rows):
-            continue
-        labels = tuple(label.lower() for label in broker.indmoney_labels)
-        kept = [row for row in merged if not any(label in str(row.get("broker") or "").lower() for label in labels)]
-        if len(kept) != len(merged):
-            deduplicated[broker.name] = deduplicated.get(broker.name, 0) + len(merged) - len(kept)
-        merged = kept + rows
+        if payload.get("available") and rows:
+            direct.append((broker, rows))
+    indmoney_rows: list[dict[str, Any]] = []
+    deduplicated: dict[str, int] = {}
+    if snapshot:
+        rows, _ = portfolio_math._holding_rows(snapshot["results"])
+        for broker, _ in direct:
+            labels = tuple(label.lower() for label in broker.indmoney_labels)
+            kept = [row for row in rows if not any(label in str(row.get("broker") or "").lower() for label in labels)]
+            if len(kept) != len(rows):
+                deduplicated[broker.name] = deduplicated.get(broker.name, 0) + len(rows) - len(kept)
+            rows = kept
+        indmoney_rows = rows
+        view = rows_view(rows) if rows else {"figures": None, "holdings": []}
+        sources.append({
+            "id": "indmoney", "name": "INDmoney", "kind": "indmoney", "status": "connected", "asOf": snapshot["capturedAt"],
+            "stale": False, "available": True, **view, "movedTo": dict(deduplicated),
+        })
+    sources.extend(broker_sources)
+    merged = list(indmoney_rows)
+    for _, rows in direct:
+        merged += rows
     if not merged:
         return {"sources": sources, "combined": {"available": False, "deduplicated": deduplicated}}
     return {"sources": sources, "combined": {

@@ -348,11 +348,23 @@ def test_combined_drops_indmoneys_zerodha_rows_and_reports_it(client, signed_in,
     assert [source["id"] for source in body["sources"]] == ["indmoney", "zerodha"]
     assert body["combined"]["deduplicated"] == {"Zerodha": 1}
     indmoney = next(source for source in body["sources"] if source["id"] == "indmoney")
-    expected = value_of(indmoney["holdings"]) - Decimal(130000) + value_of(direct["holdings"])
+    assert indmoney["movedTo"] == {"Zerodha": 1}
+    assert len(indmoney["holdings"]) == 6 - 1
+    assert all("zerodha" not in str(item["broker"]).lower() for item in indmoney["holdings"])
+    expected = value_of(indmoney["holdings"]) + value_of(direct["holdings"])
     assert value_of(body["combined"]["holdings"]) == expected
     brokers_seen = {item["broker"] for item in body["combined"]["holdings"]}
     assert "Zerodha" in brokers_seen and len(body["combined"]["holdings"]) == 6 - 1 + 3
     assert all(item["name"] != "HDFC Bank" for item in body["combined"]["holdings"])
+
+
+def test_indmoney_keeps_its_zerodha_rows_until_zerodha_has_holdings(client, signed_in, fake_kite):
+    store_indmoney_snapshot(signed_in["id"])
+    client.post("/api/brokers/zerodha/connect")
+    body = client.get("/api/holdings/combined").json()
+    indmoney = next(source for source in body["sources"] if source["id"] == "indmoney")
+    assert indmoney["movedTo"] == {}
+    assert len(indmoney["holdings"]) == 6
 
 
 def test_combined_without_brokers_equals_indmoney_only(client, signed_in):
