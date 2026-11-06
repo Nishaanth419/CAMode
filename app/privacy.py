@@ -28,7 +28,7 @@ from .db import connect_db
 # 2026-10-22.2: the operator's admin page (admin.py) and what it shows.
 # 2026-10-26.1: answer records keep the figures CA Mode calculated for an analysis (analysis_tools).
 # 2026-11-06.1: broker connections (Zerodha) and the holdings fetched from them.
-POLICY_VERSION: Final = "2026-11-06.1"
+POLICY_VERSION: Final = "2026-11-06.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -144,16 +144,22 @@ NOTICE: Final = (
     {
         "title": "Broker connections",
         "body": (
-            "If you connect Zerodha, CA Mode talks to Zerodha's hosted Kite server. You log in on Zerodha's own "
-            "site, so CA Mode never sees your Zerodha password or access token; it keeps only the encrypted "
-            "session id Kite gives it, and Zerodha ends that login within a day. If you save history, the latest "
-            "holdings fetched from Zerodha are also kept, sealed under your PIN key, so they can still be shown "
-            "after the login ends; holdings are not saved in private mode. Only Zerodha's read-only tools are used: "
-            "CA Mode cannot place or change an order. When Portfolio Analyzer reads Zerodha data for an answer, it "
-            "goes to the AI model you select, like INDmoney data. Disconnecting removes the session and the saved "
-            "holdings, clearing your history or switching to private mode removes the saved holdings, and deleting "
-            "your profile removes everything. Answer records keep their usual short, capped previews of what was "
-            "read until the chat or history is cleared; disconnecting a broker does not delete them."
+            "You can connect a broker that runs its own hosted MCP server: Zerodha, FYERS, Kotak Neo, Upstox, Dhan "
+            "or Groww. You log in on the broker's own site (or scan its QR code in its app), so CA Mode never sees "
+            "your broker password. For Zerodha and FYERS it keeps only the encrypted session id the broker gives "
+            "it, which the broker ends within a day. For Kotak Neo it keeps the encrypted login session the broker "
+            "issues (the client code you type is not kept). For Upstox, Dhan and Groww it keeps the OAuth access "
+            "token and refresh token the broker issues and the sign-in registration CA Mode made with it, encrypted "
+            "with your server's key; tokens are never exported, never shown and never sent to the AI model. If you "
+            "save history, the latest holdings fetched from a broker are also kept, sealed under your PIN key, so "
+            "they can still be shown after the login ends; holdings are not saved in private mode. Only read-only "
+            "tools are used: CA Mode cannot place or change an order. When Portfolio Analyzer reads broker data for "
+            "an answer, it goes to the AI model you select, like INDmoney data. Disconnecting removes the session or "
+            "tokens and the saved holdings (CA Mode cannot revoke a token at the broker, so also remove CA Mode in "
+            "the broker's own app list if you want that), clearing your history or switching to private mode "
+            "removes the saved holdings, and deleting your profile removes everything. Answer records keep their "
+            "usual short, capped previews of what was read until the chat or history is cleared; disconnecting a "
+            "broker does not delete them."
         ),
     },
     {

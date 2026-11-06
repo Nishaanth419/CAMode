@@ -390,7 +390,7 @@ def holdings_stored(client, fake_kite):
 
 def test_the_notice_and_policy_version_cover_brokers():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-06.1"
+    assert privacy.POLICY_VERSION == "2026-11-06.2"
     section = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")
     assert "Zerodha" in section["body"] and "read-only" in section["body"]
 
@@ -584,3 +584,66 @@ async def test_stream_agent_without_token_or_broker_tools_still_errors(monkeypat
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     with pytest.raises(agent.AgentRunError):
         await agent.run_agent("what is in my portfolio", "https://mcp", None, [], "portfolio", "openai")
+
+
+# ── Tools the broker's server exposes ─────────────────────────────────────────
+
+KITE_TOOLS = [
+    {"name": "place_order", "description": "Place an order."},
+    {"name": "get_holdings", "description": "Get   holdings\n for the user."},
+    {"name": "login", "description": "Log in to Kite."},
+    {"name": "exit_position", "description": "Exit a position."},
+    {"name": "get_profile", "description": "x" * 1000},
+    {"description": "no name"},
+]
+
+
+@pytest.fixture
+def kite_tools(monkeypatch):
+    seen = []
+
+    async def fetch(url, token, *, service="INDmoney"):
+        seen.append((url, token))
+        return {"tools": KITE_TOOLS, "sessionId": "kitemcp-tools", "protocolVersion": "2025-03-26"}
+
+    monkeypatch.setattr(brokers, "_tools_cache", {})
+    monkeypatch.setattr(brokers.mcp_client, "fetch_mcp_session", fetch)
+    return seen
+
+
+def test_tool_list_marks_what_ca_mode_may_call(client, signed_in, kite_tools):
+    body = client.get("/api/brokers/zerodha/tools").json()
+    tools = {tool["name"]: tool for tool in body["tools"]}
+    assert set(tools) == {"place_order", "get_holdings", "login", "exit_position", "get_profile"}
+    assert tools["get_holdings"] == {"name": "get_holdings", "description": "Get holdings for the user.", "access": "read"}
+    assert tools["place_order"]["access"] == "write" and tools["exit_position"]["access"] == "write"
+    assert tools["login"]["access"] == "not_enabled"
+    assert len(tools["get_profile"]["description"]) == brokers.MAX_TOOL_DESCRIPTION
+    assert [tool["access"] for tool in body["tools"]] == ["read", "read", "not_enabled", "write", "write"]
+    assert kite_tools == [(brokers.BROKERS["zerodha"].mcp_url, None)]
+    assert "sessionId" not in body and "kitemcp-tools" not in json.dumps(body)
+
+
+def test_tool_list_is_cached_and_needs_no_broker_connection(client, signed_in, kite_tools):
+    client.get("/api/brokers/zerodha/tools")
+    client.get("/api/brokers/zerodha/tools")
+    assert len(kite_tools) == 1
+    assert brokers.connections(signed_in["id"]) == []
+
+
+def test_tool_list_needs_a_profile_and_a_known_broker(client, kite_tools):
+    assert client.get("/api/brokers/zerodha/tools").status_code == 401
+    from tests.conftest import sign_up
+    sign_up(client)
+    assert client.get("/api/brokers/nope/tools").status_code == 404
+
+
+def test_tool_list_failure_is_a_safe_message(client, signed_in, monkeypatch):
+    async def fail(url, token, *, service="INDmoney"):
+        raise RuntimeError("secret internals")
+
+    monkeypatch.setattr(brokers, "_tools_cache", {})
+    monkeypatch.setattr(brokers.mcp_client, "fetch_mcp_session", fail)
+    response = client.get("/api/brokers/zerodha/tools")
+    assert response.status_code == 502
+    assert "secret" not in response.text and "Zerodha" in response.json()["error"]

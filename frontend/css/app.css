@@ -1992,3 +1992,16 @@ a.tool-tile { text-decoration: none; }
 .brokers-title { margin: 0; font-size: 14px; color: var(--text); }
 .broker-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
 .broker-actions a.gate-secondary { text-decoration: none; }
+.broker-item { display: grid; gap: 8px; }
+.broker-item + .broker-item { margin-top: 10px; }
+.broker-name { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.broker-name:hover strong, .broker-name:focus-visible strong { text-decoration: underline; }
+.broker-tools { padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); max-height: 320px; overflow-y: auto; }
+.broker-tool-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.broker-tool-list li { display: grid; gap: 2px; }
+.broker-tool-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.broker-tool-head code { font-size: 13px; overflow-wrap: anywhere; }
+.broker-tool-list small { color: var(--text-soft); font-size: 12px; line-height: 1.4; }
+.broker-tool-write { color: var(--red); }
+.broker-tool-not_enabled { color: var(--text-soft); }
+.broker-ucc { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); color: inherit; font: inherit; text-transform: uppercase; }
