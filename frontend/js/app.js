@@ -102,6 +102,19 @@ let signInError = (() => {
   window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
   return SIGN_IN_ERRORS[code] || SIGN_IN_ERRORS.failed;
 })();
+// Set from ?brokerError=<id> when a broker's own sign-in (Upstox, Dhan, Groww) did not complete.
+(() => {
+  const params = new URLSearchParams(window.location.search);
+  const broker = params.get('brokerError');
+  if (!broker) return;
+  params.delete('brokerError');
+  const query = params.toString();
+  window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+  window.addEventListener('load', () => {
+    const message = `Could not connect ${broker.slice(0, 20)}. Open your profile and try Connect again.`;
+    setTimeout(() => (typeof toast === 'function' ? toast(message) : alert(message)), 1500);
+  });
+})();
 // Cloudflare Turnstile on sign-up: the site key from /api/session (null when off), the widget and its script.
 let turnstileSiteKey = null;
 let turnstileWidget = null;
@@ -1087,6 +1100,7 @@ const brokersStatus = document.getElementById('brokers-status');
 const BROKER_POLL_MS = 3000;
 const BROKER_MAX_POLLS = 100;
 let brokerPollTimer = null;
+let lastBrokers = [];
 const brokerLoginLinks = {};
 let pendingBrokers = [];
 
@@ -1099,6 +1113,22 @@ function brokerButtons(broker) {
   const id = escHtml(broker.broker);
   const link = brokerLoginLinks[broker.broker];
   const button = (action, label) => `<button class="gate-secondary" type="button" data-broker-action="${action}" data-broker="${id}">${label}</button>`;
+  const oauthLink = (label) => `<a class="gate-secondary" href="/auth/brokers/${encodeURIComponent(broker.broker)}/connect">${label}</a>`;
+  if (broker.auth === 'oauth') {
+    if (broker.status === 'connected') return button('disconnect', 'Disconnect');
+    if (broker.status === 'needs_login' || broker.status === 'unavailable') return oauthLink('Reconnect') + button('disconnect', 'Disconnect');
+    return oauthLink('Connect');
+  }
+  if (broker.auth === 'mcp_login_qr') {
+    const ucc = `<input class="broker-ucc" type="text" maxlength="5" autocomplete="off" spellcheck="false" placeholder="Client code" aria-label="${escHtml(broker.name)} client code (UCC)" data-broker-ucc="${id}">`;
+    if (broker.status === 'pending') {
+      return (link ? `<a class="gate-secondary" href="${escHtml(link)}" target="_blank" rel="noopener noreferrer">Open QR login</a>` : '')
+        + button('verify', "I've scanned the QR") + button('disconnect', 'Cancel');
+    }
+    if (broker.status === 'connected') return button('disconnect', 'Disconnect');
+    return ucc + button('connect', broker.status === 'disconnected' ? 'Connect' : 'Reconnect')
+      + (broker.status === 'disconnected' ? '' : button('disconnect', 'Disconnect'));
+  }
   if (broker.status === 'pending') {
     return (link ? `<a class="gate-secondary" href="${escHtml(link)}" target="_blank" rel="noopener noreferrer">Open ${escHtml(broker.name)} login</a>` : button('connect', 'Get login link'))
       + button('disconnect', 'Cancel');
@@ -1108,13 +1138,56 @@ function brokerButtons(broker) {
   return button('connect', 'Connect');
 }
 
+const BROKER_TOOL_ACCESS = {
+  read: ['Read-only', 'CA Mode and the assistant can use this.'],
+  not_enabled: ['Not enabled', 'Not reviewed yet, so CA Mode never calls it.'],
+  write: ['Blocked', 'Changes your account (orders, watchlists or alerts), so CA Mode never calls it.'],
+};
+const brokerToolsOpen = new Set();
+const brokerToolsHtml = {};
+
+function brokerToolsPanel(id) {
+  return `<div class="broker-tools" id="broker-tools-${escHtml(id)}">${brokerToolsHtml[id] || '<p class="dialog-sub">Loading the tools…</p>'}</div>`;
+}
+
+function renderBrokerTools(data) {
+  const tools = data.tools || [];
+  if (data.needsConnection) return `<p class="dialog-sub">Connect ${escHtml(data.name)} to see the tools its server offers.</p>`;
+  if (!tools.length) return `<p class="dialog-sub">${escHtml(data.name)}'s server lists no tools.</p>`;
+  const usable = tools.filter((tool) => tool.access === 'read').length;
+  return `<p class="dialog-sub">${tools.length} tools on ${escHtml(data.name)}'s MCP server; CA Mode uses the ${usable} read-only ones.</p>
+    <ul class="broker-tool-list">${tools.map((tool) => {
+      const [label, why] = BROKER_TOOL_ACCESS[tool.access] || BROKER_TOOL_ACCESS.not_enabled;
+      return `<li><span class="broker-tool-head"><code>${escHtml(tool.name)}</code><span class="pill broker-tool-${escHtml(tool.access)}" title="${escHtml(why)}">${label}</span></span>${tool.description ? `<small>${escHtml(tool.description)}</small>` : ''}</li>`;
+    }).join('')}</ul>`;
+}
+
+async function loadBrokerTools(id) {
+  try {
+    const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/tools`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not read the tool list.');
+    brokerToolsHtml[id] = renderBrokerTools(data);
+  } catch (error) {
+    delete brokerToolsHtml[id];
+    const panel = document.getElementById(`broker-tools-${id}`);
+    if (panel) panel.innerHTML = `<p class="dialog-sub">${escHtml(error.message)}</p>`;
+    return;
+  }
+  const panel = document.getElementById(`broker-tools-${id}`);
+  if (panel) panel.innerHTML = brokerToolsHtml[id];
+}
+
 function renderBrokers(brokers) {
   brokersSection.hidden = !brokers.length;
-  brokersList.innerHTML = brokers.map((broker) => `<div class="connection-row">
-      <span><strong>${escHtml(broker.name)}</strong><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span>
+  brokersList.innerHTML = brokers.map((broker) => {
+    const open = brokerToolsOpen.has(broker.broker);
+    return `<div class="broker-item"><div class="connection-row">
+      <span><button class="broker-name" type="button" data-broker-tools="${escHtml(broker.broker)}" aria-expanded="${open}" title="Show the tools ${escHtml(broker.name)}'s server exposes"><strong>${escHtml(broker.name)}</strong><span aria-hidden="true">${open ? '▾' : '▸'}</span></button><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span>
       <span class="broker-actions">${brokerButtons(broker)}</span>
-    </div>`).join('');
-  pendingBrokers = brokers.filter((broker) => broker.status === 'pending').map((broker) => broker.broker);
+    </div>${open ? brokerToolsPanel(broker.broker) : ''}</div>`;
+  }).join('');
+  pendingBrokers = brokers.filter((broker) => broker.status === 'pending' && broker.auth !== 'mcp_login_qr').map((broker) => broker.broker);
   if (pendingBrokers.length) pollBrokers(0);
 }
 
@@ -1125,7 +1198,8 @@ async function loadBrokers() {
       brokersSection.hidden = true;  // Not offered here (for example in the demo).
       return;
     }
-    renderBrokers((await response.json()).brokers || []);
+    lastBrokers = (await response.json()).brokers || [];
+    renderBrokers(lastBrokers);
   } catch {
     brokersSection.hidden = true;
   }
@@ -1155,6 +1229,15 @@ function pollBrokers(count) {
 }
 
 brokersList.addEventListener('click', async (event) => {
+  const toggle = event.target.closest('[data-broker-tools]');
+  if (toggle) {
+    const id = toggle.dataset.brokerTools;
+    if (brokerToolsOpen.has(id)) brokerToolsOpen.delete(id);
+    else brokerToolsOpen.add(id);
+    renderBrokers(lastBrokers);
+    if (brokerToolsOpen.has(id) && !brokerToolsHtml[id]) loadBrokerTools(id);
+    return;
+  }
   const button = event.target.closest('[data-broker-action]');
   if (!button) return;
   const id = button.dataset.broker;
@@ -1166,10 +1249,19 @@ brokersList.addEventListener('click', async (event) => {
       delete brokerLoginLinks[id];
       document.dispatchEvent(new CustomEvent('ca:holdings'));
     } else {
-      const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/connect`, { method: 'POST' });
+      const verifying = button.dataset.brokerAction === 'verify';
+      const input = brokersList.querySelector(`[data-broker-ucc="${CSS.escape(id)}"]`);
+      const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/${verifying ? 'verify' : 'connect'}`, {
+        method: 'POST',
+        ...(input ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ucc: input.value.trim() }) } : {}),
+      });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Could not start the login.');
       if (data.loginUrl) brokerLoginLinks[id] = data.loginUrl;
+      if (verifying) {
+        delete brokerLoginLinks[id];
+        fetch(`/api/brokers/${encodeURIComponent(id)}/holdings?refresh=1`).finally(() => document.dispatchEvent(new CustomEvent('ca:holdings')));
+      }
     }
     await loadBrokers();
   } catch (error) {

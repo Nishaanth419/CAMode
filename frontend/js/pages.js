@@ -757,7 +757,7 @@ async function renderHoldings() {
       </div>
       ${isBroker ? `<button class="gate-secondary" type="button" data-broker-refresh="${escHtml(tab.id)}">Refresh from ${escHtml(tab.label)}</button>` : ''}
     </div>
-    ${source.available === false ? notice('No holdings to show', 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.') : `
+    ${source.available === false ? notice('No holdings to show', source.problem || 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.') : `
       ${holdingsTotals(source.figures)}
       <section class="panel"><div class="rail-head"><h2>${escHtml(tab.label)}${stale}</h2></div>${holdingsTable(source.holdings || [])}</section>`}`);
 }

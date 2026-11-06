@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import date
 from typing import Any, Literal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -23,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, broker_oauth, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -1205,6 +1206,86 @@ async def disconnect_indmoney(request: Request):
     return {"connected": False}
 
 
+# ── Broker OAuth (Upstox, Dhan, Groww) ─────────────────────────────────────────
+
+BROKER_OAUTH_KEY = "brokerOauth"
+
+
+def broker_error_redirect(request: Request, broker_id: str) -> RedirectResponse:
+    return RedirectResponse(f"{request_origin(request)}/?brokerError={quote(broker_id)}", status_code=302, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/auth/brokers/{broker_id}/connect")
+async def connect_broker_oauth(broker_id: str, request: Request):
+    broker = brokers.get_broker(broker_id)
+    if broker is None or broker.auth != "oauth":
+        raise HTTPException(404, "That broker is not available.")
+    sid = session_id(request)
+    user = current_user(request)
+    if not user or history_gate(user, needs_consent=True):
+        return RedirectResponse(request_origin(request) + "/", status_code=302, headers={"Cache-Control": "no-store"})
+    redirect_uri = f"{request_origin(request)}/auth/brokers/{broker.id}/callback"
+    state = random_token()
+    verifier, challenge = broker_oauth.pkce()
+    try:
+        async with httpx.AsyncClient(timeout=broker_oauth.TIMEOUT_SECONDS) as client:
+            metadata = await broker_oauth.discover(broker.mcp_url, client)
+            client_info = await broker_oauth.register(metadata, redirect_uri, client)
+        link = broker_oauth.authorize_url(metadata, client_info["clientId"], redirect_uri, state, challenge, broker.mcp_url)
+    except (broker_oauth.OAuthError, httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("broker_oauth_start_failed", extra={"broker": broker.id, "error": type(exc).__name__})
+        return broker_error_redirect(request, broker.id)
+    stored = get_session(sid) if sid else {}
+    stored.pop("updatedAt", None)
+    stored.pop("sessionExpiresAt", None)
+    stored[BROKER_OAUTH_KEY] = {
+        "broker": broker.id, "state": state, "verifier": verifier, "client": client_info,
+        "tokenEndpoint": metadata["token_endpoint"], "redirectUri": redirect_uri,
+    }
+    save_session(sid, stored)
+    return RedirectResponse(link, status_code=302, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/auth/brokers/{broker_id}/callback")
+async def finish_broker_oauth(broker_id: str, request: Request):
+    broker = brokers.get_broker(broker_id)
+    if broker is None or broker.auth != "oauth":
+        raise HTTPException(404, "That broker is not available.")
+    sid = session_id(request)
+    user = current_user(request)
+    stored = get_session(sid) if sid else {}
+    pending = stored.get(BROKER_OAUTH_KEY) if isinstance(stored.get(BROKER_OAUTH_KEY), dict) else None
+    code, state = request.query_params.get("code"), request.query_params.get("state")
+    if (
+        not user or not pending or pending.get("broker") != broker.id or not code or not state
+        or not hmac.compare_digest(str(state), str(pending.get("state")))
+        or request.query_params.get("error")
+    ):
+        return broker_error_redirect(request, broker.id)
+    stored.pop(BROKER_OAUTH_KEY, None)
+    stored.pop("updatedAt", None)
+    stored.pop("sessionExpiresAt", None)
+    save_session(sid, stored)  # the state is single use
+    try:
+        async with httpx.AsyncClient(timeout=broker_oauth.TIMEOUT_SECONDS) as client:
+            token = await broker_oauth.exchange_code(
+                pending["tokenEndpoint"], pending["client"], code, pending["verifier"], pending["redirectUri"],
+                broker.mcp_url, client,
+            )
+    except (broker_oauth.OAuthError, httpx.HTTPError, KeyError) as exc:
+        logger.warning("broker_oauth_exchange_failed", extra={"broker": broker.id, "error": type(exc).__name__})
+        return broker_error_redirect(request, broker.id)
+    try:
+        expires_in = int(token.get("expires_in") or 3600)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    brokers.save_oauth(user["id"], broker.id, {
+        "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),
+        "expiresAt": users.now_ms() + expires_in * 1000, "client": pending["client"], "tokenEndpoint": pending["tokenEndpoint"],
+    })
+    return RedirectResponse(f"{request_origin(request)}/#/holdings/{broker.id}", status_code=302, headers={"Cache-Control": "no-store"})
+
+
 # ── Broker connections ─────────────────────────────────────────────────────────
 
 def unknown_broker() -> JSONResponse:
@@ -1228,16 +1309,45 @@ async def connect_broker(broker_id: str, request: Request):
     broker = brokers.get_broker(broker_id)
     if broker is None:
         return unknown_broker()
+    if broker.auth == "oauth":
+        return {"broker": broker.id, "name": broker.name, "status": "disconnected", "auth": broker.auth,
+                "authorizeUrl": f"/auth/brokers/{broker.id}/connect"}
+    ucc = None
+    if broker.auth == "mcp_login_qr":
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        ucc = body.get("ucc") if isinstance(body, dict) else None
+        if not isinstance(ucc, str) or not brokers.UCC_RE.match(ucc):
+            return JSONResponse({"error": "Enter your 5-character client code (UCC)."}, status_code=422)
     if blocked := rate_limited(request, "broker", user["id"]):
         return blocked
     try:
-        started = await brokers.start_login(user["id"], broker)
+        started = await brokers.start_login(user["id"], broker, ucc=ucc)
     except brokers.BrokerError as exc:
         return JSONResponse({"error": str(exc)}, status_code=502)
     except Exception as exc:
         logger.warning("broker_connect_failed", extra={"broker": broker.id, "error": type(exc).__name__})
         return JSONResponse({"error": f"Could not reach {broker.name}. Try again in a moment."}, status_code=502)
     return started
+
+
+@app.post("/api/brokers/{broker_id}/verify")
+async def verify_broker(broker_id: str, request: Request):
+    """Kotak: the user scanned the QR code in the Neo app; ask Kotak to validate the login."""
+    user = current_user(request)
+    if blocked := history_gate(user, needs_consent=True):
+        return blocked
+    broker = brokers.get_broker(broker_id)
+    if broker is None:
+        return unknown_broker()
+    if blocked := rate_limited(request, "broker", user["id"]):
+        return blocked
+    try:
+        return await brokers.verify_login(user["id"], broker)
+    except brokers.BrokerError as exc:
+        return JSONResponse({"error": str(exc), "status": "pending"}, status_code=409)
 
 
 @app.get("/api/brokers/{broker_id}/status")
@@ -1253,6 +1363,23 @@ async def broker_status(broker_id: str, request: Request):
     if blocked := rate_limited(request, "broker", user["id"]):
         return blocked
     return await brokers.check_status(user["id"], broker)
+
+
+@app.get("/api/brokers/{broker_id}/tools")
+async def broker_tools_list(broker_id: str, request: Request):
+    """The tools the broker's MCP server exposes, and which of them CA Mode may call (read-only)."""
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    broker = brokers.get_broker(broker_id)
+    if broker is None:
+        return unknown_broker()
+    if blocked := rate_limited(request, "broker", user["id"]):
+        return blocked
+    try:
+        return await brokers.list_tools(broker, user_id=user["id"])
+    except brokers.BrokerError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
 
 
 @app.post("/api/brokers/{broker_id}/disconnect")
