@@ -72,7 +72,7 @@ cp .env.example .env
 | `BACKUP_DIR` | `~/ca-mode-backups` | Where daily database backups are written |
 | `BACKUP_KEEP` | `14` | How many backups to keep |
 | `BACKUP_ENABLED` | `true` | Set to `false` to stop daily backups |
-| `APP_MASTER_KEY_FILE` | `~/.config/ca-mode/master.key` | File holding the key that encrypts stored INDmoney tokens (created on first start) |
+| `APP_MASTER_KEY_FILE` | `~/.config/ca-mode/master.key` | File holding the key that encrypts stored INDmoney tokens (created on first start; never re-created over a database that already holds encrypted values) |
 | `APP_MASTER_KEY` | – | The key itself, instead of a file (a Fernet key) |
 | `PAGE_VIEWS_ENABLED` | `true` | Anonymous local page-view counts |
 | `LOG_LEVEL` | `INFO` | Server log level |

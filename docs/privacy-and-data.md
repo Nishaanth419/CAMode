@@ -30,12 +30,12 @@ flowchart TD
 - PINs are stored as salted scrypt hashes. Five wrong PINs or recovery codes lock the profile for five minutes.
 - **Saved chats, snapshots, goals, decisions, and profile details are locked with your PIN.** Each profile has its own keypair (X25519, via PyNaCl). Its private key is stored only encrypted with a key derived from your PIN, and a second copy with one derived from your recovery code (scrypt N=2^17). The daily snapshot job seals new snapshots with the public key, so it needs no PIN. Reading anything back needs the PIN: nobody else on the computer, and nobody with the database and the master key, can read it.
 - After the app restarts, each browser asks for the PIN again ("Welcome back"), because unlocked keys are kept only in memory.
-- **Forgot your PIN?** on the unlock screen sets a new PIN with your recovery code and gives you a new code (the old one stops working). **New recovery code** under **Your data and privacy** replaces a lost code. If both the PIN and the recovery code are lost, the profile's saved history cannot be recovered.
+- **Forgot your PIN?** on the unlock screen sets a new PIN with your recovery code and gives you a new code (the old one stops working). It also signs the profile out of every other browser, and their unlocked keys are forgotten. **New recovery code** under **Your data and privacy** replaces a lost code. If both the PIN and the recovery code are lost, the profile's saved history cannot be recovered.
 - Profiles from before this version get their keys and a recovery code the next time they enter their PIN; their existing chats, snapshots, and profile details are encrypted at that point. Until then, new snapshots for them are saved unencrypted.
 - INDmoney tokens, and the OAuth data held while you sign in to INDmoney, are encrypted (Fernet: AES-128 with HMAC-SHA256) with a master key stored outside the database, at `~/.config/ca-mode/master.key` by default. A copy of `.data/` alone does not reveal them. Existing plaintext tokens are encrypted the first time the app starts. If the key is lost or replaced, stored tokens can't be read: those profiles show as disconnected and need to reconnect INDmoney, and the log shows `stored_secrets_unreadable`.
 - **Disconnect** revokes the INDmoney access token and deletes the profile's snapshots; its chats are kept.
 - **Delete this profile** (in the profile dialog, confirmed with the PIN) removes the profile with its chats, snapshots, goals, decisions, and INDmoney connection.
-- Chats expire 30 days after their last message; each profile keeps at most 50 chats.
+- Chats expire 30 days after their last message; each profile keeps at most 50 chats. Expired chats, answer records older than 30 days and snapshots past the retention choice are deleted by a daily sweep, even for a profile that never signs in again.
 
 The PIN is a local lock for people sharing one computer, not internet-grade authentication: a short numeric PIN can be brute-forced offline by someone who has a copy of the database, so use a longer PIN if that matters to you. Profile names, settings, dates, and consent records are not encrypted. Before exposing CA Mode to a network, switch on [Google sign-in](accounts-and-access.md#open-it-to-other-people-google-sign-in) so each person signs in with their own account.
 
@@ -52,7 +52,7 @@ Each profile must accept the privacy notice before it can chat, connect INDmoney
 - **Save history**: chats and daily snapshots are stored in SQLite as described above.
 - **Private mode**: chats are kept only in server memory and disappear when you sign out or the app restarts. No snapshots are captured. Switching to private mode deletes the chats and snapshots already saved for the profile. INDmoney tokens, profile details, goals and decisions are still saved; **Disconnect** removes the tokens, and the Goals page removes the rest.
 
-Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, goals, decisions, consent history, chats, snapshots, and the email address you sign in with, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection.
+Under **Your data and privacy** in the profile dialog you can change these choices, read the notice, **Export my data** (a JSON file of your profile details, goals, decisions, consent history, chats, snapshots, and the email address you sign in with, without your PIN hash or tokens; confirmed with your PIN), or **Clear saved chats and snapshots** while keeping the profile and INDmoney connection. Clearing history and changing these choices need the PIN to have been entered in this browser session, because private mode and a shorter retention delete saved history.
 
 In both modes, your messages, recent chat history, the profile details, goals and decisions relevant to the question (with figures calculated from them), and any INDmoney data Portfolio Analyzer reads go to the AI model you select: they stay on this computer with the local model and are sent to OpenAI or Groq if you pick one of those.
 
@@ -126,7 +126,7 @@ erDiagram
 | --- | --- | --- |
 | `id` | plain | the cookie value |
 | `data` | master key | short-lived state: a Google sign-in in progress (`state`, `nonce`, PKCE verifier), a Google account waiting to create or claim a profile, the admin sign-in (email, time), INDmoney OAuth in progress |
-| `updated_at` | plain | last use; a session idle for 30 days is deleted when next read |
+| `updated_at` | plain | last use; a session idle for 30 days is deleted by the scheduler's sweep (or when next read). A row bound to no profile (a Google sign-in in progress, a Google account still to create or claim a profile, an admin session, a signed-out cookie) is deleted after 8 hours idle. Opening the app without a session creates no row |
 | `user_id` | plain | the signed-in profile (never set for admin sessions) |
 
 **`consents`**: every acceptance of the privacy notice and every change of storage settings, kept for the life of the profile. Columns: `id` (autoincrement), `user_id`, `policy_version`, `storage_mode`, `snapshot_retention_days`, `accepted_at`, all plain. The newest row decides whether the profile accepted the current notice.
@@ -157,7 +157,7 @@ erDiagram
 
 ### Relationships, indexes and changes
 
-- Every table above that has `user_id` references `users(id)` with `ON DELETE CASCADE` (foreign keys are switched on for each connection), so deleting a profile deletes everything it owns. The exceptions are `oauth_sessions`, whose `user_id` is set to NULL, and `page_views`, which is not linked to anyone.
+- Every table above that has `user_id` references `users(id)` with `ON DELETE CASCADE` (foreign keys are switched on for each connection), so deleting a profile deletes everything it owns. The exceptions are `oauth_sessions`, whose `user_id` is set to NULL (profile deletion deletes the profile's sessions in code first), and `page_views`, which is not linked to anyone.
 - Indexes serve each profile's newest-first lists: `chats(user_id, updated_at DESC)`, `consents(user_id, id DESC)`, `cas_statements(user_id, uploaded_at DESC)`, `investigations(user_id, created_at DESC)`, `agent_runs(user_id, created_at DESC)`.
 - `app/db.py` creates missing tables at startup and adds columns introduced later (`_ADDED_USER_COLUMNS`) in place; there is no separate migration tool. Writes that must not race (PIN lockouts, the daily question count, goal limits, allocations) run in `BEGIN IMMEDIATE` transactions.
 
@@ -171,7 +171,7 @@ The data is exact and structured: amounts, dates, holdings and statuses that are
 | --- | --- |
 | `~/.config/ca-mode/master.key` (`APP_MASTER_KEY_FILE`; `/srv/ca-mode/key/master.key` hosted) | the Fernet master key; never copied into backups |
 | `BACKUP_DIR` (`~/ca-mode-backups`; `/srv/ca-mode/backups` hosted) | daily database copies, newest 14; [`deploy/pull-backups.sh`](hosting.md#backups-and-the-master-key) copies a server's to the Mac (newest 30) |
-| Server memory, lost on restart | unlocked private keys per session, private-mode chats, rate-limit counters, INDmoney fund figures (6-hour cache) |
+| Server memory, lost on restart | unlocked private keys per session (dropped when their session row is gone or idle past 30 days), private-mode chats, rate-limit counters, INDmoney fund figures (6-hour cache) |
 | `/srv/ca-mode/caddy` (hosted with Caddy) | the site's Let's Encrypt certificate |
 | The browser | the `indmoney_session` and `ca_admin` cookies (HttpOnly); theme, agent and model choice in `localStorage` (`code-mode-theme`, `ca-mode-agent`, `ca-mode-provider`) |
 
