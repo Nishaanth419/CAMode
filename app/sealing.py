@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import secrets
+import threading
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -29,6 +31,9 @@ SEALED_PREFIX: Final = "sealed:v1:"
 RECOVERY_ALPHABET: Final = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 RECOVERY_CODE_LENGTH: Final = 20
 _SCRYPT_MAXMEM = 256 * 1024 * 1024
+# Each PIN hash or key unwrap needs ~128 MiB, so concurrent sign-ins on a small server could run it out of
+# memory. Every scrypt call in the app takes one of these slots; the rest wait their turn.
+SCRYPT_SLOTS = threading.BoundedSemaphore(max(1, int(os.getenv("SCRYPT_CONCURRENCY", "2"))))
 
 
 class WrongSecretError(Exception):
@@ -43,8 +48,14 @@ def _b64(value: bytes) -> str:
     return base64.b64encode(value).decode()
 
 
+def scrypt(secret: str, salt: bytes, *, n: int, r: int, p: int, dklen: int) -> bytes:
+    """``hashlib.scrypt`` under ``SCRYPT_SLOTS``, so at most that many run at once."""
+    with SCRYPT_SLOTS:
+        return hashlib.scrypt(secret.encode(), salt=salt, n=n, r=r, p=p, maxmem=_SCRYPT_MAXMEM, dklen=dklen)
+
+
 def _derive(secret: str, salt: bytes, n: int, r: int, p: int) -> bytes:
-    return hashlib.scrypt(secret.encode(), salt=salt, n=n, r=r, p=p, maxmem=_SCRYPT_MAXMEM, dklen=SecretBox.KEY_SIZE)
+    return scrypt(secret, salt, n=n, r=r, p=p, dklen=SecretBox.KEY_SIZE)
 
 
 def wrap_private_key(private_key: PrivateKey, secret: str, *, n: int, r: int = 8, p: int = 1) -> str:
