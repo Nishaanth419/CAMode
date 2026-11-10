@@ -252,6 +252,14 @@ def auth_error(message: str) -> JSONResponse:
     return JSONResponse({"error": message, "loginUrl": "/auth/indmoney/connect"}, status_code=401, headers={"Cache-Control": "no-store"})
 
 
+def indmoney_unavailable() -> JSONResponse:
+    """INDmoney did not answer a token refresh: the connection is kept, so this is not a reconnect prompt."""
+    return JSONResponse(
+        {"error": "INDmoney is not responding right now. Try again in a moment.", "indmoneyUnavailable": True},
+        status_code=503, headers={"Retry-After": "30"},
+    )
+
+
 def profile_required() -> JSONResponse:
     return JSONResponse({"error": "Choose your profile to continue.", "profileRequired": True}, status_code=401)
 
@@ -457,7 +465,10 @@ async def local_session(request: Request):
     connected = False
     if user:
         chats.purge_expired(user["id"])
-        connected = bool(await users.user_access_token(user["id"]))
+        try:
+            connected = bool(await users.user_access_token(user["id"]))
+        except users.IndmoneyUnavailable:
+            connected = True  # stored and not refused; INDmoney just did not answer the refresh
     google = accounts.uses_google()
     response = JSONResponse({
         "connected": connected,
@@ -1517,7 +1528,10 @@ async def indmoney_tool_list(user: dict[str, Any], request: Request) -> Any:
     if blocked := rate_limited(request, "broker", user["id"]):
         return blocked
     name = {"broker": brokers.INDMONEY_ID, "name": "INDmoney"}
-    token = await users.user_access_token(user["id"])
+    try:
+        token = await users.user_access_token(user["id"])
+    except users.IndmoneyUnavailable:
+        return indmoney_unavailable()
     if not token:
         return {**name, "tools": [], "needsConnection": True}
     try:
@@ -1653,7 +1667,11 @@ async def refresh_snapshot(request: Request):
         return consent_required()
     if user["storageMode"] != "device":
         return JSONResponse({"error": "Private mode keeps no snapshots. Choose to save history to turn them on."}, status_code=409)
-    if not await users.user_access_token(user["id"]):
+    try:
+        token = await users.user_access_token(user["id"])
+    except users.IndmoneyUnavailable:
+        return indmoney_unavailable()
+    if not token:
         return auth_error("Connect your INDmoney account to save portfolio snapshots.")
     try:
         snapshot = await snapshots.refresh_user(user["id"], mcp_url=MCP_RESOURCE)
@@ -1797,7 +1815,10 @@ async def list_tools(request: Request):
         return profile_required()
     if not privacy.has_current_consent(user["id"]):
         return consent_required()
-    token = await users.user_access_token(user["id"])
+    try:
+        token = await users.user_access_token(user["id"])
+    except users.IndmoneyUnavailable:
+        return indmoney_unavailable()
     if not token:
         return {"mcpServer": MCP_RESOURCE, "connected": False, "toolCount": 0, "tools": [], "loginUrl": "/auth/indmoney/connect",
                 "brokers": brokers.brokers_overview(user["id"])}
@@ -1842,7 +1863,12 @@ async def chat(body: ChatRequest, request: Request):
         if goal_tools or calculator:
             context = PortfolioContext(local_tools=tuple([*goal_tools, *calculator]))
     if body.agentType == "portfolio":
-        token = await users.user_access_token(user["id"])
+        try:
+            token = await users.user_access_token(user["id"])
+        except users.IndmoneyUnavailable:
+            if not brokers.has_connection(user["id"]):
+                return indmoney_unavailable()
+            token = None  # answer from the broker and saved snapshots
         if not token and not brokers.has_connection(user["id"]):
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
         extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
@@ -1871,7 +1897,10 @@ async def chat(body: ChatRequest, request: Request):
             )
         except Exception as exc:
             if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
-                refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
+                try:
+                    refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
+                except users.IndmoneyUnavailable:
+                    return indmoney_unavailable()
                 if not refreshed_token:
                     return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
                 try:

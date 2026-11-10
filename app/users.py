@@ -8,6 +8,7 @@ account and the PIN only unlocks their sealed history.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hmac
 import json
@@ -461,38 +462,81 @@ def users_with_indmoney() -> list[str]:
     return [row["id"] for row in rows if has_indmoney_tokens(_decode_secret(row["indmoney"]))]
 
 
+class IndmoneyUnavailable(RuntimeError):
+    """INDmoney's token endpoint could not be reached or failed (transport error, 5xx, 429).
+
+    The stored connection may still be fine, so this is not "disconnected": callers say INDmoney is not
+    responding and keep the connection.
+    """
+
+
+# One refresh at a time per profile: INDmoney may rotate refresh tokens, which work only once.
+_refresh_locks: dict[str, asyncio.Lock] = {}
+
+
+def _token_is_fresh(stored: dict[str, Any]) -> bool:
+    return bool(stored.get("accessToken")) and stored.get("expiresAt", 0) > now_ms() + 30_000
+
+
+def _expires_in(result: dict[str, Any]) -> int:
+    try:
+        seconds = int(float(result.get("expires_in", 3600)))
+    except (TypeError, ValueError, OverflowError):
+        return 3600
+    return seconds if seconds > 0 else 3600
+
+
 async def user_access_token(user_id: str, *, force_refresh: bool = False) -> str | None:
-    """Return a usable INDmoney access token for ``user_id``, refreshing it when needed."""
-    stored = get_indmoney(user_id)
-    token = stored.get("accessToken")
-    if not force_refresh and token and stored.get("expiresAt", 0) > now_ms() + 30_000:
-        return token
-    if not stored.get("refreshToken") or not stored.get("clientId") or not stored.get("clientSecret"):
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(INDMONEY_TOKEN_URL, data={
-                "grant_type": "refresh_token", "refresh_token": stored["refreshToken"],
-                "client_id": stored["clientId"], "client_secret": stored["clientSecret"], "resource": MCP_RESOURCE,
-            })
-    except httpx.HTTPError as exc:
-        logger.warning("INDmoney token refresh failed: %s", type(exc).__name__)
-        return None
-    if not response.is_success:
-        logger.warning("INDmoney token refresh failed: HTTP %s", response.status_code)
-        return None
-    try:
-        result = response.json()
-    except ValueError:
-        result = None
-    if not isinstance(result, dict) or not result.get("access_token"):
-        logger.warning("INDmoney token refresh returned no access token")
-        return None
-    stored["accessToken"] = result["access_token"]
-    stored["refreshToken"] = result.get("refresh_token", stored["refreshToken"])
-    stored["expiresAt"] = now_ms() + int(result.get("expires_in", 3600)) * 1000
-    save_indmoney(user_id, stored)
-    return stored["accessToken"]
+    """Return a usable INDmoney access token for ``user_id``, refreshing it when needed.
+
+    None means there is no usable connection (nothing stored, or INDmoney refused the refresh token).
+    Raises ``IndmoneyUnavailable`` when INDmoney could not be asked. Refreshes are serialised per profile
+    and the stored tokens re-read under the lock, so a refresh another request just finished is reused.
+    """
+    before = get_indmoney(user_id)
+    if not force_refresh and _token_is_fresh(before):
+        return before["accessToken"]
+    async with _refresh_locks.setdefault(user_id, asyncio.Lock()):
+        stored = get_indmoney(user_id)
+        if stored.get("accessToken") and stored.get("accessToken") != before.get("accessToken") and _token_is_fresh(stored):
+            return stored["accessToken"]  # another request refreshed while this one waited
+        if not force_refresh and _token_is_fresh(stored):
+            return stored["accessToken"]
+        if not stored.get("refreshToken") or not stored.get("clientId") or not stored.get("clientSecret"):
+            return None
+        sent = stored["refreshToken"]
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(INDMONEY_TOKEN_URL, data={
+                    "grant_type": "refresh_token", "refresh_token": sent,
+                    "client_id": stored["clientId"], "client_secret": stored["clientSecret"], "resource": MCP_RESOURCE,
+                })
+        except httpx.HTTPError as exc:
+            logger.warning("INDmoney token refresh failed: %s", type(exc).__name__)
+            raise IndmoneyUnavailable("INDmoney is not responding. Try again in a moment.") from exc
+        if response.status_code == 429 or response.status_code >= 500:
+            logger.warning("INDmoney token refresh failed: HTTP %s", response.status_code)
+            raise IndmoneyUnavailable("INDmoney is not responding. Try again in a moment.")
+        if not response.is_success:
+            logger.warning("INDmoney token refresh failed: HTTP %s", response.status_code)
+            return None
+        try:
+            result = response.json()
+        except ValueError:
+            result = None
+        if not isinstance(result, dict) or not result.get("access_token"):
+            logger.warning("INDmoney token refresh returned no access token")
+            return None
+        stored["accessToken"] = result["access_token"]
+        stored["refreshToken"] = result.get("refresh_token") or sent
+        stored["expiresAt"] = now_ms() + _expires_in(result) * 1000
+        with connect_db() as connection:
+            # Saved at once (the old refresh token may already be spent), unless INDmoney was disconnected meanwhile.
+            saved = connection.execute(
+                "UPDATE users SET indmoney = ?, updated_at = ? WHERE id = ? AND indmoney <> '{}'",
+                (_encode_secret(stored), now_ms(), user_id),
+            ).rowcount
+        return stored["accessToken"] if saved else None
 
 
 def cache_mcp_tools(user_id: str, tools: list[dict[str, Any]]) -> None:
