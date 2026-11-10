@@ -47,6 +47,27 @@ logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"
 SESSION_COOKIE = "indmoney_session"
+# Over HTTPS the cookies carry the __Host- prefix: the browser then refuses one set by a sibling host
+# (another *.sslip.io name, say), so nobody can plant their own session in a visitor's browser.
+SECURE_COOKIE_PREFIX = "__Host-"
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+MAX_BODY_BYTES = 256 * 1024
+# Base64 of the largest statement plus the JSON around it.
+MAX_CAS_BODY_BYTES = cas.MAX_PDF_BYTES * 4 // 3 + 64 * 1024
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' https://cdn.plot.ly https://challenges.cloudflare.com",
+    # Plotly writes inline styles into its charts.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "frame-src https://challenges.cloudflare.com",
+    "worker-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+])
 PUBLIC_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 __all__ = [
@@ -80,7 +101,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 task.cancel()
 
 
-app = FastAPI(title="CA Mode", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="CA Mode", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):
@@ -149,8 +170,16 @@ class RecoverRequest(BaseModel):
     newPin: str
 
 
+def session_cookie_name(request: Request) -> str:
+    return SECURE_COOKIE_PREFIX + SESSION_COOKIE if is_secure_request(request) else SESSION_COOKIE
+
+
+def admin_cookie_name(request: Request) -> str:
+    return SECURE_COOKIE_PREFIX + admin.ADMIN_COOKIE if is_secure_request(request) else admin.ADMIN_COOKIE
+
+
 def session_id(request: Request) -> str | None:
-    return request.cookies.get(SESSION_COOKIE)
+    return request.cookies.get(session_cookie_name(request))
 
 
 def signed_in_user_id(sid: str | None) -> str | None:
@@ -214,7 +243,7 @@ def is_secure_request(request: Request) -> bool:
 
 
 def cookie_options(request: Request) -> dict[str, Any]:
-    return {"key": SESSION_COOKIE, "httponly": True, "secure": is_secure_request(request), "samesite": "lax", "path": "/", "max_age": SESSION_MAX_AGE_SECONDS}
+    return {"key": session_cookie_name(request), "httponly": True, "secure": is_secure_request(request), "samesite": "lax", "path": "/", "max_age": SESSION_MAX_AGE_SECONDS}
 
 
 def auth_error(message: str) -> JSONResponse:
@@ -299,12 +328,106 @@ def is_indmoney_auth_error(error: Exception) -> bool:
     return bool(getattr(error, "auth_failed", False)) or isinstance(error, McpAuthError)
 
 
+def is_same_origin(request: Request) -> bool:
+    """Whether a browser sent this request from the app's own pages.
+
+    ``Origin`` is checked against ``APP_ORIGIN`` and the address the request came to; without it, the
+    browser's ``Sec-Fetch-Site`` must not say another site. A request with neither (curl, the tests) is not
+    from a browser page, so it carries no visitor's cookie by surprise and passes.
+    """
+    origin = request.headers.get("origin")
+    if origin is not None:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        own = f"{proto}://{request.headers.get('host', '')}"
+        return origin.rstrip("/") in {request_origin(request), own}
+    return request.headers.get("sec-fetch-site", "same-origin") in {"same-origin", "none"}
+
+
 @app.middleware("http")
 async def no_store_api(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.middleware("http")
+async def same_origin_writes(request: Request, call_next):
+    """Refuse a write sent from another site's page (CSRF): SameSite=Lax still allows a sibling host's form."""
+    if request.method in UNSAFE_METHODS and not is_same_origin(request):
+        logger.warning("cross_site_request_refused", extra={"path": request.url.path})
+        return JSONResponse({"error": "This request came from another site, so it was refused."}, status_code=403)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    headers = response.headers
+    headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if is_secure_request(request):
+        headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
+
+
+class BodySizeLimit:
+    """Refuse a request body over ``MAX_BODY_BYTES`` (``MAX_CAS_BODY_BYTES`` for a statement upload) with 413.
+
+    Checked on ``Content-Length`` before anything is read, and again while the body streams in, so a chunked
+    body without a length cannot get past it either: the app then sees the client disconnect, and whatever it
+    answers is replaced by the 413.
+    """
+
+    def __init__(self, app_: Any) -> None:
+        self.app = app_
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = MAX_CAS_BODY_BYTES if scope["path"] == "/api/cas" else MAX_BODY_BYTES
+        length = dict(scope["headers"]).get(b"content-length", b"")
+        if length.isdigit() and int(length) > limit:
+            await self._too_large(scope, receive, send)
+            return
+        received = 0
+        too_large = False
+
+        async def limited_receive() -> dict[str, Any]:
+            nonlocal received, too_large
+            if too_large:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    too_large = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message: dict[str, Any]) -> None:
+            if not too_large:
+                await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not too_large:
+                raise
+        if too_large:
+            await self._too_large(scope, receive, send)
+
+    @staticmethod
+    async def _too_large(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        response = JSONResponse({"error": "This request is too large."}, status_code=413)
+        await response(scope, receive, send)
+
+
+app.add_middleware(BodySizeLimit)
 
 
 @app.get("/healthz")
@@ -591,7 +714,7 @@ async def finish_google_sign_in(request: Request):
 
     The session id rotates either way. A linked profile's history stays locked until its PIN is entered.
     """
-    admin_sid = request.cookies.get(admin.ADMIN_COOKIE)
+    admin_sid = request.cookies.get(admin_cookie_name(request))
     if admin.is_enabled() and admin.is_signing_in(admin_sid, request.query_params.get("state", "")):
         return await finish_admin_sign_in(request, admin_sid)
     if not accounts.uses_google():
@@ -1838,7 +1961,7 @@ def current_admin(request: Request) -> dict[str, Any] | None:
     """The admin signed in on this browser's admin cookie. Every admin path is a 404 while admin is off."""
     if not admin.is_enabled():
         raise HTTPException(404)
-    return admin.admin_for_session(request.cookies.get(admin.ADMIN_COOKIE))
+    return admin.admin_for_session(request.cookies.get(admin_cookie_name(request)))
 
 
 def admin_required() -> JSONResponse:
@@ -1849,7 +1972,7 @@ def admin_required() -> JSONResponse:
 
 
 def admin_cookie_options(request: Request) -> dict[str, Any]:
-    return {**cookie_options(request), "key": admin.ADMIN_COOKIE, "max_age": admin.SESSION_SECONDS}
+    return {**cookie_options(request), "key": admin_cookie_name(request), "max_age": admin.SESSION_SECONDS}
 
 
 def _admin_page(request: Request, query: str = "") -> RedirectResponse:
@@ -1862,7 +1985,7 @@ async def start_admin_sign_in(request: Request):
     if not admin.is_enabled():
         raise HTTPException(404)
     url, values = accounts.start_sign_in(request_origin(request))
-    sid = users.start_unbound_session(request.cookies.get(admin.ADMIN_COOKIE), values)
+    sid = users.start_unbound_session(request.cookies.get(admin_cookie_name(request)), values)
     response = RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
     response.set_cookie(value=sid, **admin_cookie_options(request))
     return response
@@ -1898,10 +2021,10 @@ async def admin_session(request: Request):
 @app.post("/api/admin/sign-out")
 async def admin_sign_out(request: Request):
     current_admin(request)
-    if sid := request.cookies.get(admin.ADMIN_COOKIE):
+    if sid := request.cookies.get(admin_cookie_name(request)):
         admin.sign_out(sid)
     response = JSONResponse({"admin": None})
-    response.delete_cookie(admin.ADMIN_COOKIE, path="/")
+    response.delete_cookie(admin_cookie_name(request), path="/", secure=is_secure_request(request))
     return response
 
 

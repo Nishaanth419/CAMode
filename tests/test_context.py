@@ -71,7 +71,7 @@ GOAL_BODY = {
 
 
 def current(client):
-    return main.current_user(type("Request", (), {"cookies": client.cookies})())
+    return main.current_user(type("Request", (), {"cookies": client.cookies, "headers": {}, "url": client.base_url})())
 
 
 def test_nothing_is_retrieved_for_unrelated_requests_or_empty_profiles(client, signed_in):

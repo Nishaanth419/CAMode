@@ -53,6 +53,26 @@ def test_login_wrong_pin_then_lockout(client):
     assert client.get("/api/session").json()["user"] is None
 
 
+def test_lockout_doubles_with_each_round_of_wrong_pins():
+    user = users.create_user("Asha", users.hash_pin("2468"))
+    seen = []
+    for _ in range(4):
+        for _ in range(users.MAX_FAILED_LOGINS - 1):
+            assert users.check_pin(user, "0000") is False
+        with pytest.raises(users.ProfileLockedError) as locked:
+            users.check_pin(user, "0000")
+        seen.append(locked.value.retry_after_seconds)
+        with db.connect_db() as connection:  # Wait the lock out.
+            connection.execute("UPDATE users SET locked_until = 0 WHERE id = ?", (user["id"],))
+
+    assert seen == [users.LOCKOUT_SECONDS * 2**round_ for round_ in range(4)]
+    assert users.get_user(user["id"])["failedLogins"] == 4 * users.MAX_FAILED_LOGINS
+    assert users.lockout_seconds(1000 * users.MAX_FAILED_LOGINS) == users.MAX_LOCKOUT_SECONDS
+    # The right PIN resets the count, so the next lock is short again.
+    assert users.check_pin(user, "2468") is True
+    assert users.get_user(user["id"])["failedLogins"] == 0
+
+
 def test_concurrent_wrong_pins_cannot_bypass_lockout():
     """Parallel wrong guesses with a stale user dict must still lock after MAX_FAILED_LOGINS."""
     user = users.create_user("Asha", users.hash_pin("2468"))
@@ -246,6 +266,20 @@ def test_auth_mode_config_is_checked_at_startup(monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret")
     accounts.check_config()
     assert accounts.uses_google()
+
+
+def test_local_mode_is_refused_on_a_public_origin(monkeypatch):
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    monkeypatch.delenv("BEHIND_ACCESS", raising=False)
+    for origin in ("http://localhost:8003", "https://localhost:8443", "https://app.localhost", "http://192.168.1.5:8003"):
+        monkeypatch.setenv("APP_ORIGIN", origin)
+        accounts.check_config()
+
+    monkeypatch.setenv("APP_ORIGIN", "https://129-225-97-229.sslip.io")
+    with pytest.raises(accounts.AccountConfigError, match="AUTH_MODE=google"):
+        accounts.check_config()
+    monkeypatch.setenv("BEHIND_ACCESS", "true")
+    accounts.check_config()
 
 
 def test_unique_profile_names_are_dropped_from_an_existing_database():

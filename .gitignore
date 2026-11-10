@@ -18,3 +18,7 @@ ui-debug.log
 ca_mode_agentic_financial_copilot_plan.md
 deploy/app.env
 .archify/
+
+# Wrangler's local secrets (cloudflare/, worker/ experiments).
+.dev.vars
+.wrangler/

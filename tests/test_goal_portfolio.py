@@ -443,7 +443,7 @@ def run(coroutine):
 
 
 def tools_for(client, *, include_holdings: bool):
-    user = main.current_user(type("Request", (), {"cookies": client.cookies})())
+    user = main.current_user(type("Request", (), {"cookies": client.cookies, "headers": {}, "url": client.base_url})())
     return {tool.name: tool for tool in goal_portfolio.goal_tools(user, include_holdings=include_holdings, today=TODAY)}
 
 

@@ -9,7 +9,6 @@ account and the PIN only unlocks their sealed history.
 from __future__ import annotations
 
 import base64
-import hashlib
 import hmac
 import json
 import logging
@@ -24,7 +23,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import vault
-from .sealing import ProfileKeys
+from .sealing import ProfileKeys, scrypt
 from .db import connect_db
 
 logger = logging.getLogger("ca_mode.users")
@@ -38,12 +37,14 @@ PIN_MIN_LENGTH = 4
 PIN_MAX_LENGTH = 64
 MAX_FAILED_LOGINS = 5
 LOCKOUT_SECONDS = 5 * 60
+# Each further round of MAX_FAILED_LOGINS wrong guesses doubles the lock, up to a day, so guessing a PIN
+# online takes years rather than days. Only a correct PIN or recovery code (or the admin) resets the count.
+MAX_LOCKOUT_SECONDS = 24 * 60 * 60
 # scrypt work factor (N=2^17, r=8, p=1 needs ~128 MiB). Parameters are stored in
 # each hash, so lowering SCRYPT_N (tests) never breaks verifying existing hashes.
 SCRYPT_N = 2**17
 SCRYPT_R = 8
 SCRYPT_P = 1
-_SCRYPT_MAXMEM = 256 * 1024 * 1024
 
 
 class ProfileError(Exception):
@@ -92,7 +93,7 @@ def random_token() -> str:
 def hash_pin(pin: str) -> str:
     """Return a self-describing scrypt hash: ``scrypt$N$r$p$salt$digest``."""
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(pin.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, maxmem=_SCRYPT_MAXMEM)
+    digest = scrypt(pin, salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=64)
     encode = lambda value: base64.b64encode(value).decode()  # noqa: E731 - local one-liner
     return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${encode(salt)}${encode(digest)}"
 
@@ -103,10 +104,7 @@ def verify_pin(pin: str, stored: str) -> bool:
         if scheme != "scrypt":
             return False
         expected = base64.b64decode(digest)
-        actual = hashlib.scrypt(
-            pin.encode(), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p),
-            maxmem=_SCRYPT_MAXMEM, dklen=len(expected),
-        )
+        actual = scrypt(pin, base64.b64decode(salt), n=int(n), r=int(r), p=int(p), dklen=len(expected))
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(actual, expected)
@@ -266,15 +264,23 @@ def check_with_lockout(user_id: str, verify: Callable[[sqlite3.Row], bool]) -> b
             connection.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?", (user_id,))
             return True
         failures = row["failed_logins"] + 1
-        locked_until = now + LOCKOUT_SECONDS * 1000 if failures >= MAX_FAILED_LOGINS else 0
+        lock_seconds = lockout_seconds(failures)
+        locked_until = now + lock_seconds * 1000 if lock_seconds else 0
         connection.execute(
-            "UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?",
-            (0 if locked_until else failures, locked_until, user_id),
+            "UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?", (failures, locked_until, user_id),
         )
     logger.warning("profile_sign_in_failed", extra={"user_id": user_id, "locked": bool(locked_until)})
     if locked_until:
-        raise ProfileLockedError(LOCKOUT_SECONDS)
+        raise ProfileLockedError(lock_seconds)
     return False
+
+
+def lockout_seconds(failures: int) -> int:
+    """How long the ``failures``-th wrong guess in a row locks the profile (0: not at all)."""
+    if failures < MAX_FAILED_LOGINS or failures % MAX_FAILED_LOGINS:
+        return 0
+    rounds = failures // MAX_FAILED_LOGINS
+    return min(LOCKOUT_SECONDS * 2 ** min(rounds - 1, 20), MAX_LOCKOUT_SECONDS)
 
 
 def check_pin(user: dict[str, Any], pin: str) -> bool:
