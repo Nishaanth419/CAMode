@@ -13,7 +13,7 @@
   /* Text */
   --text:         #13201a;
   --text-soft:    #4d5c55;
-  --text-muted:   #8a978f;
+  --text-muted:   #5f6c65; /* 4.6:1 on --surface-3, 5.5:1 on --surface (WCAG AA) */
 
   /* Accent — wealth green */
   --accent:       #1f7a4f;
@@ -72,7 +72,7 @@
   --border-hover: rgba(160, 230, 100, .28);
   --text:         #eef3ef;
   --text-soft:    #a3aea6;
-  --text-muted:   #6b766e;
+  --text-muted:   #858f88; /* 4.6:1 on --surface-3, 5.9:1 on --canvas (WCAG AA) */
   --accent:       #8fdc4e;
   --accent-2:     #a6e86a;
   --accent-3:     #b9f07f;
