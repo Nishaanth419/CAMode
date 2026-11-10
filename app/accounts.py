@@ -25,7 +25,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Final, Literal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -109,6 +109,22 @@ def check_config() -> None:
         raise AccountConfigError(f"AUTH_MODE must be one of {', '.join(AUTH_MODES)}, not {configured!r}.")
     if configured == "google":
         google_client()
+    elif _is_public_origin(os.getenv("APP_ORIGIN", "")) and not _behind_access():
+        raise AccountConfigError(
+            "APP_ORIGIN is a public HTTPS address, where the profile picker would list every profile to anyone. "
+            "Set AUTH_MODE=google, or BEHIND_ACCESS=true if Cloudflare Access (or similar) lets only your team in."
+        )
+
+
+def _is_public_origin(origin: str) -> bool:
+    parts = urlsplit(origin.strip())
+    host = (parts.hostname or "").lower()
+    local = host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".localhost")
+    return parts.scheme == "https" and bool(host) and not local
+
+
+def _behind_access() -> bool:
+    return os.getenv("BEHIND_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ── Google OpenID Connect ──────────────────────────────────────────────────────

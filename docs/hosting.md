@@ -78,7 +78,7 @@ sudo mkdir -p /srv/ca-mode/data /srv/ca-mode/key /srv/ca-mode/backups
 | `deploy/.env` | `SITE_ADDRESS` | the site's host name (option B) |
 | `deploy/.env` | `CA_MODE_HOME` | `/srv/ca-mode` (database, key, backups, Caddy data) |
 | `deploy/app.env` | `APP_ORIGIN` | `https://<your host>`; INDmoney redirects to `<APP_ORIGIN>/auth/indmoney/callback`, Google to `<APP_ORIGIN>/auth/google/callback` |
-| `deploy/app.env` | `TRUSTED_PROXY` | `cloudflare` or `caddy` (not in `app.env.example`: add it) |
+| `deploy/app.env` | `TRUSTED_PROXY` | `cloudflare` or `caddy` (`app.env.example` has `caddy`) |
 | `deploy/app.env` | `OLLAMA_MODEL`, `AI_PROVIDER` | `ca-mode`, `ollama`; leave `OPENAI_API_KEY` and `GROQ_API_KEY` empty so portfolio data only goes to the Mac |
 | `deploy/app.env` | `DAILY_QUESTION_LIMIT`, `ADMIN_EMAILS`, `PRICING_CONTACT_EMAIL` | see [Accounts and access](accounts-and-access.md) |
 
@@ -141,13 +141,13 @@ tunnel:
 Things to know:
 
 - **OAuth callbacks go through the tunnel too.** INDmoney and Google redirect the browser to `APP_ORIGIN`, and the browser already holds the Access cookie, so nothing extra is needed. Add `https://camode.example.com/auth/google/callback` to the Google client's redirect URIs if you use Google sign-in or the admin page.
-- **Access is what makes the profile picker acceptable.** In `local` mode the picker lists every profile to anyone who opens the site, and the PIN is a lock, not network-grade sign-in. Keep Access in front, or switch to `AUTH_MODE=google`.
+- **Access is what makes the profile picker acceptable.** In `local` mode the picker lists every profile to anyone who opens the site, and the PIN is a lock, not network-grade sign-in. Keep Access in front, or switch to `AUTH_MODE=google`. With `AUTH_MODE=local` and an `https://` `APP_ORIGIN` the app refuses to start unless `BEHIND_ACCESS=true` is set, so a copy without Access cannot open the picker to the internet by mistake.
 - **Turnstile** (`TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`) is a separate Cloudflare product (bot check on sign-up), not part of the tunnel. See [Limits for a shared copy](accounts-and-access.md#limits-for-a-shared-copy).
 - **The server opens no ports.** You can close everything inbound except SSH (or only allow SSH over Tailscale).
 
 ## 3b. Without a domain or Cloudflare: Caddy
 
-Caddy serves the app over HTTPS on the server's own ports, with a free Let's Encrypt certificate for a domain pointing at the server or for `<ip-with-dashes>.sslip.io` (a free DNS name that points at that IP, e.g. `129-225-97-229.sslip.io`). The site is then public with no Cloudflare Access in front, so use it only with `AUTH_MODE=google`. Open TCP 80 and 443 (and UDP 443) to the internet in the cloud firewall, then:
+Caddy serves the app over HTTPS on the server's own ports, with a free Let's Encrypt certificate for a domain pointing at the server or for `<ip-with-dashes>.sslip.io` (a free DNS name that points at that IP, e.g. `129-225-97-229.sslip.io`). The site is then public with no Cloudflare Access in front, so use it only with `AUTH_MODE=google` (the app refuses to start in `local` mode there). Prefer a domain you own over `sslip.io`: every `*.sslip.io` name counts as the same site, so cookies and requests from someone else's `sslip.io` page are not treated as cross-site by the browser; the app's same-origin check and `__Host-` cookies block that, but your own domain removes the shared neighbourhood. Open TCP 80 and 443 (and UDP 443) to the internet in the cloud firewall, then:
 
 ```bash
 echo "SITE_ADDRESS=129-225-97-229.sslip.io" >> .env      # in deploy/

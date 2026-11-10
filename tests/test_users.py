@@ -268,6 +268,19 @@ def test_auth_mode_config_is_checked_at_startup(monkeypatch):
     assert accounts.uses_google()
 
 
+def test_local_mode_is_refused_on_a_public_origin(monkeypatch):
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    monkeypatch.delenv("BEHIND_ACCESS", raising=False)
+    for origin in ("http://localhost:8003", "https://localhost:8443", "https://app.localhost", "http://192.168.1.5:8003"):
+        monkeypatch.setenv("APP_ORIGIN", origin)
+        accounts.check_config()
+
+    monkeypatch.setenv("APP_ORIGIN", "https://129-225-97-229.sslip.io")
+    with pytest.raises(accounts.AccountConfigError, match="AUTH_MODE=google"):
+        accounts.check_config()
+    monkeypatch.setenv("BEHIND_ACCESS", "true")
+    accounts.check_config()
+
 
 def test_unique_profile_names_are_dropped_from_an_existing_database():
     with db.connect_db() as connection:
