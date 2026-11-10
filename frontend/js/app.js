@@ -1879,23 +1879,11 @@ function renderMarkdown(text) {
   // Escape helper
   const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // Extract chart blocks first so the agent can return data-driven visuals.
-  const chartBlocks = [];
-  text = text.replace(/```chart\s*\n([\s\S]*?)```/gi, (_, json) => {
-    const idx = chartBlocks.length;
-    chartBlocks.push(parseChartSpec(json));
-    return `\x00CHART${idx}\x00`;
-  });
-
-  // Some model responses wrap the same JSON in bold Markdown instead of a
-  // chart fence. Recognize that shape too and render it as a chart.
-  text = text.replace(/\*\*\s*(\{[\s\S]*?\})\s*\*\*/g, (whole, json) => {
-    const spec = parseChartSpec(json);
-    if (!spec) return whole;
-    const idx = chartBlocks.length;
-    chartBlocks.push(spec);
-    return `\x00CHART${idx}\x00`;
-  });
+  // Extract chart blocks first so the agent can return data-driven visuals. Only fenced ```chart blocks
+  // count: the server grounds those in tool data, while bold or inline JSON stays text.
+  const extracted = extractChartBlocks(text);
+  const chartBlocks = extracted.charts;
+  text = extracted.text;
 
   // Extract and replace code blocks
   const codeBlocks = [];
@@ -2034,24 +2022,6 @@ function renderMarkdown(text) {
     '<div class="exec-result-header">⬡ Execution Result</div>');
 
   return text;
-}
-
-function parseChartSpec(json) {
-  try {
-    // Normalize HTML-encoded spaces/quotes that occasionally appear in model output.
-    const normalized = String(json)
-      .replace(/&#x20;|&#32;/gi, ' ')
-      .replace(/&quot;/gi, '"')
-      .replace(/&amp;/gi, '&');
-    const spec = JSON.parse(normalized);
-    return spec && (
-      (['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data)) ||
-      (spec.type === 'line' && Array.isArray(spec.series)) ||
-      (spec.type === 'candlestick' && (Array.isArray(spec.candles) || Array.isArray(spec.ohlc)))
-    ) ? spec : null;
-  } catch {
-    return null;
-  }
 }
 
 const chartSpecRegistry = new Map();

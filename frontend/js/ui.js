@@ -65,9 +65,40 @@
     return Boolean(event && (event.isComposing || event.keyCode === 229));
   }
 
+  function parseChartSpec(json) {
+    try {
+      // Normalize HTML-encoded spaces/quotes that occasionally appear in model output.
+      const normalized = String(json)
+        .replace(/&#x20;|&#32;/gi, ' ')
+        .replace(/&quot;/gi, '"')
+        .replace(/&amp;/gi, '&');
+      const spec = JSON.parse(normalized);
+      return spec && (
+        (['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data)) ||
+        (spec.type === 'line' && Array.isArray(spec.series)) ||
+        (spec.type === 'candlestick' && (Array.isArray(spec.candles) || Array.isArray(spec.ohlc)))
+      ) ? spec : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Only fenced ```chart blocks are drawn: the server grounds those in tool data (charts.ground_tool_charts,
+  // charts.ground_candlestick_charts), so JSON written in bold or inline stays text and never draws figures
+  // the model made up. The pattern is the server's `_CHART_BLOCK`, so a block it skips is never drawn.
+  // Each block becomes a \x00CHART<n>\x00 placeholder; `charts[n]` is null when unreadable.
+  function extractChartBlocks(text) {
+    const charts = [];
+    const rest = String(text).replace(/```chart[ \t]*\n([\s\S]*?)```/gi, (_, json) => {
+      const idx = charts.push(parseChartSpec(json)) - 1;
+      return `\x00CHART${idx}\x00`;
+    });
+    return { text: rest, charts };
+  }
+
   const api = {
     NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
-    isComposingEnter,
+    isComposingEnter, parseChartSpec, extractChartBlocks,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

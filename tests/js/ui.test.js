@@ -66,3 +66,22 @@ test('the saved answer is found only when the chat ends with this question, save
   const long = 'x'.repeat(12500);
   assert.ok(ui.savedAnswerFor({ updatedAt: 5, messages: [{ role: 'user', content: long.slice(0, 12000) }, { role: 'assistant', content: 'ok' }] }, long, 1));
 });
+
+test('only fenced chart blocks are drawn; bold or inline chart JSON stays text', () => {
+  const fenced = 'Allocation:\n```chart\n{"type": "donut", "data": [{"label": "Equity", "value": 60}]}\n```\nDone.';
+  const { text, charts } = ui.extractChartBlocks(fenced);
+  assert.equal(text, 'Allocation:\n\x00CHART0\x00\nDone.');
+  assert.equal(charts.length, 1);
+  assert.equal(charts[0].type, 'donut');
+
+  const bold = 'Here: **{"type": "bar", "data": [{"label": "A", "value": 9999}]}**';
+  assert.deepEqual(ui.extractChartBlocks(bold), { text: bold, charts: [] });
+  const inline = 'Here: `{"type": "bar", "data": [{"label": "A", "value": 9999}]}`';
+  assert.deepEqual(ui.extractChartBlocks(inline), { text: inline, charts: [] });
+  // The fence must match the server's pattern (```chart, spaces or tabs, newline) or it is not drawn.
+  const crlf = '```chart\r\n{"type": "bar", "data": []}\n```';
+  assert.deepEqual(ui.extractChartBlocks(crlf).charts, []);
+
+  // An unreadable fenced block keeps its place and draws as the "could not draw" note.
+  assert.deepEqual(ui.extractChartBlocks('```chart\nnot json\n```').charts, [null]);
+});
