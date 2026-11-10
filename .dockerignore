@@ -1,0 +1,28 @@
+# Only app/, frontend/, scripts/ and requirements.txt go into the image (Dockerfile); keep everything else,
+# above all local data, secrets and other checkouts, out of the build context.
+.git
+.github
+.claude
+.agent-loop
+.archify
+.data
+.data*
+.env
+.env.*
+!.env.example
+.venv
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+node_modules
+cloudflare/
+worker/
+deploy/app.env
+deploy/.env
+docs
+evals
+tests
+assets
+ollama
+*.sqlite3
+*.key

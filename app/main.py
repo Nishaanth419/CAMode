@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -43,6 +43,7 @@ from .users import (
 )
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logs.install_access_log_filter()
 logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"
@@ -88,6 +89,7 @@ def _scheduler_enabled() -> bool:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    db.claim_single_process()
     stop = asyncio.Event()
     task = asyncio.create_task(snapshots.run_scheduler(stop, mcp_url=MCP_RESOURCE)) if _scheduler_enabled() else None
     try:
