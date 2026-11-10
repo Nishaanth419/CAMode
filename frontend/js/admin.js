@@ -229,12 +229,20 @@
     return section;
   }
 
+  function lastModelAnswer(model) {
+    const times = Object.values((model && model.lastSuccessAt) || {});
+    return times.length ? dateFormat.format(new Date(Math.max(...times))) : 'none since the last restart';
+  }
+
   function renderBackups(overview) {
-    const { backups } = overview;
+    const { backups, model } = overview;
     return el('section', {},
-      el('h2', {}, 'Backups'),
-      el('p', {}, backups.enabled ? `Daily, keeping the newest ${backups.keep}. ` : 'Daily backups are off (BACKUP_ENABLED). ',
-        `${backups.count} in ${backups.directory}. Latest: `, backups.latest ? dateFormat.format(new Date(backups.latest)) : 'none', '.'),
+      el('h2', {}, 'Backups and model'),
+      el('p', {}, backups.enabled ? `Daily, keeping the newest ${backups.keep}` : 'Daily backups are off (BACKUP_ENABLED)',
+        `, plus up to ${backups.manualKeep} manual. ${backups.count} in ${backups.directory}. Latest backup: `,
+        backups.latest ? dateFormat.format(new Date(backups.latest)) : 'none', '.'),
+      el('p', {}, 'Last successful model answer: ', lastModelAnswer(model),
+        model ? `. ${model.waiting} waiting for one of ${model.concurrency} model slot${model.concurrency === 1 ? '' : 's'}.` : '.'),
       el('button', {
         type: 'button',
         onclick: () => act('Backup created.', () => api('/api/admin/backups', { method: 'POST' })),

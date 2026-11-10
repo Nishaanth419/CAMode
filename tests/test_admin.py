@@ -194,6 +194,8 @@ def test_overview_lists_profiles_without_their_sealed_history(operator):
     assert row["plan"] == "free" and row["consentCurrent"] is True and row["indmoneyConnected"] is True
     assert row["questionsToday"] == 0 and row["dailyLimit"] is None and row["lockedUntil"] is None
     assert row["lastSeenAt"] and row["createdAt"]
+    assert overview["model"] == {"concurrency": 1, "waiting": 0, "lastSuccessAt": {}}
+    assert overview["backups"]["latest"] is None and overview["backups"]["manualKeep"] == 5
     text = operator.get("/api/admin/overview").text
     for secret in ("secret beach house", "access-token", "client-secret", "scrypt", "sealed:"):
         assert secret not in text.lower()

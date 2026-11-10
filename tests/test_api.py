@@ -5,10 +5,12 @@ import base64
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -63,6 +65,71 @@ def test_health_and_frontend_routes(client):
     assert client.get("/healthz").json() == {"ok": True}
     assert client.get("/").status_code == 200
     assert client.get("/js/app.js").status_code == 200
+
+
+class TagsClient:
+    """Ollama's /api/tags, answering with ``status`` or raising ``error``."""
+
+    def __init__(self, status=200, error=None):
+        self.status, self.error, self.urls = status, error, []
+
+    def __call__(self, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get(self, url):
+        self.urls.append(url)
+        if self.error:
+            raise self.error
+        return httpx.Response(self.status, json={"models": []}, request=httpx.Request("GET", url))
+
+
+def test_readyz_checks_the_database_and_ollama(client, monkeypatch):
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434/v1")
+    tags = TagsClient()
+    monkeypatch.setattr(main.httpx, "AsyncClient", tags)
+
+    ready = client.get("/readyz")
+
+    assert ready.status_code == 200
+    assert ready.json() == {"ok": True, "checks": {"database": "ok", "model": "ok"}}
+    assert tags.urls == ["http://ollama.internal:11434/api/tags"]
+
+
+@pytest.mark.parametrize(("tags", "problem"), [
+    (TagsClient(error=httpx.ConnectTimeout("asleep")), "unreachable (ConnectTimeout)"),
+    (TagsClient(status=403), "HTTP 403"),
+])
+def test_readyz_is_503_when_the_model_does_not_answer_but_healthz_is_not(client, monkeypatch, tags, problem):
+    monkeypatch.setenv("OLLAMA_MODEL", "ca-mode")
+    monkeypatch.setattr(main.httpx, "AsyncClient", tags)
+
+    ready = client.get("/readyz")
+
+    assert ready.status_code == 503
+    assert ready.json()["checks"] == {"database": "ok", "model": problem}
+    assert client.get("/healthz").status_code == 200  # a sleeping Mac never fails liveness (no rollback)
+
+
+def test_readyz_is_503_when_the_database_fails(client, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test")
+    monkeypatch.setenv("AI_PROVIDER", "openai")
+
+    def broken():
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(main, "_database_ready", broken)
+
+    ready = client.get("/readyz")
+
+    assert ready.status_code == 503
+    assert ready.json()["checks"] == {"database": "failed (OperationalError)", "model": "ok"}
 
 
 def test_provider_endpoint_exposes_ollama_openai_and_groq(client, monkeypatch):

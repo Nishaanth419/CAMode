@@ -445,7 +445,51 @@ app.add_middleware(BodySizeLimit)
 
 @app.get("/healthz")
 async def healthz():
+    """Liveness: the process serves requests. deploy/update.sh rolls back on this, never on /readyz."""
     return {"ok": True}
+
+
+READY_TIMEOUT_SECONDS: Final = 3
+
+
+def _database_ready() -> None:
+    with connect_db() as connection:
+        connection.execute("SELECT 1 FROM users LIMIT 1").fetchall()
+
+
+async def _ollama_ready() -> str | None:
+    """None when Ollama answers ``/api/tags`` (or is not this copy's model); otherwise why not."""
+    if default_provider() != "ollama":
+        return None
+    base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").rstrip("/").removesuffix("/v1")
+    try:
+        async with httpx.AsyncClient(timeout=READY_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{base}/api/tags")
+    except httpx.HTTPError as exc:
+        return f"unreachable ({type(exc).__name__})"
+    return None if response.is_success else f"HTTP {response.status_code}"
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness for monitoring: the database answers a query and Ollama answers within a few seconds.
+
+    503 when either fails. A sleeping Mac makes this 503 while the site still works without answers, so
+    alert on it, but never restart or roll back on it (that is /healthz).
+    """
+    checks: dict[str, str] = {}
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_database_ready), timeout=READY_TIMEOUT_SECONDS)
+        checks["database"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - any failure means not ready; the type is enough to report
+        checks["database"] = f"failed ({type(exc).__name__})"
+    model_problem = await _ollama_ready()
+    checks["model"] = model_problem or "ok"
+    ready = all(value == "ok" for value in checks.values())
+    if not ready:
+        logger.warning("not_ready", extra=checks)
+    return JSONResponse({"ok": ready, "checks": checks}, status_code=200 if ready else 503,
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/providers")
