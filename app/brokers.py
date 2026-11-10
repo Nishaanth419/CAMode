@@ -681,33 +681,59 @@ def _update_oauth(user_id: str, broker_id: str, oauth: dict[str, Any]) -> None:
         )
 
 
+# One refresh at a time per connection: a broker that rotates refresh tokens accepts each one only once.
+_refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _refresh_lock(user_id: str, broker_id: str) -> asyncio.Lock:
+    return _refresh_locks.setdefault((user_id, broker_id), asyncio.Lock())
+
+
+def _usable(oauth: dict[str, Any]) -> bool:
+    return bool(oauth.get("accessToken")) and int(oauth.get("expiresAt") or 0) - TOKEN_SKEW_MS > users.now_ms()
+
+
 async def oauth_token(user_id: str, broker: Broker, connection: dict[str, Any]) -> str | None:
     """A working access token, refreshed when it has expired; None (status ``needs_login``) when there is none.
 
-    Transport faults raise (the broker could not be asked); a refusal to refresh is a login that has ended.
+    Refreshes are serialised per connection, and the stored tokens are re-read under the lock, so a
+    refresh another request just finished is used instead of spending the old refresh token again.
+    Only a refusal of the refresh token we sent, while it is still the stored one, ends the login;
+    other failures (5xx, 429, transport faults) raise: the broker could not be asked.
     """
     oauth = connection.get("oauth") or {}
     if not oauth.get("accessToken"):
         return None
-    if int(oauth.get("expiresAt") or 0) - TOKEN_SKEW_MS > users.now_ms():
+    if _usable(oauth):
         return oauth["accessToken"]
-    if not oauth.get("refreshToken") or not oauth.get("tokenEndpoint") or not oauth.get("client"):
-        set_status(user_id, broker.id, "needs_login")
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=broker_oauth.TIMEOUT_SECONDS) as client:
-            token = await broker_oauth.refresh(
-                oauth["tokenEndpoint"], oauth["client"], oauth["refreshToken"], broker.mcp_url, client,
-            )
-    except broker_oauth.OAuthError:
-        set_status(user_id, broker.id, "needs_login")
-        return None
-    renewed = {
-        **oauth, "accessToken": token["access_token"], "refreshToken": token.get("refresh_token") or oauth["refreshToken"],
-        "expiresAt": users.now_ms() + int(token.get("expires_in") or 3600) * 1000,
-    }
-    _update_oauth(user_id, broker.id, renewed)
-    return renewed["accessToken"]
+    async with _refresh_lock(user_id, broker.id):
+        current = get_connection(user_id, broker.id)
+        if current is None:
+            return None  # disconnected meanwhile
+        oauth = current.get("oauth") or {}
+        if not oauth.get("accessToken"):
+            return None
+        if _usable(oauth):
+            return oauth["accessToken"]  # another request refreshed it while this one waited
+        if not oauth.get("refreshToken") or not oauth.get("tokenEndpoint") or not oauth.get("client"):
+            set_status(user_id, broker.id, "needs_login")
+            return None
+        sent = oauth["refreshToken"]
+        try:
+            async with httpx.AsyncClient(timeout=broker_oauth.TIMEOUT_SECONDS) as client:
+                token = await broker_oauth.refresh(oauth["tokenEndpoint"], oauth["client"], sent, broker.mcp_url, client)
+        except broker_oauth.OAuthRefused:
+            stored = (get_connection(user_id, broker.id) or {}).get("oauth") or {}
+            if stored.get("refreshToken") == sent:
+                set_status(user_id, broker.id, "needs_login")
+                return None
+            return stored.get("accessToken") if _usable(stored) else None
+        renewed = {
+            **oauth, "accessToken": token["access_token"], "refreshToken": token.get("refresh_token") or sent,
+            "expiresAt": users.now_ms() + broker_oauth.expires_in_seconds(token) * 1000,
+        }
+        _update_oauth(user_id, broker.id, renewed)  # at once: the old refresh token may already be spent
+        return renewed["accessToken"]
 
 
 @dataclass(slots=True)

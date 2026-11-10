@@ -1413,10 +1413,7 @@ async def finish_broker_oauth(broker_id: str, request: Request):
     except (broker_oauth.OAuthError, httpx.HTTPError, KeyError) as exc:
         logger.warning("broker_oauth_exchange_failed", extra={"broker": broker.id, "error": type(exc).__name__})
         return broker_error_redirect(request, broker.id)
-    try:
-        expires_in = int(token.get("expires_in") or 3600)
-    except (TypeError, ValueError):
-        expires_in = 3600
+    expires_in = broker_oauth.expires_in_seconds(token)
     try:
         brokers.save_oauth(user["id"], broker.id, {
             "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),

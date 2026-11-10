@@ -25,6 +25,22 @@ class OAuthError(Exception):
     """A sign-in problem whose message is safe to show the user."""
 
 
+class OAuthRefused(OAuthError):
+    """The token endpoint rejected the grant itself (``invalid_grant``, or HTTP 401): the login has ended.
+
+    Other failures (5xx, 429, an unreadable body) are plain ``OAuthError``: the broker may answer later.
+    """
+
+
+def expires_in_seconds(token: dict[str, Any], default: int = 3600) -> int:
+    """A token response's ``expires_in``, read defensively: missing, non-numeric or non-positive gives ``default``."""
+    try:
+        seconds = int(float(token.get("expires_in")))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return seconds if seconds > 0 else default
+
+
 def _https(url: Any) -> str:
     if not isinstance(url, str):
         raise OAuthError("The broker's sign-in details are incomplete.")
@@ -114,7 +130,10 @@ async def _token(token_endpoint: str, form: dict[str, str], client_info: dict[st
         form["client_secret"] = client_info["clientSecret"]
     response = await client.post(_https(token_endpoint), data=form)
     if not response.is_success:
-        raise OAuthError(f"The broker refused the sign-in (HTTP {response.status_code}).")
+        message = f"The broker refused the sign-in (HTTP {response.status_code})."
+        if response.status_code == 401 or (response.status_code == 400 and _error_code(response) == "invalid_grant"):
+            raise OAuthRefused(message)
+        raise OAuthError(message)
     try:
         body = response.json()
     except ValueError:
@@ -122,6 +141,14 @@ async def _token(token_endpoint: str, form: dict[str, str], client_info: dict[st
     if not isinstance(body, dict) or not body.get("access_token"):
         raise OAuthError("The broker's sign-in did not return an access token.")
     return body
+
+
+def _error_code(response: httpx.Response) -> str | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), str) else None
 
 
 async def exchange_code(
