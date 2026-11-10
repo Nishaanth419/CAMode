@@ -2273,7 +2273,7 @@ userInput.addEventListener('input', autoResize);
 
 /* ── Keyboard handler ────────────────────────────────────────────────── */
 userInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !isComposingEnter(e)) {
     e.preventDefault();
     sendMessage(userInput.value);
   }
