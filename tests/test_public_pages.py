@@ -76,7 +76,7 @@ def test_robots_blocks_api_and_auth_and_points_to_the_sitemap(client, origin):
     assert f"Sitemap: {origin}/sitemap.xml" in lines
 
 
-def test_sitemap_lists_only_the_privacy_and_pricing_pages(client, origin):
+def test_sitemap_lists_only_the_privacy_terms_and_pricing_pages(client, origin):
     response = client.get("/sitemap.xml")
 
     assert response.status_code == 200
@@ -89,8 +89,39 @@ def test_sitemap_lists_only_the_privacy_and_pricing_pages(client, origin):
     }
     assert entries == {
         f"{origin}/privacy": public_pages.policy_updated_on().isoformat(),
+        f"{origin}/terms": public_pages.TERMS_UPDATED.isoformat(),
         f"{origin}/pricing": plans.PRICES_UPDATED.isoformat(),
     }
+
+
+def test_terms_page_is_public_plain_and_linked_from_privacy_and_pricing(client, monkeypatch):
+    monkeypatch.delenv("PRICING_CONTACT_EMAIL", raising=False)
+    response = client.get("/terms")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    page = response.text
+    assert "<title>Terms of use · CA Mode</title>" in page
+    assert 'name="robots"' not in page
+    assert '/css/public.css' in page
+    assert "not investment, tax or legal advice" in page
+    assert "cannot place or change orders or move money" in page
+    assert 'href="/privacy"' in page and 'href="/pricing"' in page
+    assert "whoever runs this copy of CA Mode" in page
+    assert f'datetime="{public_pages.TERMS_UPDATED.isoformat()}"' in page
+
+    for path in ("/privacy", "/pricing", "/does-not-exist", "/"):
+        assert 'href="/terms"' in client.get(path).text
+
+
+def test_terms_page_escapes_the_contact_address(client, monkeypatch):
+    monkeypatch.setenv("PRICING_CONTACT_EMAIL", "team+ca@example.com")
+    page = client.get("/terms").text
+    assert 'href="mailto:team+ca@example.com"' in page
+
+    monkeypatch.setenv("PRICING_CONTACT_EMAIL", '"><script>alert(1)</script>@x.com')
+    page = client.get("/terms").text
+    assert "<script>alert(1)" not in page
 
 
 @pytest.mark.parametrize("path", ["/does-not-exist", "/js/missing.js", "/privacy/extra"])

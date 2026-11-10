@@ -2278,7 +2278,7 @@ async def admin_create_backup(request: Request):
     return {"file": path.name, **backup.status()}
 
 
-# ── Public pages: app shell, privacy policy, pricing, crawler files, 404 ───────────────
+# ── Public pages: app shell, privacy policy, terms, pricing, crawler files, 404 ───────────────
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
@@ -2289,6 +2289,11 @@ async def index(request: Request) -> HTMLResponse:
 @app.get(public_pages.PRIVACY_PATH, response_class=HTMLResponse)
 async def privacy_policy() -> HTMLResponse:
     return HTMLResponse(public_pages.privacy_page())
+
+
+@app.get(public_pages.TERMS_PATH, response_class=HTMLResponse)
+async def terms() -> HTMLResponse:
+    return HTMLResponse(public_pages.terms_page())
 
 
 @app.get(public_pages.PRICING_PATH, response_class=HTMLResponse)
