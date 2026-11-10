@@ -70,6 +70,19 @@ def forget_user(user_id: str) -> None:
         del _unlocked[sid]
 
 
+def end_all_sessions(user_id: str) -> int:
+    """Delete every browser session signed in to the profile, forget their unlocked keys and private chats.
+
+    Used after a PIN reset with the recovery code (a session that knew the old PIN must not stay
+    signed in and unlocked) and by the admin page's "sign out everywhere". Returns how many ended.
+    """
+    with connect_db() as connection:
+        ended = connection.execute("DELETE FROM oauth_sessions WHERE user_id = ?", (user_id,)).rowcount
+    forget_user(user_id)
+    chats.forget_private_chats(user_id)
+    return ended
+
+
 def _wrap(private_key: PrivateKey, secret: str) -> str:
     return sealing.wrap_private_key(private_key, secret, n=users.SCRYPT_N, r=users.SCRYPT_R, p=users.SCRYPT_P)
 

@@ -302,3 +302,26 @@ def test_switching_to_private_mode_needs_the_unlocked_session(client, signed_in,
     assert client.post("/api/privacy/consent", json=private).json()["storageMode"] == "private"
     assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == []
 
+
+# ── Recovery ends every other session ──────────────────────────────────────────
+
+def test_recovery_signs_out_and_locks_every_other_session(client):
+    client.get("/api/session")
+    created = client.post("/api/users", json={"displayName": "Asha", "pin": PIN}).json()
+    user_id, code = created["user"]["id"], created["recoveryCode"]
+    accept_notice(client)
+    other = TestClient(main.app, follow_redirects=False)
+    assert other.post("/api/session/login", json={"userId": user_id, "pin": PIN}).status_code == 200
+    assert other.get("/api/chats").status_code == 200
+    stranger = sign_up(TestClient(main.app, follow_redirects=False), "Ravi")
+
+    recovered = client.post("/api/session/recover", json={"userId": user_id, "recoveryCode": code, "newPin": "1357"})
+
+    assert recovered.status_code == 200
+    assert other.get("/api/session").json()["user"] is None
+    assert other.get("/api/chats").status_code == 401
+    assert client.get("/api/chats").status_code == 200  # the recovering browser has a fresh, unlocked session
+    assert raw("SELECT COUNT(*) FROM oauth_sessions WHERE user_id = ?", user_id) == [(1,)]
+    assert {owner for owner, _ in unlock._unlocked.values()} == {user_id, stranger["id"]}
+    assert raw("SELECT COUNT(*) FROM oauth_sessions WHERE user_id = ?", stranger["id"]) == [(1,)]
+

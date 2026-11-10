@@ -670,7 +670,10 @@ async def recover_profile(body: RecoverRequest, request: Request):
         return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
     except users.ProfileError as exc:  # Includes NoRecoveryCodeError and an unacceptable new PIN.
         return JSONResponse({"error": str(exc)}, status_code=400)
-    logger.info("profile_recovered", extra={"user_id": user["id"]})
+    # Whoever knew the old PIN may still hold a signed-in, unlocked session: end them all, this one included
+    # (it is replaced by a fresh session below).
+    ended = unlock.end_all_sessions(user["id"])
+    logger.info("profile_recovered", extra={"user_id": user["id"], "sessions_ended": ended})
     return _signed_in_response(request, user, unlocked)
 
 
@@ -1042,11 +1045,10 @@ async def delete_profile(body: ConfirmPinRequest, request: Request):
 
 
 async def remove_profile(user: dict[str, Any]) -> None:
-    """Revoke the profile's INDmoney token and delete it with everything it owns."""
+    """Revoke the profile's INDmoney token and delete it with everything it owns, its browser sessions included."""
     await revoke_indmoney(user)
+    unlock.end_all_sessions(user["id"])
     users.delete_user(user["id"])
-    chats.forget_private_chats(user["id"])
-    unlock.forget_user(user["id"])
 
 
 # ── Privacy: consent, storage mode, export ────────────────────────────────────
