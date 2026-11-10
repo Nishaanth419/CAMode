@@ -42,8 +42,7 @@ from .users import (
     touch_session,
 )
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logs.install_access_log_filter()
+logs.configure()
 logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, admin, limits, main, privacy, users
+from app import accounts, admin, limits, logs, main, privacy, users
 from conftest import sign_up
 from test_api import (
     GOOGLE_CLIENT_ID,
@@ -286,6 +287,17 @@ def test_actions_need_an_admin_session(client, admin_mode):
     assert client.request("DELETE", f"/api/admin/profiles/{user['id']}", json={"confirmName": "Ravi"}).status_code == 401
     assert client.post("/api/admin/backups").status_code == 401
     assert users.get_user(user["id"])["plan"] == "free"
+
+
+def test_admin_actions_are_logged_with_the_admins_email(operator, caplog):
+    user = users.create_user("Ravi", users.hash_pin("1357"))
+    caplog.set_level(logging.INFO, logger="ca_mode")
+
+    assert operator.post(f"/api/admin/profiles/{user['id']}/clear-lockout").status_code == 200
+
+    [record] = [record for record in caplog.records if record.getMessage() == "admin_lockout_cleared"]
+    line = logs.KeyValueFormatter().format(record)
+    assert line == f"INFO:ca_mode:admin_lockout_cleared admin={ADMIN_EMAIL} user_id={user['id']}"
 
 
 def test_admin_clears_a_pin_lock(operator):

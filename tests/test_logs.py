@@ -53,3 +53,32 @@ def test_a_second_process_cannot_serve_the_same_data(tmp_path, monkeypatch):
     assert other.returncode == 3, other.stderr
     assert "--workers 1" in other.stdout
     db._process_lock.close()
+
+
+def test_extra_fields_are_written():
+    record = logging.LogRecord("ca_mode", logging.INFO, __file__, 1, "admin_plan_changed", None, None)
+    record.admin = "owner@example.com"
+    record.user_id = "u1"
+    record.note = 'two words "quoted"'
+    record.counts = {"a": 1}
+
+    line = logs.KeyValueFormatter().format(record)
+
+    assert line == (
+        'INFO:ca_mode:admin_plan_changed admin=owner@example.com user_id=u1 '
+        'note="two words \\"quoted\\"" counts="{\\"a\\":1}"'
+    )
+
+
+def test_a_line_without_fields_is_unchanged():
+    record = logging.LogRecord("ca_mode", logging.WARNING, __file__, 1, "plain %s", ("text",), None)
+
+    assert logs.KeyValueFormatter().format(record) == "WARNING:ca_mode:plain text"
+
+
+def test_configure_installs_the_formatter():
+    logs.configure()
+
+    stream_handlers = [handler for handler in logging.getLogger().handlers if type(handler) is logging.StreamHandler]
+    assert stream_handlers
+    assert all(isinstance(handler.formatter, logs.KeyValueFormatter) for handler in stream_handlers)
