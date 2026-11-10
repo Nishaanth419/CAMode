@@ -40,13 +40,33 @@
     return GENERIC_ERROR;
   }
 
+  const TIMEOUT_STATUSES = new Set([408, 502, 503, 504, 520, 521, 522, 523, 524]);
+
+  // A chat request that died before CA Mode answered: the connection dropped (status 0), or a proxy in front
+  // (Cloudflare, Caddy) gave up waiting and sent its own page. The server may still finish and save the answer.
+  function lostChatResponse(status, body) {
+    if (!status) return true;
+    return TIMEOUT_STATUSES.has(status) && !apiError(body);
+  }
+
+  // The saved answer to `question` in `chat` (GET /api/chats/{id}) when the chat changed after `sinceUpdatedAt`
+  // (server time, from the chat list) and ends with that question and its answer; otherwise null.
+  function savedAnswerFor(chat, question, sinceUpdatedAt) {
+    if (!chat || !Array.isArray(chat.messages) || chat.messages.length < 2) return null;
+    if (Number.isFinite(sinceUpdatedAt) && !(Number(chat.updatedAt) > sinceUpdatedAt)) return null;
+    const [asked, answer] = chat.messages.slice(-2);
+    if (!asked || asked.role !== 'user' || !answer || answer.role !== 'assistant') return null;
+    if (String(asked.content || '').trim() !== String(question || '').slice(0, 12000).trim()) return null;
+    return answer;
+  }
+
   // Enter that finishes an IME composition (Japanese, Chinese, Korean, Indic keyboards) must not send.
   function isComposingEnter(event) {
     return Boolean(event && (event.isComposing || event.keyCode === 229));
   }
 
   const api = {
-    NETWORK_ERROR, GENERIC_ERROR, plainError, errorText,
+    NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

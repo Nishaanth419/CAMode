@@ -1718,14 +1718,34 @@ async function sendMessage(text) {
 
   try {
     if (!activeChatId) createdChatId = await createChat();
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent, aiProvider: selectedProvider }),
-    });
+    const chatId = activeChatId;
+    const sinceUpdatedAt = Number(chats.find((chat) => chat.id === chatId)?.updatedAt);
+    let res = null;
+    try {
+      res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, chatId, agentType: selectedAgent, aiProvider: selectedProvider }),
+      });
+    } catch { /* The connection dropped: the server may still save the answer. */ }
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+    if (!res || !res.ok) {
+      const err = res ? await res.json().catch(() => ({})) : {};
+      if (lostChatResponse(res ? res.status : 0, err)) {
+        // A proxy timed out or the connection dropped, but the server keeps answering and saves the answer
+        // with the chat: look for it there before calling this a failure.
+        setStatus('loading', 'Checking for the answer…');
+        const saved = await waitForSavedAnswer(chatId, text, sinceUpdatedAt);
+        if (saved) {
+          removeTypingIndicator();
+          addMessage('assistant', renderMarkdown(saved.content), saved.trace || [], saved.runId);
+          createdChatId = null;
+          await refreshChats().catch(() => {});
+          return;
+        }
+        throw new Error(res ? 'The connection timed out before the answer arrived. If it was saved, it appears when you reopen this chat.'
+          : NETWORK_ERROR);
+      }
       const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
       if (err.profileRequired || err.unlockRequired || err.consentRequired) {
         removeTypingIndicator();
@@ -1830,6 +1850,27 @@ async function sendMessage(text) {
   } finally {
     setBusy(false);
     scrollToBottom();
+  }
+}
+
+// After a lost chat response, re-read the chat until its saved answer shows up or the server's own answer
+// deadline (CHAT_DEADLINE_SECONDS, 240 by default) has surely passed.
+const LOST_ANSWER_POLL_MS = 10000;
+const LOST_ANSWER_WAIT_MS = 150000;
+
+async function waitForSavedAnswer(chatId, question, sinceUpdatedAt) {
+  const giveUpAt = Date.now() + LOST_ANSWER_WAIT_MS;
+  for (;;) {
+    try {
+      const response = await fetch('/api/chats/' + encodeURIComponent(chatId));
+      if (response.status >= 400 && response.status < 500) return null;
+      if (response.ok) {
+        const saved = savedAnswerFor(await response.json(), question, sinceUpdatedAt);
+        if (saved) return saved;
+      }
+    } catch { /* Still offline: try again below. */ }
+    if (Date.now() + LOST_ANSWER_POLL_MS > giveUpAt) return null;
+    await new Promise((resolve) => setTimeout(resolve, LOST_ANSWER_POLL_MS));
   }
 }
 
