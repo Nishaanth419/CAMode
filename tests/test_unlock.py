@@ -269,3 +269,36 @@ def test_private_mode_chats_need_unlock_but_are_not_written(client, monkeypatch)
     assert client.get("/api/chats").status_code == 403
     client.post("/api/session/unlock", json={"pin": PIN})
     assert raw("SELECT COUNT(*) FROM chats WHERE user_id = ?", user["id"]) == [(0,)]
+
+
+# ── Destructive history routes need the unlocked session ──────────────────────
+
+def test_clearing_history_needs_the_unlocked_session(client, signed_in, monkeypatch):
+    fake_answer(monkeypatch)
+    chat_id = chat_once(client)
+    restart_server()
+
+    refused = client.delete("/api/users/me/history")
+
+    assert refused.status_code == 403 and refused.json()["unlockRequired"] is True
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == [(chat_id,)]
+    client.post("/api/session/unlock", json={"pin": PIN})
+    assert client.delete("/api/users/me/history").json() == {"cleared": True}
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == []
+
+
+def test_switching_to_private_mode_needs_the_unlocked_session(client, signed_in, monkeypatch):
+    fake_answer(monkeypatch)
+    chat_id = chat_once(client)
+    restart_server()
+    private = {"policyVersion": privacy.POLICY_VERSION, "storageMode": "private"}
+
+    refused = client.post("/api/privacy/consent", json=private)
+
+    assert refused.status_code == 403 and refused.json()["unlockRequired"] is True
+    assert users.get_user(signed_in["id"])["storageMode"] == "device"
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == [(chat_id,)]
+    client.post("/api/session/unlock", json={"pin": PIN})
+    assert client.post("/api/privacy/consent", json=private).json()["storageMode"] == "private"
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == []
+

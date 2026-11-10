@@ -1078,9 +1078,11 @@ async def count_page_view(body: page_views.PageViewInput, request: Request):
 
 @app.post("/api/privacy/consent")
 async def accept_privacy(body: privacy.ConsentRequest, request: Request):
+    """Accept the notice or change data settings. Needs the unlocked session: private mode and a shorter
+    retention delete saved history, so a session cookie alone (without the PIN) must not be able to."""
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     try:
         privacy.record_consent(user, body)
     except privacy.StaleNoticeError as exc:
@@ -1118,9 +1120,10 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
 
 @app.delete("/api/users/me/history")
 async def clear_profile_history(request: Request):
+    """Delete saved history. Needs the unlocked session (the PIN entered in this browser), like reading it."""
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     privacy.clear_history(user["id"])
     logger.info("profile_history_cleared", extra={"user_id": user["id"]})
     return {"cleared": True}

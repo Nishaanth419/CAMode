@@ -1042,7 +1042,12 @@ document.getElementById('clear-history').addEventListener('click', async () => {
   if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and broker connections are kept.')) return;
   const response = await fetch('/api/users/me/history', { method: 'DELETE' });
   if (!response.ok) {
-    dataStatus.textContent = 'Could not clear your history.';
+    const data = await response.json().catch(() => ({}));
+    dataStatus.textContent = data.unlockRequired ? 'Enter your PIN to unlock your history first.' : 'Could not clear your history.';
+    if (data.unlockRequired) {
+      profileDialog.close();
+      await loadChats();
+    }
     return;
   }
   profileDialog.close();
