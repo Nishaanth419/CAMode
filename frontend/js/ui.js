@@ -96,9 +96,30 @@
     return { text: rest, charts };
   }
 
+  // Run `action` with `button` disabled, so a second click cannot repeat it, and show any failure in `statusEl`
+  // (plain text, see errorText). Returns the action's result, or undefined when it failed or was already running.
+  async function withPending(button, statusEl, action) {
+    if (button && button.disabled) return undefined;
+    if (button) {
+      button.disabled = true;
+      button.setAttribute?.('aria-busy', 'true');
+    }
+    try {
+      return await action();
+    } catch (error) {
+      if (statusEl) statusEl.textContent = errorText(error);
+      return undefined;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute?.('aria-busy');
+      }
+    }
+  }
+
   const api = {
     NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
-    isComposingEnter, parseChartSpec, extractChartBlocks,
+    isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

@@ -85,3 +85,41 @@ test('only fenced chart blocks are drawn; bold or inline chart JSON stays text',
   // An unreadable fenced block keeps its place and draws as the "could not draw" note.
   assert.deepEqual(ui.extractChartBlocks('```chart\nnot json\n```').charts, [null]);
 });
+
+function fakeButton() {
+  const attributes = {};
+  return {
+    disabled: false, attributes,
+    setAttribute(name, value) { attributes[name] = value; },
+    removeAttribute(name) { delete attributes[name]; },
+  };
+}
+
+test('a dialog action disables its button while it runs and ignores a second click', async () => {
+  const button = fakeButton();
+  const status = { textContent: '' };
+  let release;
+  let runs = 0;
+  const first = ui.withPending(button, status, () => { runs += 1; return new Promise((resolve) => { release = resolve; }); });
+  assert.equal(button.disabled, true);
+  assert.equal(button.attributes['aria-busy'], 'true');
+  assert.equal(await ui.withPending(button, status, async () => { runs += 1; }), undefined);
+  release('done');
+  assert.equal(await first, 'done');
+  assert.equal(runs, 1);
+  assert.equal(button.disabled, false);
+  assert.equal(button.attributes['aria-busy'], undefined);
+  assert.equal(status.textContent, '');
+});
+
+test('a failed dialog action shows a plain message and frees its button', async () => {
+  const button = fakeButton();
+  const status = { textContent: '' };
+  assert.equal(await ui.withPending(button, status, async () => { throw new Error('Incorrect PIN.'); }), undefined);
+  assert.equal(status.textContent, 'Incorrect PIN.');
+  assert.equal(button.disabled, false);
+  await ui.withPending(button, status, async () => { throw new TypeError('Failed to fetch'); });
+  assert.equal(status.textContent, ui.NETWORK_ERROR);
+  await ui.withPending(button, status, async () => { JSON.parse('<html>'); });
+  assert.equal(status.textContent, ui.GENERIC_ERROR);
+});
