@@ -75,7 +75,7 @@ Open [http://localhost:8003](http://localhost:8003), create a profile, accept th
 
 ## Where Cloudflare comes in
 
-Cloudflare is used only when CA Mode is hosted on a server, never on one computer. In `deploy/docker-compose.yml`, a `cloudflared` container opens an outbound tunnel, so the server opens no ports, and Cloudflare Access asks for a team login before any request reaches the app at `http://app:8080`. Setting `TRUSTED_PROXY=cloudflare` makes rate limits read each visitor's address from `CF-Connecting-IP`. Turnstile, an optional bot check on sign-up, is a separate Cloudflare product. Without a domain on Cloudflare, Caddy serves the app on ports 80 and 443 instead; the current hosted copy works that way. The exact steps are in [Hosting](docs/hosting.md#3a-cloudflare-tunnel-and-access).
+Cloudflare is used only when CA Mode is hosted on a server, never on one computer. In `deploy/docker-compose.tunnel.yml`, a `cloudflared` container opens an outbound tunnel, so the server opens no ports, and Cloudflare Access asks for a team login before any request reaches the app at `http://app:8080`. Setting `TRUSTED_PROXY=cloudflare` makes rate limits read each visitor's address from `CF-Connecting-IP`. Turnstile, an optional bot check on sign-up, is a separate Cloudflare product. Without a domain on Cloudflare, Caddy serves the app on ports 80 and 443 instead; the current hosted copy works that way. The exact steps are in [Hosting](docs/hosting.md#3a-cloudflare-tunnel-and-access).
 
 ```mermaid
 flowchart LR

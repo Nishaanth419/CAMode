@@ -1,0 +1,9 @@
+[Unit]
+Description=Report a failed CA Mode update
+
+[Service]
+Type=oneshot
+# CA_MODE_ALERT_URL (optional, in the deploy folder's .env) gets the alert as a plain-text POST, e.g. an ntfy.sh topic.
+EnvironmentFile=-/srv/ca-mode/app/.env
+# $$ is a literal $ for the shell (systemd would expand a single one itself).
+ExecStart=/bin/sh -c 'msg="CA Mode update failed on $$(hostname) at $$(date -Is); see journalctl -u ca-mode-update"; logger -p user.err -t ca-mode-update "$$msg"; if [ -n "$${CA_MODE_ALERT_URL:-}" ]; then curl -fsS -m 10 -d "$$msg" "$${CA_MODE_ALERT_URL}" >/dev/null || logger -p user.err -t ca-mode-update "could not send the alert"; fi'

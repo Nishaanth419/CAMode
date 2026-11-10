@@ -1,5 +1,10 @@
 """Local database backups: daily consistent copies, verification, pruning, and restore.
 
+Two kinds of copy share ``BACKUP_DIR``: the scheduler's daily ones (``codemode-<time>.sqlite3``, the newest
+``BACKUP_KEEP`` kept) and manual ones made on request (``codemode-<time>-manual.sqlite3``: ``scripts.backup now``,
+the deploy script, the admin page; the newest ``BACKUP_MANUAL_KEEP`` kept). Each kind is pruned on its own, so
+however many manual copies are made, they never push a daily restore point out.
+
 Copies are made with SQLite's online backup API, so they are consistent even while
 the app is running. Only the database is copied, never the master key: chats,
 snapshots and profile fields in it are sealed with each profile's PIN, and keeping
@@ -17,14 +22,16 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from . import db
 
 logger = logging.getLogger("ca_mode.backup")
 
 BACKUP_INTERVAL: Final = timedelta(hours=24)
-_NAME_RE: Final = re.compile(r"^codemode-(\d{8}-\d{6})\.sqlite3$")
+_NAME_RE: Final = re.compile(r"^codemode-(\d{8}-\d{6})(-manual)?\.sqlite3$")
+MANUAL_SUFFIX: Final = "-manual"
+Kind = Literal["daily", "manual"]
 # cas_statements is optional: backups made before CAS uploads existed lack it.
 _REQUIRED_TABLES: Final = {"users", "chats", "portfolio_snapshots", "consents"}
 
@@ -44,16 +51,30 @@ def backups_to_keep() -> int:
         return 14
 
 
+def manual_backups_to_keep() -> int:
+    try:
+        return max(1, int(os.getenv("BACKUP_MANUAL_KEEP", "5")))
+    except ValueError:
+        return 5
+
+
 def backups_enabled() -> bool:
     return os.getenv("BACKUP_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def list_backups() -> list[Path]:
-    """Backup files, newest first."""
+def backup_kind(path: Path) -> Kind:
+    match = _NAME_RE.match(path.name)
+    return "manual" if match and match.group(2) else "daily"
+
+
+def list_backups(kind: Kind | None = None) -> list[Path]:
+    """Backup files of ``kind`` (both when None), newest first."""
     directory = backup_dir()
     if not directory.is_dir():
         return []
-    return sorted((path for path in directory.iterdir() if _NAME_RE.match(path.name)), reverse=True)
+    found = (path for path in directory.iterdir()
+             if _NAME_RE.match(path.name) and (kind is None or backup_kind(path) == kind))
+    return sorted(found, key=lambda path: (backup_time(path), path.name), reverse=True)
 
 
 def backup_time(path: Path) -> datetime:
@@ -82,16 +103,21 @@ def verify_backup(path: Path) -> dict[str, int]:
         raise BackupError(f"{path.name} is not a readable SQLite database: {exc}") from exc
 
 
-def _prune(keep: int) -> None:
-    for old in list_backups()[keep:]:
+def _prune(kind: Kind) -> None:
+    keep = backups_to_keep() if kind == "daily" else manual_backups_to_keep()
+    for old in list_backups(kind)[keep:]:
         old.unlink(missing_ok=True)
 
 
-def create_backup(*, now: datetime | None = None) -> Path:
-    """Write a verified copy of the database to ``backup_dir()`` and prune old copies."""
+def create_backup(*, now: datetime | None = None, kind: Kind = "manual") -> Path:
+    """Write a verified copy of the database to ``backup_dir()`` and prune old copies of the same kind.
+
+    Only the scheduler (``backup_if_due()``) makes ``daily`` copies; anything asked for by hand is ``manual``.
+    """
     directory = backup_dir()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target = directory / f"codemode-{(now or datetime.now()):%Y%m%d-%H%M%S}.sqlite3"
+    suffix = MANUAL_SUFFIX if kind == "manual" else ""
+    target = directory / f"codemode-{(now or datetime.now()):%Y%m%d-%H%M%S}{suffix}.sqlite3"
     partial = target.with_name(target.name + ".partial")
     try:
         with closing(sqlite3.connect(db.DATABASE_PATH, timeout=30)) as source, \
@@ -109,20 +135,20 @@ def create_backup(*, now: datetime | None = None) -> Path:
     except BackupError:
         partial.unlink(missing_ok=True)
         raise
-    _prune(backups_to_keep())
-    logger.info("backup_created", extra={"path": str(target)})
+    _prune(kind)
+    logger.info("backup_created", extra={"path": str(target), "kind": kind})
     return target
 
 
 def backup_if_due(*, now: datetime | None = None) -> Path | None:
-    """Create a backup when the newest one is older than ``BACKUP_INTERVAL`` (or none exists)."""
+    """Create a daily backup when the newest daily one is older than ``BACKUP_INTERVAL`` (or none exists)."""
     if not backups_enabled() or not db.DATABASE_PATH.exists():
         return None
     current = now or datetime.now()
-    existing = list_backups()
+    existing = list_backups("daily")
     if existing and current - backup_time(existing[0]) < BACKUP_INTERVAL:
         return None
-    return create_backup(now=current)
+    return create_backup(now=current, kind="daily")
 
 
 def status() -> dict[str, Any]:
@@ -132,6 +158,7 @@ def status() -> dict[str, Any]:
         "enabled": backups_enabled(),
         "count": len(existing),
         "keep": backups_to_keep(),
+        "manualKeep": manual_backups_to_keep(),
         "latest": backup_time(existing[0]).isoformat(timespec="seconds") if existing else None,
     }
 

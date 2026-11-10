@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app import backup, db, snapshots, users
+from app import backup, db, main, snapshots, users
 
 NOON = datetime(2026, 10, 14, 12, 0, 0)
 
@@ -22,7 +22,8 @@ def test_backup_is_a_private_verified_copy():
 
     path = backup.create_backup(now=NOON)
 
-    assert path.name == "codemode-20261014-120000.sqlite3"
+    assert path.name == "codemode-20261014-120000-manual.sqlite3"
+    assert backup.backup_kind(path) == "manual"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert backup.verify_backup(path) == {"users": 1, "chats": 0, "portfolio_snapshots": 0}
@@ -48,11 +49,30 @@ def test_old_backups_are_pruned(monkeypatch):
     make_profile()
 
     for day in range(4):
-        backup.create_backup(now=NOON + timedelta(days=day))
+        backup.create_backup(now=NOON + timedelta(days=day), kind="daily")
 
     assert [path.name for path in backup.list_backups()] == [
         "codemode-20261017-120000.sqlite3", "codemode-20261016-120000.sqlite3",
     ]
+
+
+def test_manual_backups_never_push_daily_ones_out(monkeypatch):
+    monkeypatch.setenv("BACKUP_KEEP", "2")
+    monkeypatch.setenv("BACKUP_MANUAL_KEEP", "1")
+    make_profile()
+    for day in range(2):
+        backup.create_backup(now=NOON + timedelta(days=day), kind="daily")
+
+    for minute in range(10):
+        backup.create_backup(now=NOON + timedelta(days=2, minutes=minute))
+
+    assert [path.name for path in backup.list_backups("daily")] == [
+        "codemode-20261015-120000.sqlite3", "codemode-20261014-120000.sqlite3",
+    ]
+    assert [path.name for path in backup.list_backups("manual")] == ["codemode-20261016-120900-manual.sqlite3"]
+    assert backup.status()["count"] == 3
+    # A manual copy does not count as today's daily backup either.
+    assert backup.backup_if_due(now=NOON + timedelta(days=2, hours=1)) is not None
 
 
 def test_backup_if_due_runs_once_a_day(monkeypatch):
@@ -106,6 +126,7 @@ def test_restore_refuses_a_corrupt_backup_without_touching_the_database(tmp_path
 
 
 def test_backup_api(client, signed_in):
+    assert client.get("/api/session").json()["backupsInApp"] is True
     assert client.get("/api/backups").json()["count"] == 0
 
     created = client.post("/api/backups")
@@ -129,6 +150,40 @@ def test_backup_api_is_for_the_operator_when_the_admin_page_is_on(client, signed
     assert client.post("/api/backups").status_code == 404
     assert client.get("/api/session").json()["backupsInApp"] is False
     assert backup.list_backups() == []
+
+
+@pytest.mark.parametrize("settings", [
+    {"AUTH_MODE": "google", "GOOGLE_CLIENT_ID": "id", "GOOGLE_CLIENT_SECRET": "secret", "APP_ORIGIN": "https://ca.example.com"},
+    {"APP_ORIGIN": "https://ca.example.com"},
+    {"APP_ORIGIN": "http://localhost:8003", "BACKUPS_IN_APP": "false"},
+])
+def test_in_app_backups_are_off_on_a_hosted_copy(client, signed_in, monkeypatch, settings):
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+
+    assert main.backups_in_app() is False
+    assert client.post("/api/backups").status_code == 404
+    assert backup.list_backups() == []
+
+
+@pytest.mark.parametrize("settings", [
+    {"APP_ORIGIN": "http://localhost:8003"},
+    {"APP_ORIGIN": "http://127.0.0.1:8003"},
+    {"APP_ORIGIN": "https://ca.example.com", "BACKUPS_IN_APP": "true"},
+])
+def test_in_app_backups_on_one_computer_or_when_asked_for(monkeypatch, settings):
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+
+    assert main.backups_in_app() is True
+
+
+def test_backup_api_is_rate_limited(client, signed_in, monkeypatch):
+    monkeypatch.setenv("RATE_LIMITS_ENABLED", "true")
+
+    statuses = [client.post("/api/backups").status_code for _ in range(4)]
+
+    assert statuses == [201, 201, 201, 429]
 
 
 def test_scheduler_makes_the_daily_backup(monkeypatch):

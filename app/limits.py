@@ -9,7 +9,9 @@ behaves exactly as before:
   in a server's settings is lowered to it, so changing the allowance in code reaches a hosted copy with
   the next image. A smaller number still lowers the cap for that copy. A slot is reserved
   before the model runs (in a ``BEGIN IMMEDIATE`` transaction, so concurrent requests
-  cannot overshoot) and released when no answer comes back.
+  cannot overshoot) and released when no answer comes back. Each reservation is also a
+  ``question_reservations`` row until it is confirmed or released, so a request killed mid-answer
+  (a deploy restart) gives its slot back: at the next start, or ``RESERVATION_TTL_SECONDS`` later.
 - ``RATE_LIMITS_ENABLED``: sliding-window request limits per client IP and per profile
   on chat, sign-up, sign-in and investigation routes (``RATE_RULES``). Kept in process
   memory: they reset on restart and assume one app process, which is how CA Mode runs.
@@ -29,6 +31,7 @@ import ipaddress
 import logging
 import math
 import os
+import secrets
 import threading
 import time
 from collections import deque
@@ -45,7 +48,7 @@ from .snapshots import SNAPSHOT_TIMEZONE
 
 logger = logging.getLogger("ca_mode.limits")
 
-RateGroup = Literal["chat", "sign_up", "sign_in", "investigation", "broker"]
+RateGroup = Literal["chat", "sign_up", "sign_in", "investigation", "broker", "backup"]
 
 # The Free plan's daily allowance, offered on the pricing page; DAILY_QUESTION_LIMIT is never above it.
 FREE_DAILY_QUESTIONS: Final = 10
@@ -106,18 +109,64 @@ def next_reset(now: datetime) -> datetime:
     return datetime.combine(local.date() + timedelta(days=1), dt_time(0), tzinfo=SNAPSHOT_TIMEZONE)
 
 
-def reserve_question(user_id: str, *, now: datetime, capped: bool = True) -> date | None:
-    """Count one question for today, or raise ``DailyLimitReached``; return the day counted (None: no cap).
+# A reservation older than this belongs to a request that can no longer be running (the chat budget is far
+# shorter), so its slot is given back.
+RESERVATION_TTL_SECONDS: Final = 15 * 60
+
+
+@dataclass(frozen=True, slots=True)
+class Reservation:
+    """One counted question waiting for its answer: confirm it when answered, release it otherwise."""
+
+    id: str
+    day: date
+
+
+def _release_stale(connection, cutoff_ms: int, user_id: str | None = None) -> int:
+    """Give back the slots of reservations made before ``cutoff_ms`` (all profiles when ``user_id`` is None)."""
+    query = "SELECT id, user_id, day FROM question_reservations WHERE reserved_at < ?"
+    params: tuple = (cutoff_ms,)
+    if user_id is not None:
+        query += " AND user_id = ?"
+        params += (user_id,)
+    stale = connection.execute(query, params).fetchall()
+    for row in stale:
+        connection.execute(
+            "UPDATE question_counts SET questions = questions - 1 WHERE user_id = ? AND day = ? AND questions > 0",
+            (row["user_id"], row["day"]),
+        )
+        connection.execute("DELETE FROM question_reservations WHERE id = ?", (row["id"],))
+    return len(stale)
+
+
+def release_stale_reservations(*, older_than_seconds: float = RESERVATION_TTL_SECONDS) -> int:
+    """Give back every slot still reserved after ``older_than_seconds``; return how many.
+
+    At startup it runs with 0: no request survives a restart, so every reservation left is an orphan.
+    """
+    cutoff = int((time.time() - older_than_seconds) * 1000)
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        released = _release_stale(connection, cutoff)
+    if released:
+        logger.info("question_reservations_released", extra={"count": released})
+    return released
+
+
+def reserve_question(user_id: str, *, now: datetime, capped: bool = True) -> Reservation | None:
+    """Count one question for today, or raise ``DailyLimitReached``; return the reservation (None: no cap).
 
     ``capped=False`` (a paid plan, ``plans.has_daily_cap()``) skips the cap and the count.
-    Pass the returned day to ``release_question()`` when the question gets no answer.
+    Pass the reservation to ``confirm_question()`` once answered, else to ``release_question()``.
     """
     limit = daily_question_limit() if capped else None
     if limit is None:
         return None
     today = now.astimezone(SNAPSHOT_TIMEZONE).date()
+    reservation = Reservation(secrets.token_hex(8), today)
     with connect_db() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        _release_stale(connection, int((time.time() - RESERVATION_TTL_SECONDS) * 1000), user_id)
         row = connection.execute(
             "SELECT questions FROM question_counts WHERE user_id = ? AND day = ?", (user_id, today.isoformat()),
         ).fetchone()
@@ -128,20 +177,37 @@ def reserve_question(user_id: str, *, now: datetime, capped: bool = True) -> dat
             "ON CONFLICT(user_id, day) DO UPDATE SET questions = questions + 1",
             (user_id, today.isoformat()),
         )
+        connection.execute(
+            "INSERT INTO question_reservations(id, user_id, day, reserved_at) VALUES (?, ?, ?, ?)",
+            (reservation.id, user_id, today.isoformat(), int(time.time() * 1000)),
+        )
         # Only today's count matters; yesterday's is kept so a request spanning midnight can release it.
         connection.execute("DELETE FROM question_counts WHERE day < ?", ((today - timedelta(days=1)).isoformat(),))
-    return today
+    return reservation
 
 
-def release_question(user_id: str, day: date | None) -> None:
-    """Give back a slot taken by ``reserve_question()`` for a question that was not answered."""
-    if day is None:
+def confirm_question(reservation: Reservation | None) -> None:
+    """The question was answered: its slot stays counted and no longer waits to be given back."""
+    if reservation is None:
         return
     with connect_db() as connection:
-        connection.execute(
-            "UPDATE question_counts SET questions = questions - 1 WHERE user_id = ? AND day = ? AND questions > 0",
-            (user_id, day.isoformat()),
-        )
+        connection.execute("DELETE FROM question_reservations WHERE id = ?", (reservation.id,))
+
+
+def release_question(user_id: str, reservation: Reservation | None) -> None:
+    """Give back a slot taken by ``reserve_question()`` for a question that was not answered (once only)."""
+    if reservation is None:
+        return
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        pending = connection.execute(
+            "DELETE FROM question_reservations WHERE id = ? AND user_id = ?", (reservation.id, user_id),
+        ).rowcount
+        if pending:
+            connection.execute(
+                "UPDATE question_counts SET questions = questions - 1 WHERE user_id = ? AND day = ? AND questions > 0",
+                (user_id, reservation.day.isoformat()),
+            )
 
 
 def questions_used(user_id: str, *, now: datetime) -> int:
@@ -179,6 +245,8 @@ RATE_RULES: Final[dict[RateGroup, GroupRules]] = {
     "sign_in": GroupRules(per_ip=Rule(20, 600), per_profile=Rule(10, 600)),
     "investigation": GroupRules(per_ip=Rule(20, 600), per_profile=Rule(10, 600)),
     "broker": GroupRules(per_ip=Rule(60, 60), per_profile=Rule(10, 60)),
+    # A whole-database copy each time; manual copies are pruned apart from the daily ones (backup.py).
+    "backup": GroupRules(per_ip=Rule(5, 3600), per_profile=Rule(3, 3600)),
 }
 
 

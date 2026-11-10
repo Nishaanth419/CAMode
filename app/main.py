@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import date
 from typing import Any, Literal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -43,6 +43,7 @@ from .users import (
 )
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logs.install_access_log_filter()
 logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"
@@ -88,6 +89,9 @@ def _scheduler_enabled() -> bool:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    db.claim_single_process()
+    # No request survives a restart: slots still reserved belong to answers that were cut off.
+    await asyncio.to_thread(limits.release_stale_reservations, older_than_seconds=0)
     stop = asyncio.Event()
     task = asyncio.create_task(snapshots.run_scheduler(stop, mcp_url=MCP_RESOURCE)) if _scheduler_enabled() else None
     try:
@@ -1204,9 +1208,26 @@ async def delete_cas(statement_id: str, request: Request):
 
 # ── Backups ────────────────────────────────────────────────────────────────────
 
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 def backups_in_app() -> bool:
-    """Whether profiles may see and start backups; with an admin page they are the operator's job only."""
-    return not admin.is_enabled()
+    """Whether profiles may see and start backups (every profile's data, the server's path).
+
+    Never with an admin page (the operator's job). Otherwise ``BACKUPS_IN_APP`` decides when set; unset, only a
+    copy on one computer offers them: ``AUTH_MODE=local`` with no ``APP_ORIGIN`` or a localhost one.
+    """
+    if admin.is_enabled():
+        return False
+    flag = os.getenv("BACKUPS_IN_APP", "").strip().lower()
+    if flag:
+        return flag in {"1", "true", "yes", "on"}
+    if accounts.uses_google():
+        return False
+    origin = os.getenv("APP_ORIGIN", "").strip()
+    if not origin:
+        return True
+    return (urlsplit(origin).hostname or "") in _LOCAL_HOSTS
 
 
 @app.get("/api/backups")
@@ -1226,6 +1247,8 @@ async def create_backup(request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
+    if blocked := rate_limited(request, "backup", user["id"]):
+        return blocked
     try:
         path = await asyncio.to_thread(backup.create_backup)
     except backup.BackupError as exc:
@@ -1877,7 +1900,7 @@ async def chat(body: ChatRequest, request: Request):
         extra_tools += calculator + brokers.broker_tools(user)
         context = snapshots.portfolio_context(user, extra_tools=extra_tools, extra_profile_context=brokers.context_line(user["id"]))
     try:
-        question_day = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
+        reservation = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
     except limits.DailyLimitReached as exc:
         return daily_limit_reached(exc)
     monthly_credits = plans.plan_of(user).monthly_credits
@@ -1885,7 +1908,7 @@ async def chat(body: ChatRequest, request: Request):
         try:
             credits.ensure_available(user["id"], monthly_credits, now=limits.local_now())
         except credits.CreditsExhausted as exc:
-            limits.release_question(user["id"], question_day)
+            limits.release_question(user["id"], reservation)
             return credits_exhausted(exc)
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
     answered = False
@@ -1932,12 +1955,14 @@ async def chat(body: ChatRequest, request: Request):
             chats.append_turn(user, data, message, answer_text, trace, run_id=run_id)
         answered = bool(answer_text.strip())
         return PlainTextResponse(answer_text, headers={
-            "X-Agent-Trace": trace_header(trace), **_run_header(run_id), **_questions_left_header(question_day, user),
+            "X-Agent-Trace": trace_header(trace), **_run_header(run_id), **_questions_left_header(reservation, user),
             **(_charge_credits(user, monthly_credits, answer) if answered and monthly_credits else {}),
         })
     finally:
-        if not answered:
-            limits.release_question(user["id"], question_day)
+        if answered:
+            limits.confirm_question(reservation)
+        else:
+            limits.release_question(user["id"], reservation)
 
 
 def _save_agent_run(
@@ -1969,9 +1994,9 @@ def _charge_credits(user: dict[str, Any], monthly_credits: int, answer: Any) -> 
     return {"X-Credits-Remaining": str(left.remaining), "X-Credits-Charged": str(cost)}
 
 
-def _questions_left_header(question_day: date | None, user: dict[str, Any]) -> dict[str, str]:
+def _questions_left_header(reservation: limits.Reservation | None, user: dict[str, Any]) -> dict[str, str]:
     """Today's remaining questions after this answer, only when the daily cap counted it."""
-    if question_day is None:
+    if reservation is None:
         return {}
     remaining = plans.usage(user, now=limits.local_now())["remaining"]
     return {"X-Questions-Remaining": str(remaining)} if remaining is not None else {}

@@ -159,6 +159,14 @@ _SCHEMA = """
         questions INTEGER NOT NULL,
         PRIMARY KEY (user_id, day)
     );
+    -- Questions counted in question_counts whose answer is still being worked on (limits.py). A request killed
+    -- by a restart never confirms or releases its row; release_stale_reservations() gives the slot back.
+    CREATE TABLE IF NOT EXISTS question_reservations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        reserved_at INTEGER NOT NULL
+    );
     -- Sign-in accounts (accounts.py): one Google account per profile, one profile per account.
     CREATE TABLE IF NOT EXISTS accounts (
         provider TEXT NOT NULL,
@@ -259,6 +267,44 @@ def _drop_unique_display_name(connection: sqlite3.Connection) -> None:
     finally:
         connection.execute("PRAGMA foreign_keys = ON")
     logger.info("users_table_rebuilt: profile names no longer need to be unique")
+
+
+class SecondProcessError(RuntimeError):
+    """Another app process already serves this data directory."""
+
+
+_process_lock: object | None = None
+
+
+def claim_single_process() -> None:
+    """Refuse to serve the database from a second process (``uvicorn --workers 2``, two containers).
+
+    Unlocked history keys, rate limits and private-mode chats live in this process's memory, so a second worker would silently split them. An exclusive ``flock`` on
+    ``app.lock`` beside the database is held for the life of the process; the OS releases it on exit,
+    however the process ends. Held once per process (the test suite starts the app many times).
+    """
+    global _process_lock
+    if _process_lock is not None:
+        return
+    try:
+        import fcntl
+    except ImportError:  # Windows: no flock; CA Mode is run in Docker or on macOS/Linux.
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    handle = open(DATA_DIR / "app.lock", "a+")  # noqa: SIM115 - held until the process exits
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise SecondProcessError(
+            f"Another CA Mode process is already using {DATA_DIR}. Run one worker only (uvicorn --workers 1)."
+        ) from exc
+    except OSError:
+        # A file system without flock support: carry on, as before this check existed.
+        logger.warning("single_process_lock_unavailable", extra={"path": str(DATA_DIR / "app.lock")})
+        handle.close()
+        return
+    _process_lock = handle
 
 
 def initialize_db() -> None:

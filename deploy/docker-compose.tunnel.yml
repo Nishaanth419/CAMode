@@ -1,0 +1,17 @@
+# The Cloudflare Tunnel way in: cloudflared dials out to Cloudflare, Cloudflare Access sits in front.
+# Needs CLOUDFLARE_TUNNEL_TOKEN in deploy/.env and TRUSTED_PROXY=cloudflare in app.env. docs/hosting.md, 3a.
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.tunnel.yml          (in deploy/.env)
+services:
+  tunnel:
+    image: cloudflare/cloudflared:2025.8.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in deploy/.env}
+    depends_on:
+      - app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
