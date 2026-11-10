@@ -17,3 +17,10 @@ services:
       - ./.data:/app/.data
       - ${HOME}/.config/ca-mode:/run/ca-mode
       - ${HOME}/ca-mode-backups:/backups
+    # uvicorn lets requests in flight finish for GRACEFUL_SHUTDOWN_SECONDS (90); Docker waits a little longer.
+    stop_grace_period: 100s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

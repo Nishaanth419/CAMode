@@ -1,7 +1,7 @@
 # Alternative to the Cloudflare tunnel: Caddy publishes the app on ports 80 and 443.
-#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build app caddy
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml           (in deploy/.env)
 # Needs SITE_ADDRESS in deploy/.env, TCP 80/443 open to the internet, and in app.env
-# APP_ORIGIN=https://<SITE_ADDRESS> and TRUSTED_PROXY=caddy. README: "Host on a server".
+# APP_ORIGIN=https://<SITE_ADDRESS> and TRUSTED_PROXY=caddy. docs/hosting.md, 3b.
 services:
   caddy:
     image: caddy:2.10.2
@@ -18,3 +18,8 @@ services:
       - ${CA_MODE_HOME:-/srv/ca-mode}/caddy/config:/config
     depends_on:
       - app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
