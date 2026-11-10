@@ -1675,7 +1675,7 @@ async def combined_holdings(request: Request, refresh: bool = False):
         return blocked
     if refresh and (blocked := rate_limited(request, "broker", user["id"])):
         return blocked
-    snapshot = snapshots.latest_snapshot(user["id"], keys=user["keys"])
+    snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     payloads = await broker_holdings_payloads(user, refresh=refresh)
     return await asyncio.to_thread(brokers.combined, snapshot, payloads)
 
@@ -1691,16 +1691,22 @@ def _snapshot_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _snapshot_history(user: dict[str, Any], days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
+    history = snapshots.networth_history(user["id"], days, keys=user["keys"])
+    combined = broker_history.with_combined(user["id"], history, days, keys=user["keys"])
+    return history, combined, snapshots.latest_snapshot(user["id"], keys=user["keys"])
+
+
 @app.get("/api/snapshots")
 async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, le=365)):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    history = snapshots.networth_history(user["id"], days, keys=user["keys"])
-    combined = broker_history.with_combined(user["id"], history, days, keys=user["keys"])
+    # Up to a year of sealed snapshots, each opened and parsed: off the event loop, so other requests carry on.
+    history, combined, latest = await asyncio.to_thread(_snapshot_history, user, days)
     has_combined = combined is not history
     return {
-        "latest": _snapshot_summary(snapshots.latest_snapshot(user["id"], keys=user["keys"])),
+        "latest": _snapshot_summary(latest),
         "history": [
             {"date": point["date"], "networthInr": point["networthInr"],
              **({"combinedInr": point["combinedInr"], "combined": point["combined"]} if has_combined else {})}
@@ -1717,7 +1723,7 @@ async def portfolio_figures(request: Request):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    snapshot = snapshots.latest_snapshot(user["id"], keys=user["keys"])
+    snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     if not snapshot:
         return {"available": False}
     figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot)

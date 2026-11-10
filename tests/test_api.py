@@ -659,6 +659,26 @@ def test_snapshots_endpoint_returns_latest_and_history(client, signed_in):
     assert body["schedule"] == "09:00 Asia/Kolkata"
 
 
+def test_snapshot_history_is_read_off_the_event_loop(client, signed_in, monkeypatch):
+    history_threads = []
+    history = snapshots.networth_history
+
+    def recording(*args, **kwargs):
+        history_threads.append(threading.get_ident())
+        return history(*args, **kwargs)
+
+    monkeypatch.setattr(snapshots, "networth_history", recording)
+
+    async def loop_thread():
+        return threading.get_ident()
+
+    assert client.get("/api/snapshots?days=365").status_code == 200
+
+    # Opening a year of sealed snapshots ran in a worker thread, not on the thread running the event loop.
+    assert len(history_threads) == 1
+    assert history_threads[0] != client.portal.call(loop_thread)
+
+
 def test_snapshot_refresh_requires_indmoney(client, signed_in):
     response = client.post("/api/snapshots/refresh")
     assert response.status_code == 401
