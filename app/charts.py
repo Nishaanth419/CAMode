@@ -6,6 +6,11 @@ the broken block draws nothing. So :func:`ground_candlestick_charts` replaces ev
 candlestick block, whatever candles it holds (or none), with the candles of the
 latest ``get_indian_stocks_ohlc`` result, in the compact ``ohlc`` row form the
 frontend reads. What the model wrote is never trusted.
+
+Bar, donut and line charts in the general agent come from ``analysis_tools.make_chart``, which reads the
+numbers from a stored result in code. The answer holds only ``{"ref": "c1"}``; :func:`ground_tool_charts`
+puts the chart there, appends any chart the model made but did not place, and (``strict``) drops a data
+chart whose numbers the model typed itself.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ CANDLES_UNAVAILABLE_NOTE: Final = (
     "_No candlestick chart: the market-data tool returned no complete OHLC candles for this answer._"
 )
 CHART_IN_HISTORY: Final = "[chart shown to the user]"
+HAND_WRITTEN_NOTE: Final = "_A chart was left out here: its numbers were typed by the model instead of read from your data._"
+UNKNOWN_REF_NOTE: Final = "_A chart was left out here: it was not built from the data in this answer._"
 
 _CHART_BLOCK: Final = re.compile(r"```chart[ \t]*\n(.*?)```", re.IGNORECASE | re.DOTALL)
 _DATE_KEYS: Final = ("datetime_ist", "datetime", "date", "timestamp", "time", "label")
@@ -148,3 +155,76 @@ def ground_candlestick_charts(content: str, ohlc_results: list[str]) -> str:
 def strip_chart_blocks(content: str) -> str:
     """Earlier answers as the model sees them in history: chart data is for the user, not the model."""
     return _CHART_BLOCK.sub(CHART_IN_HISTORY, content) if "```chart" in content.lower() else content
+
+
+def _block(spec: dict[str, Any]) -> str:
+    return "```chart\n" + json.dumps(spec, ensure_ascii=False, separators=(",", ":")) + "\n```"
+
+
+def _is_data_chart(body: str, spec: Any) -> bool:
+    """A model-written bar, donut or line block (with or without readable JSON), not a ref and not candles."""
+    if isinstance(spec, dict):
+        return "ref" not in spec and spec.get("type") != "candlestick"
+    return not _is_candlestick_block(body, spec)
+
+
+_CHART_NOUN: Final = r"(?:chart|graph|diagram|donut|pie|histogram|visuali[sz]ation)s?"
+_ASKS_FOR_CHART: Final = re.compile(
+    r"\b(?:plot|visuali[sz]e|graph)\b"  # "plot my net worth", "visualise my allocation"
+    rf"|\b(?:as|in|into|with|on)\s+(?:an?\s+|the\s+)?(?:\w+\s+){{0,2}}{_CHART_NOUN}\b"  # "show that as a chart"
+    rf"|\b(?:show|draw|make|give|create|display|build|render)\b(?:\W+\w+){{0,6}}?\W+{_CHART_NOUN}\b",
+    re.IGNORECASE)
+# Price-data wording ("get the daily chart", "a candlestick chart"): candles come from the OHLC tool.
+_PRICE_CHART: Final = re.compile(
+    r"\b(?:candle(?:stick)?s?|ohlc)\b|\b(?:daily|weekly|monthly|intraday|hourly|price|technical|stock)\s+charts?\b",
+    re.IGNORECASE)
+
+
+def asks_for_chart(message: str) -> bool:
+    """A request to draw a bar, donut or line chart, not for price charts (those come from the OHLC tool)."""
+    return bool(_ASKS_FOR_CHART.search(message)) and not _PRICE_CHART.search(message)
+
+
+def has_chart_block(content: str) -> bool:
+    return _CHART_BLOCK.search(content) is not None
+
+
+def hand_written_charts(content: str) -> int:
+    """How many data charts in an answer carry numbers the model wrote (a ``ref`` block carries none)."""
+    return sum(1 for match in _CHART_BLOCK.finditer(content)
+               if _is_data_chart(match.group(1), _loads(match.group(1).strip())))
+
+
+def ground_tool_charts(content: str, made: dict[str, dict[str, Any]], *, strict: bool) -> tuple[str, dict[str, Any] | None]:
+    """Replace ``{"ref": id}`` blocks with the charts ``make_chart`` built, and say what changed (a validation event).
+
+    ``strict`` (the general agent, where ``make_chart`` is offered) also drops data charts the model typed;
+    candlestick blocks are left to :func:`ground_candlestick_charts`. Charts made but never placed go at the end.
+    """
+    placed: set[str] = set()
+    dropped = {"handWritten": 0, "unknownRef": 0}
+
+    def replace(match: re.Match[str]) -> str:
+        body = match.group(1)
+        spec = _loads(body.strip())
+        if isinstance(spec, dict) and "ref" in spec:
+            ref = str(spec.get("ref"))
+            if ref in made and ref not in placed:
+                placed.add(ref)
+                return _block(made[ref])
+            dropped["unknownRef"] += 1
+            return UNKNOWN_REF_NOTE if ref not in made else ""
+        if strict and _is_data_chart(body, spec):
+            dropped["handWritten"] += 1
+            return HAND_WRITTEN_NOTE
+        return match.group(0)
+
+    grounded = _CHART_BLOCK.sub(replace, content)
+    unplaced = [ref for ref in made if ref not in placed]
+    if unplaced:
+        grounded = grounded.rstrip() + "\n\n" + "\n\n".join(_block(made[ref]) for ref in unplaced)
+    if not made and not any(dropped.values()):
+        return grounded, None
+    problems = [f"{count} {name}" for name, count in dropped.items() if count]
+    detail = f"{len(made)} made, {len(placed)} placed, {len(unplaced)} appended" + (f"; dropped {', '.join(problems)}" if problems else "")
+    return grounded, {"check": "charts", "outcome": "warning" if problems else "passed", "detail": detail}

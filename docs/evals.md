@@ -136,7 +136,7 @@ The first live run passed 3/12: the local model writes `name` for `tool`, refers
 
 ```bash
 python -m scripts.eval_workflows                                         # scripted cases, offline (also in the test suite)
-python -m scripts.eval_workflows --provider ollama --runs 3              # the 8 live cases: the model does the whole task
+python -m scripts.eval_workflows --provider ollama --runs 3              # the 9 live cases: the model does the whole task
 python -m scripts.eval_workflows --provider ollama --runs 3 --baseline   # the same cases on the previous loop
 ```
 

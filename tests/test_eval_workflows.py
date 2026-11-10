@@ -21,7 +21,7 @@ def test_the_dataset_covers_the_four_requests_live_and_has_unique_ids():
     ids = [case["id"] for case in CASES]
     assert len(ids) == len(set(ids))
     live = [case for case in CASES if "live" in case]
-    assert len(live) == 8
+    assert len(live) == 9  # the four requests twice, plus a chart request
     assert all(not case["script"] for case in CASES if case.get("liveOnly"))
 
 

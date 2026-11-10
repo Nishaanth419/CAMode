@@ -13,6 +13,11 @@ it and what to compute.
 - ``price_levels`` measures prior-session highs and lows over stored daily candles (``price_action``).
 - ``date_facts`` gives calendar facts about dates (weekday, days and weekdays from today, the last listed date of
   each month), so the model does not reason about calendars itself.
+- ``make_chart`` builds a bar, donut or line chart from a list in a stored result: the model names the result,
+  the path and the fields, and the numbers are read here, never typed by the model. The answer carries only a
+  ``{"ref": "c1"}`` chart block, which ``charts.ground_tool_charts`` replaces with the chart.
+- A path that is not found but is the unique tail of a real path (``top_holdings`` for ``figures.top_holdings``)
+  is resolved to it; otherwise the error lists the paths that hold lists.
 
 Figures these tools return are tool results, so the answer's number check accepts them, and the model
 never has to do arithmetic itself.
@@ -36,7 +41,12 @@ MAX_ROWS: Final = 40
 MAX_FIELDS: Final = 12
 MAX_EXPRESSIONS: Final = 30
 SCALAR_LIST_LIMIT: Final = 24
-ANALYSIS_TOOL_NAMES: Final = frozenset({"inspect_result", "calculate", "option_strategy", "price_levels", "date_facts"})
+CHART_TYPES: Final = ("bar", "donut", "line")
+MAX_CHART_ROWS: Final = 24  # the frontend draws at most 24 bars or slices
+MAX_LINE_POINTS: Final = 100  # and 100 points per line
+MAX_SERIES: Final = 4
+ANALYSIS_TOOL_NAMES: Final = frozenset({"inspect_result", "calculate", "option_strategy", "price_levels", "date_facts",
+                                        "make_chart"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +90,7 @@ class ResultStore:
     """Every tool result of one answer, by id (``r1``, ``r2``...), in full."""
 
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    charts: dict[str, dict[str, Any]] = field(default_factory=dict)  # make_chart's charts by id (c1, c2...)
 
     def add(self, tool: str, arguments: dict[str, Any], text: str) -> str:
         result_id = f"r{len(self.results) + 1}"
@@ -90,7 +101,8 @@ class ResultStore:
         """What the model reads for a result: the result itself when short, else an outline to query."""
         entry = self.results[result_id]
         if len(entry["text"]) <= COMPACT_OVER_CHARS:
-            return entry["text"]
+            # The id goes with it: without one the model believed a short result could not be charted or inspected.
+            return f"{entry['text']}\n[resultId: {result_id}]"
         if entry["value"] is None:
             return json.dumps({"resultId": result_id, "chars": len(entry["text"]), "note": "not JSON; first part shown",
                                "text": entry["text"][:COMPACT_OVER_CHARS]}, ensure_ascii=False)
@@ -100,6 +112,10 @@ class ResultStore:
             "howToRead": (f"This result is too large to show in full. Call inspect_result with result_id \"{result_id}\", "
                           "the path of a list in the outline, conditions on its fields and the fields you need."),
         }, ensure_ascii=False, separators=(",", ":"), default=str)
+
+    def listing(self) -> str:
+        """``r1 (networth_holdings), r2 (...)``: what the model can pass as result_id."""
+        return ", ".join(f"{rid} ({entry['tool']})" for rid, entry in self.results.items()) or "none"
 
     def texts(self) -> list[str]:
         return [entry["text"] for entry in self.results.values()]
@@ -115,6 +131,45 @@ def _get(value: Any, path: str) -> Any:
         else:
             return None
     return value
+
+
+def _paths(value: Any, prefix: str = "", depth: int = 0) -> list[tuple[str, Any]]:
+    """Every dotted path to a dict key (not inside lists), with its value."""
+    if depth > 6 or not isinstance(value, dict):
+        return []
+    found = []
+    for key, item in value.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        found.append((path, item))
+        found.extend(_paths(item, path, depth + 1))
+    return found
+
+
+def resolve_path(value: Any, path: str) -> tuple[Any, str, dict[str, Any]]:
+    """The value at ``path``, the path actually used, and an error to return when there is nothing there.
+
+    A path that is the tail of exactly one real path is taken as that path; otherwise the error lists the
+    paths of lists in the result, so the model can pick one instead of repeating the same call.
+    """
+    if not path:
+        return value, path, {}
+    target = _get(value, path)
+    if target is not None:
+        return target, path, {}
+    candidates = [(full, item) for full, item in _paths(value) if full.endswith("." + path) and item is not None]
+    if len(candidates) == 1:
+        return candidates[0][1], candidates[0][0], {}
+    lists = [full for full, item in _paths(value) if isinstance(item, list)]
+    last = path.rsplit(".", 1)[-1].lower()
+    lists.sort(key=lambda full: last not in full.lower())
+    error: dict[str, Any] = {"error": f"nothing at path {path!r}"}
+    if candidates:
+        error["didYouMean"] = [full for full, _ in candidates][:8]
+    elif lists:
+        error["pathsWithLists"] = lists[:12]
+    else:
+        error["outline"] = _outline(value)
+    return None, path, error
 
 
 _MISSING: Final = object()
@@ -200,13 +255,14 @@ def inspect(store: ResultStore, arguments: dict[str, Any]) -> dict[str, Any]:
     value = store.results[result_id]["value"]
     if value is None:
         return {"error": f"{result_id} is not JSON"}
-    path = str(arguments.get("path") or "")
-    target = _get(value, path) if path else value
-    if target is None:
-        return {"error": f"nothing at path {path!r}", "outline": _outline(value)}
+    asked = str(arguments.get("path") or "")
+    target, path, error = resolve_path(value, asked)
+    if error:
+        return error
+    resolved = {"resolvedPath": path} if path != asked else {}
     fields = [str(item) for item in (arguments.get("fields") or [])][:MAX_FIELDS]
     if not isinstance(target, list):
-        return {"resultId": result_id, "path": path, "value": _project(target, fields)}
+        return {"resultId": result_id, "path": path, **resolved, "value": _project(target, fields)}
     conditions = arguments.get("where") or []
     if isinstance(conditions, (str, dict)):
         conditions = [conditions]
@@ -220,10 +276,123 @@ def inspect(store: ResultStore, arguments: dict[str, Any]) -> dict[str, Any]:
         rows = [row for row, key in sorted((pair for pair in keyed if pair[1] is not None), key=lambda pair: pair[1],
                                            reverse=bool(arguments.get("descending")))]
     limit = min(int(arguments.get("limit") or 20), MAX_ROWS)
-    return {"resultId": result_id, "path": path, "rows": len(target), "matched": len(rows),
+    absent = [name for name in fields if rows and all(_field(row, name) is _MISSING for row in rows)]
+    return {"resultId": result_id, "path": path, **resolved, "rows": len(target), "matched": len(rows),
             "returned": [_project(row, fields) for row in rows[:limit]],
+            **({"fieldsInNoRow": absent, "fieldsOfFirstRow": _row_fields(rows[0])} if absent else {}),
             **({"note": f"{len(rows) - limit} more matched; narrow the conditions or raise limit"} if len(rows) > limit else {}),
             "absentFields": "a field missing from a row was not reported by the tool (not quoted), never zero"}
+
+
+def _row_fields(row: Any) -> list[str]:
+    return [str(key) for key in row][:30] if isinstance(row, dict) else []
+
+
+# ── make_chart ────────────────────────────────────────────────────────────────
+
+def _chart_rows(target: Any) -> list[Any] | None:
+    """A list to chart: the list itself, or a mapping of names to numbers as ``{"key", "value"}`` rows."""
+    if isinstance(target, list):
+        return target
+    if isinstance(target, dict) and target and all(not isinstance(item, (dict, list)) for item in target.values()):
+        return [{"key": key, "value": item} for key, item in target.items()]
+    return None
+
+
+def make_chart(store: ResultStore, arguments: dict[str, Any]) -> dict[str, Any]:
+    """A chart spec from a stored list, registered under a chart id; the numbers never pass through the model."""
+    kind = str(arguments.get("type") or "").lower()
+    if kind == "pie":
+        kind = "donut"
+    if kind not in CHART_TYPES:
+        return {"error": f"type must be one of {', '.join(CHART_TYPES)}"}
+    result_id = str(arguments.get("result_id", ""))
+    if result_id not in store.results:
+        return {"error": f"no result {result_id!r}; results so far: {', '.join(store.results) or 'none'}"}
+    value = store.results[result_id]["value"]
+    if value is None:
+        return {"error": f"{result_id} is not JSON"}
+    target, path, error = resolve_path(value, str(arguments.get("path") or ""))
+    if error:
+        return error
+    rows = _chart_rows(target)
+    if rows is None or not rows:
+        return {"error": f"{path or 'the result'} is not a list of rows", "pathsWithLists":
+                [full for full, item in _paths(value) if isinstance(item, list)][:12]}
+    label_field = str(arguments.get("label_field") or "")
+    raw_values = arguments.get("value_fields") or arguments.get("value_field") or []
+    value_fields = [str(item) for item in ([raw_values] if isinstance(raw_values, str) else raw_values) if item]
+    if not label_field or not value_fields:
+        return {"error": "give label_field and value_field (value_fields for several lines)", "fieldsOfFirstRow": _row_fields(rows[0])}
+    if kind != "line" and len(value_fields) > 1:
+        return {"error": f"a {kind} chart shows one value_field; use a line chart for several series"}
+    value_fields = value_fields[:MAX_SERIES]
+    for name in (label_field, *value_fields):
+        if all(_field(row, name) is _MISSING for row in rows):
+            return {"error": f"no row has the field {name!r}", "fieldsOfFirstRow": _row_fields(rows[0])}
+    conditions = arguments.get("where") or []
+    if isinstance(conditions, (str, dict)):
+        conditions = [conditions]
+    parsed = [_condition(item) for item in conditions] if isinstance(conditions, list) else []
+    rows = [row for row in rows if all(_matches(row, c) for c in parsed)]
+
+    def label(row: Any) -> str | None:
+        text = _field(row, label_field)
+        return None if text is _MISSING or text is None or str(text).strip() == "" else str(text).strip()[:80]
+
+    def number(row: Any, name: str) -> Decimal | None:
+        found = _field(row, name)
+        return None if found is _MISSING else _number(found)
+
+    title = str(arguments.get("title") or "")[:120]
+    unit = str(arguments.get("unit") or "")[:16]
+    skipped = 0
+    if kind == "line":
+        names = [str(item)[:60] for item in arguments.get("series_names") or []]
+        points = [row for row in rows if label(row) is not None]
+        points = points[-MAX_LINE_POINTS:]
+        series = []
+        for index, name in enumerate(value_fields):
+            data = [{"label": label(row), "value": float(found)} for row in points if (found := number(row, name)) is not None]
+            skipped += len(points) - len(data)
+            series.append({"name": names[index] if index < len(names) and names[index] else name, "data": data})
+        series = [item for item in series if len(item["data"]) > 1]
+        if not series:
+            return {"error": "a line needs at least two rows with a label and a numeric value"}
+        spec = {"type": "line", "title": title, "unit": unit, "series": series}
+        summary: dict[str, Any] = {"series": [{"name": item["name"], "points": len(item["data"]),
+                                               "first": item["data"][0], "last": item["data"][-1]} for item in series]}
+    else:
+        valued = [(row, number(row, value_fields[0])) for row in rows]
+        skipped = sum(1 for row, found in valued if found is None or label(row) is None)
+        valued = [(row, found) for row, found in valued if found is not None and label(row) is not None]
+        sort_by = arguments.get("sort_by")
+        if sort_by:
+            keyed = [(row, found, _number(_field(row, str(sort_by))) if str(sort_by) != value_fields[0] else found)
+                     for row, found in valued]
+            valued = [(row, found) for row, found, key in sorted((item for item in keyed if item[2] is not None),
+                                                                 key=lambda item: item[2], reverse=bool(arguments.get("descending")))]
+        limit = max(1, min(int(arguments.get("limit") or 10), MAX_CHART_ROWS))
+        grouped = bool(arguments.get("group_rest"))
+        if grouped:
+            limit = min(limit, MAX_CHART_ROWS - 1)  # room for the "Other" bar or slice
+        shown, rest = valued[:limit], valued[limit:]
+        data = [{"label": label(row), "value": float(found)} for row, found in shown]
+        if rest and grouped:
+            # Summed exactly here, so the share of everything outside the shown rows is never the model's arithmetic.
+            data.append({"label": f"Other ({len(rest)})", "value": float(sum((found for _, found in rest), Decimal(0)))})
+        if not data:
+            return {"error": f"no row has both a label in {label_field!r} and a number in {value_fields[0]!r}"}
+        if kind == "donut" and any(item["value"] < 0 for item in data):
+            return {"error": "a donut cannot show negative values; use a bar chart"}
+        spec = {"type": kind, "title": title, "unit": unit, "data": data}
+        summary = {"rows": data, **({"notShown": len(rest)} if rest and not grouped else {})}
+    chart_id = f"c{len(store.charts) + 1}"
+    store.charts[chart_id] = spec
+    return {"chartId": chart_id, "type": kind, "title": title, "resultId": result_id, "path": path, **summary,
+            **({"skippedRows": skipped, "skippedNote": "rows with no value reported are left out, never drawn as zero"} if skipped else {}),
+            "placement": f"Put a chart block containing only {{\"ref\": \"{chart_id}\"}} where the chart should appear. "
+                         "The chart is drawn from the tool data; never write its numbers into the block."}
 
 
 # ── calculate ─────────────────────────────────────────────────────────────────
@@ -249,9 +418,12 @@ def _evaluate(node: ast.AST, names: dict[str, Decimal]) -> Decimal:
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
         return Decimal(str(node.value))
     if isinstance(node, ast.Name):
-        if node.id not in names:
-            raise ValueError(f"unknown name {node.id!r}; define it in an earlier expression")
-        return names[node.id]
+        if node.id in names:
+            return names[node.id]
+        folded = {key.lower(): item for key, item in names.items()}
+        if node.id.lower() in folded:
+            return folded[node.id.lower()]
+        raise ValueError(f"unknown name {node.id!r}; define it in an earlier expression (names so far: {', '.join(names) or 'none'})")
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         value = _evaluate(node.operand, names)
         return -value if isinstance(node.op, ast.USub) else value
@@ -281,8 +453,10 @@ def calculate(arguments: dict[str, Any]) -> dict[str, Any]:
     names: dict[str, Decimal] = {}
     results: dict[str, Any] = {}
     for index, item in enumerate(expressions, start=1):
-        name = str(item.get("name") or f"x{index}") if isinstance(item, dict) else f"x{index}"
-        expr = str(item.get("expr", "")) if isinstance(item, dict) else str(item)
+        # The local model also writes {"id": ..., "value": ...} or {"label": ..., "expression": ...}.
+        name = str(next((item[key] for key in ("name", "id", "label") if isinstance(item, dict) and item.get(key)), f"x{index}"))
+        expr = str(next((item[key] for key in ("expr", "expression", "value", "formula")
+                         if isinstance(item, dict) and item.get(key) is not None), "")) if isinstance(item, dict) else str(item)
         if not name.isidentifier():
             return {"error": f"name {name!r} must be a simple identifier"}
         try:
@@ -399,6 +573,12 @@ def tools(store: ResultStore, now: Callable[[], datetime]) -> list[ToolSpec]:
     async def run_dates(arguments: dict[str, Any]) -> str:
         return json.dumps(date_facts(arguments, now().date()), ensure_ascii=False)
 
+    async def run_chart(arguments: dict[str, Any]) -> str:
+        try:
+            return json.dumps(make_chart(store, arguments), ensure_ascii=False, default=str)
+        except (ValueError, TypeError) as exc:
+            return json.dumps({"error": str(exc)})
+
     condition = {"type": "string", "description": (
         "\"<field> <op> <value>\": a dotted field inside a row and one of >, >=, <, <=, ==, !=, between (two values), "
         "contains, exists; e.g. \"put_data.delta between -0.2 -0.1\" or \"strike_price >= 22000\"")}
@@ -450,4 +630,25 @@ def tools(store: ResultStore, now: Callable[[], datetime]) -> list[ToolSpec]:
                  "date after today.",
                  {"type": "object", "required": ["dates"], "properties": {"dates": {"type": "array", "items": {"type": "string"}}}},
                  run_dates),
+        ToolSpec("make_chart",
+                 "Draw a bar, donut or line chart from a list in an earlier tool result. Give its resultId, the path of the "
+                 "list, the field to label each bar, slice or point with, and the field (or, for a line, fields) holding the "
+                 "numbers. The numbers are read from the result in code. Returns a chartId: put a chart block containing "
+                 "only {\"ref\": \"<chartId>\"} in the answer where the chart goes. Bars compare items, donuts show the "
+                 "parts of a whole, lines show values over dates.",
+                 {"type": "object", "required": ["type", "result_id", "path", "label_field"], "properties": {
+                     "type": {"type": "string", "enum": list(CHART_TYPES)},
+                     "title": {"type": "string"},
+                     "result_id": {"type": "string"},
+                     "path": {"type": "string", "description": "Dotted path to the list, e.g. figures.top_holdings or points"},
+                     "label_field": {"type": "string", "description": "Field of each row to label it with, e.g. name or date"},
+                     "value_field": {"type": "string", "description": "Field of each row holding the number (bar, donut, line)"},
+                     "value_fields": {"type": "array", "items": {"type": "string"}, "description": "Several number fields, one line each"},
+                     "series_names": {"type": "array", "items": {"type": "string"}},
+                     "unit": {"type": "string", "description": "e.g. ₹ or %"},
+                     "where": {"type": "array", "items": condition},
+                     "sort_by": {"type": "string"}, "descending": {"type": "boolean"},
+                     "limit": {"type": "integer", "description": f"Bars or slices to show (default 10, at most {MAX_CHART_ROWS})"},
+                     "group_rest": {"type": "boolean", "description": "Add the rows past limit as one 'Other' bar or slice"}}},
+                 run_chart),
     ]

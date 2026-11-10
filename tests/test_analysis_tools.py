@@ -28,10 +28,11 @@ def test_large_results_reach_the_model_as_an_outline_with_short_lists_in_full():
     assert len(store.view(rid)) < 4000
 
 
-def test_short_results_are_shown_unchanged():
+def test_short_results_are_shown_unchanged_with_their_id():
     store = at.ResultStore()
     rid = store.add("lookup_ind_keys", {}, json.dumps(market.lookup_nifty()))
-    assert store.view(rid) == json.dumps(market.lookup_nifty())
+    assert store.view(rid) == json.dumps(market.lookup_nifty()) + f"\n[resultId: {rid}]"
+    assert store.listing() == f"{rid} (lookup_ind_keys)"
 
 
 def test_inspect_filters_projects_and_sorts_rows():

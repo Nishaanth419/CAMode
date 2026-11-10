@@ -248,7 +248,8 @@ def _tool_outputs(raw: list[tuple[str, dict[str, Any]]]) -> dict[str, list[Any]]
     """Each analysis tool's parsed results in call order (``option_strategy.0.maxLossPoints``)."""
     outputs: dict[str, list[Any]] = {}
     for kind, data in raw:
-        if kind == "tool_result" and data.get("name") in ("calculate", "option_strategy", "price_levels", "inspect_result", "date_facts"):
+        if kind == "tool_result" and data.get("name") in ("calculate", "option_strategy", "price_levels", "inspect_result", "date_facts",
+                                                                         "make_chart"):
             try:
                 outputs.setdefault(data["name"], []).append(json.loads(data.get("result") or "null"))
             except ValueError:

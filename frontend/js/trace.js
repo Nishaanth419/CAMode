@@ -117,6 +117,7 @@
     option_strategy: ['Calculate an option position', 'Payoff, maximum profit and loss and breakevens, exactly, in code'],
     price_levels: ['Measure price levels', 'Prior highs and lows over daily candles, in code'],
     date_facts: ['Check dates', 'Weekdays, days to go and monthly expiries, worked out in code'],
+    make_chart: ['Build a chart', 'Drawn from the numbers a tool returned, read in code; the model never types them'],
   };
 
   // Why the model was asked again (agent.py "retry" events).
@@ -129,6 +130,8 @@
     transient_tool_error: 'A data call timed out or was rate limited; it is tried once more',
     unverified_figures: 'The answer had figures no tool produced; it was asked to calculate or remove them',
     empty_reply: 'The model returned no text; it was asked to answer',
+    hand_written_chart: 'The answer had a chart with numbers the model typed; it was asked to build it from the data',
+    no_chart: 'A chart was asked for and none was made; it was asked to build one from the data',
   };
 
   // Checks on the answer (agent.py "validation" events).
@@ -137,6 +140,7 @@
     task_contract: ['Check the answer is complete', 'The request type decides which data it needs before it counts as answered'],
     code_output: ['Check for code', 'Answers never contain programming code'],
     length: ['Check the answer length', 'Whether the model stopped at its length limit'],
+    charts: ['Check the charts', 'Charts are drawn only from numbers a tool returned'],
   };
 
   const TASK_LABELS = {
