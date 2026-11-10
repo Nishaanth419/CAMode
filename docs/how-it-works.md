@@ -145,7 +145,7 @@ flowchart LR
 **think**
 - Sends the conversation with every tool offered. The system prompt adds `ANALYSIS_GUIDE` with today's IST date and time (facts about INDmoney's data: unlabelled expiries, `buy_price` / `sell_price`, `14d` is calendar days, `investment_code` as `fund_ids`...).
 - A malformed tool call (Ollama "error parsing tool call", Groq `tool_use_failed`) is asked for again twice, then the model answers without tools (`plan_stop` `partial`).
-- At 14 model calls (`MAX_MODEL_CALLS`), 36 tool calls (`MAX_TOOL_CALLS`) or `AGENT_DEADLINE_SECONDS` (300) it asks once more without tools and the answer says what is missing (`plan_stop` `budget` or `deadline`).
+- At 14 model calls (`MAX_MODEL_CALLS`), 36 tool calls (`MAX_TOOL_CALLS`) or `AGENT_DEADLINE_SECONDS` (180; a model call still running then is cut off) it asks once more without tools and the answer says what is missing (`plan_stop` `budget` or `deadline`).
 
 **act**
 - Refuses, with an error the model can act on: an unknown tool, arguments that are not a JSON object or fail the tool's schema (required fields, `enum` values) (`invalid_arguments`), the exact same call again (`rejected`, pointing at its `resultId`), and calls past the budget or `MAX_CALLS_PER_REPLY`.

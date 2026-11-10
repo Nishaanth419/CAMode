@@ -99,7 +99,7 @@ sudo chmod 700 /srv/ca-mode/data /srv/ca-mode/key /srv/ca-mode/backups
 
 Compose mounts `/srv/ca-mode/data` as `/app/.data`, `/srv/ca-mode/key` as `/run/ca-mode` (the master key) and `/srv/ca-mode/backups` as `/backups`. A healthcheck calls `/healthz` every 30 seconds.
 
-The container runs one uvicorn worker as user `camode` (uid 10001), from a `python:3.12-slim` base pinned by digest in the `Dockerfile`. One worker is a rule, not a default: unlocked history keys, rate limits and private-mode chats live in that process's memory, so the app takes an exclusive lock on `/app/.data/app.lock` at start and a second process (`--workers 2`, a second container on the same folder) refuses to start. (Docker Desktop's macOS file sharing does not always honour that lock on a freshly created folder; a Linux server's disk does.)
+The container runs one uvicorn worker as user `camode` (uid 10001), from a `python:3.12-slim` base pinned by digest in the `Dockerfile`. One worker is a rule, not a default: unlocked history keys, rate limits, private-mode chats, the model queue and the one-answer-at-a-time guard live in that process's memory, so the app takes an exclusive lock on `/app/.data/app.lock` at start and a second process (`--workers 2`, a second container on the same folder) refuses to start. (Docker Desktop's macOS file sharing does not always honour that lock on a freshly created folder; a Linux server's disk does.)
 
 ## 3a. Cloudflare Tunnel and Access
 
@@ -249,8 +249,12 @@ The health check that decides a rollback is `/healthz`: it answers whenever the 
 ## Logs, restarts and monitoring
 
 - **Log size.** Every service logs through Docker's `json-file` driver with rotation (`max-size: 10m`, `max-file: 5`), so logs stay under about 50 MB per container on the small disk.
+- **Fields on every line.** Log lines are `LEVEL:logger:message` followed by their fields as `key=value` (`app/logs.py`), so `admin_*` lines name the admin (`admin=owner@example.com user_id=…`) and failures carry their `user_id`, broker or error type. `docker compose logs app | grep admin_` is the admin audit trail.
 - **What the access log keeps.** uvicorn's request log drops query strings (OAuth callbacks carry one-time `code` and `state` values there) and leaves out `/healthz` and `/readyz`, which the healthcheck calls every 30 seconds (`app/logs.py`).
 - **Restarts.** On a deploy, uvicorn stops taking new requests and gives those in flight `GRACEFUL_SHUTDOWN_SECONDS` (90) to finish; Compose's `stop_grace_period` (100 s) is a little longer, so Docker only kills a request that outlives that. A chat cut off that way still gives its daily question back: each counted question is also a `question_reservations` row until its answer is saved or fails, and the app releases every leftover reservation when it starts (and any older than 15 minutes on each scheduler tick).
+
+- **Monitoring.** `GET /readyz` checks a database query and Ollama's `/api/tags` (3-second limit) and returns `503` when either fails. Point an external uptime monitor at `https://<host>/readyz` to hear about a sleeping Mac or a broken database; never use it to restart the app (Docker's healthcheck and `update.sh` use `/healthz`, which a sleeping Mac does not fail). The admin page shows the last successful model answer, the model queue and the latest backup.
+- **The model queue and time budget.** One Ollama answers everyone, so at most `MODEL_CONCURRENCY` model calls run at once (set it to the Mac's `OLLAMA_NUM_PARALLEL`). A new question waits up to `MODEL_QUEUE_SECONDS` (20) for a slot, then gets `503` with `Retry-After` and the chat says the assistant is busy; an answer already under way keeps waiting for its next slot. Each profile has one answer in flight at a time (`429 chatInFlight` otherwise). A whole answer has `CHAT_DEADLINE_SECONDS` (240), then `504`. Keep that below the proxy's timeout: Caddy has none by default, Cloudflare's is 100 seconds, so set `CHAT_DEADLINE_SECONDS=90` behind the tunnel.
 
 ## Upgrading an existing server
 
@@ -260,3 +264,5 @@ Changes to the files in `deploy/` (Compose files, `update.sh`, systemd units) ar
 2. After it is on `main`, in the deploy folder: `git pull`, then check `COMPOSE_FILE` in `.env` still names your way in (`docker-compose.caddy.yml`, or the new `docker-compose.tunnel.yml` instead of relying on `docker-compose.yml`), and add `CA_MODE_IMAGE=` and optionally `CA_MODE_ALERT_URL=` from `.env.example`.
 3. Reinstall the script and units: `sudo install -m 755 update.sh /usr/local/bin/ca-mode-update`, `sudo install -m 644 ca-mode-update.service ca-mode-update-failed.service ca-mode-update.timer /etc/systemd/system/`, `sudo systemctl daemon-reload`.
 4. `sudo /usr/local/bin/ca-mode-update` once (tags `ca-mode:current`), then `docker compose up -d` to apply the new log rotation and grace period to every container. `docker compose config --services` should list `app` and your way in only.
+
+For the release that added the model queue, the chat time budget and `/readyz`, nothing on the server has to change: the defaults apply with the image. Optionally add `MODEL_CONCURRENCY` (the Mac's `OLLAMA_NUM_PARALLEL`), `MODEL_QUEUE_SECONDS` and `CHAT_DEADLINE_SECONDS` to `app.env` (then `docker compose up -d`), and point an uptime monitor at `/readyz`.
