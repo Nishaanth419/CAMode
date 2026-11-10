@@ -68,6 +68,39 @@ def test_key_file_is_created_private_and_reused(use_key, tmp_path):
     assert vault.decrypt(stored) == "secret"
 
 
+@pytest.mark.parametrize(("table", "store"), [
+    ("users.indmoney", lambda: users.save_indmoney(users.create_user("Asha", users.hash_pin("2468"))["id"], TOKENS)),
+    ("oauth_sessions.data", lambda: users.save_session("sid", {"state": "s"})),
+    ("broker_connections.session", None),
+])
+def test_missing_key_file_is_not_recreated_over_encrypted_data(use_key, tmp_path, table, store):
+    if store is None:
+        user_id = users.create_user("Asha", users.hash_pin("2468"))["id"]
+        with db.connect_db() as connection:
+            connection.execute(
+                "INSERT INTO broker_connections(user_id, broker, status, session, session_started_at) "
+                "VALUES (?, 'zerodha', 'connected', ?, 0)", (user_id, vault.encrypt("{}")),
+            )
+    else:
+        store()
+    key_file = tmp_path / "lost" / "master.key"
+    use_key(key_file=key_file)
+
+    with pytest.raises(vault.VaultError, match=f"master key file {key_file} is missing"):
+        vault.check_key()
+    assert not key_file.exists()
+
+
+def test_first_start_on_an_empty_database_creates_the_key_file(use_key, tmp_path):
+    users.create_user("Asha", users.hash_pin("2468"))  # plain rows only: nothing encrypted yet
+    key_file = tmp_path / "new" / "master.key"
+    use_key(key_file=key_file)
+
+    vault.check_key()
+
+    assert key_file.exists()
+
+
 def test_invalid_key_is_rejected_at_startup(use_key, tmp_path):
     use_key("not-a-key")
     with pytest.raises(vault.VaultError, match="APP_MASTER_KEY is not a valid Fernet key"):
