@@ -24,7 +24,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, limits, main, privacy, unlock, users
+from app import db, limits, main, model_gate, privacy, unlock, users
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +42,11 @@ def isolated_database(tmp_path, monkeypatch):
     limits.limiter.clear()
     # Unlocked keys live in process memory; a key from another test's database must not carry over.
     unlock._unlocked.clear()
+    # The model queue, its settings and the in-flight chat guard are process memory too.
+    for name in ("MODEL_CONCURRENCY", "OLLAMA_NUM_PARALLEL", "MODEL_QUEUE_SECONDS", "CHAT_DEADLINE_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    model_gate.reset()
+    main._chats_in_flight.clear()
     db.initialize_db()
 
 

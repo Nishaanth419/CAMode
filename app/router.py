@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Final, Literal, get_args
 
 import httpx
+
+from . import model_gate
 
 logger = logging.getLogger("ca_mode.router")
 
@@ -26,6 +29,19 @@ ROUTER_TIMEOUT_SECONDS: Final = 10
 # A model host that is asleep or offline (Ollama on another computer reached over Tailscale) never
 # refuses the connection, so without a short connect limit a request would wait the full timeout.
 CONNECT_TIMEOUT_SECONDS: Final = 10
+# The local model's classifier call. It used to share the answer's 300 s timeout; a stuck classifier then held
+# the whole chat. Its loading time on a cold start is covered: a timeout falls back to the keyword rules.
+LOCAL_ROUTER_TIMEOUT_SECONDS: Final = 30
+
+
+def local_router_timeout() -> float:
+    try:
+        value = float(os.getenv("OLLAMA_ROUTER_TIMEOUT_SECONDS", "").strip() or LOCAL_ROUTER_TIMEOUT_SECONDS)
+    except ValueError:
+        return LOCAL_ROUTER_TIMEOUT_SECONDS
+    return value if value > 0 else LOCAL_ROUTER_TIMEOUT_SECONDS
+
+
 MAX_CONTEXT_MESSAGES: Final = 3
 MAX_MESSAGE_CHARS: Final = 2000
 
@@ -105,11 +121,12 @@ async def classify(
     try:
         timeout = config.get("router_timeout", ROUTER_TIMEOUT_SECONDS)
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS))) as client:
-            response = await client.post(
+            # Queued with the answer's calls (model_gate); ModelBusy and DeadlineReached reach the caller.
+            response = await model_gate.call(provider, lambda: client.post(
                 f"{config['base_url']}/chat/completions",
                 headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
                 json=payload,
-            )
+            ))
     except httpx.HTTPError as exc:
         raise RouterError(f"Classifier request failed: {type(exc).__name__}") from exc
     if not response.is_success:

@@ -1744,6 +1744,19 @@ async function sendMessage(text) {
         if (createdChatId) await discardEmptyChat(createdChatId);
         return;
       }
+      if ((res.status === 503 && err.modelBusy) || (res.status === 429 && err.chatInFlight) || (res.status === 504 && err.chatDeadline)) {
+        // The shared model is busy, this profile's previous answer is still running, or the answer ran out of
+        // time: nothing is wrong with the question, so say so plainly and when to try again.
+        removeTypingIndicator();
+        const wait = Number(err.retryAfterSeconds);
+        const fallback = err.chatDeadline ? 'That took too long to answer. Try again, or ask a shorter question.'
+          : 'The assistant is busy right now. Try again in a moment.';
+        const retry = !err.chatDeadline && wait > 0 && !/\d+ seconds/.test(err.error || '') ? ` Try again in about ${wait} seconds.` : '';
+        addMessage('assistant', `<p>${escHtml(err.error || fallback)}${escHtml(retry)}</p>`);
+        setStatus('online', err.modelBusy ? 'Assistant busy' : err.chatInFlight ? 'Still answering' : 'Took too long');
+        if (createdChatId) await discardEmptyChat(createdChatId);
+        return;
+      }
       if (res.status === 402 && err.creditsExhausted) {
         // Credits used up: say when they renew and where to top up, like the daily limit.
         removeTypingIndicator();

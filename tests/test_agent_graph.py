@@ -7,7 +7,7 @@ import time
 import httpx
 import pytest
 
-from app import agent, agent_graph
+from app import agent, agent_graph, model_gate
 from scripts import eval_workflows as ev
 from tests.fixtures import indmoney_market as market
 
@@ -110,6 +110,34 @@ def test_past_the_deadline_the_model_answers_without_tools(monkeypatch):
     assert "tools" not in payloads[0] and payloads[0]["messages"][-1]["content"] == agent_graph.FINAL_PROMPT
     assert next(e for e in events if e["kind"] == "plan_stop")["reason"] == "deadline"
     assert answer.startswith("I could not fetch")
+
+
+def test_the_deadline_cuts_off_a_model_call_still_running(monkeypatch):
+    # The first call (with tools) hangs past the agent's deadline; it is cut off there and the model is asked
+    # once more, without tools, to answer from what it has.
+    monkeypatch.setattr(agent_graph, "DEADLINE_SECONDS", 0.2)
+
+    class SlowFirst(Provider):
+        async def post(self, url, headers=None, json=None):
+            if not self.payloads:
+                self.payloads.append(json)
+                await asyncio.sleep(5)
+            return await super().post(url, headers=headers, json=json)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    provider = SlowFirst([reply("I ran out of time to read your holdings.")])
+    monkeypatch.setattr(agent.httpx, "AsyncClient", provider)
+    case = {"message": "What is my net worth?"}
+    fake = ev.FakeIndmoney({}, {})
+    started = time.perf_counter()
+    with ev.patched(fake, case), model_gate.chat_budget(30):
+        result = asyncio.run(agent.run_agent(case["message"], "https://mcp.invalid", "token", [], "portfolio", "openai",
+                                             context=ev.build_context(case)))
+
+    assert time.perf_counter() - started < 3
+    assert "tools" in provider.payloads[0] and "tools" not in provider.payloads[1]
+    assert next(e for e in result.events if e["kind"] == "plan_stop")["reason"] == "deadline"
+    assert str(result).startswith("I ran out of time")
 
 
 def test_a_local_tools_evidence_link_reaches_the_trace(monkeypatch):

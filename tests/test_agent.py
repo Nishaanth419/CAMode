@@ -69,7 +69,7 @@ def test_ollama_is_opted_into_by_model_and_needs_no_key(monkeypatch):
     assert config["model"] == "ca-mode"
     assert config["base_url"] == "http://localhost:11434/v1"
     assert config["timeout"] == agent.LOCAL_TIMEOUT_SECONDS
-    assert config["router_timeout"] == agent.LOCAL_TIMEOUT_SECONDS
+    assert config["router_timeout"] == agent.router.LOCAL_ROUTER_TIMEOUT_SECONDS  # never the answer's 300 s
 
 
 def test_default_provider_prefers_ollama_when_configured(monkeypatch):
