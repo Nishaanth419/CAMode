@@ -19,7 +19,7 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Any, Final
 
-from . import accounts, backup, chats, credits, limits, page_views, plans, privacy, unlock, users, vault
+from . import accounts, backup, credits, limits, page_views, plans, privacy, unlock, users, vault
 from .db import connect_db
 
 ADMIN_COOKIE: Final = "ca_admin"
@@ -208,8 +208,4 @@ def clear_lockout(user_id: str) -> bool:
 
 def sign_out_everywhere(user_id: str) -> int:
     """End every browser session signed in to the profile (and its unlocked keys); return how many."""
-    with connect_db() as connection:
-        ended = connection.execute("DELETE FROM oauth_sessions WHERE user_id = ?", (user_id,)).rowcount
-    unlock.forget_user(user_id)
-    chats.forget_private_chats(user_id)
-    return ended
+    return unlock.end_all_sessions(user_id)

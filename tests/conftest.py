@@ -24,7 +24,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, limits, main, privacy, users
+from app import db, limits, main, privacy, unlock, users
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +40,8 @@ def isolated_database(tmp_path, monkeypatch):
                  "PRICING_CONTACT_EMAIL"):
         monkeypatch.delenv(name, raising=False)
     limits.limiter.clear()
+    # Unlocked keys live in process memory; a key from another test's database must not carry over.
+    unlock._unlocked.clear()
     db.initialize_db()
 
 

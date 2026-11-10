@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import db, privacy, snapshots, users
+from app import agent_runs, db, housekeeping, privacy, snapshots, users
 from app.sealing import ProfileKeys
 from fixtures import indmoney_sample
 
@@ -232,3 +232,84 @@ def test_timezone_falls_back_to_fixed_ist_without_tz_data(monkeypatch):
 
     assert fallback.utcoffset(None) == timedelta(hours=5, minutes=30)
     assert snapshots._load_timezone("Mars/Olympus").utcoffset(None) == timedelta(hours=5, minutes=30)
+
+
+# ── Housekeeping: expired rows go even when their profile never comes back ─────
+
+def _insert_rows(user_id: str, *, now_ms: int) -> None:
+    day_ms = 24 * 60 * 60 * 1000
+    with db.connect_db() as connection:
+        for chat_id, expires in (("old", now_ms - 1), ("live", now_ms + day_ms)):
+            connection.execute(
+                "INSERT INTO chats(id, user_id, title, messages, updated_at, expires_at) VALUES (?, ?, 't', '[]', ?, ?)",
+                (chat_id, user_id, now_ms, expires),
+            )
+        for run_id, created in (("old-run", now_ms - agent_runs.MAX_AGE_MS - 1), ("new-run", now_ms)):
+            connection.execute(
+                "INSERT INTO agent_runs(id, user_id, chat_id, status, created_at, data) VALUES (?, ?, 'live', 'answered', ?, 'x')",
+                (run_id, user_id, created),
+            )
+        for local_date in ("2026-10-01", "2026-10-12"):
+            connection.execute(
+                "INSERT INTO portfolio_snapshots(user_id, as_of_date, captured_at, data) VALUES (?, ?, 0, 'x')",
+                (user_id, local_date),
+            )
+            connection.execute(
+                "INSERT INTO broker_snapshots(user_id, broker, local_date, captured_at, data) VALUES (?, 'zerodha', ?, 0, 'x')",
+                (user_id, local_date),
+            )
+
+
+def _ids(sql: str, *params) -> list:
+    with db.connect_db() as connection:
+        return sorted(row[0] for row in connection.execute(sql, params))
+
+
+def test_daily_sweep_deletes_expired_rows_of_profiles_that_never_return():
+    user_id = make_user(connected=False)
+    with db.connect_db() as connection:
+        connection.execute("UPDATE users SET snapshot_retention_days = 30 WHERE id = ?", (user_id,))
+    now = users.now_ms()
+    _insert_rows(user_id, now_ms=now)
+
+    deleted = housekeeping.sweep_expired_data(datetime(2026, 11, 5).date(), now_ms=now)
+
+    assert deleted == {"chats": 1, "agentRuns": 1, "snapshots": 2}
+    assert _ids("SELECT id FROM chats WHERE user_id = ?", user_id) == ["live"]
+    assert _ids("SELECT id FROM agent_runs WHERE user_id = ?", user_id) == ["new-run"]
+    assert _ids("SELECT as_of_date FROM portfolio_snapshots WHERE user_id = ?", user_id) == ["2026-10-12"]
+    assert _ids("SELECT local_date FROM broker_snapshots WHERE user_id = ?", user_id) == ["2026-10-12"]
+
+
+def test_run_due_sweeps_data_once_per_local_day(monkeypatch):
+    days = []
+    monkeypatch.setattr(housekeeping, "_last_data_sweep", None)
+    monkeypatch.setattr(housekeeping, "sweep_expired_data", lambda today: days.append(today) or {})
+
+    for moment in (at(13, 9), at(13, 23), at(14, 0, 5)):
+        housekeeping.run_due(moment)
+
+    assert [day.isoformat() for day in days] == ["2026-10-13", "2026-10-14"]
+
+
+def test_run_scheduler_runs_housekeeping(monkeypatch):
+    seen = []
+
+    async def fake_refresh_due_users(*, mcp_url, now=None):
+        return 0
+
+    def fake_run_due(now):
+        seen.append(now)
+        stop.set()
+
+    monkeypatch.setattr(snapshots, "refresh_due_users", fake_refresh_due_users)
+    monkeypatch.setattr(housekeeping, "run_due", fake_run_due)
+    stop = asyncio.Event()
+
+    async def run():
+        await asyncio.wait_for(
+            snapshots.run_scheduler(stop, mcp_url="https://mcp", poll_seconds=0.01, clock=lambda: at(13, 9)), timeout=2,
+        )
+
+    asyncio.run(run())
+    assert seen == [at(13, 9)]

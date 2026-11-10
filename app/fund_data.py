@@ -380,7 +380,10 @@ async def fetch_categories(user_id: str, category_ids: Sequence[str]) -> dict[st
     wanted = [cid for cid in category_ids if cid not in found]
     if not wanted:
         return found
-    token = await users.user_access_token(user_id)
+    try:
+        token = await users.user_access_token(user_id)
+    except users.IndmoneyUnavailable:
+        return "INDmoney is not responding right now. Try again later."
     if not token:
         return "INDmoney is not connected, or its session has expired. Connect it in your profile to see fund data."
     for attempt in range(2):
@@ -402,7 +405,10 @@ async def fetch_categories(user_id: str, category_ids: Sequence[str]) -> dict[st
             return "INDmoney's fund data took too long to arrive. Try again later."
         except (RuntimeError, httpx.HTTPError) as exc:
             if attempt == 0 and _is_auth_failure(exc):
-                token = await users.user_access_token(user_id, force_refresh=True)
+                try:
+                    token = await users.user_access_token(user_id, force_refresh=True)
+                except users.IndmoneyUnavailable:
+                    return "INDmoney is not responding right now. Try again later."
                 if token:
                     continue
                 return "INDmoney rejected the saved session. Reconnect it in your profile to see fund data."

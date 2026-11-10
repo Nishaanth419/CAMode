@@ -151,7 +151,7 @@ def extract_networth_inr(text: str | None) -> float | None:
 
 # ── Storage ────────────────────────────────────────────────────────────────────
 
-def _prune(connection: Any, user_id: str, today: date) -> None:
+def prune(connection: Any, user_id: str, today: date) -> None:
     """Delete snapshots older than the profile's retention choice, capped by ``SNAPSHOT_RETENTION_DAYS``."""
     row = connection.execute("SELECT snapshot_retention_days FROM users WHERE id = ?", (user_id,)).fetchone()
     days = min(row["snapshot_retention_days"], SNAPSHOT_RETENTION_DAYS) if row else SNAPSHOT_RETENTION_DAYS
@@ -162,7 +162,7 @@ def _prune(connection: Any, user_id: str, today: date) -> None:
 
 def prune_snapshots(user_id: str, *, today: date | None = None) -> None:
     with connect_db() as connection:
-        _prune(connection, user_id, today or local_now().date())
+        prune(connection, user_id, today or local_now().date())
 
 
 def store_snapshot(user_id: str, captured: datetime, results: dict[str, str], errors: dict[str, str]) -> dict[str, Any]:
@@ -189,7 +189,7 @@ def store_snapshot(user_id: str, captured: datetime, results: dict[str, str], er
             "networth_inr=excluded.networth_inr, data=excluded.data",
             (user_id, as_of, captured_ms, stored_networth, data),
         )
-        _prune(connection, user_id, local.date())
+        prune(connection, user_id, local.date())
     return {"asOfDate": as_of, "capturedAt": captured_ms, "networthInr": networth, "errors": errors}
 
 
@@ -441,6 +441,12 @@ async def run_scheduler(
             await broker_history.refresh_due(clock())
         except Exception:
             logger.exception("broker_history_tick_failed")
+        try:
+            from . import housekeeping  # imports snapshots, so only here
+
+            await asyncio.to_thread(housekeeping.run_due, clock())
+        except Exception:
+            logger.exception("housekeeping_failed")
         try:
             await asyncio.to_thread(backup.backup_if_due)
         except Exception:

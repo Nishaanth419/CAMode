@@ -320,8 +320,15 @@ def oauth(monkeypatch):
     async def refresh(token_endpoint, client_info, refresh_token, resource, client):
         seen["refresh"].append(refresh_token)
         if seen.get("refresh_fails"):
-            raise broker_oauth.OAuthError("refused")
-        return {"access_token": "access-2", "expires_in": 600}
+            raise broker_oauth.OAuthRefused("refused")
+        if seen.get("refresh_error"):
+            raise broker_oauth.OAuthError("HTTP 503")
+        if seen.get("refresh_wait"):
+            await seen["refresh_wait"].wait()
+        token = {"access_token": f"access-{len(seen['refresh']) + 1}", "expires_in": seen.get("expires_in", 600)}
+        if seen.get("rotate"):
+            token["refresh_token"] = f"refresh-{len(seen['refresh'])}"
+        return token
 
     monkeypatch.setattr(broker_oauth, "discover", discover)
     monkeypatch.setattr(broker_oauth, "register", register)
@@ -435,6 +442,74 @@ def test_oauth_without_a_working_refresh_needs_login(client, signed_in, oauth, m
     store_oauth(signed_in["id"], broker_id="dhan", expires_in=-10)
     oauth["refresh_fails"] = True
     assert client.get("/api/brokers/dhan/status").json()["status"] == "needs_login"
+
+
+def test_oauth_refresh_that_fails_for_a_while_keeps_the_connection(client, signed_in, oauth, mcp):
+    store_oauth(signed_in["id"], expires_in=-10)
+    oauth["refresh_error"] = True
+
+    assert client.get("/api/brokers/upstox/status").json()["status"] == "unavailable"
+    assert brokers.get_connection(signed_in["id"], "upstox")["status"] == "connected"
+
+
+def test_concurrent_oauth_refreshes_spend_the_refresh_token_once(signed_in, oauth):
+    store_oauth(signed_in["id"], expires_in=-10)
+    oauth["rotate"] = True
+    broker = brokers.BROKERS["upstox"]
+
+    async def both():
+        oauth["refresh_wait"] = asyncio.Event()
+        connection = brokers.get_connection(signed_in["id"], "upstox")
+        first = asyncio.create_task(brokers.oauth_token(signed_in["id"], broker, connection))
+        second = asyncio.create_task(brokers.oauth_token(signed_in["id"], broker, connection))
+        await asyncio.sleep(0.01)
+        oauth["refresh_wait"].set()
+        return await asyncio.gather(first, second)
+
+    assert asyncio.run(both()) == ["access-2", "access-2"]
+    assert oauth["refresh"] == ["refresh-secret"]
+    stored = brokers.get_connection(signed_in["id"], "upstox")
+    assert stored["oauth"]["refreshToken"] == "refresh-1" and stored["status"] == "connected"
+
+
+def test_a_refused_refresh_after_another_rotation_does_not_end_the_login(signed_in, oauth, monkeypatch):
+    store_oauth(signed_in["id"], expires_in=-10)
+    broker = brokers.BROKERS["upstox"]
+
+    async def refused_after_rotation(token_endpoint, client_info, refresh_token, resource, client):
+        # Another worker refreshed with the same token a moment earlier and stored the rotated pair.
+        brokers._update_oauth(signed_in["id"], "upstox", {
+            **brokers.get_connection(signed_in["id"], "upstox")["oauth"],
+            "accessToken": "rotated", "refreshToken": "refresh-rotated", "expiresAt": users.now_ms() + 3_600_000,
+        })
+        raise broker_oauth.OAuthRefused("invalid_grant")
+
+    monkeypatch.setattr(broker_oauth, "refresh", refused_after_rotation)
+    token = asyncio.run(brokers.oauth_token(signed_in["id"], broker, brokers.get_connection(signed_in["id"], "upstox")))
+
+    assert token == "rotated"
+    assert brokers.get_connection(signed_in["id"], "upstox")["status"] == "connected"
+
+
+@pytest.mark.parametrize(("expires_in", "seconds"), [(600, 600), ("900", 900), ("12.5", 12), (None, 3600), ("soon", 3600), (-5, 3600), (0, 3600)])
+def test_expires_in_is_read_defensively(expires_in, seconds):
+    assert broker_oauth.expires_in_seconds({"expires_in": expires_in}) == seconds
+
+
+def test_refresh_refusals_are_told_apart_from_failures():
+    async def call(status, body):
+        transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+        async with httpx.AsyncClient(transport=transport) as http:
+            await broker_oauth.refresh("https://auth.example/t", {"clientId": "c"}, "r", "https://mcp.example/mcp", http)
+
+    with pytest.raises(broker_oauth.OAuthRefused):
+        asyncio.run(call(400, {"error": "invalid_grant"}))
+    with pytest.raises(broker_oauth.OAuthRefused):
+        asyncio.run(call(401, {}))
+    for status, body in ((400, {"error": "invalid_request"}), (503, {}), (429, {})):
+        with pytest.raises(broker_oauth.OAuthError) as raised:
+            asyncio.run(call(status, body))
+        assert not isinstance(raised.value, broker_oauth.OAuthRefused)
 
 
 def test_oauth_holdings_use_only_read_tools_named_for_holdings(client, signed_in, oauth, mcp):

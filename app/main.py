@@ -201,6 +201,8 @@ def current_user(request: Request) -> dict[str, Any] | None:
     user = users.get_user(user_id) if user_id else None
     if user:
         user["keys"] = unlock.keys_for_session(user, sid)
+    elif sid:
+        unlock.forget_session(sid)  # expired or signed out: its key must not stay in memory
     return user
 
 
@@ -248,6 +250,14 @@ def cookie_options(request: Request) -> dict[str, Any]:
 
 def auth_error(message: str) -> JSONResponse:
     return JSONResponse({"error": message, "loginUrl": "/auth/indmoney/connect"}, status_code=401, headers={"Cache-Control": "no-store"})
+
+
+def indmoney_unavailable() -> JSONResponse:
+    """INDmoney did not answer a token refresh: the connection is kept, so this is not a reconnect prompt."""
+    return JSONResponse(
+        {"error": "INDmoney is not responding right now. Try again in a moment.", "indmoneyUnavailable": True},
+        status_code=503, headers={"Retry-After": "30"},
+    )
 
 
 def profile_required() -> JSONResponse:
@@ -444,19 +454,21 @@ async def list_ai_providers():
 
 @app.get("/api/session")
 async def local_session(request: Request):
+    # A visit without a stored session gets no row and no cookie: one is made on sign-in or Google start.
     sid = session_id(request)
-    if sid:
-        touch_session(sid)
-    else:
-        sid = random_token()
-        save_session(sid, {})
+    if sid and not touch_session(sid):
+        unlock.forget_session(sid)
+        sid = None
     user_id = signed_in_user_id(sid)
     user = users.get_user(user_id) if user_id else None
     locked = bool(user) and not unlock.keys_for_session(user, sid).is_unlocked
     connected = False
     if user:
         chats.purge_expired(user["id"])
-        connected = bool(await users.user_access_token(user["id"]))
+        try:
+            connected = bool(await users.user_access_token(user["id"]))
+        except users.IndmoneyUnavailable:
+            connected = True  # stored and not refused; INDmoney just did not answer the refresh
     google = accounts.uses_google()
     response = JSONResponse({
         "connected": connected,
@@ -474,16 +486,17 @@ async def local_session(request: Request):
         # Only when sign-up asks for a Cloudflare Turnstile check.
         **({"turnstileSiteKey": site_key} if (site_key := limits.turnstile_site_key()) else {}),
     })
-    response.set_cookie(value=sid, **cookie_options(request))
+    if sid:
+        response.set_cookie(value=sid, **cookie_options(request))
     return response
 
 
-def _session_account(sid: str, user: dict[str, Any] | None) -> dict[str, Any] | None:
+def _session_account(sid: str | None, user: dict[str, Any] | None) -> dict[str, Any] | None:
     """The signed-in account's email, or the Google account waiting to create or claim a profile."""
     if user:
         account = accounts.account_for_user(user["id"])
         return {"email": account["email"]} if account else None
-    pending = accounts.pending_identity(get_session(sid))
+    pending = accounts.pending_identity(get_session(sid)) if sid else None
     if pending is None:
         return None
     return {"email": pending.email, "name": pending.name, "pending": True, "canClaim": accounts.claims_allowed()}
@@ -670,7 +683,10 @@ async def recover_profile(body: RecoverRequest, request: Request):
         return JSONResponse({"error": "Incorrect profile or recovery code."}, status_code=401)
     except users.ProfileError as exc:  # Includes NoRecoveryCodeError and an unacceptable new PIN.
         return JSONResponse({"error": str(exc)}, status_code=400)
-    logger.info("profile_recovered", extra={"user_id": user["id"]})
+    # Whoever knew the old PIN may still hold a signed-in, unlocked session: end them all, this one included
+    # (it is replaced by a fresh session below).
+    ended = unlock.end_all_sessions(user["id"])
+    logger.info("profile_recovered", extra={"user_id": user["id"], "sessions_ended": ended})
     return _signed_in_response(request, user, unlocked)
 
 
@@ -1042,11 +1058,10 @@ async def delete_profile(body: ConfirmPinRequest, request: Request):
 
 
 async def remove_profile(user: dict[str, Any]) -> None:
-    """Revoke the profile's INDmoney token and delete it with everything it owns."""
+    """Revoke the profile's INDmoney token and delete it with everything it owns, its browser sessions included."""
     await revoke_indmoney(user)
+    unlock.end_all_sessions(user["id"])
     users.delete_user(user["id"])
-    chats.forget_private_chats(user["id"])
-    unlock.forget_user(user["id"])
 
 
 # ── Privacy: consent, storage mode, export ────────────────────────────────────
@@ -1078,9 +1093,11 @@ async def count_page_view(body: page_views.PageViewInput, request: Request):
 
 @app.post("/api/privacy/consent")
 async def accept_privacy(body: privacy.ConsentRequest, request: Request):
+    """Accept the notice or change data settings. Needs the unlocked session: private mode and a shorter
+    retention delete saved history, so a session cookie alone (without the PIN) must not be able to."""
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     try:
         privacy.record_consent(user, body)
     except privacy.StaleNoticeError as exc:
@@ -1118,9 +1135,10 @@ async def export_profile_data(body: ConfirmPinRequest, request: Request):
 
 @app.delete("/api/users/me/history")
 async def clear_profile_history(request: Request):
+    """Delete saved history. Needs the unlocked session (the PIN entered in this browser), like reading it."""
     user = current_user(request)
-    if not user:
-        return profile_required()
+    if blocked := history_gate(user):
+        return blocked
     privacy.clear_history(user["id"])
     logger.info("profile_history_cleared", extra={"user_id": user["id"]})
     return {"cleared": True}
@@ -1406,10 +1424,7 @@ async def finish_broker_oauth(broker_id: str, request: Request):
     except (broker_oauth.OAuthError, httpx.HTTPError, KeyError) as exc:
         logger.warning("broker_oauth_exchange_failed", extra={"broker": broker.id, "error": type(exc).__name__})
         return broker_error_redirect(request, broker.id)
-    try:
-        expires_in = int(token.get("expires_in") or 3600)
-    except (TypeError, ValueError):
-        expires_in = 3600
+    expires_in = broker_oauth.expires_in_seconds(token)
     try:
         brokers.save_oauth(user["id"], broker.id, {
             "accessToken": token["access_token"], "refreshToken": token.get("refresh_token"),
@@ -1513,7 +1528,10 @@ async def indmoney_tool_list(user: dict[str, Any], request: Request) -> Any:
     if blocked := rate_limited(request, "broker", user["id"]):
         return blocked
     name = {"broker": brokers.INDMONEY_ID, "name": "INDmoney"}
-    token = await users.user_access_token(user["id"])
+    try:
+        token = await users.user_access_token(user["id"])
+    except users.IndmoneyUnavailable:
+        return indmoney_unavailable()
     if not token:
         return {**name, "tools": [], "needsConnection": True}
     try:
@@ -1649,7 +1667,11 @@ async def refresh_snapshot(request: Request):
         return consent_required()
     if user["storageMode"] != "device":
         return JSONResponse({"error": "Private mode keeps no snapshots. Choose to save history to turn them on."}, status_code=409)
-    if not await users.user_access_token(user["id"]):
+    try:
+        token = await users.user_access_token(user["id"])
+    except users.IndmoneyUnavailable:
+        return indmoney_unavailable()
+    if not token:
         return auth_error("Connect your INDmoney account to save portfolio snapshots.")
     try:
         snapshot = await snapshots.refresh_user(user["id"], mcp_url=MCP_RESOURCE)
@@ -1793,7 +1815,10 @@ async def list_tools(request: Request):
         return profile_required()
     if not privacy.has_current_consent(user["id"]):
         return consent_required()
-    token = await users.user_access_token(user["id"])
+    try:
+        token = await users.user_access_token(user["id"])
+    except users.IndmoneyUnavailable:
+        return indmoney_unavailable()
     if not token:
         return {"mcpServer": MCP_RESOURCE, "connected": False, "toolCount": 0, "tools": [], "loginUrl": "/auth/indmoney/connect",
                 "brokers": brokers.brokers_overview(user["id"])}
@@ -1838,7 +1863,12 @@ async def chat(body: ChatRequest, request: Request):
         if goal_tools or calculator:
             context = PortfolioContext(local_tools=tuple([*goal_tools, *calculator]))
     if body.agentType == "portfolio":
-        token = await users.user_access_token(user["id"])
+        try:
+            token = await users.user_access_token(user["id"])
+        except users.IndmoneyUnavailable:
+            if not brokers.has_connection(user["id"]):
+                return indmoney_unavailable()
+            token = None  # answer from the broker and saved snapshots
         if not token and not brokers.has_connection(user["id"]):
             return auth_error("Connect your INDmoney account to use Portfolio Analyzer.")
         extra_tools = [investigations.investigation_tool(user, provider=provider, chat_id=data["id"])]
@@ -1867,7 +1897,10 @@ async def chat(body: ChatRequest, request: Request):
             )
         except Exception as exc:
             if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
-                refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
+                try:
+                    refreshed_token = await users.user_access_token(user["id"], force_refresh=True)
+                except users.IndmoneyUnavailable:
+                    return indmoney_unavailable()
                 if not refreshed_token:
                     return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
                 try:

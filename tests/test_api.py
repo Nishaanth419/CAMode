@@ -78,13 +78,31 @@ def test_provider_endpoint_exposes_ollama_openai_and_groq(client, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_session_initialization_sets_http_only_cookie(client):
+def test_anonymous_session_visit_stores_nothing_and_sets_no_cookie(client):
     response = client.get("/api/session")
 
     assert response.json() == {
         "connected": False, "user": None, "locked": False, "consentRequired": False, "storageMode": None,
         "usage": None, "profiles": [], "authMode": "local", "account": None, "backupsInApp": True,
     }
+    assert "set-cookie" not in response.headers
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM oauth_sessions").fetchone()[0] == 0
+
+
+def test_unknown_session_cookie_is_not_revived(client):
+    client.cookies.set(main.SESSION_COOKIE, "made-up")
+
+    response = client.get("/api/session")
+
+    assert response.json()["user"] is None and "set-cookie" not in response.headers
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM oauth_sessions").fetchone()[0] == 0
+
+
+def test_sign_in_sets_http_only_cookie(client):
+    response = client.post("/api/users", json={"displayName": "Asha", "pin": "2468"})
+
     cookie = response.headers["set-cookie"].lower()
     assert "indmoney_session=" in cookie
     assert "httponly" in cookie
@@ -92,8 +110,53 @@ def test_session_initialization_sets_http_only_cookie(client):
 
 def test_session_cookie_is_secure_for_https_requests():
     with TestClient(main.app, base_url="https://testserver", follow_redirects=False) as secure_client:
-        response = secure_client.get("/api/session")
+        response = secure_client.post("/api/users", json={"displayName": "Asha", "pin": "2468"})
     assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_idle_session_past_max_age_is_deleted_not_slid(client, signed_in):
+    sid = client.cookies.get(main.SESSION_COOKIE)
+    with main.connect_db() as connection:
+        connection.execute("UPDATE oauth_sessions SET updated_at = 0 WHERE id = ?", (sid,))
+
+    assert client.get("/api/session").json()["user"] is None
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT 1 FROM oauth_sessions WHERE id = ?", (sid,)).fetchone() is None
+
+
+def test_session_sweep_deletes_expired_and_abandoned_rows(client, signed_in):
+    from app import housekeeping
+
+    live_sid = client.cookies.get(main.SESSION_COOKIE)
+    now = users.now_ms()
+    max_age = users.SESSION_MAX_AGE_SECONDS * 1000
+    unbound_age = housekeeping.UNBOUND_SESSION_SECONDS * 1000
+    with main.connect_db() as connection:
+        for sid, user_id, updated in (
+            ("expired-bound", signed_in["id"], now - max_age - 1),
+            ("old-unbound", None, now - unbound_age - 1),  # an abandoned Google sign-in or pending account
+            ("new-unbound", None, now - 1000),
+        ):
+            connection.execute(
+                "INSERT INTO oauth_sessions(id, data, updated_at, user_id) VALUES (?, '{}', ?, ?)", (sid, updated, user_id),
+            )
+
+    ended = housekeeping.sweep_sessions(now_ms=now)
+
+    assert ended == {"expired": 1, "unbound": 1, "keysForgotten": 0}
+    with main.connect_db() as connection:
+        left = {row[0] for row in connection.execute("SELECT id FROM oauth_sessions")}
+    assert left == {live_sid, "new-unbound"}
+
+
+def test_deleting_a_profile_deletes_its_sessions(client, signed_in):
+    other = TestClient(main.app, follow_redirects=False)
+    assert other.post("/api/session/login", json={"userId": signed_in["id"], "pin": "2468"}).status_code == 200
+
+    assert client.request("DELETE", "/api/users/me", json={"pin": "2468"}).status_code == 200
+
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM oauth_sessions").fetchone()[0] == 0
 
 
 def test_expired_local_session_is_removed():
@@ -562,8 +625,7 @@ def test_connect_db_closes_connection():
         connection.execute("SELECT 1")
 
 
-def test_session_endpoint_slides_session_expiry(client):
-    client.get("/api/session")
+def test_session_endpoint_slides_session_expiry(client, signed_in):
     sid = client.cookies.get(main.SESSION_COOKIE)
     stale = int(time.time() * 1000) - 29 * 24 * 60 * 60 * 1000
     with main.connect_db() as connection:
@@ -590,11 +652,122 @@ def test_expired_chats_are_hidden_and_purged(client, signed_in):
         assert connection.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone() is None
 
 
-def test_user_access_token_refresh_network_error_returns_no_token(stored_user, monkeypatch):
+def test_user_access_token_network_error_is_unavailable_not_disconnected(stored_user, monkeypatch):
     connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
     monkeypatch.setattr(users.httpx, "AsyncClient", lambda **kwargs: FailingAsyncClient())
 
+    with pytest.raises(users.IndmoneyUnavailable):
+        asyncio.run(users.user_access_token(stored_user))
+    assert users.get_indmoney(stored_user)["refreshToken"] == "refresh"
+
+
+class TokenEndpoint:
+    """A fake INDmoney token endpoint: answers each refresh with ``status`` (and rotates the refresh token)."""
+
+    def __init__(self, status=200):
+        self.status = status
+        self.sent = []
+        self.gate = None
+
+    def client(self, **kwargs):
+        endpoint = self
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, url, data):
+                endpoint.sent.append(data["refresh_token"])
+                if endpoint.gate:
+                    await endpoint.gate.wait()
+                n = len(endpoint.sent)
+                return main.httpx.Response(endpoint.status, json={
+                    "access_token": f"fresh-{n}", "refresh_token": f"refresh-{n}", "expires_in": "3600",
+                } if endpoint.status == 200 else {"error": "invalid_grant"})
+
+        return Client()
+
+
+@pytest.mark.parametrize("status", [500, 502, 429])
+def test_user_access_token_server_errors_are_unavailable(stored_user, monkeypatch, status):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+    monkeypatch.setattr(users.httpx, "AsyncClient", TokenEndpoint(status).client)
+
+    with pytest.raises(users.IndmoneyUnavailable):
+        asyncio.run(users.user_access_token(stored_user))
+
+
+def test_user_access_token_refused_refresh_reads_as_disconnected(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+    monkeypatch.setattr(users.httpx, "AsyncClient", TokenEndpoint(400).client)
+
     assert asyncio.run(users.user_access_token(stored_user)) is None
+
+
+def test_concurrent_indmoney_refreshes_spend_the_refresh_token_once(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+    endpoint = TokenEndpoint()
+    monkeypatch.setattr(users.httpx, "AsyncClient", endpoint.client)
+
+    async def both():
+        endpoint.gate = asyncio.Event()
+        tasks = [asyncio.create_task(users.user_access_token(stored_user)) for _ in range(3)]
+        await asyncio.sleep(0.01)
+        endpoint.gate.set()
+        return await asyncio.gather(*tasks)
+
+    assert asyncio.run(both()) == ["fresh-1"] * 3
+    assert endpoint.sent == ["refresh"]
+    assert users.get_indmoney(stored_user)["refreshToken"] == "refresh-1"
+
+
+def test_forced_refresh_reuses_a_refresh_another_request_just_made(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user)
+    endpoint = TokenEndpoint()
+    monkeypatch.setattr(users.httpx, "AsyncClient", endpoint.client)
+
+    async def both():
+        endpoint.gate = asyncio.Event()
+        tasks = [asyncio.create_task(users.user_access_token(stored_user, force_refresh=True)) for _ in range(2)]
+        await asyncio.sleep(0.01)
+        endpoint.gate.set()
+        return await asyncio.gather(*tasks)
+
+    assert asyncio.run(both()) == ["fresh-1", "fresh-1"]
+    assert endpoint.sent == ["refresh"]
+
+
+def test_refresh_finishing_after_a_disconnect_does_not_restore_the_tokens(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+    endpoint = TokenEndpoint()
+    monkeypatch.setattr(users.httpx, "AsyncClient", endpoint.client)
+
+    async def disconnect_midway():
+        endpoint.gate = asyncio.Event()
+        task = asyncio.create_task(users.user_access_token(stored_user))
+        await asyncio.sleep(0.01)
+        users.clear_indmoney(stored_user)
+        endpoint.gate.set()
+        return await task
+
+    assert asyncio.run(disconnect_midway()) is None
+    assert users.get_indmoney(stored_user) == {}
+
+
+def test_session_and_chat_say_indmoney_is_not_responding_rather_than_disconnected(client, signed_in, monkeypatch):
+    async def unavailable(user_id, *, force_refresh=False):
+        raise users.IndmoneyUnavailable("INDmoney is not responding.")
+
+    monkeypatch.setattr(users, "user_access_token", unavailable)
+    assert client.get("/api/session").json()["connected"] is True
+    chat = client.post("/api/chats", json={"agentType": "portfolio"}).json()
+    response = client.post("/api/chat", json={"message": "What is my net worth?", "chatId": chat["id"], "agentType": "portfolio"})
+    assert response.status_code == 503 and response.json()["indmoneyUnavailable"] is True
+    refresh = client.post("/api/snapshots/refresh")
+    assert refresh.status_code == 503 and "loginUrl" not in refresh.json()
 
 
 def test_oauth_connect_upstream_failure_returns_502(client, signed_in, monkeypatch):

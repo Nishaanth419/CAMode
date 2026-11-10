@@ -269,3 +269,89 @@ def test_private_mode_chats_need_unlock_but_are_not_written(client, monkeypatch)
     assert client.get("/api/chats").status_code == 403
     client.post("/api/session/unlock", json={"pin": PIN})
     assert raw("SELECT COUNT(*) FROM chats WHERE user_id = ?", user["id"]) == [(0,)]
+
+
+# ── Destructive history routes need the unlocked session ──────────────────────
+
+def test_clearing_history_needs_the_unlocked_session(client, signed_in, monkeypatch):
+    fake_answer(monkeypatch)
+    chat_id = chat_once(client)
+    restart_server()
+
+    refused = client.delete("/api/users/me/history")
+
+    assert refused.status_code == 403 and refused.json()["unlockRequired"] is True
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == [(chat_id,)]
+    client.post("/api/session/unlock", json={"pin": PIN})
+    assert client.delete("/api/users/me/history").json() == {"cleared": True}
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == []
+
+
+def test_switching_to_private_mode_needs_the_unlocked_session(client, signed_in, monkeypatch):
+    fake_answer(monkeypatch)
+    chat_id = chat_once(client)
+    restart_server()
+    private = {"policyVersion": privacy.POLICY_VERSION, "storageMode": "private"}
+
+    refused = client.post("/api/privacy/consent", json=private)
+
+    assert refused.status_code == 403 and refused.json()["unlockRequired"] is True
+    assert users.get_user(signed_in["id"])["storageMode"] == "device"
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == [(chat_id,)]
+    client.post("/api/session/unlock", json={"pin": PIN})
+    assert client.post("/api/privacy/consent", json=private).json()["storageMode"] == "private"
+    assert raw("SELECT id FROM chats WHERE id = ?", chat_id) == []
+
+
+# ── Recovery ends every other session ──────────────────────────────────────────
+
+def test_recovery_signs_out_and_locks_every_other_session(client):
+    client.get("/api/session")
+    created = client.post("/api/users", json={"displayName": "Asha", "pin": PIN}).json()
+    user_id, code = created["user"]["id"], created["recoveryCode"]
+    accept_notice(client)
+    other = TestClient(main.app, follow_redirects=False)
+    assert other.post("/api/session/login", json={"userId": user_id, "pin": PIN}).status_code == 200
+    assert other.get("/api/chats").status_code == 200
+    stranger = sign_up(TestClient(main.app, follow_redirects=False), "Ravi")
+
+    recovered = client.post("/api/session/recover", json={"userId": user_id, "recoveryCode": code, "newPin": "1357"})
+
+    assert recovered.status_code == 200
+    assert other.get("/api/session").json()["user"] is None
+    assert other.get("/api/chats").status_code == 401
+    assert client.get("/api/chats").status_code == 200  # the recovering browser has a fresh, unlocked session
+    assert raw("SELECT COUNT(*) FROM oauth_sessions WHERE user_id = ?", user_id) == [(1,)]
+    assert {owner for owner, _ in unlock._unlocked.values()} == {user_id, stranger["id"]}
+    assert raw("SELECT COUNT(*) FROM oauth_sessions WHERE user_id = ?", stranger["id"]) == [(1,)]
+
+
+# ── Unlocked keys do not outlive their sessions ────────────────────────────────
+
+def test_sweep_forgets_keys_whose_session_is_gone_or_idle(client, signed_in):
+    sid = next(iter(unlock._unlocked))
+    assert unlock.sweep(users.SESSION_MAX_AGE_SECONDS * 1000) == 0
+    with db.connect_db() as connection:
+        connection.execute("UPDATE oauth_sessions SET updated_at = 0 WHERE id = ?", (sid,))
+
+    assert unlock.sweep(users.SESSION_MAX_AGE_SECONDS * 1000) == 1
+    assert sid not in unlock._unlocked
+
+
+def test_sweep_forgets_keys_of_deleted_and_rebound_sessions(client, signed_in):
+    sid = next(iter(unlock._unlocked))
+    unlock._unlocked["gone"] = unlock._unlocked[sid]
+    with db.connect_db() as connection:
+        connection.execute("UPDATE oauth_sessions SET user_id = NULL WHERE id = ?", (sid,))
+
+    assert unlock.sweep(users.SESSION_MAX_AGE_SECONDS * 1000) == 2
+    assert unlock._unlocked == {}
+
+
+def test_an_expired_session_forgets_its_key_on_the_next_request(client, signed_in):
+    sid = next(iter(unlock._unlocked))
+    with db.connect_db() as connection:
+        connection.execute("UPDATE oauth_sessions SET updated_at = 0 WHERE id = ?", (sid,))
+
+    assert client.get("/api/chats").status_code == 401
+    assert sid not in unlock._unlocked
