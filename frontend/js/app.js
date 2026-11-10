@@ -237,7 +237,7 @@ agentNavItems.forEach((item) => item.addEventListener('click', () => {
 setAgent(selectedAgent);
 
 function showError(error) {
-  addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
+  addMessage('assistant', '<span style="color:var(--error)">' + escHtml(errorText(error)) + '</span>');
 }
 
 /* ── Status helpers ─────────────────────────────────────────────────── */
@@ -422,7 +422,7 @@ casForm.addEventListener('submit', async (event) => {
     casStatus.textContent = 'Saved. The PDF and its password were not kept.';
   } catch (error) {
     casStatus.classList.add('is-error');
-    casStatus.textContent = error.message;
+    casStatus.textContent = errorText(error);
   } finally {
     password.value = '';
     submit.disabled = false;
@@ -496,7 +496,7 @@ async function loadChats() {
     isSessionReady = true;
     document.dispatchEvent(new CustomEvent('ca:session'));
   } catch (err) {
-    chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
+    chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(errorText(err)) + '</small></div>';
     setStatus('error', 'Connection failed');
   }
 }
@@ -674,7 +674,7 @@ async function submitGate(url, body, form) {
     }
     await loadChats();
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
   } finally {
     submit.disabled = false;
   }
@@ -780,7 +780,7 @@ async function showTurnstile() {
     const turnstile = await loadTurnstile();
     turnstileWidget = turnstile.render(slot, { sitekey: turnstileSiteKey, action: 'sign_up' });
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
   }
 }
 
@@ -856,7 +856,7 @@ async function showConsentGate() {
     renderNotice(consentNotice, privacy.notice);
     setStorageChoice(consentForm, 'consent-storage', privacy.storageMode, privacy.snapshotRetentionDays);
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
   }
 }
 
@@ -870,7 +870,7 @@ consentForm.addEventListener('submit', async (event) => {
     await savePrivacyChoice(readStorageChoice(consentForm, 'consent-storage'));
     await loadChats();
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
     if (error.message.startsWith('The privacy notice changed')) await showConsentGate();
   } finally {
     submit.disabled = false;
@@ -954,7 +954,7 @@ document.getElementById('save-data-settings').addEventListener('click', async ()
     dataStatus.textContent = 'Data settings saved.';
     await loadChats();
   } catch (error) {
-    dataStatus.textContent = error.message;
+    dataStatus.textContent = errorText(error);
   }
 });
 
@@ -1032,7 +1032,7 @@ document.getElementById('backup-now').addEventListener('click', async (event) =>
     renderBackupStatus(data);
     dataStatus.textContent = `Backed up to ${data.file}.`;
   } catch (error) {
-    dataStatus.textContent = error.message;
+    dataStatus.textContent = errorText(error);
   } finally {
     button.disabled = false;
   }
@@ -1180,7 +1180,7 @@ async function loadBrokerTools(id) {
   } catch (error) {
     delete brokerToolsHtml[id];
     const panel = document.getElementById(`broker-tools-${id}`);
-    if (panel) panel.innerHTML = `<p class="dialog-sub">${escHtml(error.message)}</p>`;
+    if (panel) panel.innerHTML = `<p class="dialog-sub">${escHtml(errorText(error))}</p>`;
     return;
   }
   const panel = document.getElementById(`broker-tools-${id}`);
@@ -1289,7 +1289,7 @@ brokersList.addEventListener('click', async (event) => {
     }
     await loadBrokers();
   } catch (error) {
-    brokersStatus.textContent = error.message;
+    brokersStatus.textContent = errorText(error);
   } finally {
     button.disabled = false;
   }
@@ -1437,7 +1437,7 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       reconnect.disabled = false;
       reconnect.textContent = 'Try again';
-      reconnect.title = error.message;
+      reconnect.title = errorText(error);
     }
   }
 });
@@ -1725,7 +1725,7 @@ async function sendMessage(text) {
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      const err = await res.json().catch(() => ({}));
       const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
       if (err.profileRequired || err.unlockRequired || err.consentRequired) {
         removeTypingIndicator();
@@ -1773,7 +1773,7 @@ async function sendMessage(text) {
         const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
         throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
       }
-      throw Object.assign(new Error([err.error, err.details].filter(Boolean).join(': ') || `HTTP ${res.status}`), { trace, runId: err.runId });
+      throw Object.assign(new Error(plainError(res.status, err)), { trace, runId: err.runId });
     }
 
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
@@ -1822,7 +1822,7 @@ async function sendMessage(text) {
   } catch (err) {
     removeTypingIndicator();
     addMessage('assistant',
-      `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`,
+      `<span style="color:var(--error)">⚠ ${escHtml(errorText(err))}</span>${err.connectLink || ''}`,
       err.trace || [], err.runId,
     );
     setStatus('error', 'Request failed');
@@ -2301,7 +2301,7 @@ document.addEventListener('click', (event) => {
 
 /* ── Init ────────────────────────────────────────────────────────────── */
 loadProviders().catch((error) => {
-  providerPicker.innerHTML = `<option value="">${escHtml(error.message)}</option>`;
+  providerPicker.innerHTML = `<option value="">${escHtml(errorText(error))}</option>`;
   providerPicker.disabled = true;
   providerReady = true;
 });

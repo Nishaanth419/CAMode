@@ -341,6 +341,32 @@ def test_an_ai_provider_401_does_not_refresh_the_indmoney_token(client, signed_i
     assert refreshed == []
 
 
+@pytest.mark.parametrize(("raised", "expected"), [
+    (AgentRunError('Ollama request failed: HTTP 500 {"error": "model runner crashed at /usr/lib/ollama"}', [], code="provider_error"),
+     main.CHAT_FAILURE_MESSAGES["provider_error"]),
+    (AgentRunError("Could not connect to INDmoney: ConnectError('[Errno 61] Connection refused')", [], code="internal_error"),
+     main.CHAT_FAILURE_INDMONEY),
+    (KeyError("choices"), main.CHAT_FAILURE_DEFAULT),
+])
+def test_a_failed_answer_shows_a_plain_message_without_exception_text(client, signed_in, monkeypatch, raised, expected):
+    chat = client.post("/api/chats", json={"agentType": "finance"}).json()
+
+    async def fake_run_agent(*args, **kwargs):
+        raise raised
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    response = client.post("/api/chat", json={"message": "What is an index fund?", "chatId": chat["id"], "agentType": "finance"})
+
+    assert response.status_code == 502
+    body = response.json()
+    assert body["error"] == expected
+    assert "details" not in body
+    text = response.text
+    for leaked in ("HTTP 500", "/usr/lib", "Errno", "ConnectError", "choices"):
+        assert leaked not in text
+
+
 def test_portfolio_chat_passes_snapshot_context_and_only_relevant_saved_context(client, signed_in, monkeypatch):
     connect_user_to_indmoney(signed_in["id"])
     client.put("/api/profile", json={"riskAppetite": "moderate", "primaryGoal": "Buy a home"})
