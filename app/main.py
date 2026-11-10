@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import date
 from typing import Any, Literal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -1206,9 +1206,26 @@ async def delete_cas(statement_id: str, request: Request):
 
 # ── Backups ────────────────────────────────────────────────────────────────────
 
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 def backups_in_app() -> bool:
-    """Whether profiles may see and start backups; with an admin page they are the operator's job only."""
-    return not admin.is_enabled()
+    """Whether profiles may see and start backups (every profile's data, the server's path).
+
+    Never with an admin page (the operator's job). Otherwise ``BACKUPS_IN_APP`` decides when set; unset, only a
+    copy on one computer offers them: ``AUTH_MODE=local`` with no ``APP_ORIGIN`` or a localhost one.
+    """
+    if admin.is_enabled():
+        return False
+    flag = os.getenv("BACKUPS_IN_APP", "").strip().lower()
+    if flag:
+        return flag in {"1", "true", "yes", "on"}
+    if accounts.uses_google():
+        return False
+    origin = os.getenv("APP_ORIGIN", "").strip()
+    if not origin:
+        return True
+    return (urlsplit(origin).hostname or "") in _LOCAL_HOSTS
 
 
 @app.get("/api/backups")
@@ -1228,6 +1245,8 @@ async def create_backup(request: Request):
     user = current_user(request)
     if not user:
         return profile_required()
+    if blocked := rate_limited(request, "backup", user["id"]):
+        return blocked
     try:
         path = await asyncio.to_thread(backup.create_backup)
     except backup.BackupError as exc:

@@ -45,7 +45,7 @@ from .snapshots import SNAPSHOT_TIMEZONE
 
 logger = logging.getLogger("ca_mode.limits")
 
-RateGroup = Literal["chat", "sign_up", "sign_in", "investigation", "broker"]
+RateGroup = Literal["chat", "sign_up", "sign_in", "investigation", "broker", "backup"]
 
 # The Free plan's daily allowance, offered on the pricing page; DAILY_QUESTION_LIMIT is never above it.
 FREE_DAILY_QUESTIONS: Final = 10
@@ -179,6 +179,8 @@ RATE_RULES: Final[dict[RateGroup, GroupRules]] = {
     "sign_in": GroupRules(per_ip=Rule(20, 600), per_profile=Rule(10, 600)),
     "investigation": GroupRules(per_ip=Rule(20, 600), per_profile=Rule(10, 600)),
     "broker": GroupRules(per_ip=Rule(60, 60), per_profile=Rule(10, 60)),
+    # A whole-database copy each time; manual copies are pruned apart from the daily ones (backup.py).
+    "backup": GroupRules(per_ip=Rule(5, 3600), per_profile=Rule(3, 3600)),
 }
 
 

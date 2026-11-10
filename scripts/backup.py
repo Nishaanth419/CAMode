@@ -1,6 +1,6 @@
 """Create, list, verify and restore CA Mode database backups.
 
-    python -m scripts.backup now              # back up now
+    python -m scripts.backup now              # back up now (a manual copy, pruned apart from the daily ones)
     python -m scripts.backup list             # list backups, newest first
     python -m scripts.backup verify FILE      # integrity check and row counts
     python -m scripts.backup restore FILE     # stop the app first; the current database is kept aside
@@ -30,7 +30,7 @@ def main() -> int:
             print("Backed up to", backup.create_backup())
         elif args.command == "list":
             for path in backup.list_backups():
-                print(f"{backup.backup_time(path):%Y-%m-%d %H:%M}  {path}")
+                print(f"{backup.backup_time(path):%Y-%m-%d %H:%M}  {backup.backup_kind(path):6}  {path}")
             print(f"({backup.status()['count']} kept in {backup.backup_dir()})")
         elif args.command == "verify":
             counts = backup.verify_backup(args.file)
