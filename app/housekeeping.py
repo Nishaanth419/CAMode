@@ -63,9 +63,12 @@ def sweep_expired_data(today: date, *, now_ms: int | None = None) -> dict[str, i
 def run_due(now: datetime) -> None:
     """Sweep sessions on every call and expired data once per local day. Logs counts, never row contents."""
     global _last_data_sweep
+    from . import limits  # limits imports snapshots, which starts this sweep
+
     ended = sweep_sessions()
     if any(ended.values()):
         logger.info("sessions_swept", extra=ended)
+    limits.release_stale_reservations()
     today = now.astimezone(snapshots.SNAPSHOT_TIMEZONE).date()
     if _last_data_sweep == today:
         return

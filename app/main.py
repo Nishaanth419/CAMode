@@ -90,6 +90,8 @@ def _scheduler_enabled() -> bool:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     db.claim_single_process()
+    # No request survives a restart: slots still reserved belong to answers that were cut off.
+    await asyncio.to_thread(limits.release_stale_reservations, older_than_seconds=0)
     stop = asyncio.Event()
     task = asyncio.create_task(snapshots.run_scheduler(stop, mcp_url=MCP_RESOURCE)) if _scheduler_enabled() else None
     try:
@@ -1898,7 +1900,7 @@ async def chat(body: ChatRequest, request: Request):
         extra_tools += calculator + brokers.broker_tools(user)
         context = snapshots.portfolio_context(user, extra_tools=extra_tools, extra_profile_context=brokers.context_line(user["id"]))
     try:
-        question_day = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
+        reservation = limits.reserve_question(user["id"], now=limits.local_now(), capped=plans.has_daily_cap(user))
     except limits.DailyLimitReached as exc:
         return daily_limit_reached(exc)
     monthly_credits = plans.plan_of(user).monthly_credits
@@ -1906,7 +1908,7 @@ async def chat(body: ChatRequest, request: Request):
         try:
             credits.ensure_available(user["id"], monthly_credits, now=limits.local_now())
         except credits.CreditsExhausted as exc:
-            limits.release_question(user["id"], question_day)
+            limits.release_question(user["id"], reservation)
             return credits_exhausted(exc)
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
     answered = False
@@ -1953,12 +1955,14 @@ async def chat(body: ChatRequest, request: Request):
             chats.append_turn(user, data, message, answer_text, trace, run_id=run_id)
         answered = bool(answer_text.strip())
         return PlainTextResponse(answer_text, headers={
-            "X-Agent-Trace": trace_header(trace), **_run_header(run_id), **_questions_left_header(question_day, user),
+            "X-Agent-Trace": trace_header(trace), **_run_header(run_id), **_questions_left_header(reservation, user),
             **(_charge_credits(user, monthly_credits, answer) if answered and monthly_credits else {}),
         })
     finally:
-        if not answered:
-            limits.release_question(user["id"], question_day)
+        if answered:
+            limits.confirm_question(reservation)
+        else:
+            limits.release_question(user["id"], reservation)
 
 
 def _save_agent_run(
@@ -1990,9 +1994,9 @@ def _charge_credits(user: dict[str, Any], monthly_credits: int, answer: Any) -> 
     return {"X-Credits-Remaining": str(left.remaining), "X-Credits-Charged": str(cost)}
 
 
-def _questions_left_header(question_day: date | None, user: dict[str, Any]) -> dict[str, str]:
+def _questions_left_header(reservation: limits.Reservation | None, user: dict[str, Any]) -> dict[str, str]:
     """Today's remaining questions after this answer, only when the daily cap counted it."""
-    if question_day is None:
+    if reservation is None:
         return {}
     remaining = plans.usage(user, now=limits.local_now())["remaining"]
     return {"X-Questions-Remaining": str(remaining)} if remaining is not None else {}

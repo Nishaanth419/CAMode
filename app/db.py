@@ -159,6 +159,14 @@ _SCHEMA = """
         questions INTEGER NOT NULL,
         PRIMARY KEY (user_id, day)
     );
+    -- Questions counted in question_counts whose answer is still being worked on (limits.py). A request killed
+    -- by a restart never confirms or releases its row; release_stale_reservations() gives the slot back.
+    CREATE TABLE IF NOT EXISTS question_reservations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        reserved_at INTEGER NOT NULL
+    );
     -- Sign-in accounts (accounts.py): one Google account per profile, one profile per account.
     CREATE TABLE IF NOT EXISTS accounts (
         provider TEXT NOT NULL,

@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
+from fastapi.testclient import TestClient
+
 from app import limits, main, privacy
 from app.db import connect_db
 from tests.conftest import sign_up
@@ -128,7 +130,7 @@ def test_daily_limit_resets_at_local_midnight(signed_in, monkeypatch):
     monkeypatch.setenv("DAILY_QUESTION_LIMIT", "1")
     late = datetime(2026, 10, 21, 23, 59, tzinfo=IST)
 
-    assert limits.reserve_question(signed_in["id"], now=late).isoformat() == "2026-10-21"
+    assert limits.reserve_question(signed_in["id"], now=late).day.isoformat() == "2026-10-21"
     with pytest.raises(limits.DailyLimitReached) as reached:
         limits.reserve_question(signed_in["id"], now=late)
     assert reached.value.resets_at == datetime(2026, 10, 22, 0, 0, tzinfo=IST)
@@ -150,13 +152,62 @@ def test_old_daily_counts_are_dropped(signed_in, monkeypatch):
 def test_released_question_never_goes_below_zero(signed_in, monkeypatch):
     monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
     now = datetime(2026, 10, 21, 12, tzinfo=IST)
-    day = limits.reserve_question(signed_in["id"], now=now)
+    reservation = limits.reserve_question(signed_in["id"], now=now)
+    limits.reserve_question(signed_in["id"], now=now)
 
-    limits.release_question(signed_in["id"], day)
-    limits.release_question(signed_in["id"], day)
+    limits.release_question(signed_in["id"], reservation)
+    limits.release_question(signed_in["id"], reservation)
     limits.release_question(signed_in["id"], None)
 
+    assert limits.questions_used(signed_in["id"], now=now) == 1
+
+
+def pending_reservations(user_id):
+    with connect_db() as connection:
+        return connection.execute("SELECT COUNT(*) FROM question_reservations WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+
+def test_an_answered_question_keeps_its_slot(client, signed_in, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
+    answer_with(monkeypatch)
+
+    assert ask(client, new_chat(client)).status_code == 200
+
+    assert limits.questions_used(signed_in["id"], now=limits.local_now()) == 1
+    assert pending_reservations(signed_in["id"]) == 0
+    assert limits.release_stale_reservations(older_than_seconds=0) == 0
+    assert limits.questions_used(signed_in["id"], now=limits.local_now()) == 1
+
+
+def test_a_request_killed_mid_answer_gives_its_slot_back(client, signed_in, monkeypatch):
+    # A deploy restart kills the request after the slot is counted; nothing confirms or releases it.
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "1")
+    now = limits.local_now()
+    limits.reserve_question(signed_in["id"], now=now)
+    assert pending_reservations(signed_in["id"]) == 1
+    with pytest.raises(limits.DailyLimitReached):
+        limits.reserve_question(signed_in["id"], now=now)
+
+    # Not yet stale: the answer may still be on its way.
+    assert limits.release_stale_reservations() == 0
+
+    # The next start releases every reservation left behind.
+    with TestClient(main.app):
+        pass
     assert limits.questions_used(signed_in["id"], now=now) == 0
+    assert pending_reservations(signed_in["id"]) == 0
+    assert limits.reserve_question(signed_in["id"], now=now) is not None
+
+
+def test_a_stale_reservation_is_released_on_the_next_question(signed_in, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "1")
+    now = limits.local_now()
+    limits.reserve_question(signed_in["id"], now=now)
+    later = limits.time.time() + limits.RESERVATION_TTL_SECONDS + 1
+    monkeypatch.setattr(limits.time, "time", lambda: later)
+
+    assert limits.reserve_question(signed_in["id"], now=now) is not None
+    assert limits.questions_used(signed_in["id"], now=now) == 1
 
 
 def test_daily_counts_are_deleted_with_the_profile(client, signed_in, monkeypatch):
