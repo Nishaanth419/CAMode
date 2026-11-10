@@ -67,7 +67,7 @@ def store_day(
             "ON CONFLICT(user_id, broker, local_date) DO UPDATE SET captured_at = excluded.captured_at, data = excluded.data",
             (user_id, broker_id, local.date().isoformat(), captured_ms, keys.seal(payload)),
         )
-        snapshots._prune(connection, user_id, local.date())
+        snapshots.prune(connection, user_id, local.date())
 
 
 def delete_for_broker(user_id: str, broker_id: str) -> None:

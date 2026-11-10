@@ -103,8 +103,10 @@ def test_session_data_is_stored_encrypted():
     assert vault.is_encrypted(stored) and "client-secret-value" not in stored
     assert users.get_session("sid")["clientSecret"] == "client-secret-value"
 
-    users.touch_session("new-sid")
-    assert raw_column("oauth_sessions", "data", "new-sid") == "{}"
+    assert users.touch_session("sid") is True
+    assert users.touch_session("new-sid") is False  # nothing is created for an unknown id
+    with db.connect_db() as connection:
+        assert connection.execute("SELECT 1 FROM oauth_sessions WHERE id = 'new-sid'").fetchone() is None
 
 
 def test_startup_migration_encrypts_plaintext_rows_once():

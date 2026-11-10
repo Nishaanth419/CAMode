@@ -348,14 +348,17 @@ def save_session(sid: str, values: dict[str, Any]) -> None:
         )
 
 
-def touch_session(sid: str) -> None:
-    """Slide the session expiry forward, creating an empty session row if it is missing."""
+def touch_session(sid: str) -> bool:
+    """Slide a live session's expiry forward; return False (creating nothing) when there is no such session.
+
+    A session idle past the max age is deleted rather than revived.
+    """
+    now = now_ms()
     with connect_db() as connection:
         connection.execute(
-            "INSERT INTO oauth_sessions(id, data, updated_at) VALUES (?, '{}', ?) "
-            "ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at",
-            (sid, now_ms()),
+            "DELETE FROM oauth_sessions WHERE id = ? AND updated_at < ?", (sid, now - SESSION_MAX_AGE_SECONDS * 1000),
         )
+        return connection.execute("UPDATE oauth_sessions SET updated_at = ? WHERE id = ?", (now, sid)).rowcount > 0
 
 
 def session_user_id(sid: str | None) -> str | None:

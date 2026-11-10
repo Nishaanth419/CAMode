@@ -201,6 +201,8 @@ def current_user(request: Request) -> dict[str, Any] | None:
     user = users.get_user(user_id) if user_id else None
     if user:
         user["keys"] = unlock.keys_for_session(user, sid)
+    elif sid:
+        unlock.forget_session(sid)  # expired or signed out: its key must not stay in memory
     return user
 
 
@@ -444,12 +446,11 @@ async def list_ai_providers():
 
 @app.get("/api/session")
 async def local_session(request: Request):
+    # A visit without a stored session gets no row and no cookie: one is made on sign-in or Google start.
     sid = session_id(request)
-    if sid:
-        touch_session(sid)
-    else:
-        sid = random_token()
-        save_session(sid, {})
+    if sid and not touch_session(sid):
+        unlock.forget_session(sid)
+        sid = None
     user_id = signed_in_user_id(sid)
     user = users.get_user(user_id) if user_id else None
     locked = bool(user) and not unlock.keys_for_session(user, sid).is_unlocked
@@ -474,16 +475,17 @@ async def local_session(request: Request):
         # Only when sign-up asks for a Cloudflare Turnstile check.
         **({"turnstileSiteKey": site_key} if (site_key := limits.turnstile_site_key()) else {}),
     })
-    response.set_cookie(value=sid, **cookie_options(request))
+    if sid:
+        response.set_cookie(value=sid, **cookie_options(request))
     return response
 
 
-def _session_account(sid: str, user: dict[str, Any] | None) -> dict[str, Any] | None:
+def _session_account(sid: str | None, user: dict[str, Any] | None) -> dict[str, Any] | None:
     """The signed-in account's email, or the Google account waiting to create or claim a profile."""
     if user:
         account = accounts.account_for_user(user["id"])
         return {"email": account["email"]} if account else None
-    pending = accounts.pending_identity(get_session(sid))
+    pending = accounts.pending_identity(get_session(sid)) if sid else None
     if pending is None:
         return None
     return {"email": pending.email, "name": pending.name, "pending": True, "canClaim": accounts.claims_allowed()}

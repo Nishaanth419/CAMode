@@ -78,13 +78,31 @@ def test_provider_endpoint_exposes_ollama_openai_and_groq(client, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_session_initialization_sets_http_only_cookie(client):
+def test_anonymous_session_visit_stores_nothing_and_sets_no_cookie(client):
     response = client.get("/api/session")
 
     assert response.json() == {
         "connected": False, "user": None, "locked": False, "consentRequired": False, "storageMode": None,
         "usage": None, "profiles": [], "authMode": "local", "account": None, "backupsInApp": True,
     }
+    assert "set-cookie" not in response.headers
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM oauth_sessions").fetchone()[0] == 0
+
+
+def test_unknown_session_cookie_is_not_revived(client):
+    client.cookies.set(main.SESSION_COOKIE, "made-up")
+
+    response = client.get("/api/session")
+
+    assert response.json()["user"] is None and "set-cookie" not in response.headers
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM oauth_sessions").fetchone()[0] == 0
+
+
+def test_sign_in_sets_http_only_cookie(client):
+    response = client.post("/api/users", json={"displayName": "Asha", "pin": "2468"})
+
     cookie = response.headers["set-cookie"].lower()
     assert "indmoney_session=" in cookie
     assert "httponly" in cookie
@@ -92,8 +110,53 @@ def test_session_initialization_sets_http_only_cookie(client):
 
 def test_session_cookie_is_secure_for_https_requests():
     with TestClient(main.app, base_url="https://testserver", follow_redirects=False) as secure_client:
-        response = secure_client.get("/api/session")
+        response = secure_client.post("/api/users", json={"displayName": "Asha", "pin": "2468"})
     assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_idle_session_past_max_age_is_deleted_not_slid(client, signed_in):
+    sid = client.cookies.get(main.SESSION_COOKIE)
+    with main.connect_db() as connection:
+        connection.execute("UPDATE oauth_sessions SET updated_at = 0 WHERE id = ?", (sid,))
+
+    assert client.get("/api/session").json()["user"] is None
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT 1 FROM oauth_sessions WHERE id = ?", (sid,)).fetchone() is None
+
+
+def test_session_sweep_deletes_expired_and_abandoned_rows(client, signed_in):
+    from app import housekeeping
+
+    live_sid = client.cookies.get(main.SESSION_COOKIE)
+    now = users.now_ms()
+    max_age = users.SESSION_MAX_AGE_SECONDS * 1000
+    unbound_age = housekeeping.UNBOUND_SESSION_SECONDS * 1000
+    with main.connect_db() as connection:
+        for sid, user_id, updated in (
+            ("expired-bound", signed_in["id"], now - max_age - 1),
+            ("old-unbound", None, now - unbound_age - 1),  # an abandoned Google sign-in or pending account
+            ("new-unbound", None, now - 1000),
+        ):
+            connection.execute(
+                "INSERT INTO oauth_sessions(id, data, updated_at, user_id) VALUES (?, '{}', ?, ?)", (sid, updated, user_id),
+            )
+
+    ended = housekeeping.sweep_sessions(now_ms=now)
+
+    assert ended == {"expired": 1, "unbound": 1, "keysForgotten": 0}
+    with main.connect_db() as connection:
+        left = {row[0] for row in connection.execute("SELECT id FROM oauth_sessions")}
+    assert left == {live_sid, "new-unbound"}
+
+
+def test_deleting_a_profile_deletes_its_sessions(client, signed_in):
+    other = TestClient(main.app, follow_redirects=False)
+    assert other.post("/api/session/login", json={"userId": signed_in["id"], "pin": "2468"}).status_code == 200
+
+    assert client.request("DELETE", "/api/users/me", json={"pin": "2468"}).status_code == 200
+
+    with main.connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM oauth_sessions").fetchone()[0] == 0
 
 
 def test_expired_local_session_is_removed():
@@ -562,8 +625,7 @@ def test_connect_db_closes_connection():
         connection.execute("SELECT 1")
 
 
-def test_session_endpoint_slides_session_expiry(client):
-    client.get("/api/session")
+def test_session_endpoint_slides_session_expiry(client, signed_in):
     sid = client.cookies.get(main.SESSION_COOKIE)
     stale = int(time.time() * 1000) - 29 * 24 * 60 * 60 * 1000
     with main.connect_db() as connection:

@@ -83,6 +83,27 @@ def end_all_sessions(user_id: str) -> int:
     return ended
 
 
+def sweep(max_age_ms: int, *, now_ms: int | None = None) -> int:
+    """Forget unlocked keys whose session row is gone, idle past ``max_age_ms``, or bound to another profile.
+
+    Run by the scheduler, so a key does not outlive its session in memory. Returns how many were forgotten.
+    """
+    if not _unlocked:
+        return 0
+    cutoff = (users.now_ms() if now_ms is None else now_ms) - max_age_ms
+    with connect_db() as connection:
+        live = {
+            row["id"]: row["user_id"]
+            for row in connection.execute(
+                "SELECT id, user_id FROM oauth_sessions WHERE user_id IS NOT NULL AND updated_at >= ?", (cutoff,),
+            )
+        }
+    stale = [sid for sid, (owner, _) in list(_unlocked.items()) if live.get(sid) != owner]
+    for sid in stale:
+        _unlocked.pop(sid, None)
+    return len(stale)
+
+
 def _wrap(private_key: PrivateKey, secret: str) -> str:
     return sealing.wrap_private_key(private_key, secret, n=users.SCRYPT_N, r=users.SCRYPT_R, p=users.SCRYPT_P)
 
