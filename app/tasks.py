@@ -28,7 +28,8 @@ ACCOUNT_LOCAL_TOOLS: Final = frozenset({
 })
 GOAL_TOOLS: Final = frozenset({"calculate_goal_plan", "get_goal_plans", "plan_goal_what_if"})
 # The general agent's arithmetic and result-reading tools (analysis_tools): useful, but they read no account data.
-ANALYSIS_TOOLS: Final = frozenset({"inspect_result", "calculate", "option_strategy", "price_levels", "date_facts"})
+ANALYSIS_TOOLS: Final = frozenset({"inspect_result", "calculate", "option_strategy", "price_levels", "date_facts",
+                                   "make_chart"})
 
 # Budgets are observed, not enforced: a run over them is reported as such. The Phase 1 baseline used at most
 # 5 model calls and 4 tool calls per answer; the agent loop itself stops at 12 model calls.

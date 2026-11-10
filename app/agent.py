@@ -760,14 +760,23 @@ class _ToolRunner:
 def _guarded_answer(
     content: str, messages: list[dict[str, Any]], *, agent_type: str, message: str,
     saved_context: SavedContext | None, goal_maths: bool, ohlc_results: list[str], finish_reason: Any,
+    made_charts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, list[AgentEvent]]:
-    """The answer after the output checks (code output, charts, figures, length), with their validation events."""
+    """The answer after the output checks (code output, charts, figures, length), with their validation events.
+
+    ``made_charts`` (the general agent, which offers ``make_chart``) puts those charts in place of their
+    ``ref`` blocks and drops data charts the model typed itself, before the number check.
+    """
     if _contains_code_output(content):
         logger.warning("Blocked code-shaped model output for %s agent", agent_type)
         return FINANCE_ONLY_NOTICE, [("validation", {"check": "code_output", "outcome": "failed",
                                                      "detail": "replaced with the finance-only notice"})]
     events: list[AgentEvent] = []
     content = charts.ground_candlestick_charts(content, ohlc_results)
+    if made_charts is not None:
+        content, chart_result = charts.ground_tool_charts(content, made_charts, strict=True)
+        if chart_result:
+            events.append(("validation", chart_result))
     warning, number_result = _number_check(content, messages, agent_type, message, saved_context, goal_maths=goal_maths)
     if number_result:
         events.append(("validation", number_result))
@@ -1159,14 +1168,14 @@ async def _graph_answer(
     def guard(content: str, sources: list[dict[str, Any]], finish_reason: Any) -> tuple[str, list[AgentEvent]]:
         return _guarded_answer(content, sources, agent_type=agent_type, message=message, saved_context=saved_context,
                                goal_maths="calculate_goal_plan" in runner.local_tools, ohlc_results=runner.ohlc_results,
-                               finish_reason=finish_reason)
+                               finish_reason=finish_reason, made_charts=store.charts)
 
     schemas = {**runner.tool_schemas, **{name: tool.input_schema for name, tool in runner.local_tools.items()}}
     deps = agent_graph.Deps(
         model_call=model_call, run_tool=runner.run, model_tools=model_tools, schemas=schemas,
         local_tools=frozenset(runner.local_tools), is_account_tool=lambda name: tasks.is_account_tool(name, runner.local_tools),
         store=store, guard=guard, unverified=lambda content, sources: _unverified_numbers(content, sources, message, saved_context),
-        requires_account_data=True,
+        requires_account_data=True, wants_chart=charts.asks_for_chart(message),
     )
     async for event in agent_graph.run(deps, messages):
         yield event

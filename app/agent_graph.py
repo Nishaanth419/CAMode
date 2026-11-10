@@ -5,8 +5,10 @@ has enough to answer. CA Mode supplies the tools (INDmoney's read-only tools, th
 the general ``analysis_tools``), facts about INDmoney's data in the prompt, and bounded checks:
 
     think ─┬→ act → think            the model's tool calls, run together, results back to the model
-           ├→ check ─┬→ think        a reply that skipped account data, or states figures no tool produced,
-           │         └→ finish       is sent back once with the reason; otherwise the usual output checks
+           ├→ check ─┬→ think        a reply that skipped account data, typed a chart's numbers, made no chart
+           │         │                that was asked for, or states
+           │         └→ finish       figures no tool produced, is sent back once with the reason; otherwise the
+           │                          usual output checks (``make_chart`` charts replace their ref blocks)
            └→ end                     a provider or INDmoney sign-in failure
 
 - ``act`` runs a reply's calls in parallel (``CONCURRENCY``, each under ``STEP_TIMEOUT_SECONDS``), retries a
@@ -41,7 +43,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from . import tool_results
+from . import charts, tool_results
 from .analysis_tools import ANALYSIS_TOOL_NAMES, ResultStore
 
 logger = logging.getLogger(__name__)
@@ -76,7 +78,8 @@ def enabled() -> bool:
 ANALYSIS_GUIDE: Final = """How to work:
 - Work out the steps the question needs, then fetch the data. Call tools that do not depend on each other in the same turn; they run together. After results arrive, decide the next step from them.
 - Never guess an identifier: resolve stock, index, option or fund names with lookup_ind_keys first (it returns one flat list for all the names you pass, so match the names yourself).
-- A large result comes back as an outline with a resultId: read the rows you need with inspect_result (conditions such as "put_data.delta between -0.2 -0.1", only the fields you need).
+- Every data result carries a resultId (short ones end with [resultId: r1]). A large result comes back as an outline: read the rows you need with inspect_result (conditions such as "put_data.delta between -0.2 -0.1", only the fields you need).
+- Charts: for a bar, donut or line chart call make_chart with the resultId, the path of the list (e.g. figures.top_holdings, figures.by_asset_type or points), label_field and value_field; it reads the numbers itself and returns a chartId. Then put a chart block containing only {"ref": "c1"} (that chartId) where the chart goes. Never type chart numbers yourself: this replaces the bar, donut and line chart formats described earlier. Candlestick charts keep their own block.
 - For dates (which listed expiry is the last of its month, weekdays, days or trading days from today) use date_facts instead of working them out. Absent fields mean the tool did not report them; never treat them as zero.
 - Never do arithmetic yourself. Every figure you derive (sums, differences, percentages, ratios, quantities, payoffs, breakevens, upside) must come from calculate, option_strategy or price_levels, or be quoted exactly as a tool returned it.
 - If data is missing, stale, contradictory or not offered by any tool, say so plainly and do not fill it in. Ask the user only for inputs no tool can provide.
@@ -101,6 +104,16 @@ NO_ACCOUNT_DATA_PROMPT: Final = (
 UNVERIFIED_PROMPT: Final = (
     "These figures in your answer do not appear in any tool result: {figures}. Compute each one with calculate, "
     "option_strategy or price_levels, or quote it exactly as a tool returned it, or leave it out. Then answer again."
+)
+HAND_WRITTEN_CHART_PROMPT: Final = (
+    "Your answer has a chart whose numbers you typed. Build it with make_chart (result_id, path, label_field, "
+    "value_field) and put a chart block containing only {\"ref\": \"<chartId>\"} in its place, or leave the chart out. "
+    "Then answer again."
+)
+NO_CHART_PROMPT: Final = (
+    "My question asks for a chart. Every tool result above has a resultId ({results}). Call make_chart on the one that "
+    "holds the data (result_id, path, label_field, value_field) and put a chart block containing only "
+    "{{\"ref\": \"<chartId>\"}} in your answer. If no result has data to chart, say so instead."
 )
 MALFORMED_PROMPT: Final = (
     "Your last tool call could not be read (malformed JSON). Send it again as valid JSON; if it was long, split it "
@@ -138,6 +151,7 @@ class Deps:
     guard: Callable[[str, list[dict[str, Any]], Any], tuple[str, list[Event]]]
     unverified: Callable[[str, list[dict[str, Any]]], list[str]]
     requires_account_data: bool
+    wants_chart: bool = False  # the question asks for a bar, donut or line chart (charts.asks_for_chart)
     started: float = field(default_factory=time.monotonic)
     succeeded: dict[str, str] = field(default_factory=dict)  # call key → resultId
 
@@ -340,6 +354,16 @@ async def check(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         _emit("retry", {"reason": "no_account_tool", "detail": "answered an account question without reading account data"})
         return {"messages": [*messages, {"role": "assistant", "content": reply}, {"role": "user", "content": NO_ACCOUNT_DATA_PROMPT}],
                 "retries": _count(state, "no_account_tool"), "reply": None, "route": "think"}
+    if (charts.hand_written_charts(reply) and "make_chart" in deps.schemas and room
+            and _retries(state, "hand_written_chart") < 1):
+        _emit("retry", {"reason": "hand_written_chart", "detail": "a chart with numbers the model typed"})
+        return {"messages": [*messages, {"role": "assistant", "content": reply}, {"role": "user", "content": HAND_WRITTEN_CHART_PROMPT}],
+                "retries": _count(state, "hand_written_chart"), "reply": None, "route": "think"}
+    if (deps.wants_chart and not deps.store.charts and not charts.has_chart_block(reply) and deps.store.results
+            and "make_chart" in deps.schemas and room and _retries(state, "no_chart") < 1):
+        _emit("retry", {"reason": "no_chart", "detail": "a chart was asked for and none was made"})
+        return {"messages": [*messages, {"role": "assistant", "content": reply}, {"role": "user", "content": NO_CHART_PROMPT.format(results=deps.store.listing())}],
+                "retries": _count(state, "no_chart"), "reply": None, "route": "think"}
     unverified = deps.unverified(reply, _sources(state, deps)) if state.get("tool_calls") else []
     if unverified and room and _retries(state, "unverified_figures") < 1:
         _emit("retry", {"reason": "unverified_figures", "detail": ", ".join(unverified[:8])})
