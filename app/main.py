@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import date
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -24,8 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
-from .agent import PortfolioContext, configured_providers, default_provider, run_agent
+from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -42,8 +42,7 @@ from .users import (
     touch_session,
 )
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logs.install_access_log_filter()
+logs.configure()
 logger = logging.getLogger("ca_mode")
 
 MCP_RESOURCE_METADATA = "https://mcp.indmoney.com/.well-known/oauth-protected-resource/mcp"
@@ -446,7 +445,51 @@ app.add_middleware(BodySizeLimit)
 
 @app.get("/healthz")
 async def healthz():
+    """Liveness: the process serves requests. deploy/update.sh rolls back on this, never on /readyz."""
     return {"ok": True}
+
+
+READY_TIMEOUT_SECONDS: Final = 3
+
+
+def _database_ready() -> None:
+    with connect_db() as connection:
+        connection.execute("SELECT 1 FROM users LIMIT 1").fetchall()
+
+
+async def _ollama_ready() -> str | None:
+    """None when Ollama answers ``/api/tags`` (or is not this copy's model); otherwise why not."""
+    if default_provider() != "ollama":
+        return None
+    base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").rstrip("/").removesuffix("/v1")
+    try:
+        async with httpx.AsyncClient(timeout=READY_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{base}/api/tags")
+    except httpx.HTTPError as exc:
+        return f"unreachable ({type(exc).__name__})"
+    return None if response.is_success else f"HTTP {response.status_code}"
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness for monitoring: the database answers a query and Ollama answers within a few seconds.
+
+    503 when either fails. A sleeping Mac makes this 503 while the site still works without answers, so
+    alert on it, but never restart or roll back on it (that is /healthz).
+    """
+    checks: dict[str, str] = {}
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_database_ready), timeout=READY_TIMEOUT_SECONDS)
+        checks["database"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - any failure means not ready; the type is enough to report
+        checks["database"] = f"failed ({type(exc).__name__})"
+    model_problem = await _ollama_ready()
+    checks["model"] = model_problem or "ok"
+    ready = all(value == "ok" for value in checks.values())
+    if not ready:
+        logger.warning("not_ready", extra=checks)
+    return JSONResponse({"ok": ready, "checks": checks}, status_code=200 if ready else 503,
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/providers")
@@ -1632,7 +1675,7 @@ async def combined_holdings(request: Request, refresh: bool = False):
         return blocked
     if refresh and (blocked := rate_limited(request, "broker", user["id"])):
         return blocked
-    snapshot = snapshots.latest_snapshot(user["id"], keys=user["keys"])
+    snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     payloads = await broker_holdings_payloads(user, refresh=refresh)
     return await asyncio.to_thread(brokers.combined, snapshot, payloads)
 
@@ -1648,16 +1691,22 @@ def _snapshot_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _snapshot_history(user: dict[str, Any], days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
+    history = snapshots.networth_history(user["id"], days, keys=user["keys"])
+    combined = broker_history.with_combined(user["id"], history, days, keys=user["keys"])
+    return history, combined, snapshots.latest_snapshot(user["id"], keys=user["keys"])
+
+
 @app.get("/api/snapshots")
 async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, le=365)):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    history = snapshots.networth_history(user["id"], days, keys=user["keys"])
-    combined = broker_history.with_combined(user["id"], history, days, keys=user["keys"])
+    # Up to a year of sealed snapshots, each opened and parsed: off the event loop, so other requests carry on.
+    history, combined, latest = await asyncio.to_thread(_snapshot_history, user, days)
     has_combined = combined is not history
     return {
-        "latest": _snapshot_summary(snapshots.latest_snapshot(user["id"], keys=user["keys"])),
+        "latest": _snapshot_summary(latest),
         "history": [
             {"date": point["date"], "networthInr": point["networthInr"],
              **({"combinedInr": point["combinedInr"], "combined": point["combined"]} if has_combined else {})}
@@ -1674,7 +1723,7 @@ async def portfolio_figures(request: Request):
     user = current_user(request)
     if blocked := history_gate(user):
         return blocked
-    snapshot = snapshots.latest_snapshot(user["id"], keys=user["keys"])
+    snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     if not snapshot:
         return {"available": False}
     figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot)
@@ -1865,6 +1914,46 @@ async def chat(body: ChatRequest, request: Request):
         return blocked
     if blocked := rate_limited(request, "chat", user["id"]):
         return blocked
+    # One answer at a time per profile: monthly credits are checked before an answer and charged after it,
+    # so parallel answers could spend past the balance, and each one takes a slot on the shared model.
+    if user["id"] in _chats_in_flight:
+        return JSONResponse(
+            {"error": "Your previous question is still being answered. Wait for it to finish, then ask again.",
+             "chatInFlight": True, "retryAfterSeconds": CHAT_IN_FLIGHT_RETRY_SECONDS},
+            status_code=429, headers={"Retry-After": str(CHAT_IN_FLIGHT_RETRY_SECONDS)},
+        )
+    _chats_in_flight.add(user["id"])
+    try:
+        # The whole answer (classifier, model calls, tools, a token-refresh retry) shares one time budget.
+        with model_gate.chat_budget():
+            return await _answer_chat(body, request, user, message, provider)
+    finally:
+        _chats_in_flight.discard(user["id"])
+
+
+# Profiles with an answer being worked on (this process only; CA Mode runs one worker).
+_chats_in_flight: set[str] = set()
+CHAT_IN_FLIGHT_RETRY_SECONDS: Final = 5
+# Past the model budget, tool calls (INDmoney's own timeouts) may still be finishing; then the request ends.
+CHAT_BACKSTOP_GRACE_SECONDS: Final = 20
+
+
+async def _run_agent_within_budget(*args: Any, **kwargs: Any) -> Any:
+    """``run_agent`` cut off once the chat budget (``model_gate.chat_budget``) and a short grace are spent."""
+    left = model_gate.remaining()
+    if left is None:
+        return await run_agent(*args, **kwargs)
+    try:
+        return await asyncio.wait_for(run_agent(*args, **kwargs), timeout=max(0.0, left) + CHAT_BACKSTOP_GRACE_SECONDS)
+    except TimeoutError:
+        logger.warning("chat_deadline_backstop", extra={"seconds": round(model_gate.chat_deadline_seconds())})
+        raise AgentRunError(
+            f"The answer took longer than {round(model_gate.chat_deadline_seconds())} seconds, the most CA Mode waits. "
+            "Try again, or ask a shorter question.", [], code="chat_deadline",
+        ) from None
+
+
+async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str):
     data = chats.read_chat(user, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
@@ -1914,7 +2003,7 @@ async def chat(body: ChatRequest, request: Request):
     answered = False
     try:
         try:
-            answer = await run_agent(
+            answer = await _run_agent_within_budget(
                 message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
                 plan_parts=task_parts(message),
             )
@@ -1927,7 +2016,7 @@ async def chat(body: ChatRequest, request: Request):
                 if not refreshed_token:
                     return auth_error("Your INDmoney session has expired. Reconnect your account and try again.")
                 try:
-                    answer = await run_agent(
+                    answer = await _run_agent_within_budget(
                         message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
                         context=context, saved_context=saved_context, plan_parts=task_parts(message),
                     )
@@ -1944,9 +2033,24 @@ async def chat(body: ChatRequest, request: Request):
                 error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
                 trace = getattr(exc, "trace", [])[:12]
                 run_id = _save_agent_run(user, data, body, provider, exc, error=details)
+                code = getattr(exc, "code", None)
+                headers = {"X-Agent-Trace": trace_header(trace), **_run_header(run_id)}
+                if code == "model_busy":
+                    # Every model slot stayed taken: not a failure of this question, so say when to ask again.
+                    retry_after = getattr(exc, "retry_after", None) or round(model_gate.queue_seconds())
+                    return JSONResponse(
+                        {"error": details, "modelBusy": True, "retryAfterSeconds": retry_after,
+                         **({"runId": run_id} if run_id else {})},
+                        status_code=503, headers={**headers, "Retry-After": str(retry_after)},
+                    )
+                if code == "chat_deadline":
+                    return JSONResponse(
+                        {"error": details, "chatDeadline": True, **({"runId": run_id} if run_id else {})},
+                        status_code=504, headers=headers,
+                    )
                 return JSONResponse(
                     {"error": error, "details": details, **({"runId": run_id} if run_id else {})}, status_code=502,
-                    headers={"X-Agent-Trace": trace_header(trace), **_run_header(run_id)},
+                    headers=headers,
                 )
         answer_text = str(answer)
         trace = getattr(answer, "trace", [])[:12]

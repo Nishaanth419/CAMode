@@ -80,7 +80,8 @@ def test_an_ended_login_says_reconnect_and_exits_non_zero(signed_in, fake, capsy
         fake.logged_in = False
     if failure == "gone":
         fake.gone = True
-    assert broker_script.main(["--profile", signed_in["id"]]) == 1
+    # The `=` form: a random profile id can start with "-", which argparse would read as another option.
+    assert broker_script.main([f"--profile={signed_in['id']}"]) == 1
     out = capsys.readouterr().out
     assert "reconnect Zerodha first" in out
     for secret in SECRETS:

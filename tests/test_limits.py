@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -7,7 +9,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from app import limits, main, privacy
+from app import limits, main, model_gate, privacy
 from app.db import connect_db
 from tests.conftest import sign_up
 
@@ -477,3 +479,85 @@ def test_notice_describes_the_usage_limits():
     assert "number of questions your profile asked today and yesterday" in text
     assert "kept in memory only, for about an hour at most, and never saved" in text
     assert "challenges.cloudflare.com" in text
+
+
+# ── Busy model, time budget, one answer at a time ───────────────────────────────
+
+def test_a_busy_model_is_a_503_with_retry_after_and_keeps_the_question(client, signed_in, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
+    busy = main.AgentRunError("The assistant is busy answering other people right now. Try again in about 20 seconds.",
+                              [], code="model_busy", retry_after=20)
+    answer_with(monkeypatch, busy)
+
+    response = ask(client, new_chat(client))
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "20"
+    body = response.json()
+    assert body["modelBusy"] is True and body["retryAfterSeconds"] == 20 and "busy" in body["error"]
+    assert limits.questions_used(signed_in["id"], now=limits.local_now()) == 0
+
+
+def test_an_answer_past_its_budget_is_a_504(client, signed_in, monkeypatch):
+    answer_with(monkeypatch, main.AgentRunError("The answer took longer than 240 seconds.", [], code="chat_deadline"))
+
+    response = ask(client, new_chat(client))
+
+    assert response.status_code == 504
+    assert response.json()["chatDeadline"] is True
+
+
+def test_the_whole_answer_is_cut_off_at_the_chat_budget(client, signed_in, monkeypatch):
+    monkeypatch.setenv("CHAT_DEADLINE_SECONDS", "0.05")
+    monkeypatch.setattr(main, "CHAT_BACKSTOP_GRACE_SECONDS", 0.05)
+
+    async def stuck(*args, **kwargs):
+        await asyncio.sleep(5)  # a tool call that never returns, say
+
+    monkeypatch.setattr(main, "run_agent", stuck)
+    started = time.monotonic()
+
+    response = ask(client, new_chat(client))
+
+    assert response.status_code == 504 and response.json()["chatDeadline"] is True
+    assert time.monotonic() - started < 2
+
+
+def test_the_model_calls_of_an_answer_share_one_budget(client, signed_in, monkeypatch):
+    monkeypatch.setenv("CHAT_DEADLINE_SECONDS", "200")
+    seen = []
+
+    async def fake_run_agent(*args, **kwargs):
+        seen.append(model_gate.remaining())
+        return "Diversification spreads risk."
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    assert ask(client, new_chat(client)).status_code == 200
+    assert 190 < seen[0] <= 200
+    assert model_gate.remaining() is None  # nothing outside a chat is bounded
+
+
+def test_a_profile_gets_one_answer_at_a_time(client, signed_in, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "5")
+    calls = answer_with(monkeypatch)
+    chat_id = new_chat(client)
+    main._chats_in_flight.add(signed_in["id"])  # an answer for this profile is still running
+
+    response = ask(client, chat_id)
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == str(main.CHAT_IN_FLIGHT_RETRY_SECONDS)
+    assert response.json()["chatInFlight"] is True
+    assert calls == [] and limits.questions_used(signed_in["id"], now=limits.local_now()) == 0
+
+    main._chats_in_flight.clear()
+    assert ask(client, chat_id).status_code == 200
+    assert main._chats_in_flight == set()  # released after the answer
+
+
+def test_the_in_flight_guard_is_released_after_a_failure(client, signed_in, monkeypatch):
+    answer_with(monkeypatch, RuntimeError("model crashed"))
+
+    assert ask(client, new_chat(client)).status_code == 502
+    assert main._chats_in_flight == set()

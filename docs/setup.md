@@ -41,6 +41,10 @@ cp .env.example .env
 | `OLLAMA_MODEL` | – | Enables the local model; `ca-mode` once built from `ollama/Modelfile` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama's address (Docker Compose sets `host.docker.internal`) |
 | `OLLAMA_TIMEOUT_SECONDS` | `300` | How long to wait for a local answer |
+| `OLLAMA_ROUTER_TIMEOUT_SECONDS` | `30` | How long the local request classifier may take (then the keyword rules decide) |
+| `MODEL_CONCURRENCY` | `OLLAMA_NUM_PARALLEL`, else `1` | Ollama calls in flight at once; the rest queue (`app/model_gate.py`) |
+| `MODEL_QUEUE_SECONDS` | `20` | How long a new question waits for a free model slot before the chat says the assistant is busy (`503`) |
+| `CHAT_DEADLINE_SECONDS` | `240` | The whole answer's time budget; keep it below the proxy's timeout (`504` when spent) |
 | `OPENAI_API_KEY` | – | Enables OpenAI |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model |
 | `GROQ_API_KEY` | – | Enables Groq |
@@ -58,7 +62,7 @@ cp .env.example .env
 | `ALLOW_PROFILE_CLAIMS` | `true` | Google sign-in: let a Google account claim an existing profile |
 | `ADMIN_EMAILS` | – | Google accounts allowed into [`/admin`](accounts-and-access.md#admin-page) (unset: admin off) |
 | `AGENT_GRAPH_ENABLED` | `true` | Answer account questions with the [general agent](how-it-works.md#the-general-agent-portfolio-analyzer); `false` returns to the previous loop and planner |
-| `AGENT_STEP_TIMEOUT_SECONDS`, `AGENT_DEADLINE_SECONDS` | `60`, `300` | General agent: time per tool call and per answer |
+| `AGENT_STEP_TIMEOUT_SECONDS`, `AGENT_DEADLINE_SECONDS` | `60`, `180` | General agent: time per tool call, and before it answers from what it has (a model call still running then is cut off) |
 | `PLAN_STEP_TIMEOUT_SECONDS`, `PLAN_DEADLINE_SECONDS` | `60`, `240` | Planned answers: time per step and per answer |
 | `SNAPSHOT_TIME` | `09:00` | Daily snapshot time |
 | `SNAPSHOT_TIMEZONE` | `Asia/Kolkata` | Time zone for `SNAPSHOT_TIME` |

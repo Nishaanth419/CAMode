@@ -19,7 +19,7 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Any, Final
 
-from . import accounts, backup, credits, limits, page_views, plans, privacy, unlock, users, vault
+from . import accounts, backup, credits, limits, model_gate, page_views, plans, privacy, unlock, users, vault
 from .db import connect_db
 
 ADMIN_COOKIE: Final = "ca_admin"
@@ -190,6 +190,8 @@ def overview(*, now: datetime) -> dict[str, Any]:
         "resetsAt": limits.next_reset(now).isoformat(timespec="minutes"),
         "authMode": accounts.auth_mode(),
         "backups": backup.status(),
+        # In memory since the last restart: the model queue and when each provider last answered successfully.
+        "model": model_gate.status(),
         "pageViews": {"days": PAGE_VIEW_DAYS, "byPage": page_views.totals(views)},
         "profiles": rows,
     }

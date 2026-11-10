@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import analysis_tools, charts, number_check, planner, router, tasks, tool_results
+from . import analysis_tools, charts, model_gate, number_check, planner, router, tasks, tool_results
 from .agent_events import REDACTED, RunRecorder, redact_trace_text, summarize  # noqa: F401 (re-exported)
 from .mcp_client import (
     IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
@@ -313,7 +313,8 @@ def provider_config(provider: str) -> dict[str, Any]:
         "router_model": os.getenv(definition["router_model_env"], "").strip() or model,
         # A local model loads into memory on first use and generates slower than a hosted one.
         "timeout": LOCAL_TIMEOUT_SECONDS if local else CLOUD_TIMEOUT_SECONDS,
-        "router_timeout": LOCAL_TIMEOUT_SECONDS if local else router.ROUTER_TIMEOUT_SECONDS,
+        # Classifying is one short forced tool call; a local model that takes longer is stuck, not thinking.
+        "router_timeout": router.local_router_timeout() if local else router.ROUTER_TIMEOUT_SECONDS,
     }
 
 
@@ -853,11 +854,19 @@ async def _plan_model_call(
         payload["tool_choice"] = tool_choice
     yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": run.attempts}
     try:
-        response = await client.post(
+        response = await model_gate.call(provider, lambda: client.post(
             f"{config['base_url']}/chat/completions",
             headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
             json=payload,
-        )
+        ))
+    except model_gate.ModelBusy as exc:
+        yield "error", _busy_error(exc)
+        run.stopped = True
+        return
+    except model_gate.DeadlineReached:
+        yield "error", _deadline_error()
+        run.stopped = True
+        return
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         yield "error", {"message": f"Could not connect to {config['label']}: {_error_text(exc)}", "code": "provider_unreachable"}
         run.stopped = True
@@ -1078,6 +1087,15 @@ def _ist_now() -> datetime:
     return datetime.now(zone).replace(tzinfo=None)
 
 
+def _busy_error(exc: model_gate.ModelBusy) -> dict[str, Any]:
+    return {"message": str(exc), "code": "model_busy", "retry_after": exc.retry_after_seconds}
+
+
+def _deadline_error() -> dict[str, Any]:
+    return {"message": (f"The answer took longer than {round(model_gate.chat_deadline_seconds())} seconds, the most CA Mode "
+                        "waits. Try again, or ask a shorter question."), "code": "chat_deadline"}
+
+
 def _agent_graph_enabled() -> bool:
     return os.getenv("AGENT_GRAPH_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
@@ -1105,11 +1123,17 @@ async def _provider_call(
         payload["tool_choice"] = "auto"
     yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": attempt}
     try:
-        response = await client.post(
+        response = await model_gate.call(provider, lambda: client.post(
             f"{config['base_url']}/chat/completions",
             headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
             json=payload,
-        )
+        ))
+    except model_gate.ModelBusy as exc:
+        yield "_completion", {"ok": False, **_busy_error(exc)}
+        return
+    except model_gate.DeadlineReached:
+        yield "_completion", {"ok": False, **_deadline_error()}
+        return
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         error = ("Could not reach the local model (Ollama). The computer that runs it may be asleep or offline; try "
                  "again later or pick another provider.") if provider == "ollama" else f"Could not connect to {config['label']}: {_error_text(exc)}"
@@ -1224,7 +1248,12 @@ async def stream_agent(
     if force_account_data:
         category: router.Category = "account_data"
     else:
-        category, route_info = await _route_request(message, history, provider)
+        try:
+            category, route_info = await _route_request(message, history, provider)
+        except (model_gate.ModelBusy, model_gate.DeadlineReached) as exc:
+            yield "error", _busy_error(exc) if isinstance(exc, model_gate.ModelBusy) else _deadline_error()
+            yield "done", {}
+            return
         yield "route", route_info
     if category in ("code_request", "off_topic"):
         yield "contract", {"contract": tasks.contract_for(category, agent_type, ())}
@@ -1372,11 +1401,19 @@ async def stream_agent(
 
                 yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": attempt}
                 try:
-                    response = await client.post(
+                    response = await model_gate.call(provider, lambda: client.post(
                         f"{config['base_url']}/chat/completions",
                         headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
                         json=payload,
-                    )
+                    ))
+                except model_gate.ModelBusy as exc:
+                    yield "error", _busy_error(exc)
+                    yield "done", {}
+                    return
+                except model_gate.DeadlineReached:
+                    yield "error", _deadline_error()
+                    yield "done", {}
+                    return
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                     if provider == "ollama":
                         message_text = (
@@ -1566,10 +1603,14 @@ class AgentRunError(RuntimeError):
     def __init__(
         self, message: str, trace: list[dict[str, Any]], *, auth_failed: bool = False,
         events: list[dict[str, Any]] | None = None, verdict: dict[str, Any] | None = None,
+        code: str | None = None, retry_after: int | None = None,
     ):
         super().__init__(message)
         self.trace = trace
         self.auth_failed = auth_failed
+        # The failing event's code: "model_busy" (with retry_after seconds) and "chat_deadline" become 503/504.
+        self.code = code
+        self.retry_after = retry_after
         self.events = events or []
         self.verdict = verdict
 
@@ -1730,6 +1771,7 @@ async def run_agent(
         recorder.terminate("auth_failed" if auth_failed else "failed", code)
         message_text = (last_error or {}).get("message") or "No answer was produced."
         raise AgentRunError(message_text, bounded_trace(trace.steps), auth_failed=auth_failed,
-                            events=recorder.events, verdict=verdict)
+                            events=recorder.events, verdict=verdict, code=code,
+                            retry_after=(last_error or {}).get("retry_after"))
     recorder.terminate("refused" if contract and contract.task == "refusal" else "answered")
     return AgentResult(answer, bounded_trace(trace.steps), recorder.events, verdict)

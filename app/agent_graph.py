@@ -43,7 +43,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from . import charts, tool_results
+from . import charts, model_gate, tool_results
 from .analysis_tools import ANALYSIS_TOOL_NAMES, ResultStore
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,8 @@ MAX_CALLS_PER_REPLY: Final = 25
 CONCURRENCY: Final = 4
 MAX_MALFORMED: Final = 2
 STEP_TIMEOUT_SECONDS: Final = _positive_env_int("AGENT_STEP_TIMEOUT_SECONDS", 60)
-DEADLINE_SECONDS: Final = _positive_env_int("AGENT_DEADLINE_SECONDS", 300)
+# Below the whole chat's budget (model_gate.CHAT_DEADLINE_SECONDS, 240) so the last call, without tools, has room.
+DEADLINE_SECONDS: Final = _positive_env_int("AGENT_DEADLINE_SECONDS", 180)
 BACKOFF_SECONDS: float = 1.0  # Tests set 0.
 RECURSION_LIMIT: Final = 120
 _TRANSIENT: Final = re.compile(r"timed?\s*out|\b429\b|rate.?limit|too many requests|temporar|\b50[234]\b", re.IGNORECASE)
@@ -193,12 +194,19 @@ async def think(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         update["stop_reason"] = "deadline" if deps.over_deadline() else "budget"
         messages.append({"role": "user", "content": FINAL_PROMPT})
     completion: dict[str, Any] = {}
-    async for event, data in deps.model_call(messages, None if final else deps.model_tools):
-        if event == "_completion":
-            completion = data
-        else:
-            _emit(event, data)
+    # A call still running at the deadline is cut off there (the final call only by the chat's own budget).
+    with model_gate.call_deadline(None if final else deps.started + DEADLINE_SECONDS):
+        async for event, data in deps.model_call(messages, None if final else deps.model_tools):
+            if event == "_completion":
+                completion = data
+            else:
+                _emit(event, data)
     update.update({"messages": messages, "final": final, "model_calls": state.get("model_calls", 0) + 1})
+    budget_left = model_gate.remaining()
+    if completion.get("code") == "chat_deadline" and not final and (budget_left is None or budget_left > 0):
+        # The deadline cut a call off mid-answer: answer from what was gathered, without tools.
+        update.update({"final": True, "stop_reason": "deadline", "messages": [*messages, {"role": "user", "content": FINAL_PROMPT}]})
+        return update
     if completion.get("malformed") and not final:
         _emit("retry", {"reason": "malformed_tool_call", "detail": str(completion.get("error") or "")[:160]})
         update["retries"] = _count(state, "malformed_tool_call")

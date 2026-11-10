@@ -196,8 +196,9 @@ async def test_unreachable_ollama_fails_fast_with_a_plain_message(model_router, 
     with pytest.raises(agent.AgentRunError, match="may be asleep or offline"):
         await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "ollama")
 
-    model_timeouts = [t for t in timeouts if isinstance(t, httpx.Timeout) and t.read == agent.LOCAL_TIMEOUT_SECONDS]
-    assert len(model_timeouts) == 2  # Classifier, then the answer model.
+    model_timeouts = [t for t in timeouts if isinstance(t, httpx.Timeout)]
+    # The classifier gets its own short read limit, the answer model the long one.
+    assert [t.read for t in model_timeouts] == [router.LOCAL_ROUTER_TIMEOUT_SECONDS, agent.LOCAL_TIMEOUT_SECONDS]
     assert all(t.connect == router.CONNECT_TIMEOUT_SECONDS for t in model_timeouts)
 
 
