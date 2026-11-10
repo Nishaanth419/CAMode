@@ -1,8 +1,11 @@
 name: Publish image
 
 # After CI passes on main, build the app image for x86 and Arm and publish it to
-# ghcr.io/<owner>/<repo>:main. A server running deploy/update.sh picks it up within minutes
-# (README: "Automatic updates"); GitHub never connects to the server.
+# ghcr.io/<owner>/<repo>:sha-<commit>, then point :main at it. A server running deploy/update.sh picks
+# :main up within minutes (docs/hosting.md: "Automatic updates"); GitHub never connects to the server.
+# :main only ever moves to the commit at the head of main: a run for a commit that has since been
+# superseded (CI runs finishing out of order, a re-run of an old run) publishes its :sha- tag and stops,
+# so the server is never moved back to older code.
 on:
   workflow_run:
     workflows: [CI]
@@ -39,6 +42,19 @@ jobs:
         id: image
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Check the commit is still the head of main
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)
+          if [ "$head" = "$COMMIT" ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$COMMIT is no longer the head of main ($head); :main is left alone."
+          fi
+
       - name: Set up Arm emulation
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
@@ -61,10 +77,24 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ steps.image.outputs.name }}:main
             ${{ steps.image.outputs.name }}:sha-${{ env.COMMIT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.COMMIT }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Checked again after the build: main may have moved while it ran. The run for the newer commit
+      # is queued behind this one (concurrency group) and moves :main itself.
+      - name: Point :main at this commit
+        if: steps.head.outputs.latest == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.image.outputs.name }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)
+          if [ "$head" != "$COMMIT" ]; then
+            echo "::notice::main moved to $head during the build; :main is left alone."
+            exit 0
+          fi
+          docker buildx imagetools create --tag "$NAME:main" "$NAME:sha-$COMMIT"
