@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#070a08" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -28,15 +28,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=49" />
+  <link rel="stylesheet" href="/css/app.css?v=51" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
-  <script src="/js/finance.js?v=10" defer></script>
+  <script src="/js/finance.js?v=11" defer></script>
   <script src="/js/trace.js?v=12" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
-  <script src="/js/app.js?v=44" defer></script>
-  <script src="/js/pages.js?v=28" defer></script>
-  <script src="/js/rail.js?v=7" defer></script>
+  <script src="/js/app.js?v=46" defer></script>
+  <script src="/js/pages.js?v=30" defer></script>
+  <script src="/js/rail.js?v=8" defer></script>
 </head>
 <body>
   <div id="app">
@@ -52,65 +52,76 @@
         </span>
         <span class="brand-copy">
           <span class="logo-text">CA Mode</span>
-          <span class="logo-sub">Your Financial Co-Pilot</span>
         </span>
       </a>
 
-      <button id="new-chat-button" class="new-chat-button" type="button">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
-        <span>New Chat</span>
-      </button>
-
       <nav class="main-nav" aria-label="Main">
-        <a class="nav-item" href="#/" data-route="home">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1Z"/></svg>
-          <span>Home</span>
-        </a>
-        <a class="nav-item" href="#/portfolio" data-route="portfolio">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 15a4 4 0 0 1 8 0"/><path d="m12 15 2.2-2.6"/></svg>
-          <span>Portfolio Overview</span>
-        </a>
-        <a class="nav-item" href="#/chat" data-route="chat">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19.5 8v8L12 20.5 4.5 16V8Z"/><path d="m12 8.6.9 2.5 2.5.9-2.5.9-.9 2.5-.9-2.5-2.5-.9 2.5-.9Z"/></svg>
-          <span>Ask AI</span>
-        </a>
-        <a class="nav-item" href="#/investments" data-route="investments">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 15 3-3 2 2 3-4"/><path d="M14 10h2v2"/></svg>
-          <span>Investments</span>
-        </a>
-        <a class="nav-item" href="#/returns" data-route="returns">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16"/><path d="M6 15l4-4 3 3 5-6"/><path d="M15 8h3v3"/></svg>
-          <span>Returns &amp; tax</span>
-        </a>
-        <a class="nav-item" href="#/holdings" data-route="holdings">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M4 10h16M9 10v9"/></svg>
-          <span>Holdings</span>
-        </a>
-        <a class="nav-item" href="#/planning" data-route="planning">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="3.5" width="15" height="17" rx="3"/><path d="M8 8h8M8 12h2.5M13.5 12H16M8 16h2.5M13.5 16H16"/></svg>
-          <span>Planning Tools</span>
-        </a>
-        <a class="nav-item" href="#/markets" data-route="markets">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="m8.5 14 2.3-2.4 2 2 2.7-3.3"/></svg>
-          <span>Market Insights</span>
-        </a>
-        <a class="nav-item" href="#/goals" data-route="goals">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19 6v5.5c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6Z"/><path d="m9 12 2 2 4-4"/></svg>
-          <span>Goals</span>
-        </a>
-        <a class="nav-item" href="#/reports" data-route="reports">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7Z"/><path d="M13.5 3.5v4.5H18M10 12h5M10 16h5"/></svg>
-          <span>Reports</span>
-        </a>
-        <a class="nav-item" href="#/activity" data-route="activity">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h3.5l2.5-6 4 12 2.5-6H20"/></svg>
-          <span>Activity</span>
-        </a>
+        <div class="nav-group" role="group" aria-labelledby="nav-overview">
+          <p class="nav-group-label" id="nav-overview">Overview</p>
+          <a class="nav-item" href="#/" data-route="home">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+            <span>Home</span>
+          </a>
+          <a class="nav-item" href="#/portfolio" data-route="portfolio">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12A9 9 0 1 1 12 3v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/></svg>
+            <span>Portfolio</span>
+          </a>
+          <a class="nav-item" href="#/holdings" data-route="holdings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M2 12.5l10 5 10-5M2 17l10 5 10-5"/></svg>
+            <span>Holdings</span>
+          </a>
+          <a class="nav-item" href="#/investments" data-route="investments">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 15 3-3 2 2 3-4"/><path d="M14 10h2v2"/></svg>
+            <span>Investments</span>
+          </a>
+          <a class="nav-item" href="#/returns" data-route="returns">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18"/><path d="m5 15 4-4 3 3 6-7"/><path d="M15 7h3v3"/></svg>
+            <span>Returns &amp; tax</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-labelledby="nav-assistant">
+          <p class="nav-group-label" id="nav-assistant">Assistant</p>
+          <a class="nav-item" href="#/chat" data-route="chat">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>
+            <span>Ask AI</span>
+          </a>
+          <a class="nav-item" href="#/activity" data-route="activity">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+            <span>Activity</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-labelledby="nav-plan">
+          <p class="nav-group-label" id="nav-plan">Plan</p>
+          <a class="nav-item" href="#/goals" data-route="goals">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+            <span>Goals</span>
+          </a>
+          <a class="nav-item" href="#/planning" data-route="planning">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 12h.01M12 12h.01M15 12h.01M9 16h.01M12 16h.01M15 16h.01"/></svg>
+            <span>Calculators</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-labelledby="nav-explore">
+          <p class="nav-group-label" id="nav-explore">Explore</p>
+          <a class="nav-item" href="#/markets" data-route="markets">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>
+            <span>Markets</span>
+          </a>
+          <a class="nav-item" href="#/reports" data-route="reports">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4M9 13h6M9 17h6"/></svg>
+            <span>Reports</span>
+          </a>
+        </div>
       </nav>
 
       <div class="sidebar-section-head">
-        <span>Recent Chats</span>
-        <a class="see-all" href="#/chats" data-route="chats">See all</a>
+        <span>Recent chats</span>
+        <span class="section-actions">
+          <a class="see-all" href="#/chats" data-route="chats">See all</a>
+          <button id="new-chat-button" class="new-chat-button" type="button" aria-label="New chat" title="New chat">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
+          </button>
+        </span>
       </div>
       <div id="chat-list"></div>
 
@@ -132,12 +143,20 @@
     <!-- ── Main column ──────────────────────────────────────────────── -->
     <section id="chat-area" aria-label="CA Mode chat">
       <header id="topbar">
-        <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-        </button>
-        <label class="search-box">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
-          <input id="chat-search" type="search" placeholder="Search your conversations…" aria-label="Search your conversations" autocomplete="off" />
+        <a class="topbar-brand" href="#/" aria-label="CA Mode home">
+          <span class="logo-mark" aria-hidden="true">
+            <svg viewBox="0 0 28 28" fill="none">
+              <path d="M14 23V13" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+              <path d="M14 14c0-4 2.6-6.8 7-7-.1 4.4-3 7-7 7Z" fill="currentColor"/>
+              <path d="M14 16c0-3.4-2.3-5.8-6-6 .1 3.7 2.6 6 6 6Z" fill="currentColor" opacity=".75"/>
+            </svg>
+          </span>
+          <span>CA Mode</span>
+        </a>
+        <label class="search-box" title="Search your conversations">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="chat-search" type="search" placeholder="Search your conversations" aria-label="Search your conversations" aria-keyshortcuts="Meta+K Control+K" autocomplete="off" />
+          <kbd class="search-kbd" id="search-kbd" aria-hidden="true">Ctrl K</kbd>
         </label>
         <div class="topbar-spacer"></div>
         <div id="status-badge" aria-live="polite">
@@ -146,6 +165,9 @@
         </div>
         <button id="theme-toggle" class="icon-button" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
           <svg id="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z" /></svg>
+        </button>
+        <button id="topbar-account" class="topbar-account" type="button" aria-label="Profile and settings" aria-haspopup="dialog">
+          <span class="account-avatar" aria-hidden="true"></span>
         </button>
       </header>
 
@@ -234,99 +256,102 @@
       <div id="page-view" hidden>
         <section class="page page-dashboard" data-page="home" aria-labelledby="home-title">
           <div class="broker-banners" data-broker-banners></div>
-          <div class="dash-hero">
-            <div class="dash-hero-copy">
-              <p class="dash-greeting"><span class="js-greeting">Hello</span><span id="home-name"></span> <span aria-hidden="true">👋</span></p>
-              <h1 id="home-title" class="dash-title">Your AI wealth assistant</h1>
-              <p class="page-sub">Track, analyse and grow your investments with AI.</p>
+          <header class="page-head">
+            <div>
+              <p class="page-kicker"><span class="js-greeting">Hello</span><span id="home-name"></span></p>
+              <h1 id="home-title" class="page-title">Your money at a glance</h1>
             </div>
-            <div class="dash-ask">
-              <form id="home-ask" class="dash-ask-box" autocomplete="off">
-                <svg class="dash-ask-spark" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 1.8 4.9L18.5 11l-4.7 1.9L12 18l-1.8-5.1L5.5 11l4.7-2.1Z"/><path d="M18.5 3.5v3M17 5h3"/></svg>
-                <input id="home-ask-input" type="text" placeholder="Ask CA Mode anything…" aria-label="Ask CA Mode anything" />
-                <button type="submit" aria-label="Ask">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                </button>
-              </form>
-              <div class="dash-chips" aria-label="Suggested questions">
-                <button class="chip" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">Analyze my portfolio</button>
-                <button class="chip js-goal-agent" type="button" data-agent="finance" data-prompt="Which kinds of funds suit my saved goals, given their horizon and my risk?">Suggest funds for a goal</button>
-                <button class="chip" type="button" data-agent="finance" data-prompt="How should I compare two mutual funds? What figures matter most?">Compare funds</button>
-                <button class="chip" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">Tax saving ideas</button>
-              </div>
+            <div class="page-actions">
+              <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+              <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>New chat</button>
             </div>
-          </div>
+          </header>
 
-          <div id="home-stats" class="dash-stats"></div>
-
-          <div class="dash-grid">
-            <section class="panel dash-card" aria-labelledby="home-allocation-title">
-              <div class="rail-head"><h2 id="home-allocation-title">Asset Allocation</h2></div>
-              <div id="home-allocation"></div>
-            </section>
-            <section class="panel dash-card" aria-labelledby="home-performance-title">
-              <div class="rail-head">
-                <h2 id="home-performance-title">Portfolio Performance</h2>
-                <div class="dash-range" role="group" aria-label="Period">
-                  <button type="button" data-home-range="30">1M</button>
-                  <button type="button" data-home-range="90">3M</button>
-                  <button type="button" data-home-range="180">6M</button>
+          <div class="home-hero">
+            <section class="panel home-networth" aria-labelledby="home-networth-title">
+              <div class="home-networth-head">
+                <div class="home-networth-figures">
+                  <h2 id="home-networth-title" class="kpi-label">Net worth</h2>
+                  <p id="home-networth-value" class="figure-xl"></p>
+                  <p id="home-networth-change" class="home-change"></p>
+                </div>
+                <div id="home-range" class="seg seg-small" role="group" aria-label="Chart period">
+                  <button type="button" data-home-range="30" aria-pressed="false">1M</button>
+                  <button type="button" data-home-range="90" aria-pressed="false">3M</button>
+                  <button type="button" data-home-range="180" aria-pressed="false">6M</button>
                   <button type="button" data-home-range="365" aria-pressed="true">1Y</button>
                 </div>
               </div>
-              <div id="home-performance"></div>
+              <div id="home-performance" class="home-chart"></div>
             </section>
-            <section class="panel dash-card" aria-labelledby="home-holdings-title">
-              <div class="rail-head"><h2 id="home-holdings-title">Top Holdings</h2><a class="panel-link" href="#/investments">View all <span aria-hidden="true">→</span></a></div>
+
+            <section class="panel home-ask" aria-labelledby="home-ask-title">
+              <h2 id="home-ask-title" class="card-title">Ask about your money</h2>
+              <form id="home-ask" class="home-composer" autocomplete="off">
+                <label class="sr-only" for="home-ask-input">Your question</label>
+                <textarea id="home-ask-input" rows="3" placeholder="Why did my portfolio move this week?"></textarea>
+                <div class="home-composer-foot">
+                  <span id="home-ask-agent" class="home-composer-agent"></span>
+                  <button type="submit" aria-label="Ask">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  </button>
+                </div>
+              </form>
+              <ul class="prompt-rows" aria-label="Suggested questions">
+                <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12A9 9 0 1 1 12 3v9z"/></svg></span>
+                  <span class="prompt-row-text">Analyze my portfolio</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <li><button class="prompt-row js-goal-agent" type="button" data-agent="finance" data-prompt="Am I on track for my saved goals? Go through each one and say what would close any gap.">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg></span>
+                  <span class="prompt-row-text">Am I on track for my goals?</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <li><button class="prompt-row js-goal-agent" type="button" data-agent="finance" data-prompt="Which kinds of funds suit my saved goals, given their horizon and my risk?">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></svg></span>
+                  <span class="prompt-row-text">Suggest funds for a goal</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <li><button class="prompt-row" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h3"/></svg></span>
+                  <span class="prompt-row-text">Tax saving ideas</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+              </ul>
+            </section>
+          </div>
+
+          <div id="home-stats" class="kpi-strip" aria-label="Key figures"></div>
+
+          <div class="home-cards">
+            <section class="panel home-card" aria-labelledby="home-allocation-title">
+              <div class="card-head"><h2 id="home-allocation-title" class="card-title">Where it is invested</h2><a class="panel-link" href="#/portfolio">Portfolio <span aria-hidden="true">→</span></a></div>
+              <div id="home-allocation"></div>
+            </section>
+            <section class="panel home-card" aria-labelledby="home-holdings-title">
+              <div class="card-head"><h2 id="home-holdings-title" class="card-title">Largest holdings</h2><a class="panel-link" href="#/investments">All holdings <span aria-hidden="true">→</span></a></div>
               <div id="home-holdings"></div>
             </section>
-          </div>
-
-          <div class="dash-grid">
-            <section class="panel dash-card" aria-labelledby="home-goals-title">
-              <div class="rail-head"><h2 id="home-goals-title">Goals</h2><a class="panel-link" href="#/goals">View all <span aria-hidden="true">→</span></a></div>
+            <section class="panel home-card" aria-labelledby="home-goals-title">
+              <div class="card-head"><h2 id="home-goals-title" class="card-title">Goals</h2><a class="panel-link" href="#/goals">Goals <span aria-hidden="true">→</span></a></div>
               <div id="home-goals"></div>
             </section>
-            <section class="panel dash-card" aria-labelledby="home-insights-title">
-              <div class="rail-head"><h2 id="home-insights-title"><span class="dash-spark" aria-hidden="true">✦</span> AI Insights</h2><a class="panel-link" href="#/markets">See all <span aria-hidden="true">→</span></a></div>
-              <div id="home-insights"></div>
-            </section>
-            <section class="panel dash-card" aria-labelledby="home-actions-title">
-              <div class="rail-head"><h2 id="home-actions-title">Quick Actions</h2></div>
-              <div class="dash-actions">
-                <button class="dash-action" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 19v-6M11 19V9M16 19v-4M21 19V5"/></svg></span>
-                  <strong>Analyze Portfolio</strong><small>Get AI insights</small>
-                </button>
-                <a class="dash-action" href="#/markets/funds">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></span>
-                  <strong>Find Funds</strong><small>Look up any mutual fund</small>
-                </a>
-                <a class="dash-action" href="#/planning/goal">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg></span>
-                  <strong>Plan a Goal</strong><small>See what it takes each month</small>
-                </a>
-                <a class="dash-action" href="#/planning/tax">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7Z"/><path d="M13.5 3.5v4.5H18M10 12h5M10 16h5"/></svg></span>
-                  <strong>Income Tax</strong><small>Compare both regimes</small>
-                </a>
-              </div>
-            </section>
           </div>
 
-          <section class="panel" aria-labelledby="home-chats-title">
-            <div class="rail-head"><h2 id="home-chats-title">Continue a chat</h2><a class="panel-link" href="#/chats">See all <span aria-hidden="true">→</span></a></div>
-            <div id="home-chats" class="mini-chat-list"></div>
-          </section>
+          <div class="home-bottom">
+            <section class="panel home-card" aria-labelledby="home-insights-title">
+              <div class="card-head"><h2 id="home-insights-title" class="card-title">What changed today</h2></div>
+              <div id="home-insights"></div>
+            </section>
+            <section class="panel home-card" aria-labelledby="home-chats-title">
+              <div class="card-head"><h2 id="home-chats-title" class="card-title">Continue a chat</h2><a class="panel-link" href="#/chats">All chats <span aria-hidden="true">→</span></a></div>
+              <div id="home-chats" class="mini-chat-list home-chat-list"></div>
+            </section>
+          </div>
         </section>
 
         <section class="page" data-page="portfolio" aria-labelledby="portfolio-title">
           <header class="page-head">
             <div>
-              <h1 id="portfolio-title" class="page-title">Portfolio Overview</h1>
+              <h1 id="portfolio-title" class="page-title">Portfolio overview</h1>
               <p class="page-sub" id="portfolio-asof"></p>
             </div>
-            <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+            <div class="page-actions">
+              <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+            </div>
           </header>
           <div id="portfolio-body"></div>
         </section>
@@ -565,6 +590,15 @@
         </div>
       </section>
     </aside>
+
+    <!-- ── Bottom tab bar (below 900px; More opens the sidebar as a drawer) ── -->
+    <nav id="tabbar" aria-label="Quick navigation">
+      <a class="tab" href="#/" data-route="home"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span>Home</a>
+      <a class="tab" href="#/holdings" data-route="holdings"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M2 12.5l10 5 10-5M2 17l10 5 10-5"/></svg></span>Holdings</a>
+      <a class="tab tab-ask" href="#/chat" data-route="chat"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg></span>Ask</a>
+      <a class="tab" href="#/goals" data-route="goals"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg></span>Goals</a>
+      <button id="menu-toggle" class="tab" type="button" aria-controls="sidebar" aria-expanded="false"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></span>More</button>
+    </nav>
   </div>
 
   <!-- ── Profile picker (shown until someone signs in) ────────────────── -->
