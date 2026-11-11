@@ -213,3 +213,19 @@ def test_export_includes_statement_holdings(client, signed_in, parsed_pdf):
     body = client.post("/api/users/me/export", json={"pin": "2468"}).json()
 
     assert body["casStatements"][0]["rows"][0]["investment"] == "HDFC BANK LIMITED"
+
+
+def test_upload_reports_ledger_availability(client, signed_in, parsed_pdf):
+    from mf_fixtures import FOLIO_NUMBER, statement as detailed_statement
+
+    from app import mf_ledger
+
+    parsed_pdf(detailed_statement())
+    response = upload(client)
+    assert response.json()["ledger"] == {"available": True, "hint": None}
+    (stored,) = cas.all_statements(signed_in["id"], unlock.keys_for_session(
+        users.get_user(signed_in["id"]), client.cookies.get("indmoney_session")))
+    assert stored["ledger"]["schemes"][0]["folioKey"] and FOLIO_NUMBER not in json.dumps(stored)
+
+    parsed_pdf(nsdl_statement())
+    assert upload(client).json()["ledger"] == {"available": False, "hint": mf_ledger.HINT}

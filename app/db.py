@@ -34,6 +34,7 @@ _USERS_COLUMNS = """(
     history_public_key TEXT,
     history_key_pin TEXT,
     history_key_recovery TEXT,
+    folio_salt TEXT,
     failed_logins INTEGER NOT NULL DEFAULT 0,
     locked_until INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
@@ -202,6 +203,8 @@ _ADDED_USER_COLUMNS = {
     "credit_period_start": "TEXT",
     "credits_used": "INTEGER NOT NULL DEFAULT 0",
     "topup_credits": "INTEGER NOT NULL DEFAULT 0",
+    # Random per-profile salt for mutual fund folio keys (mf_ledger.py), sealed with the profile's key.
+    "folio_salt": "TEXT",
 }
 
 

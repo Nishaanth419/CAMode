@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -1246,13 +1246,15 @@ async def upload_cas(body: CasUploadRequest, request: Request):
         pdf = base64.b64decode(body.pdfBase64, validate=True)
     except ValueError:
         return JSONResponse({"error": "The file could not be read. Try uploading it again."}, status_code=400)
+    folio_key = mf_ledger.folio_key_for(await asyncio.to_thread(mf_ledger.folio_salt, user["id"], user["keys"]))
     try:
-        statement = await asyncio.to_thread(cas.parse_statement, pdf, body.password)
+        statement = await asyncio.to_thread(cas.parse_statement, pdf, body.password, folio_key=folio_key)
     except cas.CASError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     summary = cas.store_statement(user["id"], statement, user["keys"])
-    logger.info("cas_uploaded", extra={"user_id": user["id"], "source": statement["source"]})
-    return summary
+    has_ledger = bool((statement.get("ledger") or {}).get("schemes"))
+    logger.info("cas_uploaded", extra={"user_id": user["id"], "source": statement["source"], "ledger": has_ledger})
+    return {**summary, "ledger": {"available": has_ledger, "hint": None if has_ledger else mf_ledger.HINT}}
 
 
 @app.get("/api/cas")
