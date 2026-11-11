@@ -303,6 +303,31 @@ def test_notice_mentions_ai_providers_and_permanent_loss():
     assert "recovery code" in text and "cannot be recovered" in text
 
 
+def test_notice_covers_backups_cloudflare_and_credits(monkeypatch):
+    from app import backup
+
+    sections = {item["title"]: item["body"] for item in privacy.NOTICE}
+    backups = sections["Backups"]
+    # The defaults the notice quotes are the ones backup.py uses (no path is created or read here).
+    for name in ("BACKUP_DIR", "BACKUP_KEEP", "BACKUP_MANUAL_KEEP"):
+        monkeypatch.delenv(name, raising=False)
+    assert backup.backup_dir().name in backups
+    assert f"last {backup.backups_to_keep()} daily copies" in backups
+    assert f"last {backup.manual_backups_to_keep()} copies made by hand" in backups
+    assert "never copied into a backup" in backups
+    assert "can remain in a backup until newer copies replace it" in backups
+
+    cloudflare = sections["Hosted copies and Cloudflare"]
+    assert "Cloudflare Tunnel" in cloudflare and "Cloudflare Access" in cloudflare
+    assert "decrypts it" in cloudflare and "own sign-in cookie" in cloudflare
+
+    limits_text = sections["Usage limits"]
+    assert "monthly credits" in limits_text and "top-up credits" in limits_text
+    assert "in progress" in limits_text
+    assert "credits used this month" in sections["What whoever runs CA Mode can see"]
+    assert privacy.POLICY_VERSION == "2026-11-10.1"
+
+
 def test_capture_finishing_after_switch_to_private_is_not_stored(client, signed_in):
     accept(client, "private")
 

@@ -255,6 +255,30 @@ def auth_error(message: str) -> JSONResponse:
     return JSONResponse({"error": message, "loginUrl": "/auth/indmoney/connect"}, status_code=401, headers={"Cache-Control": "no-store"})
 
 
+# What a failed answer says to the user, by the agent's error code. The agent's own message can carry a provider's
+# response body or exception text, so it goes only to the log and the saved run, never into the response.
+CHAT_FAILURE_MESSAGES: dict[str, str] = {
+    "provider_unreachable": "Could not reach the AI model. It may be offline; try again in a few minutes.",
+    "provider_timeout": "The AI model took too long to reply. Try again, or ask a shorter question.",
+    "provider_error": "The AI model returned an error. Try again in a moment.",
+    "provider_bad_response": "The AI model returned an error. Try again in a moment.",
+    "empty_response": "The AI model returned no answer. Try again in a moment.",
+    "context_too_small": "The AI model is not set up for answers this long. Ask whoever runs CA Mode to check its settings.",
+    "request_too_large": "This conversation is too long for the model. Start a new chat and ask again.",
+    "indmoney_not_connected": "Connect your INDmoney account to use Portfolio Analyzer.",
+    "no_account_tool": "The model did not read your account data, so no answer was given. Try again.",
+}
+CHAT_FAILURE_DEFAULT = "Something went wrong while answering. Try again in a moment."
+CHAT_FAILURE_INDMONEY = "Could not read your INDmoney data. Try again in a moment."
+
+
+def chat_failure_message(code: str | None, details: str) -> str:
+    """A plain sentence for a failed answer, never the exception text itself."""
+    if code in CHAT_FAILURE_MESSAGES:
+        return CHAT_FAILURE_MESSAGES[code]
+    return CHAT_FAILURE_INDMONEY if "INDmoney" in details or "MCP" in details else CHAT_FAILURE_DEFAULT
+
+
 def indmoney_unavailable() -> JSONResponse:
     """INDmoney did not answer a token refresh: the connection is kept, so this is not a reconnect prompt."""
     return JSONResponse(
@@ -1751,7 +1775,7 @@ async def refresh_snapshot(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=502)
     except Exception as exc:
         logger.warning("manual_snapshot_failed", extra={"user_id": user["id"]}, exc_info=True)
-        return JSONResponse({"error": "Could not save a snapshot from INDmoney.", "details": str(exc)[:300]}, status_code=502)
+        return JSONResponse({"error": "Could not save a snapshot from INDmoney. Try again in a moment."}, status_code=502)
     return {"latest": _snapshot_summary(snapshot)}
 
 
@@ -2030,7 +2054,6 @@ async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any]
             if exc is not None:
                 logger.error("Chat agent request failed: %s", exc)
                 details = str(exc)
-                error = "INDmoney data request failed" if "INDmoney" in details or "MCP" in details else "Agent request failed"
                 trace = getattr(exc, "trace", [])[:12]
                 run_id = _save_agent_run(user, data, body, provider, exc, error=details)
                 code = getattr(exc, "code", None)
@@ -2049,7 +2072,8 @@ async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any]
                         status_code=504, headers=headers,
                     )
                 return JSONResponse(
-                    {"error": error, "details": details, **({"runId": run_id} if run_id else {})}, status_code=502,
+                    {"error": chat_failure_message(code, details), **({"code": code} if code else {}),
+                     **({"runId": run_id} if run_id else {})}, status_code=502,
                     headers=headers,
                 )
         answer_text = str(answer)
@@ -2254,7 +2278,7 @@ async def admin_create_backup(request: Request):
     return {"file": path.name, **backup.status()}
 
 
-# ── Public pages: app shell, privacy policy, pricing, crawler files, 404 ───────────────
+# ── Public pages: app shell, privacy policy, terms, pricing, crawler files, 404 ───────────────
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
@@ -2265,6 +2289,11 @@ async def index(request: Request) -> HTMLResponse:
 @app.get(public_pages.PRIVACY_PATH, response_class=HTMLResponse)
 async def privacy_policy() -> HTMLResponse:
     return HTMLResponse(public_pages.privacy_page())
+
+
+@app.get(public_pages.TERMS_PATH, response_class=HTMLResponse)
+async def terms() -> HTMLResponse:
+    return HTMLResponse(public_pages.terms_page())
 
 
 @app.get(public_pages.PRICING_PATH, response_class=HTMLResponse)

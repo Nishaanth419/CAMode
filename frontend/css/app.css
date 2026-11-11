@@ -13,7 +13,7 @@
   /* Text */
   --text:         #13201a;
   --text-soft:    #4d5c55;
-  --text-muted:   #8a978f;
+  --text-muted:   #5f6c65; /* 4.6:1 on --surface-3, 5.5:1 on --surface (WCAG AA) */
 
   /* Accent — wealth green */
   --accent:       #1f7a4f;
@@ -72,7 +72,7 @@
   --border-hover: rgba(160, 230, 100, .28);
   --text:         #eef3ef;
   --text-soft:    #a3aea6;
-  --text-muted:   #6b766e;
+  --text-muted:   #858f88; /* 4.6:1 on --surface-3, 5.9:1 on --canvas (WCAG AA) */
   --accent:       #8fdc4e;
   --accent-2:     #a6e86a;
   --accent-3:     #b9f07f;
@@ -2020,3 +2020,14 @@ a.tool-tile { text-decoration: none; }
 .broker-monogram { display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2, #e6e8ec); color: var(--muted, #555); font-size: 13px; font-weight: 600; }
 .holdings-tab { display: inline-flex; align-items: center; gap: 6px; }
 .holdings-tab .broker-logo { width: 18px; height: 18px; border-radius: 4px; }
+
+/* iOS Safari zooms the page in when a focused field's text is under 16px. On phones, tablets and narrow
+   windows every text field is 16px; desktop keeps its 14px fields. !important because several field rules
+   (.field input, #user-input, .dash-ask-box input) set their own size with higher specificity. */
+@media (max-width: 860px), (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

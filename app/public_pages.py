@@ -1,7 +1,7 @@
-"""Pages served without a profile: the app shell, privacy policy, pricing, admin, 404 page, robots.txt and sitemap.xml.
+"""Pages served without a profile: the app shell, privacy policy, terms, pricing, admin, 404 page, robots.txt and sitemap.xml.
 
 The privacy page renders ``privacy.NOTICE``, so it always matches what profiles accept in the
-app, and the pricing page renders ``plans.PLANS``. Only those two are listed for search engines: the app shell shows the names of the
+app, and the pricing page renders ``plans.PLANS``. Only those and the terms page are listed for search engines: the app shell shows the names of the
 profiles on this computer, so it carries ``noindex`` (crawlers are still allowed to fetch it, or
 they could not read that tag). ``/api/``, ``/auth/`` and ``/admin`` are disallowed outright.
 """
@@ -21,7 +21,10 @@ from . import plans, privacy
 PUBLIC_DIR: Final = Path(__file__).resolve().parent.parent / "frontend"
 PRIVACY_PATH: Final = "/privacy"
 PRICING_PATH: Final = "/pricing"
-INDEXABLE_PATHS: Final = (PRIVACY_PATH, PRICING_PATH)
+TERMS_PATH: Final = "/terms"
+INDEXABLE_PATHS: Final = (PRIVACY_PATH, TERMS_PATH, PRICING_PATH)
+# Change with the wording of ``terms_page()``.
+TERMS_UPDATED: Final = date(2026, 11, 10)
 ORIGIN_PLACEHOLDER: Final = "{{origin}}"
 # Paths whose 404s stay JSON for API clients; everything else gets the HTML page.
 API_PREFIXES: Final = ("/api/", "/auth/")
@@ -55,7 +58,9 @@ def robots_txt(origin: str) -> str:
 
 
 def _last_modified(path: str) -> date:
-    return plans.PRICES_UPDATED if path == PRICING_PATH else policy_updated_on()
+    if path == PRICING_PATH:
+        return plans.PRICES_UPDATED
+    return TERMS_UPDATED if path == TERMS_PATH else policy_updated_on()
 
 
 def sitemap_xml(origin: str) -> str:
@@ -116,10 +121,64 @@ def privacy_page() -> str:
       · Notice version {escape(privacy.POLICY_VERSION)}</p>
     <p class="public-lead">CA Mode runs on the computer it is installed on. This is the same notice each profile
       reads and accepts before it can chat, connect INDmoney or save history.</p>
-{sections}    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRICING_PATH}">Pricing</a></p>"""
+{sections}    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{TERMS_PATH}">Terms of use</a>
+      <a class="public-link" href="{PRICING_PATH}">Pricing</a></p>"""
     return _page(
         title="Privacy policy",
         description="What CA Mode saves on your computer, what it sends to the AI model you choose, and how to export or delete your data.",
+        body=body,
+        is_indexable=True,
+    )
+
+
+def terms_page() -> str:
+    """Return the terms of use: plain rules for using CA Mode, without promises the code does not keep."""
+    contact = plans.contact_email()
+    reach = (
+        f'<a class="public-link" href="mailto:{escape(contact, quote=True)}">{escape(contact)}</a>'
+        if contact else "whoever runs this copy of CA Mode"
+    )
+    sections = (
+        ("What CA Mode is",
+         "CA Mode is a finance assistant. Its answers are written by an AI model from your question, the data you "
+         "connect and the details you enter, and they can be wrong or out of date. They are general information, "
+         "not investment, tax or legal advice, and CA Mode is not a registered investment adviser. Check anything "
+         "important yourself, or with a qualified adviser, before you act on it."),
+        ("Your profile",
+         "Keep your PIN and recovery code to yourself. Your saved history is locked with them: if you lose both, "
+         "nobody can recover it, including whoever runs CA Mode. You are responsible for what is done with your "
+         "profile while it is signed in."),
+        ("Connected accounts",
+         "When you connect INDmoney or a broker, CA Mode only reads your holdings and related data. It cannot place "
+         "or change orders or move money. Your use of those services stays under their own terms."),
+        ("Using CA Mode fairly",
+         "Do not try to reach other people's profiles or data, get around usage limits, overload the service, or "
+         "use it for anything unlawful. A shared copy may limit how many questions you can ask, and whoever runs it "
+         "can sign a profile out, change its plan or delete it."),
+        ("Plans and payment",
+         f'Plans, prices, credits and the refund policy are on the <a class="public-link" href="{PRICING_PATH}">pricing page</a>. '
+         "There is no online checkout: plan changes are made by whoever runs this copy."),
+        ("Availability",
+         "CA Mode may be unavailable at times, for example while it is updated or when the computer that runs its "
+         "AI model is offline, and features may change or be removed."),
+        ("Your data",
+         f'What CA Mode saves, where it is sent and how to export or delete it is in the '
+         f'<a class="public-link" href="{PRIVACY_PATH}">privacy policy</a>.'),
+        ("Changes and questions",
+         f"These terms may change; the date at the top shows the last change. Questions go to {reach}."),
+    )
+    # Section bodies are fixed text written above; only the contact address comes from configuration (escaped).
+    body_sections = "".join(
+        f'    <section>\n      <h2>{escape(title)}</h2>\n      <p>{text}</p>\n    </section>\n' for title, text in sections
+    )
+    body = f"""    <h1>Terms of use</h1>
+    <p class="public-meta">Last updated <time datetime="{TERMS_UPDATED.isoformat()}">{TERMS_UPDATED.day} {TERMS_UPDATED:%B %Y}</time></p>
+    <p class="public-lead">The rules for using this copy of CA Mode, in plain words.</p>
+{body_sections}    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRIVACY_PATH}">Privacy policy</a>
+      <a class="public-link" href="{PRICING_PATH}">Pricing</a></p>"""
+    return _page(
+        title="Terms of use",
+        description="The rules for using CA Mode: answers are not financial advice, connected accounts are read-only, and fair use.",
         body=body,
         is_indexable=True,
     )
@@ -145,7 +204,7 @@ def not_found_page() -> str:
     <h1>Page not found</h1>
     <p class="public-lead">This address is not part of CA Mode. It may have been mistyped, or the page has moved.</p>
     <p><a class="public-button" href="/">Go to CA Mode</a> <a class="public-link" href="/pricing">Pricing</a>
-      <a class="public-link" href="/privacy">Privacy policy</a></p>"""
+      <a class="public-link" href="/privacy">Privacy policy</a> <a class="public-link" href="/terms">Terms of use</a></p>"""
     return _page(
         title="Page not found",
         description="This address is not part of CA Mode.",
@@ -223,7 +282,8 @@ def pricing_page() -> str:
         <li>To ask, contact whoever runs this copy of CA Mode.</li>
       </ul>
     </section>
-    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRIVACY_PATH}">Privacy policy</a></p>"""
+    <p><a class="public-button" href="/">Open CA Mode</a> <a class="public-link" href="{PRIVACY_PATH}">Privacy policy</a>
+      <a class="public-link" href="{TERMS_PATH}">Terms of use</a></p>"""
     return _page(
         title="Pricing",
         description=(

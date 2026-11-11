@@ -237,7 +237,7 @@ agentNavItems.forEach((item) => item.addEventListener('click', () => {
 setAgent(selectedAgent);
 
 function showError(error) {
-  addMessage('assistant', '<span style="color:var(--error)">' + escHtml(error.message) + '</span>');
+  addMessage('assistant', '<span style="color:var(--error)">' + escHtml(errorText(error)) + '</span>');
 }
 
 /* ── Status helpers ─────────────────────────────────────────────────── */
@@ -422,7 +422,7 @@ casForm.addEventListener('submit', async (event) => {
     casStatus.textContent = 'Saved. The PDF and its password were not kept.';
   } catch (error) {
     casStatus.classList.add('is-error');
-    casStatus.textContent = error.message;
+    casStatus.textContent = errorText(error);
   } finally {
     password.value = '';
     submit.disabled = false;
@@ -496,7 +496,7 @@ async function loadChats() {
     isSessionReady = true;
     document.dispatchEvent(new CustomEvent('ca:session'));
   } catch (err) {
-    chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(err.message) + '</small></div>';
+    chatList.innerHTML = '<div class="tools-error">Could not load chats<br><small>' + escHtml(errorText(err)) + '</small></div>';
     setStatus('error', 'Connection failed');
   }
 }
@@ -674,7 +674,7 @@ async function submitGate(url, body, form) {
     }
     await loadChats();
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
   } finally {
     submit.disabled = false;
   }
@@ -780,7 +780,7 @@ async function showTurnstile() {
     const turnstile = await loadTurnstile();
     turnstileWidget = turnstile.render(slot, { sitekey: turnstileSiteKey, action: 'sign_up' });
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
   }
 }
 
@@ -856,7 +856,7 @@ async function showConsentGate() {
     renderNotice(consentNotice, privacy.notice);
     setStorageChoice(consentForm, 'consent-storage', privacy.storageMode, privacy.snapshotRetentionDays);
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
   }
 }
 
@@ -870,7 +870,7 @@ consentForm.addEventListener('submit', async (event) => {
     await savePrivacyChoice(readStorageChoice(consentForm, 'consent-storage'));
     await loadChats();
   } catch (error) {
-    showGateError(error.message);
+    showGateError(errorText(error));
     if (error.message.startsWith('The privacy notice changed')) await showConsentGate();
   } finally {
     submit.disabled = false;
@@ -915,6 +915,9 @@ profileDialog.querySelectorAll('[data-close-dialog]').forEach(button => button.a
 
 profileForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  // Only the Save button submits; Enter in a field submits through it too.
+  const button = profileForm.querySelector('.dialog-save');
+  profileFormStatus.textContent = '';
   const body = {};
   for (const field of PROFILE_FIELDS) {
     const input = document.getElementById(`field-${field}`);
@@ -922,16 +925,17 @@ profileForm.addEventListener('submit', async (event) => {
     if (value === '') continue;
     body[field] = input.type === 'number' ? Number(value) : value;
   }
-  const response = await fetch('/api/profile', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  if (response.ok) {
+  await withPending(button, profileFormStatus, async () => {
+    const response = await fetch('/api/profile', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(Array.isArray(data.detail) ? 'Check the highlighted values and try again.' : plainError(response.status, data));
+    }
     profileFormStatus.textContent = 'Saved.';
     setTimeout(() => profileDialog.close(), 600);
-  } else {
-    const data = await response.json().catch(() => ({}));
-    profileFormStatus.textContent = Array.isArray(data.detail) ? 'Check the highlighted values and try again.' : (data.error || 'Could not save your profile.');
-  }
+  });
 });
 
 function renderDataZone(privacy) {
@@ -945,62 +949,61 @@ function renderDataZone(privacy) {
 
 profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => input.addEventListener('change', () => syncRetentionField(profileForm, 'settings-storage')));
 
-document.getElementById('save-data-settings').addEventListener('click', async () => {
+document.getElementById('save-data-settings').addEventListener('click', async (event) => {
   const choice = readStorageChoice(profileForm, 'settings-storage');
   if (choice.storageMode === 'private' && storageMode !== 'private'
     && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile. Continue?')) return;
-  try {
+  dataStatus.textContent = '';
+  await withPending(event.currentTarget, dataStatus, async () => {
     renderDataZone(await savePrivacyChoice(choice));
     dataStatus.textContent = 'Data settings saved.';
     await loadChats();
-  } catch (error) {
-    dataStatus.textContent = error.message;
-  }
+  });
 });
 
-document.getElementById('export-data').addEventListener('click', async () => {
+document.getElementById('export-data').addEventListener('click', async (event) => {
   const pin = document.getElementById('export-pin').value;
   if (!pin) {
     dataStatus.textContent = 'Enter your PIN to export your data.';
     return;
   }
-  const response = await fetch('/api/users/me/export', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+  dataStatus.textContent = '';
+  await withPending(event.currentTarget, dataStatus, async () => {
+    const response = await fetch('/api/users/me/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(plainError(response.status, data));
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    link.download = `ca-mode-export-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    // Revoking straight away can cancel the download in some browsers.
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    document.getElementById('export-pin').value = '';
+    dataStatus.textContent = 'Export downloaded. It contains your chats and portfolio data, so keep it somewhere safe.';
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    dataStatus.textContent = data.error || 'Could not export your data.';
-    return;
-  }
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-  link.download = `ca-mode-export-${new Date().toISOString().slice(0, 10)}.json`;
-  link.click();
-  // Revoking straight away can cancel the download in some browsers.
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-  document.getElementById('export-pin').value = '';
-  dataStatus.textContent = 'Export downloaded. It contains your chats and portfolio data, so keep it somewhere safe.';
 });
 
-document.getElementById('new-recovery-code').addEventListener('click', async () => {
+document.getElementById('new-recovery-code').addEventListener('click', async (event) => {
   const pin = document.getElementById('export-pin').value;
   if (!pin) {
     dataStatus.textContent = 'Enter your PIN to create a new recovery code.';
     return;
   }
   if (!window.confirm('Create a new recovery code? Your current recovery code will stop working.')) return;
-  const response = await fetch('/api/users/me/recovery-code', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+  dataStatus.textContent = '';
+  await withPending(event.currentTarget, dataStatus, async () => {
+    const response = await fetch('/api/users/me/recovery-code', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(plainError(response.status, data));
+    document.getElementById('export-pin').value = '';
+    document.getElementById('settings-recovery-value').textContent = data.recoveryCode;
+    document.getElementById('settings-recovery').hidden = false;
+    dataStatus.textContent = 'Save this code somewhere safe now. It will not be shown again, and your old code no longer works.';
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    dataStatus.textContent = data.error || 'Could not create a new recovery code.';
-    return;
-  }
-  document.getElementById('export-pin').value = '';
-  document.getElementById('settings-recovery-value').textContent = data.recoveryCode;
-  document.getElementById('settings-recovery').hidden = false;
-  dataStatus.textContent = 'Save this code somewhere safe now. It will not be shown again, and your old code no longer works.';
 });
 document.getElementById('copy-settings-recovery').addEventListener('click', (event) => {
   copyText(document.getElementById('settings-recovery-value').textContent, event.currentTarget);
@@ -1023,59 +1026,61 @@ async function loadBackupStatus() {
 }
 
 document.getElementById('backup-now').addEventListener('click', async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  try {
+  dataStatus.textContent = '';
+  await withPending(event.currentTarget, dataStatus, async () => {
     const response = await fetch('/api/backups', { method: 'POST' });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'Could not back up.');
+    if (!response.ok) throw new Error(plainError(response.status, data));
     renderBackupStatus(data);
     dataStatus.textContent = `Backed up to ${data.file}.`;
-  } catch (error) {
-    dataStatus.textContent = error.message;
-  } finally {
-    button.disabled = false;
-  }
+  });
 });
 
-document.getElementById('clear-history').addEventListener('click', async () => {
+document.getElementById('clear-history').addEventListener('click', async (event) => {
   if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and broker connections are kept.')) return;
-  const response = await fetch('/api/users/me/history', { method: 'DELETE' });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    dataStatus.textContent = data.unlockRequired ? 'Enter your PIN to unlock your history first.' : 'Could not clear your history.';
-    if (data.unlockRequired) {
-      profileDialog.close();
-      await loadChats();
+  dataStatus.textContent = '';
+  await withPending(event.currentTarget, dataStatus, async () => {
+    const response = await fetch('/api/users/me/history', { method: 'DELETE' });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      if (data.unlockRequired) {
+        profileDialog.close();
+        await loadChats();
+        return;
+      }
+      throw new Error(plainError(response.status, data.error ? data : { error: 'Could not clear your history.' }));
     }
-    return;
-  }
-  profileDialog.close();
-  await loadChats();
+    profileDialog.close();
+    await loadChats();
+  });
 });
 
-document.getElementById('switch-profile').addEventListener('click', async () => {
-  profileDialog.close();
-  await fetch('/api/session/logout', { method: 'POST' });
-  await loadChats();
+document.getElementById('switch-profile').addEventListener('click', async (event) => {
+  profileFormStatus.textContent = '';
+  await withPending(event.currentTarget, profileFormStatus, async () => {
+    await fetch('/api/session/logout', { method: 'POST' });
+    profileDialog.close();
+    await loadChats();
+  });
 });
 
-document.getElementById('delete-profile').addEventListener('click', async () => {
+document.getElementById('delete-profile').addEventListener('click', async (event) => {
+  const deleteStatus = document.getElementById('delete-status');
   const pin = document.getElementById('delete-pin').value;
   if (!pin) {
-    profileFormStatus.textContent = 'Enter your PIN to delete this profile.';
+    deleteStatus.textContent = 'Enter your PIN to delete this profile.';
     return;
   }
-  const response = await fetch('/api/users/me', {
-    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+  deleteStatus.textContent = '';
+  await withPending(event.currentTarget, deleteStatus, async () => {
+    const response = await fetch('/api/users/me', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(plainError(response.status, data));
+    profileDialog.close();
+    await loadChats();
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    profileFormStatus.textContent = data.error || 'Could not delete this profile.';
-    return;
-  }
-  profileDialog.close();
-  await loadChats();
 });
 
 // Opens the profile dialog at its Brokers list, where every broker (INDmoney included) is connected.
@@ -1087,7 +1092,8 @@ async function openBrokers() {
 // INDmoney keeps its own sign-in and disconnect routes; the list treats it like any other broker.
 async function disconnectIndmoney() {
   if (!window.confirm('Disconnect INDmoney? Saved portfolio snapshots for this profile will be deleted; your chats are kept.')) return false;
-  await fetch('/auth/indmoney/disconnect', { method: 'POST' });
+  const response = await fetch('/auth/indmoney/disconnect', { method: 'POST' });
+  if (!response.ok) throw new Error(plainError(response.status, await response.json().catch(() => ({}))));
   await loadChats();
   return true;
 }
@@ -1180,7 +1186,7 @@ async function loadBrokerTools(id) {
   } catch (error) {
     delete brokerToolsHtml[id];
     const panel = document.getElementById(`broker-tools-${id}`);
-    if (panel) panel.innerHTML = `<p class="dialog-sub">${escHtml(error.message)}</p>`;
+    if (panel) panel.innerHTML = `<p class="dialog-sub">${escHtml(errorText(error))}</p>`;
     return;
   }
   const panel = document.getElementById(`broker-tools-${id}`);
@@ -1268,7 +1274,8 @@ brokersList.addEventListener('click', async (event) => {
       if (id === 'indmoney') {
         if (!(await disconnectIndmoney())) return;
       } else {
-        await fetch(`/api/brokers/${encodeURIComponent(id)}/disconnect`, { method: 'POST' });
+        const response = await fetch(`/api/brokers/${encodeURIComponent(id)}/disconnect`, { method: 'POST' });
+        if (!response.ok) throw new Error(plainError(response.status, await response.json().catch(() => ({}))));
       }
       delete brokerLoginLinks[id];
       document.dispatchEvent(new CustomEvent('ca:holdings'));
@@ -1280,7 +1287,7 @@ brokersList.addEventListener('click', async (event) => {
         ...(input ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ucc: input.value.trim() }) } : {}),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'Could not start the login.');
+      if (!response.ok) throw new Error(plainError(response.status, data.error ? data : { error: 'Could not start the login.' }));
       if (data.loginUrl) brokerLoginLinks[id] = data.loginUrl;
       if (verifying) {
         delete brokerLoginLinks[id];
@@ -1289,7 +1296,7 @@ brokersList.addEventListener('click', async (event) => {
     }
     await loadBrokers();
   } catch (error) {
-    brokersStatus.textContent = error.message;
+    brokersStatus.textContent = errorText(error);
   } finally {
     button.disabled = false;
   }
@@ -1430,14 +1437,14 @@ document.addEventListener('click', async (event) => {
     try {
       const response = await fetch(`/api/brokers/${encodeURIComponent(broker.broker)}/connect`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'Could not start the login.');
+      if (!response.ok) throw new Error(plainError(response.status, data.error ? data : { error: 'Could not start the login.' }));
       if (data.loginUrl) bannerLinks[broker.broker] = data.loginUrl;
       renderBrokerBanners();
       pollBannerLogin(broker.broker);
     } catch (error) {
       reconnect.disabled = false;
       reconnect.textContent = 'Try again';
-      reconnect.title = error.message;
+      reconnect.title = errorText(error);
     }
   }
 });
@@ -1718,14 +1725,34 @@ async function sendMessage(text) {
 
   try {
     if (!activeChatId) createdChatId = await createChat();
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: activeChatId, agentType: selectedAgent, aiProvider: selectedProvider }),
-    });
+    const chatId = activeChatId;
+    const sinceUpdatedAt = Number(chats.find((chat) => chat.id === chatId)?.updatedAt);
+    let res = null;
+    try {
+      res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, chatId, agentType: selectedAgent, aiProvider: selectedProvider }),
+      });
+    } catch { /* The connection dropped: the server may still save the answer. */ }
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    if (!res || !res.ok) {
+      const err = res ? await res.json().catch(() => ({})) : {};
+      if (lostChatResponse(res ? res.status : 0, err)) {
+        // A proxy timed out or the connection dropped, but the server keeps answering and saves the answer
+        // with the chat: look for it there before calling this a failure.
+        setStatus('loading', 'Checking for the answer…');
+        const saved = await waitForSavedAnswer(chatId, text, sinceUpdatedAt);
+        if (saved) {
+          removeTypingIndicator();
+          addMessage('assistant', renderMarkdown(saved.content), saved.trace || [], saved.runId);
+          createdChatId = null;
+          await refreshChats().catch(() => {});
+          return;
+        }
+        throw new Error(res ? 'The connection timed out before the answer arrived. If it was saved, it appears when you reopen this chat.'
+          : NETWORK_ERROR);
+      }
       const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
       if (err.profileRequired || err.unlockRequired || err.consentRequired) {
         removeTypingIndicator();
@@ -1773,7 +1800,7 @@ async function sendMessage(text) {
         const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
         throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
       }
-      throw Object.assign(new Error([err.error, err.details].filter(Boolean).join(': ') || `HTTP ${res.status}`), { trace, runId: err.runId });
+      throw Object.assign(new Error(plainError(res.status, err)), { trace, runId: err.runId });
     }
 
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
@@ -1822,7 +1849,7 @@ async function sendMessage(text) {
   } catch (err) {
     removeTypingIndicator();
     addMessage('assistant',
-      `<span style="color:var(--error)">⚠ Error: ${escHtml(err.message)}</span>${err.connectLink || ''}`,
+      `<span style="color:var(--error)">⚠ ${escHtml(errorText(err))}</span>${err.connectLink || ''}`,
       err.trace || [], err.runId,
     );
     setStatus('error', 'Request failed');
@@ -1833,28 +1860,37 @@ async function sendMessage(text) {
   }
 }
 
+// After a lost chat response, re-read the chat until its saved answer shows up or the server's own answer
+// deadline (CHAT_DEADLINE_SECONDS, 240 by default) has surely passed.
+const LOST_ANSWER_POLL_MS = 10000;
+const LOST_ANSWER_WAIT_MS = 150000;
+
+async function waitForSavedAnswer(chatId, question, sinceUpdatedAt) {
+  const giveUpAt = Date.now() + LOST_ANSWER_WAIT_MS;
+  for (;;) {
+    try {
+      const response = await fetch('/api/chats/' + encodeURIComponent(chatId));
+      if (response.status >= 400 && response.status < 500) return null;
+      if (response.ok) {
+        const saved = savedAnswerFor(await response.json(), question, sinceUpdatedAt);
+        if (saved) return saved;
+      }
+    } catch { /* Still offline: try again below. */ }
+    if (Date.now() + LOST_ANSWER_POLL_MS > giveUpAt) return null;
+    await new Promise((resolve) => setTimeout(resolve, LOST_ANSWER_POLL_MS));
+  }
+}
+
 /* ── Markdown renderer (minimal) ─────────────────────────────────────── */
 function renderMarkdown(text) {
   // Escape helper
   const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // Extract chart blocks first so the agent can return data-driven visuals.
-  const chartBlocks = [];
-  text = text.replace(/```chart\s*\n([\s\S]*?)```/gi, (_, json) => {
-    const idx = chartBlocks.length;
-    chartBlocks.push(parseChartSpec(json));
-    return `\x00CHART${idx}\x00`;
-  });
-
-  // Some model responses wrap the same JSON in bold Markdown instead of a
-  // chart fence. Recognize that shape too and render it as a chart.
-  text = text.replace(/\*\*\s*(\{[\s\S]*?\})\s*\*\*/g, (whole, json) => {
-    const spec = parseChartSpec(json);
-    if (!spec) return whole;
-    const idx = chartBlocks.length;
-    chartBlocks.push(spec);
-    return `\x00CHART${idx}\x00`;
-  });
+  // Extract chart blocks first so the agent can return data-driven visuals. Only fenced ```chart blocks
+  // count: the server grounds those in tool data, while bold or inline JSON stays text.
+  const extracted = extractChartBlocks(text);
+  const chartBlocks = extracted.charts;
+  text = extracted.text;
 
   // Extract and replace code blocks
   const codeBlocks = [];
@@ -1993,24 +2029,6 @@ function renderMarkdown(text) {
     '<div class="exec-result-header">⬡ Execution Result</div>');
 
   return text;
-}
-
-function parseChartSpec(json) {
-  try {
-    // Normalize HTML-encoded spaces/quotes that occasionally appear in model output.
-    const normalized = String(json)
-      .replace(/&#x20;|&#32;/gi, ' ')
-      .replace(/&quot;/gi, '"')
-      .replace(/&amp;/gi, '&');
-    const spec = JSON.parse(normalized);
-    return spec && (
-      (['bar', 'donut'].includes(spec.type) && Array.isArray(spec.data)) ||
-      (spec.type === 'line' && Array.isArray(spec.series)) ||
-      (spec.type === 'candlestick' && (Array.isArray(spec.candles) || Array.isArray(spec.ohlc)))
-    ) ? spec : null;
-  } catch {
-    return null;
-  }
 }
 
 const chartSpecRegistry = new Map();
@@ -2273,7 +2291,7 @@ userInput.addEventListener('input', autoResize);
 
 /* ── Keyboard handler ────────────────────────────────────────────────── */
 userInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !isComposingEnter(e)) {
     e.preventDefault();
     sendMessage(userInput.value);
   }
@@ -2301,7 +2319,7 @@ document.addEventListener('click', (event) => {
 
 /* ── Init ────────────────────────────────────────────────────────────── */
 loadProviders().catch((error) => {
-  providerPicker.innerHTML = `<option value="">${escHtml(error.message)}</option>`;
+  providerPicker.innerHTML = `<option value="">${escHtml(errorText(error))}</option>`;
   providerPicker.disabled = true;
   providerReady = true;
 });

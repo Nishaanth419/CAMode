@@ -29,7 +29,9 @@ from .db import connect_db
 # 2026-10-26.1: answer records keep the figures CA Mode calculated for an analysis (analysis_tools).
 # 2026-11-06.1: broker connections (Zerodha) and the holdings fetched from them.
 # 2026-11-06.3: a daily history of each broker's holdings, kept for the snapshot retention period.
-POLICY_VERSION: Final = "2026-11-06.3"
+# 2026-11-10.1: daily database backups, Cloudflare in front of a hosted copy, monthly credits and the
+# in-progress question marker.
+POLICY_VERSION: Final = "2026-11-10.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -61,6 +63,20 @@ NOTICE: Final = (
         ),
     },
     {
+        "title": "Backups",
+        "body": (
+            "Once a day CA Mode copies its whole SQLite file into a backup folder on the same computer or server "
+            "(by default ca-mode-backups in the home folder of the account that runs it), and whoever runs it can "
+            "also make a copy by hand, for example before an update. By default the last 14 daily copies and the "
+            "last 5 copies made by hand are kept; older ones are deleted. Each copy is readable only by the account "
+            "that runs CA Mode and holds the same data as the database, so your saved history in it is still "
+            "locked with your PIN. The key that encrypts INDmoney and broker tokens is never copied into a backup. "
+            "Because earlier copies are kept, something you delete (a chat, your history, or your whole profile) "
+            "can remain in a backup until newer copies replace it: about two weeks for daily copies, and until five "
+            "newer ones are made for a copy made by hand. Backups are not part of your export."
+        ),
+    },
+    {
         "title": "Signing in with Google",
         "body": (
             "Where CA Mode is set up for Google sign-in, Google tells CA Mode your Google account ID, email address, "
@@ -76,7 +92,8 @@ NOTICE: Final = (
         "title": "What whoever runs CA Mode can see",
         "body": (
             "Where an admin page is turned on, the people who run this copy can see a list of profiles with each "
-            "one's name, Google email address, plan, the number of questions asked today, when it was created and "
+            "one's name, Google email address, plan, the number of questions asked today, the credits used this "
+            "month, when it was created and "
             "last used, whether it accepted this notice, whether INDmoney is connected and when the last snapshot "
             "was taken, and whether its PIN is locked after wrong guesses. From that page they can change your plan, "
             "clear a PIN lock, sign your profile out on every device, or delete your profile and everything it owns. "
@@ -118,6 +135,17 @@ NOTICE: Final = (
         ),
     },
     {
+        "title": "Hosted copies and Cloudflare",
+        "body": (
+            "A hosted copy may be reached through Cloudflare Tunnel and protected by Cloudflare Access. Then every "
+            "request between your browser and CA Mode passes through Cloudflare, which decrypts it on its network to "
+            "pass it on, so it can see what you send and receive, including your chats and portfolio figures. Access "
+            "asks you to sign in (for example with your work email) before the app opens and sets its own sign-in "
+            "cookie; Cloudflare keeps records of those sign-ins and requests under its own privacy policy. A copy "
+            "served without Cloudflare, or one running on your own computer, does not send anything through it."
+        ),
+    },
+    {
         "title": "Page-view counts",
         "body": (
             "If you save history, CA Mode adds one to a daily count each time you open one of its "
@@ -137,7 +165,13 @@ NOTICE: Final = (
             "applies only to the Free plan. With a daily question limit, the number of questions "
             "your profile asked today and yesterday is stored (never what you asked); it is not part of your export "
             "and is deleted with your profile. With request rate limits, the times of recent requests from your IP "
-            "address and profile are kept in memory only, for about an hour at most, and never saved. If sign-up includes a "
+            "address and profile are kept in memory only, for about an hour at most, and never saved. While one of "
+            "your questions is being answered, a marker that it is in progress (your profile, the day and the time) "
+            "is stored and removed when the answer finishes or fails. On a plan with monthly credits (the Individual "
+            "plan), the day the plan started, the credits used in the current month and any top-up credits left are "
+            "stored with your profile; an answered question uses credits by the number of model tokens it took "
+            "(never what you asked). These counts are not part of your export and are deleted with your profile. "
+            "If sign-up includes a "
             "Cloudflare Turnstile check, the sign-up form loads it from challenges.cloudflare.com, which sees your "
             "IP address and browser details to tell people from bots."
         ),

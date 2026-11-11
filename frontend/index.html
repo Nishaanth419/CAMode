@@ -28,12 +28,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=48" />
+  <link rel="stylesheet" href="/css/app.css?v=49" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
   <script src="/js/finance.js?v=9" defer></script>
   <script src="/js/trace.js?v=11" defer></script>
-  <script src="/js/app.js?v=42" defer></script>
+  <script src="/js/ui.js?v=1" defer></script>
+  <script src="/js/app.js?v=43" defer></script>
   <script src="/js/pages.js?v=27" defer></script>
   <script src="/js/rail.js?v=7" defer></script>
 </head>
@@ -657,7 +658,7 @@
 
       <p id="gate-error" class="gate-error" role="alert" hidden></p>
       <p id="gate-note" class="gate-note">Your PIN encrypts your saved history, so choose one other people can't guess. It is not a substitute for a device password.</p>
-      <p class="gate-legal"><a href="/pricing" target="_blank" rel="noopener">Pricing</a> · <a href="/privacy" target="_blank" rel="noopener">Privacy policy</a></p>
+      <p class="gate-legal"><a href="/pricing" target="_blank" rel="noopener">Pricing</a> · <a href="/privacy" target="_blank" rel="noopener">Privacy policy</a> · <a href="/terms" target="_blank" rel="noopener">Terms</a></p>
     </section>
   </div>
 
@@ -738,6 +739,7 @@
         <p>Deletes this profile's chats, snapshots, and broker connections from CA Mode.</p>
         <label class="field"><span>Confirm with your PIN</span><input id="delete-pin" type="password" autocomplete="current-password" /></label>
         <button id="delete-profile" class="danger-button" type="button">Delete profile</button>
+        <p id="delete-status" class="dialog-status" role="status"></p>
       </details>
     </form>
   </dialog>
