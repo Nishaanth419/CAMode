@@ -269,15 +269,18 @@ function renderRoute() {
   chatScroll.hidden = !isChat;
   inputArea.hidden = !isChat;
   pageView.hidden = isChat;
-  document.body.classList.toggle('route-home', route === 'home');
+  document.body.classList.toggle('route-chat', isChat);
   pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
   updateRouteMeta(route, sub);
   countPageView(route);
-  document.querySelectorAll('#sidebar [data-route]').forEach((link) => {
+  document.querySelectorAll('#sidebar [data-route], #tabbar [data-route]').forEach((link) => {
     if (link.dataset.route === route) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   });
+  // Pages without their own tab live behind More.
+  document.getElementById('menu-toggle').classList.toggle('is-active', !document.querySelector(`#tabbar [data-route="${route}"]`));
   setSidebarOpen(false);
+  document.dispatchEvent(new CustomEvent('ca:route', { detail: { route } }));
   if (isChat) {
     scrollToBottom();
     return;

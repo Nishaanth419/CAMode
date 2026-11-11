@@ -30,7 +30,7 @@ const welcomeDescription = document.getElementById('welcome-description');
 const followUps = document.getElementById('follow-ups');
 const accountName = document.getElementById('account-name');
 const accountPlan = document.getElementById('account-plan');
-const accountAvatar = document.querySelector('.account-avatar');
+const accountAvatars = document.querySelectorAll('.account-avatar');
 const menuToggle = document.getElementById('menu-toggle');
 const sidebarScrim = document.getElementById('sidebar-scrim');
 const accountTrigger = document.getElementById('account-trigger');
@@ -191,17 +191,28 @@ function updateGreeting() {
 }
 updateGreeting();
 
-/* ── Mobile navigation drawer ───────────────────────────────────────── */
+/* ── Phone navigation drawer (More in the bottom tab bar) ───────────── */
 function setSidebarOpen(open) {
+  const wasOpen = document.body.classList.contains('sidebar-open');
   document.body.classList.toggle('sidebar-open', open);
   sidebarScrim.hidden = !open;
   menuToggle.setAttribute('aria-expanded', String(open));
+  if (open && !wasOpen) document.querySelector('#sidebar .nav-item')?.focus();
+  else if (!open && wasOpen && document.getElementById('sidebar').contains(document.activeElement)) menuToggle.focus();
 }
 menuToggle.addEventListener('click', () => setSidebarOpen(!document.body.classList.contains('sidebar-open')));
 sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') setSidebarOpen(false);
+  // Cmd+K (Ctrl+K elsewhere) jumps to the search field, unless a sign-in screen or dialog is open.
+  if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
+    && !document.body.classList.contains('gate-open') && !document.querySelector('dialog[open]')) {
+    event.preventDefault();
+    chatSearch.focus();
+    chatSearch.select();
+  }
 });
+if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) document.getElementById('search-kbd').textContent = '⌘K';
 
 function agentName(agent = selectedAgent) {
   return agent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
@@ -256,7 +267,8 @@ function setBusy(busy) {
 function renderAccount() {
   accountName.textContent = currentUser?.displayName || 'Guest';
   document.getElementById('switch-profile').textContent = authMode === 'google' ? 'Sign out' : 'Switch profile';
-  accountAvatar.textContent = (currentUser?.displayName || '?').trim().charAt(0).toUpperCase();
+  const initial = (currentUser?.displayName || '?').trim().charAt(0).toUpperCase();
+  accountAvatars.forEach((avatar) => { avatar.textContent = initial; });
   planName.textContent = `${usage?.planName || 'Free'} plan`;
   planUsage.textContent = usageText();
   planBrokers.textContent = usage && usage.brokersConnected != null ? `Brokers: ${usage.brokersConnected} of ${usage.brokerLimit == null ? 'any number' : usage.brokerLimit}` : '';
@@ -266,7 +278,7 @@ function renderAccount() {
     storageMode === 'private' ? 'Private' : '',
   ].filter(Boolean).join(' · ');
   accountPlan.title = accountPlan.textContent;
-  accountAvatar.classList.toggle('is-connected', isConnected);
+  accountAvatars.forEach((avatar) => avatar.classList.toggle('is-connected', isConnected));
 }
 
 function usageText() {
@@ -907,10 +919,10 @@ async function openProfileDialog() {
   profileDialog.showModal();
 }
 
-accountTrigger.addEventListener('click', () => {
+[accountTrigger, document.getElementById('topbar-account')].forEach((trigger) => trigger.addEventListener('click', () => {
   setSidebarOpen(false);
   openProfileDialog().catch(showError);
-});
+}));
 profileDialog.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => profileDialog.close()));
 
 profileForm.addEventListener('submit', async (event) => {
