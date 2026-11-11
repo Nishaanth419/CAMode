@@ -145,6 +145,15 @@ _SCHEMA = """
         data TEXT NOT NULL,
         PRIMARY KEY (user_id, id)
     );
+    -- Today's mutual fund NAVs from AMFI's public NAVAll.txt (app.amfi): public data, nothing personal.
+    CREATE TABLE IF NOT EXISTS amfi_navs (
+        isin TEXT PRIMARY KEY,
+        scheme_code TEXT NOT NULL,
+        scheme_name TEXT NOT NULL,
+        amfi_category TEXT,
+        nav TEXT NOT NULL,
+        nav_date TEXT NOT NULL
+    );
     -- Anonymous daily counts per app page: no profile, session, IP or browser details.
     CREATE TABLE IF NOT EXISTS page_views (
         day TEXT NOT NULL,
