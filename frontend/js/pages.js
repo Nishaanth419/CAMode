@@ -170,8 +170,8 @@ function netWorthSeries(points) {
   return [{ name: 'Net worth', data: thin(points).map((point) => ({ label: point.date, value: point.networthInr })) }];
 }
 
-function chartHtml(spec) {
-  return renderDataChart(spec) || '<p class="page-muted">Not enough data to chart yet.</p>';
+function chartHtml(spec, options) {
+  return renderDataChart(spec, options) || '<p class="page-muted">Not enough data to chart yet.</p>';
 }
 
 // Replaces a container's HTML, cleaning up and then drawing any Plotly charts.
@@ -313,7 +313,7 @@ document.addEventListener('ca:session-ended', () => {
   for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
-  for (const id of ['portfolio-asof', 'holdings-asof', 'investments-asof', 'home-name']) document.getElementById(id).textContent = '';
+  for (const id of ['portfolio-asof', 'holdings-asof', 'investments-asof', 'home-name', 'home-networth-value', 'home-networth-change']) document.getElementById(id).textContent = '';
   if (goalDialog.open) goalDialog.close();
 });
 document.addEventListener('ca:snapshot', () => {
@@ -357,67 +357,100 @@ document.addEventListener('click', async (event) => {
 });
 
 /* ── Home ───────────────────────────────────────────────────────────── */
-// Dashboard colours for the allocation ring, in order of size.
-const DASH_COLORS = ['#8fdc4e', '#f2d64b', '#e9eef0', '#c9a7ff', '#5ec8f2', '#ff9f6b', '#5fe0b5', '#9aa59d'];
+// Allocation colours, in order of size; CSS maps each to a theme colour (.series-1 … .series-8).
+const SERIES_COUNT = 8;
 let homeRange = 365;
+
+// One KPI card: one label, one figure, one note.
+function kpiCard(label, value, note = '', tone = '') {
+  return `<div class="kpi-card"><p class="kpi-label">${escHtml(label)}</p><p class="kpi-value ${tone}">${escHtml(value)}</p>${note ? `<p class="kpi-note">${escHtml(note)}</p>` : ''}</div>`;
+}
+
+function historyChartHtml(points, title, options = {}) {
+  return chartHtml({ type: 'line', title, unit: '₹', series: netWorthSeries(points) }, { history: true, ...options });
+}
 
 async function renderHome() {
   const isCurrent = startRender('home');
   document.getElementById('home-name').textContent = currentUser ? `, ${currentUser.displayName}` : '';
   document.querySelectorAll('.js-goal-agent').forEach((chip) => { chip.dataset.agent = goalAgent(); });
+  document.getElementById('home-ask-agent').textContent = `${agentName()} · opens in Ask AI`;
   updateGreeting();
   renderHomeChats();
   const stats = document.getElementById('home-stats');
-  const parts = ['home-allocation', 'home-performance', 'home-holdings', 'home-insights'].map((id) => document.getElementById(id));
+  const value = document.getElementById('home-networth-value');
+  const change = document.getElementById('home-networth-change');
+  const chart = document.getElementById('home-performance');
+  const refresh = document.querySelector('[data-page="home"] .js-snapshot-refresh');
+  const parts = ['home-allocation', 'home-holdings', 'home-insights'].map((id) => document.getElementById(id));
   const goalsPromise = getGoals().catch(() => []);
   renderHomeGoals(goalsPromise, isCurrent);
   const access = portfolioAccess();
+  const range = document.getElementById('home-range');
+  refresh.hidden = access !== 'ok';
+  range.hidden = access !== 'ok';
   if (access !== 'ok') {
-    stats.innerHTML = dashStat('Portfolio Value', access === 'private' ? 'Live only' : 'Not connected',
-      access === 'private' ? 'Private mode saves no snapshots' : 'Connect a broker to track it')
-      + dashStat('Total Invested', '—', 'Needs a portfolio snapshot')
-      + dashStat('Today\'s Change', '—', 'Needs a portfolio snapshot')
-      + dashStat('Total Returns', '—', 'Needs a portfolio snapshot');
+    value.textContent = '';
+    change.textContent = '';
+    stats.innerHTML = '';
+    stats.hidden = true;
+    setHtml(chart, access === 'private'
+      ? '<div class="home-empty"><p class="home-empty-title">Live only in private mode</p><p class="page-muted">Private mode keeps no snapshots, so there is no history to chart. Portfolio Analyzer can still read your connected brokers live.</p><button class="rail-button inline-button" type="button" data-agent="portfolio" data-prompt="Give me a snapshot of my current net worth.">Ask Portfolio Analyzer</button></div>'
+      : `<div class="home-empty"><p class="home-empty-title">Connect a broker</p><p class="page-muted">Connect a broker to see your net worth, holdings and how they change each day. Access is read-only.</p>${CONNECT_BUTTON}</div>`);
     const message = access === 'private'
-      ? '<p class="page-muted">Private mode keeps no snapshots. Portfolio Analyzer can still read your connected brokers live.</p>'
-      : `<p class="page-muted">Connect a broker to see this. Access is read-only.</p>${CONNECT_BUTTON}`;
+      ? '<p class="page-muted">Private mode keeps no snapshots.</p>'
+      : '<p class="page-muted">Appears once a broker is connected.</p>';
     parts.forEach((part) => { part.innerHTML = message; });
     return;
   }
-  stats.innerHTML = dashStat('Portfolio Value', '…') + dashStat('Total Invested', '…') + dashStat('Today\'s Change', '…') + dashStat('Total Returns', '…');
+  stats.hidden = false;
+  stats.innerHTML = ['Invested', 'Returns', "Today's change", 'Liabilities'].map((label) => kpiCard(label, '…')).join('');
+  setHtml(chart, loadingBlock());
   parts.forEach((part) => { part.innerHTML = loadingBlock(); });
   const [portfolio, trend] = await Promise.all([getPortfolio().catch((error) => ({ error })), getHistory(homeRange).catch(() => null)]);
   if (!isCurrent()) return;
   if (portfolio.error || !portfolio.available) {
-    const message = portfolio.error ? errorBlock(portfolio.error) : `<p class="page-muted">Your first daily snapshot is on its way.</p>${REFRESH_BUTTON}`;
-    stats.innerHTML = dashStat('Portfolio Value', '—', 'First snapshot on its way') + dashStat('Total Invested', '—') + dashStat('Today\'s Change', '—') + dashStat('Total Returns', '—');
+    range.hidden = true;
+    value.textContent = '';
+    change.textContent = '';
+    stats.innerHTML = '';
+    stats.hidden = true;
+    setHtml(chart, portfolio.error ? errorBlock(portfolio.error)
+      : `<div class="home-empty"><p class="home-empty-title">No snapshot yet</p><p class="page-muted">CA Mode saves one portfolio snapshot a day. The first one is on its way; you can also save one now.</p>${REFRESH_BUTTON}</div>`);
+    const message = portfolio.error ? '<p class="page-muted">Could not load your portfolio.</p>' : '<p class="page-muted">Appears after your first snapshot.</p>';
     parts.forEach((part) => { part.innerHTML = message; });
     return;
   }
   const figures = portfolio.figures;
-  const points = (trend?.history || []).filter((point) => Number.isFinite(point.networthInr));
+  const series = historySeries(trend);
+  const points = series.points;
   const netWorth = figures.totals.net_worth_inr ?? portfolio.networthInr;
-  const change = historyChange(points);
-  const pnl = figures.pnl;
-  const day = dayChange(portfolio.holdings || []);
-  const investedShare = pnl.current_value_inr > 0 ? Math.min(100, pnl.invested_inr / pnl.current_value_inr * 100) : 0;
-  stats.innerHTML = dashStat('Portfolio Value', money(netWorth),
-    change ? `${signedMoney(change.change)} (${percent(change.pct, { signed: true })}) · ${change.label}` : `As of ${formatDate(portfolio.asOfDate)}`,
-    { tone: change ? toneOf(change.change) : '', art: dashSpark(points, 'stat') })
-    + dashStat('Total Invested', money(pnl.invested_inr), `${signedShort(pnl.pnl_inr)} (${percent(pnl.pnl_pct, { signed: true })}) over ${pnl.holdings_counted} holdings`,
-      { tone: toneOf(pnl.pnl_inr), art: `<span class="dash-meter" aria-hidden="true"><span style="width:${investedShare.toFixed(1)}%"></span></span>` })
-    + dashStat('Today\'s Change', day ? signedMoney(day.change) : '—', day ? `${percent(day.pct, { signed: true })} · ${day.up} up, ${day.down} down` : 'No moves in the latest snapshot',
-      { tone: day ? toneOf(day.change) : '', art: day ? dashBars(portfolio.holdings) : '' })
-    + dashStat('Total Returns', percent(pnl.pnl_pct, { signed: true }), `${signedShort(pnl.pnl_inr)} on holdings with a cost`,
-      { tone: toneOf(pnl.pnl_inr), art: dashSpark(points, 'mini') });
-  parts[0].innerHTML = allocationRing(figures.by_asset_type || [], netWorth);
-  parts[1].innerHTML = performanceChart(points);
-  parts[2].innerHTML = topHoldingsList(figures.top_holdings || []);
-  parts[3].innerHTML = insightList(portfolio);
+  const moved = historyChange(points);
+  value.textContent = money(netWorth);
+  change.innerHTML = moved
+    ? `<span class="change-pill ${toneOf(moved.change)}">${moved.change < 0 ? '▼' : '▲'} ${escHtml(signedMoney(moved.change))} · ${escHtml(percent(moved.pct))}</span> <span>${escHtml(spanPhrase(moved.days))}</span>`
+    : `<span>From your snapshot of ${escHtml(formatDate(portfolio.asOfDate))}</span>`;
+  setHtml(chart, points.length > 1
+    ? historyChartHtml(points, `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${homeRange} days`, { compact: true, area: true, height: 220 })
+    : '<p class="page-muted home-chart-empty">The trend appears after a second daily snapshot.</p>');
+  stats.innerHTML = homeKpis(figures, portfolio.holdings || []);
+  parts[0].innerHTML = allocationCard(figures.by_asset_type || []);
+  parts[1].innerHTML = topHoldingsList(figures.top_holdings || []);
+  parts[2].innerHTML = insightList(portfolio);
 }
 
-function dashStat(label, value, sub = '', { tone = '', art = '' } = {}) {
-  return `<div class="dash-stat"><span class="stat-label">${escHtml(label)}</span><strong class="dash-stat-value">${escHtml(value)}</strong>${sub ? `<small class="stat-sub ${tone}">${escHtml(sub)}</small>` : ''}${art}</div>`;
+function homeKpis(figures, holdings) {
+  const pnl = figures.pnl || {};
+  const counted = Number(pnl.holdings_counted);
+  const excluded = Number(pnl.holdings_excluded);
+  const costNote = Number.isFinite(counted)
+    ? (Number.isFinite(excluded) && excluded > 0 ? `${counted} of ${counted + excluded} holdings report a cost` : `${counted} holdings with a cost`)
+    : '';
+  const day = dayChange(holdings);
+  return kpiCard('Invested', money(pnl.invested_inr), costNote)
+    + kpiCard('Returns', signedMoney(pnl.pnl_inr), Number.isFinite(pnl.pnl_pct) ? `${percent(pnl.pnl_pct, { signed: true })} on those holdings` : '', toneOf(pnl.pnl_inr))
+    + kpiCard("Today's change", day ? signedMoney(day.change) : '—', day ? `${percent(day.pct, { signed: true })} · ${day.up} up, ${day.down} down` : 'No moves in the latest snapshot', day ? toneOf(day.change) : '')
+    + kpiCard('Liabilities', money(figures.totals?.liabilities_inr), 'Loans and card dues');
 }
 
 // The latest snapshot's one-day moves summed over holdings, as the rail's insight does.
@@ -430,102 +463,49 @@ function dayChange(holdings) {
   return { change, pct: base > 0 ? change / base * 100 : NaN, up, down: moved.length - up };
 }
 
-function dashSpark(points, kind) {
-  const values = thin(points, 60).map((point) => point.networthInr);
-  if (values.length < 2) return '';
-  const width = 160;
-  const height = 48;
-  const min = Math.min(...values);
-  const range = Math.max(...values) - min || 1;
-  const line = values.map((value, index) => `${(index / (values.length - 1) * width).toFixed(1)} ${(height - 4 - (value - min) / range * (height - 10)).toFixed(1)}`).join(' L');
-  const down = values[values.length - 1] < values[0];
-  return `<svg class="dash-spark-chart dash-spark-${kind} ${down ? 'is-down' : ''}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
-    <path d="M${line} V${height} H0 Z" class="dash-area"/><path d="M${line}" class="dash-line"/></svg>`;
+// A stacked bar and a list with each asset type's full name, value and share.
+function allocationCard(rows) {
+  const shares = allocationShares(rows);
+  if (!shares.length) return '<p class="page-muted">No holdings in the latest snapshot.</p>';
+  const series = (index) => `series-${(index % SERIES_COUNT) + 1}`;
+  const label = shares.map((row) => `${assetTypeLabel(row.assetType)} ${percent(row.pct)}`).join(', ');
+  return `<div class="stack-bar" role="img" aria-label="${escHtml(label)}">${shares.map((row, index) =>
+    `<span class="${series(index)}" style="width:${row.pct.toFixed(2)}%"></span>`).join('')}</div>
+    <ul class="alloc-list">${shares.map((row, index) => `<li><span class="alloc-swatch ${series(index)}" aria-hidden="true"></span>
+      <span class="alloc-name">${escHtml(assetTypeLabel(row.assetType))}</span>
+      <span class="alloc-value">${escHtml(money(row.value))}</span><strong class="alloc-pct">${escHtml(percent(row.pct))}</strong></li>`).join('')}</ul>`;
 }
 
-// One bar per holding that moved, largest moves on the right.
-function dashBars(holdings) {
-  const moves = holdings.map((item) => item.one_day_change_inr).filter((value) => Number.isFinite(value) && value !== 0)
-    .sort((a, b) => Math.abs(a) - Math.abs(b)).slice(-8);
-  const peak = Math.max(...moves.map(Math.abs)) || 1;
-  return `<span class="dash-bars" aria-hidden="true">${moves.map((value) =>
-    `<span class="${value < 0 ? 'is-down' : ''}" style="height:${Math.max(12, Math.abs(value) / peak * 100).toFixed(0)}%"></span>`).join('')}</span>`;
-}
-
-function allocationRing(rows, netWorth) {
-  const shown = rows.filter((row) => row.current_value_inr > 0).sort((a, b) => b.current_value_inr - a.current_value_inr);
-  const total = shown.reduce((sum, row) => sum + row.current_value_inr, 0);
-  if (!total) return '<p class="page-muted">No holdings in the latest snapshot.</p>';
-  const radius = 15.9155;
-  let offset = 25;
-  const arcs = shown.map((row, index) => {
-    const share = row.current_value_inr / total * 100;
-    const arc = `<circle cx="21" cy="21" r="${radius}" fill="none" stroke="${DASH_COLORS[index % DASH_COLORS.length]}" stroke-width="5.2" stroke-dasharray="${Math.max(share - 0.6, 0.1).toFixed(2)} ${(100 - share + 0.6).toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"/>`;
-    offset -= share;
-    return arc;
-  }).join('');
-  const legend = shown.map((row, index) => `<li><span class="dash-dot" style="background:${DASH_COLORS[index % DASH_COLORS.length]}"></span>
-    <span>${escHtml(assetTypeLabel(row.asset_type))}</span><strong>${percent(row.current_value_inr / total * 100)}</strong></li>`).join('');
-  return `<div class="dash-alloc">
-    <div class="dash-ring"><svg viewBox="0 0 42 42" role="img" aria-label="Allocation by asset type">${arcs}</svg>
-      <span class="dash-ring-label"><strong>${escHtml(moneyShort(netWorth))}</strong><small>Total</small></span></div>
-    <ul class="dash-legend">${legend}</ul></div>`;
-}
-
-function performanceChart(points) {
-  const series = thin(points, 120);
-  if (series.length < 2) return '<p class="page-muted">The trend appears after a second daily snapshot.</p>';
-  const width = 520;
-  const height = 250;
-  const left = 50;
-  const bottom = 22;
-  const values = series.map((point) => point.networthInr);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const pad = (max - min) * 0.12 || max * 0.02 || 1;
-  const low = min - pad;
-  const span = max + pad - low;
-  const x = (index) => left + index / (series.length - 1) * (width - left - 6);
-  const y = (value) => 8 + (1 - (value - low) / span) * (height - bottom - 8);
-  const line = series.map((point, index) => `${x(index).toFixed(1)} ${y(point.networthInr).toFixed(1)}`).join(' L');
-  const ticks = [0, 1, 2, 3].map((step) => low + span * (step / 3));
-  const grid = ticks.map((value) => `<line x1="${left}" x2="${width}" y1="${y(value).toFixed(1)}" y2="${y(value).toFixed(1)}"/>
-    <text x="${left - 8}" y="${(y(value) + 3).toFixed(1)}" text-anchor="end">${escHtml(moneyShort(value))}</text>`).join('');
-  const labelEvery = Math.max(1, Math.floor(series.length / 6));
-  const labels = series.map((point, index) => (index % labelEvery === 0 ? `<text x="${x(index).toFixed(1)}" y="${height - 4}" text-anchor="middle">${escHtml(shortDay(point.date))}</text>` : '')).join('');
-  const down = values[values.length - 1] < values[0];
-  return `<svg class="dash-perf ${down ? 'is-down' : ''}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Net worth from ${escHtml(formatDate(series[0].date))} to ${escHtml(formatDate(series[series.length - 1].date))}">
-    <defs><linearGradient id="dash-perf-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".38"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-    <g class="dash-grid-lines">${grid}</g><g class="dash-axis">${labels}</g>
-    <path d="M${line} V${height - bottom} H${left} Z" fill="url(#dash-perf-fill)"/><path d="M${line}" class="dash-line"/></svg>`;
-}
-
-function shortDay(isoDate) {
-  return new Date(`${isoDate}T00:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short' });
-}
+const ASSET_TYPE_SINGULAR = { MF: 'Mutual fund', IND_STOCK: 'Indian stock', US_STOCK: 'US stock', FD: 'Fixed deposit', BONDS: 'Bond' };
 
 function topHoldingsList(rows) {
   if (!rows.length) return '<p class="page-muted">No holdings in the latest snapshot.</p>';
-  return `<ul class="dash-list">${rows.slice(0, 5).map((row, index) => {
-    const name = row.name || row.code || 'Holding';
-    const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase();
-    const pct = Number.isFinite(row.pnl_pct) ? `<strong class="${toneOf(row.pnl_pct)}">${percent(row.pnl_pct, { signed: true })}</strong>` : '<strong class="page-muted">—</strong>';
-    return `<li><span class="dash-badge" style="--badge:${DASH_COLORS[index % DASH_COLORS.length]}" aria-hidden="true">${escHtml(initials)}</span>
-      <span class="dash-list-body"><span>${escHtml(name)}</span><small>${escHtml(money(row.current_value_inr))}</small></span>${pct}</li>`;
+  return `<ul class="holding-list">${rows.slice(0, 5).map((row) => {
+    const where = [ASSET_TYPE_SINGULAR[row.asset_type] || assetTypeLabel(row.asset_type), row.broker,
+      Number.isFinite(row.share_of_portfolio_pct) ? percent(row.share_of_portfolio_pct) : ''].filter(Boolean).join(' · ');
+    const pnl = Number.isFinite(row.pnl_pct)
+      ? `<span class="holding-pnl ${toneOf(row.pnl_pct)}">${escHtml(percent(row.pnl_pct, { signed: true }))}</span>`
+      : '<span class="holding-pnl page-muted">No cost reported</span>';
+    return `<li><span class="holding-main"><span class="holding-title">${escHtml(row.name || row.code || 'Holding')}</span><small>${escHtml(where)}</small></span>
+      <span class="holding-figures"><strong>${escHtml(money(row.current_value_inr))}</strong>${pnl}</span></li>`;
   }).join('')}</ul>`;
 }
 
 function insightList(portfolio) {
   const insights = portfolioInsights(portfolio, 3);
   if (!insights.length) return '<p class="page-muted">Nothing stood out in your latest snapshot.</p>';
-  const icons = { up: '<path d="M7 17 17 7M9 7h8v8"/>', down: '<path d="M7 7l10 10M17 9v8H9"/>', other: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3Z"/>' };
-  return `<ul class="dash-insights">${insights.map((insight) => {
-    const kind = insight.tone === 'up' ? 'up' : insight.tone === 'down' ? 'down' : 'other';
-    return `<li><button type="button" data-agent="portfolio" data-prompt="${escHtml(insight.prompt)}">
-      <span class="dash-insight-icon is-${kind}" aria-hidden="true"><svg viewBox="0 0 24 24">${icons[kind]}</svg></span>
-      <span class="dash-list-body"><span>${escHtml(insight.title)}</span><small>${escHtml(insight.detail)}</small></span>
-      <span class="dash-chevron" aria-hidden="true">›</span></button></li>`;
-  }).join('')}</ul>`;
+  const arrows = { up: '▲', down: '▼' };
+  return `<ul class="change-list">${insights.map((insight) => `<li>
+      <span class="change-mark ${insight.tone === 'up' ? 'is-up' : insight.tone === 'down' ? 'is-down' : 'is-other'}" aria-hidden="true">${arrows[insight.tone] || '•'}</span>
+      <span class="change-body"><span>${escHtml(insight.title)}</span><small>${escHtml(insight.detail)}</small></span>
+      <button class="ask-why" type="button" data-agent="portfolio" data-prompt="${escHtml(insight.prompt)}" aria-label="Ask why: ${escHtml(insight.title)}">Ask why</button></li>`).join('')}</ul>`;
+}
+
+const GOAL_TONE_CLASSES = { good: 'is-good', conditional: 'is-conditional', behind: 'is-behind' };
+
+function monthYear(isoDate) {
+  if (!isoDate) return '';
+  return new Date(`${isoDate}T00:00:00`).toLocaleDateString([], { month: 'short', year: 'numeric' });
 }
 
 async function renderHomeGoals(goalsPromise, isCurrent) {
@@ -534,19 +514,23 @@ async function renderHomeGoals(goalsPromise, isCurrent) {
   const goals = await goalsPromise;
   if (!isCurrent()) return;
   const shown = goals.filter((goal) => !isDraft(goal)).slice(0, 3);
+  const add = goals.length < MAX_GOALS ? '<button class="add-row" type="button" data-add-goal>+ Add a goal</button>' : '';
   if (!shown.length) {
-    box.innerHTML = '<p class="page-muted">Set what you are saving for and track it here.</p><button class="rail-button inline-button" type="button" data-add-goal>Add a goal</button>';
+    box.innerHTML = `<p class="page-muted">Set what you are saving for and track it here.</p>${add}`;
     return;
   }
-  box.innerHTML = `<ul class="dash-list dash-goals">${shown.map((goal, index) => {
-    const progress = Number.isFinite(goal.plan?.progressPct) ? goal.plan.progressPct : 0;
+  box.innerHTML = `<ul class="goal-progress-list">${shown.map((goal) => {
+    const progress = Number(goal.plan?.progressPct);
+    const known = Number.isFinite(progress);
+    const tone = GOAL_TONE_CLASSES[goalTone(goal.plan)];
     const target = headlineTarget(goal);
-    return `<li><button type="button" data-edit-goal="${escHtml(goal.id)}">
-      ${goalIconHtml(goal, GOAL_TONES[index % GOAL_TONES.length], 'dash-goal-icon')}
-      <span class="dash-list-body"><span>${escHtml(goal.name)}</span><small>${target.amount != null ? `${escHtml(amount(target.amount, goal.currency))} target` : 'No target yet'}</small>
-        <span class="dash-meter" aria-hidden="true"><span style="width:${Math.min(100, progress).toFixed(1)}%"></span></span></span>
-      <strong>${Math.floor(progress)}%</strong></button></li>`;
-  }).join('')}</ul>`;
+    const of = target.amount != null ? ` of ${amountShort(target.amount, goal.currency)}` : '';
+    return `<li><button type="button" data-edit-goal="${escHtml(goal.id)}" aria-label="Edit ${escHtml(goal.name)}">
+      <span class="goal-progress-head"><span class="goal-progress-name">${escHtml(goal.name)}</span><span class="tone-pill ${tone}">${escHtml(goalStatus(goal.plan)[0])}</span></span>
+      <span class="progress-bar ${tone}" aria-hidden="true"><span style="width:${known ? Math.min(100, Math.max(0, progress)).toFixed(1) : 0}%"></span></span>
+      <span class="goal-progress-foot"><span>${known ? `${Math.floor(progress)}%${escHtml(of)}` : 'Progress unknown'}</span><span>${goal.targetDate ? `by ${escHtml(monthYear(goal.targetDate))}` : ''}</span></span>
+    </button></li>`;
+  }).join('')}</ul>${add}`;
 }
 
 document.querySelectorAll('[data-home-range]').forEach((button) => button.addEventListener('click', () => {
@@ -555,13 +539,21 @@ document.querySelectorAll('[data-home-range]').forEach((button) => button.addEve
   if (currentRoute === 'home') renderHome();
 }));
 
-document.getElementById('home-ask').addEventListener('submit', (event) => {
+const homeAskForm = document.getElementById('home-ask');
+const homeAskInput = document.getElementById('home-ask-input');
+homeAskForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const input = document.getElementById('home-ask-input');
-  const text = input.value.trim();
+  const text = homeAskInput.value.trim();
   if (!text) return;
-  input.value = '';
+  homeAskInput.value = '';
   runPrompt(text).catch(showError);
+});
+// Enter sends, Shift+Enter starts a new line, as in the chat composer.
+homeAskInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !isComposingEnter(event)) {
+    event.preventDefault();
+    homeAskForm.requestSubmit();
+  }
 });
 
 function renderHomeChats() {
@@ -608,11 +600,11 @@ async function renderPortfolio() {
   const f = data.figures;
   const t = f.totals;
   const p = f.pnl;
-  const stats = statTile('Net worth', moneyShort(t.net_worth_inr ?? data.networthInr), money(t.net_worth_inr ?? data.networthInr))
-    + statTile('Current value', moneyShort(t.current_value_inr), 'All investments')
-    + statTile('Invested', moneyShort(t.invested_inr), 'As reported by INDmoney')
-    + statTile('P&L', signedShort(p.pnl_inr), `${percent(p.pnl_pct, { signed: true })} on ${p.holdings_counted} holdings with a cost`, toneOf(p.pnl_inr))
-    + statTile('Liabilities', moneyShort(t.liabilities_inr), 'Loans and card dues');
+  const stats = kpiCard('Net worth', money(t.net_worth_inr ?? data.networthInr), data.asOfDate ? `As of ${formatDate(data.asOfDate)}` : '')
+    + kpiCard('Current value', money(t.current_value_inr), 'All investments')
+    + kpiCard('Invested', money(t.invested_inr), 'As reported by INDmoney')
+    + kpiCard('P&L', signedMoney(p.pnl_inr), Number.isFinite(p.pnl_pct) ? `${percent(p.pnl_pct, { signed: true })} on ${p.holdings_counted} holdings with a cost` : 'No holding reports a cost', toneOf(p.pnl_inr))
+    + kpiCard('Liabilities', money(t.liabilities_inr), 'Loans and card dues');
 
   const allocation = (f.by_asset_type || []).filter((row) => row.current_value_inr > 0)
     .map((row) => ({ label: assetTypeLabel(row.asset_type), value: row.current_value_inr }));
@@ -630,7 +622,7 @@ async function renderPortfolio() {
   const notes = [...(f.data_notes || []), ...Object.keys(data.unavailable || {}).map((name) => `${name} could not be fetched for this snapshot.`)];
 
   setHtml(body, `
-    <div class="stat-grid">${stats}</div>
+    <div class="kpi-strip kpi-strip-5" aria-label="Key figures">${stats}</div>
     ${panel('Net worth trend', '<div id="trend-chart"></div>', { action: trendControls() })}
     <div class="page-columns">
       ${panel('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }))}
@@ -671,10 +663,8 @@ async function renderTrend() {
     setHtml(container, '<p class="page-muted">The trend appears once there are two days of snapshots.</p>');
     return;
   }
-  setHtml(container, chartHtml({
-    type: 'line', title: `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${trendDays} days`, unit: '₹',
-    series: netWorthSeries(points),
-  }) + (series.note ? `<p class="page-muted small">${escHtml(series.note)}</p>` : ''));
+  setHtml(container, historyChartHtml(points, `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${trendDays} days`)
+    + (series.note ? `<p class="page-muted small">${escHtml(series.note)}</p>` : ''));
 }
 
 document.addEventListener('click', (event) => {
@@ -1966,7 +1956,7 @@ async function renderReports() {
       ${statTile('12-month high', moneyShort(high.networthInr), formatDate(high.date))}
       ${statTile('12-month low', moneyShort(low.networthInr), formatDate(low.date))}
     </div>
-    ${panel('Net worth over time', reportPoints.length > 1 ? chartHtml({ type: 'line', title: 'Net worth, last 12 months', unit: '₹', series: netWorthSeries(reportPoints) }) : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
+    ${panel('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
     ${panel('Change by period', `<div class="table-scroll"><table class="data-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table></div>`)}
     ${panel('Month-end net worth', `<div class="table-scroll"><table class="data-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table></div>`)}
     ${downloadsPanel(true)}`);

@@ -132,6 +132,49 @@ test('historySeries uses the combined value only when broker history exists', ()
   assert.deepEqual(finance.historySeries(null).points, []);
 });
 
+test('spanPhrase reads a change span in words', () => {
+  assert.equal(finance.spanPhrase(120), 'over the last 4 months');
+  assert.equal(finance.spanPhrase(30), 'over the last month');
+  assert.equal(finance.spanPhrase(12), 'over the last 12 days');
+  assert.equal(finance.spanPhrase(1), 'over the last day');
+  assert.equal(finance.spanPhrase(365), 'over the last year');
+  assert.equal(finance.spanPhrase(0), '');
+  assert.equal(finance.spanPhrase(NaN), '');
+});
+
+test('niceTicks covers the data with round steps and never invents a range', () => {
+  assert.deepEqual(finance.niceTicks(1543288, 1605331), [1540000, 1560000, 1580000, 1600000, 1620000]);
+  assert.deepEqual(finance.niceTicks(-5000, 12000), [-5000, 0, 5000, 10000, 15000]);
+  assert.deepEqual(finance.niceTicks(0.1, 0.37), [0.1, 0.2, 0.3, 0.4]);  // no floating-point noise
+  const flat = finance.niceTicks(250000, 250000);
+  assert.ok(flat[0] < 250000 && flat[flat.length - 1] > 250000);  // a flat line still gets an axis around it
+  assert.deepEqual(finance.niceTicks(NaN, 10), []);
+  assert.deepEqual(finance.niceTicks(5, Infinity), []);
+});
+
+test('goalTone separates on track, on track only if returns hold, and behind', () => {
+  assert.equal(finance.goalTone({ status: 'on_track' }), 'good');
+  assert.equal(finance.goalTone({ status: 'reached' }), 'good');
+  assert.equal(finance.goalTone({ status: 'on_track', feasibility: { status: 'depends_on_returns' } }), 'conditional');
+  assert.equal(finance.goalTone({ status: 'behind' }), 'behind');
+  assert.equal(finance.goalTone({ status: 'insufficient_data' }), 'behind');
+  assert.equal(finance.goalTone(null), 'behind');
+});
+
+test('allocationShares sorts asset types by value and leaves out missing or empty ones', () => {
+  const shares = finance.allocationShares([
+    { asset_type: 'EPF', current_value_inr: 250000 },
+    { asset_type: 'MF', current_value_inr: 750000 },
+    { asset_type: 'GOLD', current_value_inr: 0 },
+    { asset_type: 'FD', current_value_inr: null },
+  ]);
+  assert.deepEqual(shares.map((row) => row.assetType), ['MF', 'EPF']);
+  assert.deepEqual(shares.map((row) => row.pct), [75, 25]);
+  assert.equal(shares[0].value, 750000);
+  assert.deepEqual(finance.allocationShares([]), []);
+  assert.deepEqual(finance.allocationShares(null), []);
+});
+
 const HOUR = 3600 * 1000;
 
 test('brokersNeedingAttention flags ended logins and day-old holdings only for connected brokers', () => {
