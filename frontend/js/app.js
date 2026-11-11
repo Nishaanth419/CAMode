@@ -347,27 +347,29 @@ function renderCasStatements(statements) {
   const list = document.getElementById('cas-statements');
   list.innerHTML = '';
   if (!statements.length) return;
-  const table = document.createElement('table');
-  table.className = 'data-table compact';
-  table.innerHTML = '<thead><tr><th>Statement</th><th>Holdings</th><th>Value</th><th><span class="sr-only">Actions</span></th></tr></thead>';
-  const body = document.createElement('tbody');
+  // A list rather than a table, so each statement reads as one row on a phone too.
+  const items = document.createElement('ul');
+  items.className = 'cas-list';
+  items.setAttribute('aria-label', 'Saved statements');
   for (const statement of statements) {
-    const row = document.createElement('tr');
-    row.innerHTML = `<td>${escHtml(statement.source)} · ${escHtml(statement.periodTo)}</td><td>${Number(statement.holdings) || 0}</td><td>${inr.format(statement.valueInr || 0)}</td><td></td>`;
+    const item = document.createElement('li');
+    const count = Number(statement.holdings) || 0;
+    item.innerHTML = `<span class="cas-item-main"><span class="cas-item-title">${escHtml(statement.source)} · ${escHtml(statement.periodTo)}</span>
+      <small>${count} ${count === 1 ? 'holding' : 'holdings'} · ${escHtml(money(statement.valueInr))}</small></span>`;
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'table-action';
     remove.textContent = 'Delete';
+    remove.setAttribute('aria-label', `Delete the ${statement.source} statement to ${statement.periodTo}`);
     remove.addEventListener('click', async () => {
       if (!window.confirm('Delete this saved statement?')) return;
       const response = await fetch('/api/cas/' + encodeURIComponent(statement.id), { method: 'DELETE' });
       if (response.ok) await loadCasStatus();
     });
-    row.lastElementChild.appendChild(remove);
-    body.appendChild(row);
+    item.appendChild(remove);
+    items.appendChild(item);
   }
-  table.appendChild(body);
-  list.appendChild(table);
+  list.appendChild(items);
 }
 
 function renderCas(latest) {
@@ -376,7 +378,7 @@ function renderCas(latest) {
   casAsk.hidden = !latest;
   if (latest) {
     const brokers = latest.brokers.length;
-    casCopy.textContent = `${inr.format(latest.valueInr)} in ${latest.holdings} holdings across ${brokers} account${brokers === 1 ? '' : 's'} (${latest.source} statement). Upload a newer one each month.`;
+    casCopy.textContent = `${money(latest.valueInr)} in ${latest.holdings} holdings across ${brokers} account${brokers === 1 ? '' : 's'} (${latest.source} statement). Upload a newer one each month.`;
   } else {
     casCopy.textContent = CAS_DEFAULT_COPY;
   }

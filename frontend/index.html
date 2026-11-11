@@ -28,14 +28,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=51" />
+  <link rel="stylesheet" href="/css/app.css?v=52" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
-  <script src="/js/finance.js?v=11" defer></script>
+  <script src="/js/finance.js?v=12" defer></script>
   <script src="/js/trace.js?v=12" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
-  <script src="/js/app.js?v=46" defer></script>
-  <script src="/js/pages.js?v=30" defer></script>
+  <script src="/js/app.js?v=47" defer></script>
+  <script src="/js/pages.js?v=31" defer></script>
   <script src="/js/rail.js?v=8" defer></script>
 </head>
 <body>
@@ -69,10 +69,6 @@
           <a class="nav-item" href="#/holdings" data-route="holdings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M2 12.5l10 5 10-5M2 17l10 5 10-5"/></svg>
             <span>Holdings</span>
-          </a>
-          <a class="nav-item" href="#/investments" data-route="investments">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 15 3-3 2 2 3-4"/><path d="M14 10h2v2"/></svg>
-            <span>Investments</span>
           </a>
           <a class="nav-item" href="#/returns" data-route="returns">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18"/><path d="m5 15 4-4 3 3 6-7"/><path d="M15 7h3v3"/></svg>
@@ -322,7 +318,7 @@
               <div id="home-allocation"></div>
             </section>
             <section class="panel home-card" aria-labelledby="home-holdings-title">
-              <div class="card-head"><h2 id="home-holdings-title" class="card-title">Largest holdings</h2><a class="panel-link" href="#/investments">All holdings <span aria-hidden="true">→</span></a></div>
+              <div class="card-head"><h2 id="home-holdings-title" class="card-title">Largest holdings</h2><a class="panel-link" href="#/holdings">All holdings <span aria-hidden="true">→</span></a></div>
               <div id="home-holdings"></div>
             </section>
             <section class="panel home-card" aria-labelledby="home-goals-title">
@@ -362,27 +358,20 @@
               <h1 id="holdings-title" class="page-title">Holdings</h1>
               <p class="page-sub" id="holdings-asof"></p>
             </div>
+            <div class="page-actions">
+              <button id="holdings-csv" class="gate-secondary" type="button" hidden>Download CSV</button>
+              <button class="gate-secondary" type="button" data-connect>Connect a broker</button>
+            </div>
           </header>
           <div class="broker-banners" data-broker-banners></div>
           <div id="holdings-body"></div>
-        </section>
-
-        <section class="page" data-page="investments" aria-labelledby="investments-title">
-          <header class="page-head">
-            <div>
-              <h1 id="investments-title" class="page-title">Investments</h1>
-              <p class="page-sub" id="investments-asof"></p>
-            </div>
-            <button id="holdings-csv" class="gate-secondary" type="button" hidden>Download CSV</button>
-          </header>
-          <div id="investments-body"></div>
-          <section class="panel" id="cas-card" hidden>
-            <div class="rail-head">
-              <h2>Holdings at other brokers</h2>
+          <section class="panel home-card cas-card" id="cas-card" aria-labelledby="cas-title" hidden>
+            <div class="card-head">
+              <h2 id="cas-title" class="card-title">CAS statements</h2>
               <span id="cas-pill" class="pill">No statement</span>
             </div>
-            <p id="cas-copy" class="rail-copy">Upload the monthly CAS emailed by NSDL or CDSL to include holdings at every broker. CA Mode keeps the holdings and, from a detailed CAMS or KFintech statement, the mutual fund transactions (never folio numbers), locked with your PIN.</p>
-            <p class="rail-copy">For true returns on your mutual funds, upload a detailed CAS from CAMS or KFintech covering since inception, then open <a href="#/returns">Returns &amp; tax</a>.</p>
+            <p id="cas-copy" class="cas-copy">Upload the monthly CAS emailed by NSDL or CDSL to include holdings at every broker. CA Mode keeps the holdings and, from a detailed CAMS or KFintech statement, the mutual fund transactions (never folio numbers), locked with your PIN.</p>
+            <p class="cas-copy cas-hint">For true returns on your mutual funds, upload a detailed CAS from CAMS or KFintech covering since inception, then open <a href="#/returns">Returns &amp; tax</a>.</p>
             <form id="cas-form" class="cas-form">
               <label class="field"><span>CAS PDF</span><input id="cas-file" type="file" accept="application/pdf,.pdf" required /></label>
               <label class="field"><span>PDF password (usually your PAN in capitals)</span><input id="cas-password" type="password" autocomplete="off" required /></label>

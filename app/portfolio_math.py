@@ -155,7 +155,7 @@ def _portfolio_value(investments: list[dict[str, Any]], rows: list[dict[str, Any
 
 
 def all_holdings(results: dict[str, str]) -> list[dict[str, Any]]:
-    """Every holding with its full computed fields, largest first (for the app's Investments page)."""
+    """Every holding with its full computed fields, largest first (for the app's pages and CSV downloads)."""
     snapshot = _json(results.get("networth_snapshot")) or {}
     rows, _ = _holding_rows(results)
     investments = [item for item in snapshot.get("investments") or [] if isinstance(item, dict)]

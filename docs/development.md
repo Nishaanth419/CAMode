@@ -98,7 +98,7 @@ frontend/
   js/demo.js       Demo mode (?demo): answers the API in the browser from demo/data.json (loaded first)
   js/finance.js    Pure money, goal, tax, insight and broker helpers (tabs, reconnect reminders, logos, the connect limit)
   js/app.js        Chat UI, profiles, snapshot card, Markdown and Plotly charts
-  js/pages.js      Hash routes: Home, Activity, Portfolio, Investments, Planning, Markets, Goals, Reports
+  js/pages.js      Hash routes: Home, Activity, Portfolio, Holdings (with CAS upload), Planning, Markets, Goals, Reports
   js/trace.js      Answer trace timeline, investigation evidence card, Activity list helpers
   js/rail.js       The right rail: portfolio, goals, market insights, quick tools
   css/app.css      Styles and light/dark themes

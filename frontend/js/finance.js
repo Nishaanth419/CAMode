@@ -510,6 +510,50 @@
     return payload.combined?.available ? [{ id: 'all', label: 'All', available: true, stale: false, asOf: null, logo: null }, ...tabs] : tabs;
   }
 
+  /* ── Holdings table: tiles, filters and sorting ───────────────────── */
+  // Two letters for a holding's tile: the first letters of its first two words, else the word's first two.
+  function holdingInitials(name) {
+    const words = String(name || '').split(/\s+/).filter((word) => /^[\p{L}\p{N}]/u.test(word));
+    if (!words.length) return '?';
+    const letters = words.length > 1 ? words[0][0] + words[1][0] : [...words[0]].slice(0, 2).join('');
+    return letters.toUpperCase();
+  }
+
+  // Asset types in the order they first appear (rows come largest first), each with its count.
+  function holdingTypeCounts(rows) {
+    const counts = new Map();
+    for (const row of rows || []) {
+      if (row?.asset_type) counts.set(row.asset_type, (counts.get(row.asset_type) || 0) + 1);
+    }
+    return [...counts].map(([type, count]) => ({ type, count }));
+  }
+
+  // Largest first; a missing figure sorts last, never as zero.
+  function byFigure(key) {
+    return (a, b) => {
+      const x = a[key];
+      const y = b[key];
+      if (Number.isFinite(x) !== Number.isFinite(y)) return Number.isFinite(x) ? -1 : 1;
+      return Number.isFinite(x) ? y - x : 0;
+    };
+  }
+  const HOLDING_SORTS = {
+    value: byFigure('current_value_inr'),
+    pnl: byFigure('pnl_inr'),
+    pnlPct: byFigure('pnl_pct'),
+    day: byFigure('one_day_change_inr'),
+    name: (a, b) => String(a.name || a.code || '').localeCompare(String(b.name || b.code || '')),
+  };
+
+  // The rows a holdings table shows: one asset type (or ALL), matching the search in name, code or broker.
+  function filterHoldings(rows, { type = 'ALL', query = '', sort = 'value' } = {}) {
+    const needle = String(query).trim().toLowerCase();
+    return (rows || [])
+      .filter((row) => type === 'ALL' || row.asset_type === type)
+      .filter((row) => !needle || [row.name, row.code, row.broker].some((value) => String(value || '').toLowerCase().includes(needle)))
+      .sort(HOLDING_SORTS[sort] || HOLDING_SORTS.value);
+  }
+
   // The status line for a broker in the profile dialog.
   function brokerStatusLabel(status, holdingsAt, now = Date.now()) {
     const saved = holdingsAt ? ` Showing holdings from ${timeAgo(holdingsAt, now)}.` : '';
@@ -653,7 +697,7 @@
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
-    spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
+    spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, holdingInitials, holdingTypeCounts, filterHoldings, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
     returnFigure, returnStatus, navNote, shortDate,
