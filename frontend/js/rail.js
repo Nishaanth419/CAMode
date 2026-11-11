@@ -213,6 +213,13 @@ async function renderRailInsights(isCurrent) {
 
 /* ── Wiring ─────────────────────────────────────────────────────────── */
 let railToken = 0;
+// The rail shows only beside Ask AI, so it loads its cards only there; elsewhere a change marks it stale.
+let railStale = true;
+let railQueued = false;
+
+function railShown() {
+  return currentRoute === 'chat';
+}
 
 function renderRail() {
   railToken += 1;
@@ -222,9 +229,24 @@ function renderRail() {
     clearRail();
     return;
   }
+  if (!railShown()) {
+    railStale = true;
+    return;
+  }
+  railStale = false;
   for (const render of [renderRailPortfolio, renderRailGoals, renderRailInsights]) {
     render(isCurrent).catch((error) => console.warn('Rail card failed to render:', error));
   }
+}
+
+// Sign-in fires both ca:route and ca:session in one go; render once for both.
+function queueRail() {
+  if (railQueued) return;
+  railQueued = true;
+  queueMicrotask(() => {
+    railQueued = false;
+    renderRail();
+  });
 }
 
 function clearRail() {
@@ -233,15 +255,31 @@ function clearRail() {
   railInsights.innerHTML = '';
 }
 
-document.addEventListener('ca:session', renderRail);
-document.addEventListener('ca:snapshot', renderRail);
-document.addEventListener('ca:brokers', () => { if (sessionReady()) renderRail(); });
+document.addEventListener('ca:route', () => { if (railShown() && railStale) queueRail(); });
+document.addEventListener('ca:session', () => {
+  railStale = true;
+  queueRail();
+});
+document.addEventListener('ca:snapshot', () => {
+  railStale = true;
+  queueRail();
+});
+document.addEventListener('ca:brokers', () => {
+  if (!sessionReady()) return;
+  railStale = true;
+  queueRail();
+});
 document.addEventListener('ca:session-ended', () => {
   railToken += 1;
+  railStale = true;
   clearRail();
 });
 document.addEventListener('ca:goals', () => {
   if (!sessionReady()) return;
+  if (!railShown()) {
+    railStale = true;
+    return;
+  }
   const token = railToken;
   renderRailGoals(() => token === railToken).catch((error) => console.warn('Rail goals failed to render:', error));
 });
