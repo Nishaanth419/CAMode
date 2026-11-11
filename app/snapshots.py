@@ -617,6 +617,7 @@ def cas_tool(user_id: str, keys: ProfileKeys) -> LocalTool:
 
 
 MF_RETURNS_MAX_CHARS = 5500
+MF_EXCLUDED_ROWS = 10  # Excluded funds listed by name in the tool payload; excludedCount has them all.
 _MF_ROW_KEYS = (
     "name", "isin", "status", "reason", "currentValue", "invested", "unrealisedGain", "realisedGain", "xirr",
     "absoluteReturnPct", "returnReason", "navDate", "navSource",
@@ -639,8 +640,10 @@ def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> st
         item = {key: value for key, value in found[0].items() if key != "folioKey"}
         return dump({"available": True, **base, "scheme": item, "otherMatches": len(found) - 1})
     rows = [{key: item[key] for key in _MF_ROW_KEYS} for item in figures["schemes"]]
+    excluded = figures["coverage"]["excluded"]
+    coverage = {**figures["coverage"], "excluded": excluded[:MF_EXCLUDED_ROWS], "excludedCount": len(excluded)}
     for count in range(len(rows), -1, -1):
-        payload = {"available": True, **base, "portfolio": figures["portfolio"], "coverage": figures["coverage"],
+        payload = {"available": True, **base, "portfolio": figures["portfolio"], "coverage": coverage,
                    "schemes": rows[:count], "omittedSchemes": len(rows) - count}
         text = dump(payload)
         if len(text) < MF_RETURNS_MAX_CHARS:

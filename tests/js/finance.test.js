@@ -446,6 +446,7 @@ test('mutual fund returns: status chips and NAV notes', () => {
   assert.equal(finance.returnStatus('incomplete_history').label, 'History missing');
   assert.equal(finance.returnStatus('unreconciled').label, 'Units don’t add up');
   assert.equal(finance.returnStatus('unsupported').label, 'Not supported');
+  assert.equal(finance.returnStatus('no_nav').label, 'No NAV');
   assert.equal(finance.navNote({ navSource: 'amfi', navDate: '2026-11-10' }), 'AMFI NAV of 10 Nov 2026');
   assert.equal(finance.navNote({ navSource: 'statement', navDate: '2026-09-30' }), 'Statement NAV of 30 Sep 2026');
   assert.equal(finance.navNote({ navSource: null, navDate: null }), 'No NAV available');

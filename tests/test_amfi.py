@@ -109,3 +109,47 @@ def test_refresh_is_off_when_disabled():
         raise AssertionError("must not download")
 
     assert asyncio.run(amfi.refresh_if_due(datetime.now(SNAPSHOT_TIMEZONE), fetch=fetch)) is False
+
+
+# The live layout since 2026: Plan and Option columns before the NAV.
+EIGHT_COLUMNS = """Scheme Code;ISIN Div Payout/ ISIN Growth;ISIN Div Reinvestment;Scheme Name;Plan;Option;Net Asset Value;Date
+
+Open Ended Schemes(Equity Scheme - Small Cap Fund)
+
+Axis Mutual Fund
+
+135762;INF846K01WO1;-;Axis Small Cap Fund;Direct Plan;Growth Option;31.0915;11-Nov-2026
+135763;INF846K01WS2;INF846K01WQ6;Axis Small Cap Fund;Direct Plan;IDCW Option;N.A.;11-Nov-2026
+"""
+
+
+def test_parse_reads_the_eight_column_layout():
+    rows = by_isin(amfi.parse_nav_file(EIGHT_COLUMNS))
+
+    assert list(rows) == ["INF846K01WO1"]
+    row = rows["INF846K01WO1"]
+    assert (row.nav, row.nav_date, row.amfi_category) == (Decimal("31.0915"), date(2026, 11, 11), "Equity Scheme - Small Cap Fund")
+    assert row.scheme_name == "Axis Small Cap Fund - Direct Plan - Growth Option"
+
+
+def test_download_follows_amfis_redirect_to_its_portal():
+    import httpx
+
+    def handler(request):
+        if request.url.host == "www.amfiindia.com":
+            return httpx.Response(302, headers={"Location": "https://portal.amfiindia.com/spages/NAVAll.txt"})
+        return httpx.Response(200, text=EIGHT_COLUMNS)
+
+    assert asyncio.run(amfi._download(transport=httpx.MockTransport(handler))) == EIGHT_COLUMNS
+
+
+def test_download_refuses_a_redirect_away_from_amfi():
+    import httpx
+
+    def handler(request):
+        if request.url.host == "www.amfiindia.com":
+            return httpx.Response(302, headers={"Location": "https://example.com/NAVAll.txt"})
+        return httpx.Response(200, text=EIGHT_COLUMNS)
+
+    with pytest.raises(ValueError, match="amfiindia.com"):
+        asyncio.run(amfi._download(transport=httpx.MockTransport(handler)))

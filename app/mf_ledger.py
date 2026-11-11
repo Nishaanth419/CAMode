@@ -116,7 +116,8 @@ def folio_salt(user_id: str, keys: ProfileKeys) -> bytes:
 
 def folio_key_for(salt: bytes) -> Callable[[str], str]:
     def folio_key(folio: str) -> str:
-        return hmac.new(salt, folio.strip().encode(), hashlib.sha256).hexdigest()
+        # Statements print the same folio with different spacing ("12124203 / 63"), so whitespace is ignored.
+        return hmac.new(salt, "".join(folio.split()).encode(), hashlib.sha256).hexdigest()
 
     return folio_key
 

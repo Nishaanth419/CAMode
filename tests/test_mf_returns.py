@@ -132,7 +132,7 @@ def test_switch_between_two_schemes_cancels_in_portfolio_flows():
     # Pooled, the switch nets out: 10000 in on 2 Jan 2023, 13200 (110 x 120) on 10 Nov 2026.
     expected = mf_math.xirr([(date(2023, 1, 2), Decimal("-10000")), (date(2026, 11, 10), Decimal("13200"))])
     assert result["portfolio"]["xirr"] == pct(expected.rate)
-    assert result["coverage"] == {"pct": 100.0, "excluded": []}
+    assert result["coverage"] == {"pct": 100.0, "excluded": [], "valueUnknown": 0}
 
 
 def test_no_ledger_gives_the_hint():
@@ -275,3 +275,46 @@ def test_the_agent_quotes_the_tool_figures(monkeypatch):
     assert agent.MF_RETURNS_RULES in payloads[0]["messages"][0]["content"]
     assert next(e for e in events if e["kind"] == "validation" and e["check"] == "numbers")["outcome"] == "passed"
     assert str(xirr) in answer
+
+
+# ── Final review fixes ─────────────────────────────────────────────────────────
+
+def test_fully_redeemed_scheme_needs_no_nav():
+    (item,) = ledger(scheme(close="0", isin=None, valuation=("30-Sep-2026", "0"), transactions=[
+        ("2024-01-10", "PURCHASE", "10000", "100", "100"), ("2025-03-10", "REDEMPTION", "-15000", "-100", "150"),
+    ]))
+
+    result = mf_returns.returns_from([item], {}, TODAY)
+
+    (row,) = result["schemes"]
+    assert (row["status"], row["currentValue"], row["realisedGain"]) == ("ok", 0.0, 5000.0)
+    assert result["portfolio"]["realisedGain"] == 5000.0 and result["portfolio"]["xirr"] is not None
+
+
+def test_held_units_without_a_nav_are_no_nav_not_unreconciled():
+    (item,) = ledger(scheme(isin=None, valuation=("30-Sep-2026", "0")))
+
+    row = mf_returns.scheme_returns(item, {}, TODAY)
+
+    assert row["status"] == "no_nav" and row["currentValue"] is None and "NAV" in row["reason"]
+
+
+def test_unknown_values_make_coverage_unknown():
+    schemes = ledger(scheme(), scheme("No NAV Fund", None, amfi="999", valuation=("30-Sep-2026", "0")))
+
+    result = mf_returns.returns_from(schemes, nav(), TODAY)
+
+    assert result["coverage"]["pct"] is None and result["coverage"]["valueUnknown"] == 1
+    assert result["portfolio"]["totalValue"] == 2600.0
+
+
+def test_tool_payload_stays_small_with_many_excluded_funds(monkeypatch):
+    many = ledger(*[scheme(f"Fund number {i} with a fairly long scheme name - Direct Growth", f"INF00000{i:04d}", close="25")
+                    for i in range(60)])
+    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today: mf_returns.returns_from(many, {}, TODAY))
+
+    payload = asyncio.run(snapshots.mf_returns_tool("u", None).handler({}))
+
+    body = json.loads(payload)
+    assert len(payload) < 5500
+    assert body["coverage"]["excludedCount"] == 60 and len(body["coverage"]["excluded"]) < 60

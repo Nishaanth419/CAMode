@@ -206,3 +206,17 @@ def test_history_clearing_private_mode_and_deletion_remove_the_ledger(client, si
     with connect_db() as connection:
         assert connection.execute("SELECT COUNT(*) FROM cas_statements").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM users WHERE folio_salt IS NOT NULL").fetchone()[0] == 0
+
+
+def test_folio_spacing_does_not_change_the_key():
+    key = mf_ledger.folio_key_for(b"s" * 32)
+
+    assert key("12124203 / 63") == key("12124203/63") == key(" 12124203  /63 ")
+
+
+def test_cas_card_copy_mentions_the_transactions_kept():
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "frontend" / "index.html").read_text()
+    assert "Only the holdings are kept" not in html
+    assert "Only holdings are kept" not in Path(cas.__file__).read_text()

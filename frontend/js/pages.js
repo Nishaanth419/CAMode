@@ -893,7 +893,9 @@ async function renderReturns() {
   const period = data.statementPeriod || {};
   asOf.textContent = `Mutual funds from your CAS covering ${formatDate(period.from)} to ${formatDate(period.to)}; latest NAV ${formatDate(data.navDate)}.`;
   const headline = returnFigure(p);
-  const coverageText = Number.isFinite(coverage.pct) ? `${coverage.pct.toFixed(2)}% of fund value included` : 'Coverage not known';
+  const unknown = Number(coverage.valueUnknown) || 0;
+  const coverageText = Number.isFinite(coverage.pct) ? `${coverage.pct.toFixed(2)}% of fund value included`
+    : unknown ? `Coverage not known: ${unknown} fund${unknown === 1 ? ' has' : 's have'} no NAV` : 'Coverage not known';
   const excluded = (coverage.excluded || []).map((item) =>
     `<li><strong>${escHtml(item.name)}</strong>: ${escHtml(item.reason || returnStatus(item.status).label)}</li>`).join('');
   setHtml(body, `
@@ -902,7 +904,7 @@ async function renderReturns() {
     </div>
     <div class="stat-grid">
       ${statTile('Mutual fund return', headline.short, [headline.label, headline.note || coverageText].filter(Boolean).join(' · '))}
-      ${statTile('Current value', money(p.includedValue), `${money(p.totalValue)} across all funds`)}
+      ${statTile('Current value', money(p.includedValue), `${money(p.totalValue)} across ${unknown ? 'funds with a known value' : 'all funds'}`)}
       ${statTile('Invested (units still held)', money(p.invested), 'Cost of the units you hold')}
       ${statTile('Unrealised gain', money(p.unrealisedGain), '', toneOf(p.unrealisedGain))}
       ${statTile('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}

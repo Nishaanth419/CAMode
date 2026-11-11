@@ -563,7 +563,7 @@
     no_schemes: 'No fund could be included.',
   };
   const RETURN_STATUSES = {
-    nav_stale: 'Old NAV', incomplete_history: 'History missing', unreconciled: 'Units don’t add up', unsupported: 'Not supported',
+    nav_stale: 'Old NAV', no_nav: 'No NAV', incomplete_history: 'History missing', unreconciled: 'Units don’t add up', unsupported: 'Not supported',
   };
 
   function fixedPct(value) {

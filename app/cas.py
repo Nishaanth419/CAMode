@@ -4,10 +4,12 @@ An NSDL or CDSL CAS lists every demat account the user has, at every broker, plu
 mutual fund folios and NPS; a CAMS or KFintech CAS lists mutual fund folios. That
 covers brokers INDmoney's MCP server does not. Parsing uses ``casparser`` offline.
 
-Only holdings are kept: name, ISIN, broker (the demat account's depository
+Holdings are kept: name, ISIN, broker (the demat account's depository
 participant), units, price, value and cost where the statement gives one. The PDF,
 its password, and the investor's name, PAN, address, contact details and DP/client
 IDs are never stored. Holdings are sealed with the profile's keys like snapshots.
+A detailed CAMS or KFintech statement also keeps its mutual fund transactions
+(``mf_ledger``), with folio numbers replaced by keys.
 
 Rows use INDmoney's holdings layout so ``portfolio_math.compute_metrics`` computes
 the same figures for both sources.

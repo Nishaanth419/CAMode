@@ -7,6 +7,9 @@ older than ``fund_data.stale_days()`` makes an otherwise clean scheme ``nav_stal
 gains and returns only for ``ok`` and ``nav_stale`` schemes, the others carry the
 status reason instead. Missing is never zero.
 
+A scheme with no units left is worth exactly zero and needs no NAV; one with units
+but no NAV from either source is ``no_nav`` (left out, and the coverage is then unknown).
+
 Returns: XIRR over the scheme's cash flows plus its value on the NAV date; under 365
 days from the first flow, ``absoluteReturnPct`` instead (``returnReason: under_one_year``).
 The portfolio pools the included schemes' flows, so a switch between two of them nets out.
@@ -72,7 +75,8 @@ def _returns(flows: Flows, end: date | None) -> dict[str, Any]:
 def _scheme(scheme: LedgerScheme, navs: dict[str, NavRow], today: date) -> _Computed:
     """The scheme's figures with the exact amounts the portfolio adds up."""
     nav, nav_date, source = _nav(scheme, navs)
-    value = scheme.close * nav if nav is not None else None
+    # A scheme with no units is worth exactly zero: it needs no NAV.
+    value = _ZERO if scheme.close == 0 else (scheme.close * nav if nav is not None else None)
     status, reason = scheme.status, scheme.reason
     lots = mf_math.fifo(scheme.transactions)
     if status == "ok":
@@ -82,8 +86,8 @@ def _scheme(scheme: LedgerScheme, navs: dict[str, NavRow], today: date) -> _Comp
                 f"Units bought and sold ({held}) do not match the closing units ({scheme.close})."
             )
         elif value is None:
-            status, reason = "unreconciled", "No NAV is available for this scheme."
-        elif (today - nav_date).days > fund_data.stale_days():
+            status, reason = "no_nav", "No NAV is available for this fund from AMFI or the statement."
+        elif scheme.close and (today - nav_date).days > fund_data.stale_days():
             status, reason = "nav_stale", f"The latest NAV is from {nav_date:%d %b %Y}; figures use it."
     row = navs.get(scheme.isin) if scheme.isin else None
     result: dict[str, Any] = {
@@ -122,7 +126,7 @@ def _portfolio(items: Sequence[_Computed]) -> tuple[dict[str, Any], dict[str, An
     if included:
         value = sum((c.value or _ZERO for c in included), _ZERO)
         invested = sum((c.invested for c in included), _ZERO)
-        end = max(date.fromisoformat(c.item["navDate"]) for c in included)
+        end = max((date.fromisoformat(c.item["navDate"]) for c in included if c.item["navDate"]), default=None)
         portfolio = {
             "totalValue": _round(total), "includedValue": _round(value), "invested": _round(invested),
             "unrealisedGain": _round(value - invested),
@@ -133,11 +137,14 @@ def _portfolio(items: Sequence[_Computed]) -> tuple[dict[str, Any], dict[str, An
         value = _ZERO
         portfolio = {"totalValue": _round(total), "includedValue": 0.0, "invested": None, "unrealisedGain": None,
                      "realisedGain": None, "xirr": None, "absoluteReturnPct": None, "returnReason": "no_schemes"}
-    if not excluded:
-        coverage_pct: float | None = 100.0
+    unknown = sum(1 for c in items if c.value is None)
+    if unknown:
+        coverage_pct: float | None = None  # The whole is not known, so neither is the share of it.
+    elif not excluded:
+        coverage_pct = 100.0
     else:
         coverage_pct = _round(value / total * 100) if total else None
-    return portfolio, {"pct": coverage_pct, "excluded": excluded}
+    return portfolio, {"pct": coverage_pct, "excluded": excluded, "valueUnknown": unknown}
 
 
 def returns_from(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], today: date) -> dict[str, Any]:
