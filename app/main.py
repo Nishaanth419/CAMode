@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, mf_returns, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -1273,6 +1273,16 @@ async def delete_cas(statement_id: str, request: Request):
     if not cas.delete_statement(user["id"], statement_id):
         return JSONResponse({"error": "Statement not found."}, status_code=404)
     return {"deleted": True}
+
+
+@app.get("/api/returns")
+async def mutual_fund_returns(request: Request):
+    """Mutual fund returns (FIFO lots, XIRR) from the detailed CAS ledger. Reading needs no consent, like the CAS list."""
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    today = snapshots.local_now().date()
+    return await asyncio.to_thread(mf_returns.returns_for, user["id"], user["keys"], today)
 
 
 # ── Backups ────────────────────────────────────────────────────────────────────
