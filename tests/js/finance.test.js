@@ -465,3 +465,32 @@ test('INDmoney comes first in the tabs and is reconnected through its own route'
   assert.deepEqual(f.brokersNeedingAttention([stale, { broker: 'indmoney', auth: 'indmoney_oauth', status: 'needs_login' }], now).map((b) => b.status), ['needs_login']);
   assert.deepEqual(f.brokersToCheck([stale, { broker: 'zerodha', status: 'connected' }], {}, now), ['zerodha']);
 });
+
+test('mutual fund returns: XIRR, short holdings and missing figures', () => {
+  assert.deepEqual(finance.returnFigure({ xirr: 12.34, absoluteReturnPct: null, returnReason: null }),
+    { text: '12.34% a year (XIRR)', short: '12.34%', label: 'a year (XIRR)', note: '' });
+  assert.deepEqual(finance.returnFigure({ xirr: -3.5, returnReason: null }),
+    { text: '−3.50% a year (XIRR)', short: '−3.50%', label: 'a year (XIRR)', note: '' });
+  assert.deepEqual(finance.returnFigure({ xirr: null, absoluteReturnPct: 5.1, returnReason: 'under_one_year' }),
+    { text: '5.10% (held under a year)', short: '5.10%', label: 'held under a year', note: 'Not annualised: held for less than a year.' });
+  const excluded = finance.returnFigure({ xirr: null, absoluteReturnPct: null, returnReason: 'unreconciled', reason: 'Units do not add up.' });
+  assert.equal(excluded.text, 'Not available');
+  assert.equal(excluded.short, 'Not available');
+  assert.equal(excluded.note, 'Units do not add up.');
+  assert.equal(finance.returnFigure({ xirr: null, returnReason: 'no_convergence' }).note, 'XIRR could not be worked out from these cash flows.');
+  // Unknown is never shown as zero.
+  assert.equal(finance.returnFigure({ xirr: null, absoluteReturnPct: null }).text, 'Not available');
+  assert.equal(finance.money(null), '—');
+});
+
+test('mutual fund returns: status chips and NAV notes', () => {
+  assert.deepEqual(finance.returnStatus('ok'), { label: '', tone: '' });
+  assert.deepEqual(finance.returnStatus('nav_stale'), { label: 'Old NAV', tone: 'is-warning' });
+  assert.equal(finance.returnStatus('incomplete_history').label, 'History missing');
+  assert.equal(finance.returnStatus('unreconciled').label, 'Units don’t add up');
+  assert.equal(finance.returnStatus('unsupported').label, 'Not supported');
+  assert.equal(finance.returnStatus('no_nav').label, 'No NAV');
+  assert.equal(finance.navNote({ navSource: 'amfi', navDate: '2026-11-10' }), 'AMFI NAV of 10 Nov 2026');
+  assert.equal(finance.navNote({ navSource: 'statement', navDate: '2026-09-30' }), 'Statement NAV of 30 Sep 2026');
+  assert.equal(finance.navNote({ navSource: null, navDate: null }), 'No NAV available');
+});

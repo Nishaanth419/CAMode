@@ -4,10 +4,12 @@ An NSDL or CDSL CAS lists every demat account the user has, at every broker, plu
 mutual fund folios and NPS; a CAMS or KFintech CAS lists mutual fund folios. That
 covers brokers INDmoney's MCP server does not. Parsing uses ``casparser`` offline.
 
-Only holdings are kept: name, ISIN, broker (the demat account's depository
+Holdings are kept: name, ISIN, broker (the demat account's depository
 participant), units, price, value and cost where the statement gives one. The PDF,
 its password, and the investor's name, PAN, address, contact details and DP/client
 IDs are never stored. Holdings are sealed with the profile's keys like snapshots.
+A detailed CAMS or KFintech statement also keeps its mutual fund transactions
+(``mf_ledger``), with folio numbers replaced by keys.
 
 Rows use INDmoney's holdings layout so ``portfolio_math.compute_metrics`` computes
 the same figures for both sources.
@@ -19,6 +21,7 @@ import io
 import json
 import logging
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any, Final
 
 import casparser
@@ -78,8 +81,12 @@ def _folio_rows(data: Any) -> list[dict[str, Any]]:
     ]
 
 
-def parse_statement(pdf: bytes, password: str) -> dict[str, Any]:
-    """Parse a CAS PDF into holdings rows and statement metadata. Raises ``CASError``."""
+def parse_statement(pdf: bytes, password: str, *, folio_key: Callable[[str], str] | None = None) -> dict[str, Any]:
+    """Parse a CAS PDF into holdings rows and statement metadata. Raises ``CASError``.
+
+    With ``folio_key`` a detailed CAMS or KFintech statement also gets a ``ledger``
+    (``mf_ledger.extract``): its mutual fund transactions, folio numbers replaced by keys.
+    """
     if len(pdf) > MAX_PDF_BYTES:
         raise CASError("That file is larger than 15 MB; a CAS is usually much smaller.")
     if not pdf.startswith(b"%PDF"):
@@ -99,7 +106,7 @@ def parse_statement(pdf: bytes, password: str) -> dict[str, Any]:
     rows = _demat_rows(data) if hasattr(data, "accounts") else _folio_rows(data)
     if not rows:
         raise CASError("No holdings were found in this statement.")
-    return {
+    statement = {
         # casparser's models store enums by value, so this is usually already a string ("CDSL").
         "source": str(getattr(data.file_type, "value", data.file_type)),
         "period_from": data.statement_period.from_,
@@ -107,6 +114,12 @@ def parse_statement(pdf: bytes, password: str) -> dict[str, Any]:
         "rows": rows,
         "warnings": [str(warning)[:200] for warning in getattr(data, "parse_warnings", [])][:10],
     }
+    if folio_key is not None:
+        from . import mf_ledger  # mf_ledger reads stored statements through this module
+
+        if (ledger := mf_ledger.extract(data, folio_key)) is not None:
+            statement["ledger"] = ledger
+    return statement
 
 
 def statement_metrics(statement: dict[str, Any], *, include_all_holdings: bool = False) -> dict[str, Any]:

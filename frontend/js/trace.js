@@ -108,6 +108,7 @@
     get_networth_history: ['Read net worth history', 'Daily net worth from saved snapshots'],
     investigate_portfolio_change: ['Investigate the portfolio change', 'Compare two saved snapshots and check the data'],
     get_cas_holdings: ['Read CAS statement holdings', 'Holdings from your latest uploaded statement'],
+    get_mf_returns: ['Read mutual fund returns', 'Returns worked out from your detailed CAS'],
     calculate_goal_plan: ['Calculate the goal', 'Goal figures worked out in code from the numbers in this chat; nothing is saved'],
     get_goal_plans: ['Read your saved goals', 'Plans calculated in code from the goals you saved'],
     plan_goal_what_if: ['Try a what-if on a goal', 'A different contribution, date or return, calculated in code; nothing is saved'],

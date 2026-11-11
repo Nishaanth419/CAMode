@@ -325,7 +325,7 @@ def test_notice_covers_backups_cloudflare_and_credits(monkeypatch):
     assert "monthly credits" in limits_text and "top-up credits" in limits_text
     assert "in progress" in limits_text
     assert "credits used this month" in sections["What whoever runs CA Mode can see"]
-    assert privacy.POLICY_VERSION == "2026-11-10.1"
+    assert privacy.POLICY_VERSION == "2026-11-12.1"
 
 
 def test_capture_finishing_after_switch_to_private_is_not_stored(client, signed_in):

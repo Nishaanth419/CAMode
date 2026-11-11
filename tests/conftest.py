@@ -9,6 +9,8 @@ from cryptography.fernet import Fernet
 
 os.environ.setdefault("APP_DATA_DIR", tempfile.mkdtemp(prefix="camode-tests-"))
 os.environ["SNAPSHOT_SCHEDULER_ENABLED"] = "false"
+# No AMFI downloads in tests (app.amfi); tests that exercise the refresh turn it on with a fake fetch.
+os.environ["MF_DATA_ENABLED"] = "false"
 # Deterministic routing by default; tests/test_router.py exercises the model classifier.
 os.environ["REQUEST_ROUTER"] = "keywords"
 # The existing agent tests script the previous loop and planner (AGENT_GRAPH_ENABLED=false keeps them as the

@@ -3,7 +3,7 @@
    Goals, Reports, Activity and All chats. Loaded after app.js and uses its state
    (currentUser, isConnected, storageMode, chats) and helpers. */
 
-const ROUTES = ['home', 'chat', 'portfolio', 'holdings', 'investments', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
+const ROUTES = ['home', 'chat', 'portfolio', 'holdings', 'investments', 'returns', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
 // Tab title and meta description for each page; `not-found` is any hash that names no page.
 const ROUTE_META = {
   home: ['Home', 'Where your money stands today: net worth, goals and recent chats.'],
@@ -11,6 +11,7 @@ const ROUTE_META = {
   portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
   holdings: ['Holdings', 'Holdings from INDmoney and each connected broker, with a combined total that counts nothing twice.'],
   investments: ['Investments', 'Every holding from your latest snapshot, with CSV download and CAS upload.'],
+  returns: ['Returns & tax', 'True returns (XIRR) on your mutual funds from a detailed CAS.'],
   planning: ['Planning tools', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
   markets: ['Market insights', 'Mutual fund figures from INDmoney for your goals.'],
   goals: ['Goals', 'Your savings goals, their plans and the investments assigned to them.'],
@@ -292,7 +293,7 @@ function renderRoute() {
 async function renderPage(route) {
   if (!sessionReady()) return;
   const renderers = {
-    home: renderHome, portfolio: renderPortfolio, holdings: renderHoldings, investments: renderInvestments, planning: renderPlanning,
+    home: renderHome, portfolio: renderPortfolio, holdings: renderHoldings, investments: renderInvestments, returns: renderReturns, planning: renderPlanning,
     markets: renderMarkets, goals: renderGoals, reports: renderReports, activity: renderActivity, chats: renderAllChats,
   };
   await renderers[route]?.();
@@ -310,10 +311,10 @@ document.addEventListener('ca:session-ended', () => {
   latestHoldings = [];
   reportPoints = [];
   resetActivity();
-  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'investments-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
+  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'investments-body', 'returns-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
-  for (const id of ['portfolio-asof', 'holdings-asof', 'investments-asof', 'home-name', 'home-networth-value', 'home-networth-change']) document.getElementById(id).textContent = '';
+  for (const id of ['portfolio-asof', 'holdings-asof', 'investments-asof', 'returns-asof', 'home-name', 'home-networth-value', 'home-networth-change']) document.getElementById(id).textContent = '';
   if (goalDialog.open) goalDialog.close();
 });
 document.addEventListener('ca:snapshot', () => {
@@ -834,6 +835,78 @@ async function renderInvestments() {
     </section>
     ${brokers ? panel('By broker', `<table class="data-table compact"><thead><tr><th>Broker</th><th>Holdings</th><th>Value</th><th>Share</th></tr></thead><tbody>${brokers}</tbody></table>`) : ''}`);
   renderHoldingsTable();
+}
+
+/* ── Returns & tax ──────────────────────────────────────────────────── */
+// Mutual fund returns from GET /api/returns; every figure is computed on the server.
+const RETURNS_NOTE = 'Figures are information, not advice or a recommendation to buy or sell.';
+
+function returnCell(item) {
+  const figure = returnFigure(item);
+  // An excluded fund's reason is already under its name.
+  const note = figure.note && figure.note !== item.reason ? figure.note : '';
+  return `${escHtml(figure.short)}${figure.label ? `<small class="stat-sub">${escHtml(figure.label)}</small>` : ''}${note ? `<small class="stat-sub">${escHtml(note)}</small>` : ''}`;
+}
+
+function returnsSchemeRow(item) {
+  const status = returnStatus(item.status);
+  const chip = status.label ? ` <span class="status-pill ${status.tone}" title="${escHtml(item.reason || '')}">${escHtml(status.label)}</span>` : '';
+  const reason = item.reason ? `<small class="stat-sub">${escHtml(item.reason)}</small>` : '';
+  return `<tr>
+    <td>${escHtml(item.name)}${chip}${reason}</td>
+    <td>${returnCell(item)}</td>
+    <td>${money(item.currentValue)}<small class="stat-sub">${escHtml(navNote(item))}</small></td>
+    <td>${money(item.invested)}</td>
+    <td>${money(item.unrealisedGain)}</td>
+    <td>${money(item.realisedGain)}</td>
+  </tr>`;
+}
+
+async function renderReturns() {
+  const isCurrent = startRender('returns');
+  const body = document.getElementById('returns-body');
+  const asOf = document.getElementById('returns-asof');
+  asOf.textContent = 'Returns on your mutual funds from the transactions in a detailed CAS.';
+  setHtml(body, loadingBlock());
+  let data;
+  try {
+    data = await fetchJson('/api/returns'); // Not cached: a new upload changes it.
+  } catch (error) {
+    if (isCurrent()) setHtml(body, errorBlock(error));
+    return;
+  }
+  if (!isCurrent()) return;
+  if (!data.available) {
+    setHtml(body, notice('No detailed CAS yet', data.hint || 'Upload a detailed CAS from CAMS or KFintech.',
+      '<a class="rail-button inline-button" href="#/investments">Upload a CAS</a>'));
+    return;
+  }
+  const p = data.portfolio;
+  const coverage = data.coverage || {};
+  const period = data.statementPeriod || {};
+  asOf.textContent = `Mutual funds from your CAS covering ${formatDate(period.from)} to ${formatDate(period.to)}; latest NAV ${formatDate(data.navDate)}.`;
+  const headline = returnFigure(p);
+  const unknown = Number(coverage.valueUnknown) || 0;
+  const coverageText = Number.isFinite(coverage.pct) ? `${coverage.pct.toFixed(2)}% of fund value included`
+    : unknown ? `Coverage not known: ${unknown} fund${unknown === 1 ? ' has' : 's have'} no NAV` : 'Coverage not known';
+  const excluded = (coverage.excluded || []).map((item) =>
+    `<li><strong>${escHtml(item.name)}</strong>: ${escHtml(item.reason || returnStatus(item.status).label)}</li>`).join('');
+  setHtml(body, `
+    <div class="seg seg-small" role="tablist" aria-label="Returns and tax">
+      <button type="button" role="tab" aria-selected="true" aria-pressed="true">Returns</button>
+    </div>
+    <div class="stat-grid">
+      ${statTile('Mutual fund return', headline.short, [headline.label, headline.note || coverageText].filter(Boolean).join(' · '))}
+      ${statTile('Current value', money(p.includedValue), `${money(p.totalValue)} across ${unknown ? 'funds with a known value' : 'all funds'}`)}
+      ${statTile('Invested (units still held)', money(p.invested), 'Cost of the units you hold')}
+      ${statTile('Unrealised gain', money(p.unrealisedGain), '', toneOf(p.unrealisedGain))}
+      ${statTile('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}
+    </div>
+    ${excluded ? panel('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul>${excluded}</ul>`) : ''}
+    ${panel('By fund', `<div class="table-scroll"><table class="data-table"><thead><tr>
+      <th>Fund</th><th>Return</th><th>Current value</th><th>Invested</th><th>Unrealised</th><th>Realised</th>
+    </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
+    <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
 
 function renderHoldingsTable() {

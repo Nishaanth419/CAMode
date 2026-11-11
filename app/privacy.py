@@ -31,7 +31,9 @@ from .db import connect_db
 # 2026-11-06.3: a daily history of each broker's holdings, kept for the snapshot retention period.
 # 2026-11-10.1: daily database backups, Cloudflare in front of a hosted copy, monthly credits and the
 # in-progress question marker.
-POLICY_VERSION: Final = "2026-11-10.1"
+# 2026-11-12.1: the mutual fund transactions from a detailed CAS (folio numbers replaced by a code) and the
+# daily download of AMFI's public NAV file.
+POLICY_VERSION: Final = "2026-11-12.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -47,7 +49,7 @@ NOTICE: Final = (
             "from your chats. If you choose to save history: your chats (each kept 30 days after its last message, "
             "at most 50) and a daily snapshot of your INDmoney net worth, allocation and holdings for the retention "
             "period you pick, the holdings from any CAS statement you upload (the last 12; never the PDF, its "
-            "password, or your name, PAN or contact details), and the portfolio change investigations you run (the "
+            "password, or your name, PAN or contact details; from a detailed CAMS or KFintech statement also the mutual fund transactions, with the date, type, amount, units and NAV of each, so returns can be worked out, with each folio number replaced by a code only your profile can produce, never the folio number itself), and the portfolio change investigations you run (the "
             "last 50: the snapshots compared, the figures computed from them, the checks and the result), and a record of the steps behind each chat answer (the last 200, none older than 30 days: the start of your question, which data was read and a short preview of it, the figures CA Mode calculated from it, the checks on the answer and how long each step took; never the answer itself or your PIN, tokens or PAN). Everything is in a SQLite file readable only by the account that runs CA Mode. INDmoney "
             "tokens are encrypted with a key kept outside that file."
         ),
@@ -143,6 +145,15 @@ NOTICE: Final = (
             "asks you to sign in (for example with your work email) before the app opens and sets its own sign-in "
             "cookie; Cloudflare keeps records of those sign-ins and requests under its own privacy policy. A copy "
             "served without Cloudflare, or one running on your own computer, does not send anything through it."
+        ),
+    },
+    {
+        "title": "Public fund data",
+        "body": (
+            "Once a day CA Mode downloads the public file of mutual fund NAVs that AMFI (amfiindia.com) publishes, "
+            "to value your funds at the latest NAV. The request is the same for everyone and sends nothing about "
+            "you. The NAVs are stored in the same SQLite file, are not linked to any profile, and are not part of "
+            "your export."
         ),
     },
     {

@@ -491,7 +491,7 @@ def holdings_stored(client, fake_kite):
 
 def test_the_notice_and_policy_version_cover_brokers():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-10.1"
+    assert privacy.POLICY_VERSION == "2026-11-12.1"
     section = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")
     assert "Zerodha" in section["body"] and "read-only" in section["body"]
 

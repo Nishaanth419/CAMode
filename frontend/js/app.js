@@ -434,7 +434,9 @@ casForm.addEventListener('submit', async (event) => {
     if (!response.ok) throw new Error(data.error || 'Could not read that statement.');
     casForm.reset();
     await loadCasStatus();
-    casStatus.textContent = 'Saved. The PDF and its password were not kept.';
+    casStatus.textContent = data.ledger?.available
+      ? 'Saved. The PDF and its password were not kept. Your mutual fund returns are on the Returns & tax page.'
+      : `Saved. The PDF and its password were not kept. ${data.ledger?.hint || ''}`.trim();
   } catch (error) {
     casStatus.classList.add('is-error');
     casStatus.textContent = errorText(error);
