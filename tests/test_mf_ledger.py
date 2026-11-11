@@ -156,3 +156,53 @@ def test_ledger_for_reads_the_stored_statements(client, signed_in, monkeypatch):
     assert [item.isin for item in mf_ledger.ledger_for(signed_in["id"], keys)] == ["INF179K01VK6"]
     assert mf_ledger.has_ledger(signed_in["id"], keys) is True
     assert mf_ledger.has_ledger(signed_in["id"], sealing.ProfileKeys()) is False
+
+
+# ── Privacy ────────────────────────────────────────────────────────────────────
+
+from app import privacy  # noqa: E402
+
+
+@pytest.fixture
+def detailed_upload(client, monkeypatch):
+    import base64
+
+    monkeypatch.setattr(cas.casparser, "read_cas_pdf", lambda file, password: statement())
+    return lambda: client.post("/api/cas", json={"password": "x", "pdfBase64": base64.b64encode(PDF).decode()})
+
+
+def test_notice_describes_the_ledger_and_the_amfi_download():
+    sections = {item["title"]: item["body"] for item in privacy.NOTICE}
+    saved = sections["What is saved, and where"]
+    assert "mutual fund transactions" in saved and "folio number" in saved
+    fetched = sections["Public fund data"]
+    assert "AMFI" in fetched and "nothing about you" in fetched
+    assert privacy.POLICY_VERSION == "2026-11-12.1"
+
+
+def test_export_includes_the_ledger_without_folio_numbers(client, signed_in, detailed_upload):
+    detailed_upload()
+
+    body = client.post("/api/users/me/export", json={"pin": "2468"}).json()
+
+    (scheme_row,) = body["casStatements"][0]["ledger"]["schemes"]
+    assert len(scheme_row["folioKey"]) == 64
+    assert FOLIO_NUMBER not in json.dumps(body)
+
+
+def test_history_clearing_private_mode_and_deletion_remove_the_ledger(client, signed_in, detailed_upload):
+    keys = keys_of(client, signed_in["id"])
+    detailed_upload()
+    client.delete("/api/users/me/history")
+    assert not mf_ledger.has_ledger(signed_in["id"], keys)
+
+    detailed_upload()
+    client.post("/api/privacy/consent", json={"policyVersion": privacy.POLICY_VERSION, "storageMode": "private"})
+    assert not mf_ledger.has_ledger(signed_in["id"], keys)
+
+    client.post("/api/privacy/consent", json={"policyVersion": privacy.POLICY_VERSION, "storageMode": "device"})
+    detailed_upload()
+    assert client.request("DELETE", "/api/users/me", json={"pin": "2468"}).status_code == 200
+    with connect_db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM cas_statements").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM users WHERE folio_salt IS NOT NULL").fetchone()[0] == 0
