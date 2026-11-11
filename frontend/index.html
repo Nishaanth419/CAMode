@@ -31,11 +31,11 @@
   <link rel="stylesheet" href="/css/app.css?v=49" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
-  <script src="/js/finance.js?v=9" defer></script>
-  <script src="/js/trace.js?v=11" defer></script>
+  <script src="/js/finance.js?v=10" defer></script>
+  <script src="/js/trace.js?v=12" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
-  <script src="/js/app.js?v=43" defer></script>
-  <script src="/js/pages.js?v=27" defer></script>
+  <script src="/js/app.js?v=44" defer></script>
+  <script src="/js/pages.js?v=28" defer></script>
   <script src="/js/rail.js?v=7" defer></script>
 </head>
 <body>
@@ -77,6 +77,10 @@
         <a class="nav-item" href="#/investments" data-route="investments">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 15 3-3 2 2 3-4"/><path d="M14 10h2v2"/></svg>
           <span>Investments</span>
+        </a>
+        <a class="nav-item" href="#/returns" data-route="returns">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16"/><path d="M6 15l4-4 3 3 5-6"/><path d="M15 8h3v3"/></svg>
+          <span>Returns &amp; tax</span>
         </a>
         <a class="nav-item" href="#/holdings" data-route="holdings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M4 10h16M9 10v9"/></svg>
@@ -353,6 +357,7 @@
               <span id="cas-pill" class="pill">No statement</span>
             </div>
             <p id="cas-copy" class="rail-copy">Upload the monthly CAS emailed by NSDL or CDSL to include holdings at every broker. Only the holdings are kept, locked with your PIN.</p>
+            <p class="rail-copy">For true returns on your mutual funds, upload a detailed CAS from CAMS or KFintech covering since inception, then open <a href="#/returns">Returns &amp; tax</a>.</p>
             <form id="cas-form" class="cas-form">
               <label class="field"><span>CAS PDF</span><input id="cas-file" type="file" accept="application/pdf,.pdf" required /></label>
               <label class="field"><span>PDF password (usually your PAN in capitals)</span><input id="cas-password" type="password" autocomplete="off" required /></label>
@@ -362,6 +367,16 @@
             <div id="cas-statements"></div>
             <button id="cas-ask" class="rail-link" type="button" hidden>Ask about all my brokers</button>
           </section>
+        </section>
+
+        <section class="page" data-page="returns" aria-labelledby="returns-title">
+          <header class="page-head">
+            <div>
+              <h1 id="returns-title" class="page-title">Returns &amp; tax</h1>
+              <p class="page-sub" id="returns-asof"></p>
+            </div>
+          </header>
+          <div id="returns-body"></div>
         </section>
 
         <section class="page" data-page="planning" aria-labelledby="planning-title">

@@ -554,6 +554,52 @@
       .map((broker) => broker.broker);
   }
 
+  /* ── Mutual fund returns (figures come from /api/returns; nothing is computed here) ── */
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const RETURN_REASONS = {
+    no_flows: 'No purchases or sales to measure.',
+    no_sign_change: 'Returns cannot be worked out from these cash flows.',
+    no_convergence: 'XIRR could not be worked out from these cash flows.',
+    no_schemes: 'No fund could be included.',
+  };
+  const RETURN_STATUSES = {
+    nav_stale: 'Old NAV', incomplete_history: 'History missing', unreconciled: 'Units don’t add up', unsupported: 'Not supported',
+  };
+
+  function fixedPct(value) {
+    return `${value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`;
+  }
+
+  function shortDate(isoDate) {
+    const [year, month, day] = String(isoDate || '').split('-').map(Number);
+    return year && month && day ? `${day} ${MONTHS[month - 1]} ${year}` : '';
+  }
+
+  // The headline return of a fund or the portfolio: XIRR, the plain return under a year, or why there is none.
+  // `text` is the whole phrase; `short` and `label` split it for a stat tile.
+  function returnFigure(item) {
+    if (Number.isFinite(item?.xirr)) {
+      const short = fixedPct(item.xirr);
+      return { text: `${short} a year (XIRR)`, short, label: 'a year (XIRR)', note: '' };
+    }
+    if (Number.isFinite(item?.absoluteReturnPct) && item.returnReason === 'under_one_year') {
+      const short = fixedPct(item.absoluteReturnPct);
+      return { text: `${short} (held under a year)`, short, label: 'held under a year', note: 'Not annualised: held for less than a year.' };
+    }
+    return { text: 'Not available', short: 'Not available', label: '', note: RETURN_REASONS[item?.returnReason] || item?.reason || '' };
+  }
+
+  function returnStatus(status) {
+    if (status === 'ok') return { label: '', tone: '' };
+    return { label: RETURN_STATUSES[status] || String(status || 'Unknown'), tone: 'is-warning' };
+  }
+
+  function navNote(item) {
+    const date = shortDate(item?.navDate);
+    if (!date) return 'No NAV available';
+    return `${item.navSource === 'amfi' ? 'AMFI' : 'Statement'} NAV of ${date}`;
+  }
+
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
@@ -561,6 +607,7 @@
     spanLabel, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
+    returnFigure, returnStatus, navNote, shortDate,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

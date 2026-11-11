@@ -24,7 +24,7 @@ MAX_REPORT_DAYS: Final = RETENTION_DAYS
 
 # The hash routes in frontend/js/pages.js (ROUTE_META), including its not-found page.
 Route = Literal[
-    "home", "chat", "portfolio", "holdings", "investments", "planning", "markets",
+    "home", "chat", "portfolio", "holdings", "investments", "returns", "planning", "markets",
     "goals", "reports", "activity", "chats", "not-found",
 ]
 
