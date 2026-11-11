@@ -23,7 +23,7 @@ TaskType = Literal["refusal", "general_finance", "goal_calculation", "account_da
 
 # Local tools that read the user's own account data (saved snapshots, CAS holdings, investigations, fund figures).
 ACCOUNT_LOCAL_TOOLS: Final = frozenset({
-    "get_portfolio_snapshot", "get_networth_history", "get_cas_holdings", "investigate_portfolio_change",
+    "get_portfolio_snapshot", "get_networth_history", "get_cas_holdings", "get_mf_returns", "investigate_portfolio_change",
     "get_goal_fund_comparison", "get_broker_holdings", "call_broker_tool",
 })
 GOAL_TOOLS: Final = frozenset({"calculate_goal_plan", "get_goal_plans", "plan_goal_what_if"})

@@ -194,3 +194,84 @@ def test_returns_need_no_consent(client, detailed_pdf):
         connection.execute("UPDATE consents SET policy_version = 'old'")
     assert not privacy.has_current_consent(user["id"])
     assert client.get("/api/returns").json()["available"] is True
+
+
+# ── Agent tool ─────────────────────────────────────────────────────────────────
+
+import asyncio  # noqa: E402
+import json  # noqa: E402
+
+from app import agent, sealing, snapshots, tasks  # noqa: E402
+
+
+def tool_names(client, user_id):
+    user = users.get_user(user_id)
+    user["keys"] = unlock.keys_for_session(user, client.cookies.get("indmoney_session"))
+    return [tool.name for tool in snapshots.portfolio_context(user).local_tools], user
+
+
+def test_tool_is_offered_only_with_a_ledger(client, signed_in, monkeypatch):
+    monkeypatch.setattr(cas.casparser, "read_cas_pdf", lambda file, password: statement(cas_type="SUMMARY"))
+    upload(client)
+    names, _ = tool_names(client, signed_in["id"])
+    assert "get_cas_holdings" in names and "get_mf_returns" not in names
+
+    monkeypatch.setattr(cas.casparser, "read_cas_pdf", lambda file, password: statement())
+    upload(client)
+    names, user = tool_names(client, signed_in["id"])
+    assert "get_mf_returns" in names
+
+    user["keys"] = sealing.ProfileKeys()  # Locked: the ledger cannot be read, so no tool.
+    assert "get_mf_returns" not in [tool.name for tool in snapshots.portfolio_context(user).local_tools]
+
+
+def test_tool_payload_and_scheme_filter(client, signed_in, detailed_pdf):
+    upload(client)
+    amfi.store_navs(list(nav().values()))
+    _, user = tool_names(client, signed_in["id"])
+    tool = next(t for t in snapshots.portfolio_context(user).local_tools if t.name == "get_mf_returns")
+
+    everything = json.loads(asyncio.run(tool.handler({})))
+    one = json.loads(asyncio.run(tool.handler({"scheme": "nifty 50"})))
+    none = json.loads(asyncio.run(tool.handler({"scheme": "INF000NOPE"})))
+
+    assert everything["available"] is True and everything["portfolio"]["totalValue"] == 2600.0
+    assert everything["schemes"][0]["name"] == "HDFC Index Fund Nifty 50 Plan - Direct"
+    assert "folioKey" not in everything["schemes"][0]
+    assert one["scheme"]["isin"] == "INF179K01VK6" and one["scheme"]["invested"] == 2500.13
+    assert "error" in none
+
+
+def test_tool_payload_stays_small_with_many_schemes(monkeypatch):
+    many = ledger(*[scheme(f"Fund number {i} with a fairly long scheme name - Direct Growth", f"INF00000{i:04d}")
+                    for i in range(60)])
+    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today: mf_returns.returns_from(many, {}, TODAY))
+
+    payload = asyncio.run(snapshots.mf_returns_tool("u", None).handler({}))
+
+    body = json.loads(payload)
+    assert len(payload) < 5500
+    assert body["omittedSchemes"] == 60 - len(body["schemes"]) > 0
+
+
+def test_tool_counts_as_reading_account_data():
+    assert tasks.is_account_tool("get_mf_returns", {"get_mf_returns"})
+
+
+def test_the_agent_quotes_the_tool_figures(monkeypatch):
+    from tests.test_agent_graph import reply, run
+    from scripts import eval_workflows as ev
+
+    figures = mf_returns.returns_from(ledger(scheme()), nav(), TODAY)
+    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today: figures)
+    monkeypatch.setattr(ev, "build_context", lambda case: agent.PortfolioContext(
+        local_tools=(snapshots.mf_returns_tool("u", None),), cached_mcp_tools=ev.TOOLS))
+    xirr = figures["portfolio"]["xirr"]
+
+    answer, events, payloads, _, _ = run(monkeypatch, "What is my mutual fund XIRR?", [
+        reply(calls=[["get_mf_returns", {}]]),
+        reply(f"Your mutual fund XIRR is {xirr}% on ₹2,600 (AMFI NAV of 10 Nov 2026). This is information, not advice.")])
+
+    assert agent.MF_RETURNS_RULES in payloads[0]["messages"][0]["content"]
+    assert next(e for e in events if e["kind"] == "validation" and e["check"] == "numbers")["outcome"] == "passed"
+    assert str(xirr) in answer

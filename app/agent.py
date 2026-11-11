@@ -459,6 +459,12 @@ GOAL_TOOL_RULES: Final = (
     "save nothing."
 )
 NO_FUND_DATA_RULE: Final = "No fund data is available here, so never name, rank or compare specific funds for a goal."
+# Added when get_mf_returns is offered (Portfolio Analyzer with a detailed CAS ledger).
+MF_RETURNS_RULES: Final = (
+    "get_mf_returns gives mutual fund returns computed in code from the user's detailed CAS. Quote its figures as "
+    "given and never recompute them; give each figure's NAV date and source; say which funds are left out and why, "
+    "and the coverage. These are information, not a recommendation to buy or sell."
+)
 # Replaces NO_FUND_DATA_RULE when get_goal_fund_comparison is offered (Portfolio Analyzer with a saved goal).
 FUND_COMPARISON_RULES: Final = (
     "For specific funds in a goal's suitable categories, call get_goal_fund_comparison and name only the schemes it "
@@ -1330,6 +1336,8 @@ async def stream_agent(
     if FINANCE_LOCAL_TOOL_NAMES & local_tools.keys():
         funds = "get_goal_fund_comparison" in local_tools
         prompt += "\n\n" + GOAL_TOOL_RULES + " " + (FUND_COMPARISON_RULES if funds else NO_FUND_DATA_RULE)
+    if "get_mf_returns" in local_tools:
+        prompt += "\n\n" + MF_RETURNS_RULES
     if graph:
         from .agent_graph import guide
 

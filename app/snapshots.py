@@ -616,6 +616,67 @@ def cas_tool(user_id: str, keys: ProfileKeys) -> LocalTool:
     )
 
 
+MF_RETURNS_MAX_CHARS = 5500
+_MF_ROW_KEYS = (
+    "name", "isin", "status", "reason", "currentValue", "invested", "unrealisedGain", "realisedGain", "xirr",
+    "absoluteReturnPct", "returnReason", "navDate", "navSource",
+)
+
+
+def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> str:
+    """The returns figures for the model: one scheme in full, or the portfolio with a row per scheme (largest first)."""
+    dump = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # noqa: E731
+    if not figures.get("available"):
+        return dump(figures)
+    base = {key: figures[key] for key in ("navDate", "statementPeriod")}
+    if scheme:
+        wanted = scheme.strip().lower()
+        found = [item for item in figures["schemes"]
+                 if wanted == (item["isin"] or "").lower() or wanted in item["name"].lower()]
+        if not found:
+            return dump({"error": f"No mutual fund in the ledger matches {scheme!r}.",
+                         "schemes": [item["name"] for item in figures["schemes"]][:40]})
+        item = {key: value for key, value in found[0].items() if key != "folioKey"}
+        return dump({"available": True, **base, "scheme": item, "otherMatches": len(found) - 1})
+    rows = [{key: item[key] for key in _MF_ROW_KEYS} for item in figures["schemes"]]
+    for count in range(len(rows), -1, -1):
+        payload = {"available": True, **base, "portfolio": figures["portfolio"], "coverage": figures["coverage"],
+                   "schemes": rows[:count], "omittedSchemes": len(rows) - count}
+        text = dump(payload)
+        if len(text) < MF_RETURNS_MAX_CHARS:
+            return text
+    return text
+
+
+def mf_returns_tool(user_id: str, keys: ProfileKeys | None) -> LocalTool:
+    """Read-only returns (FIFO lots, XIRR) on the mutual funds in the user's detailed CAS ledger."""
+
+    async def get_mf_returns(arguments: dict[str, Any]) -> str:
+        from . import mf_returns  # imports fund_data, which imports this module
+
+        figures = await asyncio.to_thread(mf_returns.returns_for, user_id, keys, local_now().date())
+        scheme = arguments.get("scheme")
+        return mf_returns_payload(figures, scheme if isinstance(scheme, str) and scheme.strip() else None)
+
+    return LocalTool(
+        name="get_mf_returns",
+        description=(
+            "Read the user's mutual fund returns computed in code from the transactions in their detailed CAMS or "
+            "KFintech CAS: per fund and for the whole mutual fund portfolio, current value at the latest NAV (AMFI or "
+            "the statement's), amount invested in the units still held, unrealised and realised gain, and XIRR "
+            "(annualised return on the user's own cash flows; absoluteReturnPct for holdings under a year). Each fund "
+            "has a status: funds that are not ok or nav_stale are left out of the totals with a reason, and coverage "
+            "says how much of the value is included. Pass scheme (part of a fund name or its ISIN) for one fund."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"scheme": {"type": "string", "description": "Part of a fund's name, or its ISIN."}},
+            "additionalProperties": False,
+        },
+        handler=get_mf_returns,
+    )
+
+
 def snapshot_context(snapshot: dict[str, Any] | None) -> str:
     """Say whether a saved snapshot exists and when it was captured, for the Portfolio Analyzer prompt.
 
@@ -652,6 +713,10 @@ def portfolio_context(
     local_tools = snapshot_tools(user["id"], keys)
     if cas.has_statement(user["id"]):
         local_tools.append(cas_tool(user["id"], keys))
+        from . import mf_ledger
+
+        if mf_ledger.has_ledger(user["id"], keys):
+            local_tools.append(mf_returns_tool(user["id"], keys))
     local_tools.extend(extra_tools)
     return PortfolioContext(
         local_tools=tuple(local_tools),
