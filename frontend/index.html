@@ -28,14 +28,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=50" />
+  <link rel="stylesheet" href="/css/app.css?v=51" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
-  <script src="/js/finance.js?v=9" defer></script>
+  <script src="/js/finance.js?v=10" defer></script>
   <script src="/js/trace.js?v=11" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
-  <script src="/js/app.js?v=44" defer></script>
-  <script src="/js/pages.js?v=28" defer></script>
+  <script src="/js/app.js?v=45" defer></script>
+  <script src="/js/pages.js?v=29" defer></script>
   <script src="/js/rail.js?v=8" defer></script>
 </head>
 <body>
@@ -252,99 +252,102 @@
       <div id="page-view" hidden>
         <section class="page page-dashboard" data-page="home" aria-labelledby="home-title">
           <div class="broker-banners" data-broker-banners></div>
-          <div class="dash-hero">
-            <div class="dash-hero-copy">
-              <p class="dash-greeting"><span class="js-greeting">Hello</span><span id="home-name"></span> <span aria-hidden="true">👋</span></p>
-              <h1 id="home-title" class="dash-title">Your AI wealth assistant</h1>
-              <p class="page-sub">Track, analyse and grow your investments with AI.</p>
+          <header class="page-head">
+            <div>
+              <p class="page-kicker"><span class="js-greeting">Hello</span><span id="home-name"></span></p>
+              <h1 id="home-title" class="page-title">Your money at a glance</h1>
             </div>
-            <div class="dash-ask">
-              <form id="home-ask" class="dash-ask-box" autocomplete="off">
-                <svg class="dash-ask-spark" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 1.8 4.9L18.5 11l-4.7 1.9L12 18l-1.8-5.1L5.5 11l4.7-2.1Z"/><path d="M18.5 3.5v3M17 5h3"/></svg>
-                <input id="home-ask-input" type="text" placeholder="Ask CA Mode anything…" aria-label="Ask CA Mode anything" />
-                <button type="submit" aria-label="Ask">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                </button>
-              </form>
-              <div class="dash-chips" aria-label="Suggested questions">
-                <button class="chip" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">Analyze my portfolio</button>
-                <button class="chip js-goal-agent" type="button" data-agent="finance" data-prompt="Which kinds of funds suit my saved goals, given their horizon and my risk?">Suggest funds for a goal</button>
-                <button class="chip" type="button" data-agent="finance" data-prompt="How should I compare two mutual funds? What figures matter most?">Compare funds</button>
-                <button class="chip" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">Tax saving ideas</button>
-              </div>
+            <div class="page-actions">
+              <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+              <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>New chat</button>
             </div>
-          </div>
+          </header>
 
-          <div id="home-stats" class="dash-stats"></div>
-
-          <div class="dash-grid">
-            <section class="panel dash-card" aria-labelledby="home-allocation-title">
-              <div class="rail-head"><h2 id="home-allocation-title">Asset Allocation</h2></div>
-              <div id="home-allocation"></div>
-            </section>
-            <section class="panel dash-card" aria-labelledby="home-performance-title">
-              <div class="rail-head">
-                <h2 id="home-performance-title">Portfolio Performance</h2>
-                <div class="dash-range" role="group" aria-label="Period">
-                  <button type="button" data-home-range="30">1M</button>
-                  <button type="button" data-home-range="90">3M</button>
-                  <button type="button" data-home-range="180">6M</button>
+          <div class="home-hero">
+            <section class="panel home-networth" aria-labelledby="home-networth-title">
+              <div class="home-networth-head">
+                <div class="home-networth-figures">
+                  <h2 id="home-networth-title" class="kpi-label">Net worth</h2>
+                  <p id="home-networth-value" class="figure-xl"></p>
+                  <p id="home-networth-change" class="home-change"></p>
+                </div>
+                <div id="home-range" class="seg seg-small" role="group" aria-label="Chart period">
+                  <button type="button" data-home-range="30" aria-pressed="false">1M</button>
+                  <button type="button" data-home-range="90" aria-pressed="false">3M</button>
+                  <button type="button" data-home-range="180" aria-pressed="false">6M</button>
                   <button type="button" data-home-range="365" aria-pressed="true">1Y</button>
                 </div>
               </div>
-              <div id="home-performance"></div>
+              <div id="home-performance" class="home-chart"></div>
             </section>
-            <section class="panel dash-card" aria-labelledby="home-holdings-title">
-              <div class="rail-head"><h2 id="home-holdings-title">Top Holdings</h2><a class="panel-link" href="#/investments">View all <span aria-hidden="true">→</span></a></div>
+
+            <section class="panel home-ask" aria-labelledby="home-ask-title">
+              <h2 id="home-ask-title" class="card-title">Ask about your money</h2>
+              <form id="home-ask" class="home-composer" autocomplete="off">
+                <label class="sr-only" for="home-ask-input">Your question</label>
+                <textarea id="home-ask-input" rows="3" placeholder="Why did my portfolio move this week?"></textarea>
+                <div class="home-composer-foot">
+                  <span id="home-ask-agent" class="home-composer-agent"></span>
+                  <button type="submit" aria-label="Ask">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  </button>
+                </div>
+              </form>
+              <ul class="prompt-rows" aria-label="Suggested questions">
+                <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12A9 9 0 1 1 12 3v9z"/></svg></span>
+                  <span class="prompt-row-text">Analyze my portfolio</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <li><button class="prompt-row js-goal-agent" type="button" data-agent="finance" data-prompt="Am I on track for my saved goals? Go through each one and say what would close any gap.">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg></span>
+                  <span class="prompt-row-text">Am I on track for my goals?</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <li><button class="prompt-row js-goal-agent" type="button" data-agent="finance" data-prompt="Which kinds of funds suit my saved goals, given their horizon and my risk?">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></svg></span>
+                  <span class="prompt-row-text">Suggest funds for a goal</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <li><button class="prompt-row" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
+                  <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h3"/></svg></span>
+                  <span class="prompt-row-text">Tax saving ideas</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+              </ul>
+            </section>
+          </div>
+
+          <div id="home-stats" class="kpi-strip" aria-label="Key figures"></div>
+
+          <div class="home-cards">
+            <section class="panel home-card" aria-labelledby="home-allocation-title">
+              <div class="card-head"><h2 id="home-allocation-title" class="card-title">Where it is invested</h2><a class="panel-link" href="#/portfolio">Portfolio <span aria-hidden="true">→</span></a></div>
+              <div id="home-allocation"></div>
+            </section>
+            <section class="panel home-card" aria-labelledby="home-holdings-title">
+              <div class="card-head"><h2 id="home-holdings-title" class="card-title">Largest holdings</h2><a class="panel-link" href="#/investments">All holdings <span aria-hidden="true">→</span></a></div>
               <div id="home-holdings"></div>
             </section>
-          </div>
-
-          <div class="dash-grid">
-            <section class="panel dash-card" aria-labelledby="home-goals-title">
-              <div class="rail-head"><h2 id="home-goals-title">Goals</h2><a class="panel-link" href="#/goals">View all <span aria-hidden="true">→</span></a></div>
+            <section class="panel home-card" aria-labelledby="home-goals-title">
+              <div class="card-head"><h2 id="home-goals-title" class="card-title">Goals</h2><a class="panel-link" href="#/goals">Goals <span aria-hidden="true">→</span></a></div>
               <div id="home-goals"></div>
             </section>
-            <section class="panel dash-card" aria-labelledby="home-insights-title">
-              <div class="rail-head"><h2 id="home-insights-title"><span class="dash-spark" aria-hidden="true">✦</span> AI Insights</h2><a class="panel-link" href="#/markets">See all <span aria-hidden="true">→</span></a></div>
-              <div id="home-insights"></div>
-            </section>
-            <section class="panel dash-card" aria-labelledby="home-actions-title">
-              <div class="rail-head"><h2 id="home-actions-title">Quick Actions</h2></div>
-              <div class="dash-actions">
-                <button class="dash-action" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 19v-6M11 19V9M16 19v-4M21 19V5"/></svg></span>
-                  <strong>Analyze Portfolio</strong><small>Get AI insights</small>
-                </button>
-                <a class="dash-action" href="#/markets/funds">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></span>
-                  <strong>Find Funds</strong><small>Look up any mutual fund</small>
-                </a>
-                <a class="dash-action" href="#/planning/goal">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg></span>
-                  <strong>Plan a Goal</strong><small>See what it takes each month</small>
-                </a>
-                <a class="dash-action" href="#/planning/tax">
-                  <span class="dash-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7Z"/><path d="M13.5 3.5v4.5H18M10 12h5M10 16h5"/></svg></span>
-                  <strong>Income Tax</strong><small>Compare both regimes</small>
-                </a>
-              </div>
-            </section>
           </div>
 
-          <section class="panel" aria-labelledby="home-chats-title">
-            <div class="rail-head"><h2 id="home-chats-title">Continue a chat</h2><a class="panel-link" href="#/chats">See all <span aria-hidden="true">→</span></a></div>
-            <div id="home-chats" class="mini-chat-list"></div>
-          </section>
+          <div class="home-bottom">
+            <section class="panel home-card" aria-labelledby="home-insights-title">
+              <div class="card-head"><h2 id="home-insights-title" class="card-title">What changed today</h2></div>
+              <div id="home-insights"></div>
+            </section>
+            <section class="panel home-card" aria-labelledby="home-chats-title">
+              <div class="card-head"><h2 id="home-chats-title" class="card-title">Continue a chat</h2><a class="panel-link" href="#/chats">All chats <span aria-hidden="true">→</span></a></div>
+              <div id="home-chats" class="mini-chat-list home-chat-list"></div>
+            </section>
+          </div>
         </section>
 
         <section class="page" data-page="portfolio" aria-labelledby="portfolio-title">
           <header class="page-head">
             <div>
-              <h1 id="portfolio-title" class="page-title">Portfolio Overview</h1>
+              <h1 id="portfolio-title" class="page-title">Portfolio overview</h1>
               <p class="page-sub" id="portfolio-asof"></p>
             </div>
-            <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+            <div class="page-actions">
+              <button class="gate-secondary js-snapshot-refresh" type="button" hidden>Refresh snapshot</button>
+            </div>
           </header>
           <div id="portfolio-body"></div>
         </section>

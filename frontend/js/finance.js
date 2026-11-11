@@ -262,6 +262,55 @@
     };
   }
 
+  // "over the last 4 months": the span a history change covers, for the line beside the change.
+  function spanPhrase(days) {
+    if (!Number.isFinite(days) || days < 1) return '';
+    if (days >= 330) return 'over the last year';
+    if (days >= 28) {
+      const months = Math.round(days / 30);
+      return months === 1 ? 'over the last month' : `over the last ${months} months`;
+    }
+    return days === 1 ? 'over the last day' : `over the last ${days} days`;
+  }
+
+  // Round axis ticks (1, 2, 2.5 or 5 times a power of ten) that cover [min, max] in about ``count`` steps.
+  // Empty when either end is missing, so an axis never starts from a made-up zero.
+  function niceTicks(min, max, count = 4) {
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
+    let low = Math.min(min, max);
+    let high = Math.max(min, max);
+    if (low === high) {
+      const pad = Math.abs(low) * 0.01 || 1;
+      low -= pad;
+      high += pad;
+    }
+    const rough = (high - low) / Math.max(1, count);
+    const power = 10 ** Math.floor(Math.log10(rough));
+    const step = [1, 2, 2.5, 5, 10].map((factor) => factor * power).find((candidate) => candidate >= rough);
+    const first = Math.floor(low / step) * step;
+    const last = Math.ceil(high / step) * step;
+    const ticks = [];
+    for (let index = 0; first + index * step <= last + step / 1e6; index += 1) ticks.push(Number((first + index * step).toPrecision(12)));
+    return ticks;
+  }
+
+  // How a goal's status reads at a glance: "good" (reached or on track), "conditional" (on track only if the
+  // assumed return holds) or "behind" (short, due, past due or missing details).
+  function goalTone(plan) {
+    const status = plan && plan.status;
+    if (status === 'on_track' && plan.feasibility && plan.feasibility.status === 'depends_on_returns') return 'conditional';
+    return status === 'on_track' || status === 'reached' ? 'good' : 'behind';
+  }
+
+  // Asset types with a value, largest first, each with its share of their total. Rows without a positive value are
+  // left out rather than drawn as zero.
+  function allocationShares(rows) {
+    const shown = (rows || []).filter((row) => row && Number.isFinite(row.current_value_inr) && row.current_value_inr > 0)
+      .sort((a, b) => b.current_value_inr - a.current_value_inr);
+    const total = shown.reduce((sum, row) => sum + row.current_value_inr, 0);
+    return shown.map((row) => ({ assetType: row.asset_type, value: row.current_value_inr, pct: row.current_value_inr / total * 100 }));
+  }
+
   /* ── Insights from the latest snapshot ────────────────────────────── */
   function holdingLabel(item) {
     return String(item.name || item.code || 'A holding');
@@ -558,7 +607,7 @@
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
-    spanLabel, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
+    spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
   };
