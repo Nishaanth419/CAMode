@@ -425,6 +425,40 @@ test('holdingsTabs lists All first only when there is a combined total', () => {
   assert.deepEqual(finance.holdingsTabs(null), []);
 });
 
+test('holdingInitials takes two letters from the first two words, else from the one word', () => {
+  assert.equal(finance.holdingInitials('Parag Parikh Flexi Cap Fund'), 'PP');
+  assert.equal(finance.holdingInitials('HDFC Index Fund Nifty 50'), 'HI');
+  assert.equal(finance.holdingInitials('Apple'), 'AP');
+  assert.equal(finance.holdingInitials('  infosys  '), 'IN');
+  assert.equal(finance.holdingInitials('(G) Axis Liquid'), 'AL');
+  assert.equal(finance.holdingInitials(''), '?');
+  assert.equal(finance.holdingInitials(null), '?');
+});
+
+test('holdingTypeCounts keeps the order types first appear in', () => {
+  const rows = [{ asset_type: 'MF' }, { asset_type: 'IND_STOCK' }, { asset_type: 'MF' }, { asset_type: null }, { asset_type: 'US_STOCK' }];
+  assert.deepEqual(finance.holdingTypeCounts(rows), [{ type: 'MF', count: 2 }, { type: 'IND_STOCK', count: 1 }, { type: 'US_STOCK', count: 1 }]);
+  assert.deepEqual(finance.holdingTypeCounts(undefined), []);
+});
+
+test('filterHoldings filters by type and search, and sorts missing figures last', () => {
+  const rows = [
+    { name: 'Infosys', code: 'INFY', asset_type: 'IND_STOCK', broker: 'INDmoney', current_value_inr: 90000, pnl_inr: 9000, pnl_pct: 10.9, one_day_change_inr: 232 },
+    { name: 'HDFC Bank', code: 'HDFCBANK', asset_type: 'IND_STOCK', broker: 'Zerodha', current_value_inr: 155000, pnl_inr: null, pnl_pct: null, one_day_change_inr: -44 },
+    { name: 'Axis Liquid Fund', code: '120', asset_type: 'MF', broker: null, current_value_inr: 146000, pnl_inr: 3000, pnl_pct: 2.1, one_day_change_inr: null },
+  ];
+  const names = (list) => list.map((row) => row.name);
+  assert.deepEqual(names(finance.filterHoldings(rows)), ['HDFC Bank', 'Axis Liquid Fund', 'Infosys']);
+  assert.deepEqual(names(finance.filterHoldings(rows, { type: 'MF' })), ['Axis Liquid Fund']);
+  assert.deepEqual(names(finance.filterHoldings(rows, { query: 'zerodha' })), ['HDFC Bank']);
+  assert.deepEqual(names(finance.filterHoldings(rows, { query: ' infy ' })), ['Infosys']);
+  assert.deepEqual(names(finance.filterHoldings(rows, { sort: 'pnl' })), ['Infosys', 'Axis Liquid Fund', 'HDFC Bank']);
+  assert.deepEqual(names(finance.filterHoldings(rows, { sort: 'day' })), ['Infosys', 'HDFC Bank', 'Axis Liquid Fund']);
+  assert.deepEqual(names(finance.filterHoldings(rows, { sort: 'name' })), ['Axis Liquid Fund', 'HDFC Bank', 'Infosys']);
+  // The caller's list is left in its order.
+  assert.deepEqual(names(rows), ['Infosys', 'HDFC Bank', 'Axis Liquid Fund']);
+});
+
 test('brokerStatusLabel never shows an expired login as current', () => {
   const now = Date.UTC(2026, 10, 6, 12);
   assert.equal(finance.brokerStatusLabel('connected', null, now), 'Connected');

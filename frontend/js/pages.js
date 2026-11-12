@@ -1,16 +1,15 @@
 /* ── Pages behind the sidebar ───────────────────────────────────────────
-   Home, Portfolio Overview, Investments, Planning Tools, Market Insights,
+   Home, Portfolio Overview, Holdings, Planning Tools, Market Insights,
    Goals, Reports, Activity and All chats. Loaded after app.js and uses its state
    (currentUser, isConnected, storageMode, chats) and helpers. */
 
-const ROUTES = ['home', 'chat', 'portfolio', 'holdings', 'investments', 'returns', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
+const ROUTES = ['home', 'chat', 'portfolio', 'holdings', 'returns', 'planning', 'markets', 'goals', 'reports', 'activity', 'chats'];
 // Tab title and meta description for each page; `not-found` is any hash that names no page.
 const ROUTE_META = {
   home: ['Home', 'Where your money stands today: net worth, goals and recent chats.'],
   chat: ['Ask AI', 'Ask finance questions or ask about the portfolio at your connected brokers.'],
   portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
-  holdings: ['Holdings', 'Holdings from INDmoney and each connected broker, with a combined total that counts nothing twice.'],
-  investments: ['Investments', 'Every holding from your latest snapshot, with CSV download and CAS upload.'],
+  holdings: ['Holdings', 'Every holding from INDmoney and each connected broker, with search, CSV download and CAS statements.'],
   returns: ['Returns & tax', 'True returns (XIRR) on your mutual funds from a detailed CAS.'],
   planning: ['Planning tools', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
   markets: ['Market insights', 'Mutual fund figures from INDmoney for your goals.'],
@@ -20,6 +19,8 @@ const ROUTE_META = {
   chats: ['All chats', 'Every saved conversation with CA Mode.'],
   'not-found': ['Page not found', 'There is no page at this address in CA Mode.'],
 };
+// Old addresses that now open another page: Investments was merged into Holdings.
+const ROUTE_ALIASES = { investments: 'holdings' };
 const metaDescription = document.querySelector('meta[name="description"]');
 const pageView = document.getElementById('page-view');
 const inputArea = document.getElementById('input-area');
@@ -224,6 +225,11 @@ function startRender(route) {
 function parseHash() {
   const [route = '', sub = ''] = location.hash.replace(/^#\/?/, '').split('/');
   if (!route) return { route: 'home', sub: '' };
+  if (ROUTE_ALIASES[route]) {
+    // Keep old links and bookmarks working, and show the page's own address.
+    history.replaceState(null, '', `#/${ROUTE_ALIASES[route]}`);
+    return { route: ROUTE_ALIASES[route], sub: '' };
+  }
   return ROUTES.includes(route) ? { route, sub: safeDecode(sub) } : { route: 'not-found', sub: '' };
 }
 
@@ -293,7 +299,7 @@ function renderRoute() {
 async function renderPage(route) {
   if (!sessionReady()) return;
   const renderers = {
-    home: renderHome, portfolio: renderPortfolio, holdings: renderHoldings, investments: renderInvestments, returns: renderReturns, planning: renderPlanning,
+    home: renderHome, portfolio: renderPortfolio, holdings: renderHoldings, returns: renderReturns, planning: renderPlanning,
     markets: renderMarkets, goals: renderGoals, reports: renderReports, activity: renderActivity, chats: renderAllChats,
   };
   await renderers[route]?.();
@@ -309,12 +315,14 @@ document.addEventListener('ca:session-ended', () => {
   pageCache.clear();
   lastCountedRoute = null;
   latestHoldings = [];
+  document.getElementById('holdings-csv').hidden = true;
+  Object.assign(holdingsView, { type: 'ALL', query: '', sort: 'value' });
   reportPoints = [];
   resetActivity();
-  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'investments-body', 'returns-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
+  for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'returns-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
   }
-  for (const id of ['portfolio-asof', 'holdings-asof', 'investments-asof', 'returns-asof', 'home-name', 'home-networth-value', 'home-networth-change']) document.getElementById(id).textContent = '';
+  for (const id of ['portfolio-asof', 'holdings-asof', 'returns-asof', 'home-name', 'home-networth-value', 'home-networth-change']) document.getElementById(id).textContent = '';
   if (goalDialog.open) goalDialog.close();
 });
 document.addEventListener('ca:snapshot', () => {
@@ -442,13 +450,8 @@ async function renderHome() {
 
 function homeKpis(figures, holdings) {
   const pnl = figures.pnl || {};
-  const counted = Number(pnl.holdings_counted);
-  const excluded = Number(pnl.holdings_excluded);
-  const costNote = Number.isFinite(counted)
-    ? (Number.isFinite(excluded) && excluded > 0 ? `${counted} of ${counted + excluded} holdings report a cost` : `${counted} holdings with a cost`)
-    : '';
   const day = dayChange(holdings);
-  return kpiCard('Invested', money(pnl.invested_inr), costNote)
+  return kpiCard('Invested', money(pnl.invested_inr), costNote(pnl))
     + kpiCard('Returns', signedMoney(pnl.pnl_inr), Number.isFinite(pnl.pnl_pct) ? `${percent(pnl.pnl_pct, { signed: true })} on those holdings` : '', toneOf(pnl.pnl_inr))
     + kpiCard("Today's change", day ? signedMoney(day.change) : '—', day ? `${percent(day.pct, { signed: true })} · ${day.up} up, ${day.down} down` : 'No moves in the latest snapshot', day ? toneOf(day.change) : '')
     + kpiCard('Liabilities', money(figures.totals?.liabilities_inr), 'Loans and card dues');
@@ -633,7 +636,7 @@ async function renderPortfolio() {
         ${caps ? panel('Direct stocks by market cap', `<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`) : ''}
       </div>
     </div>
-    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/investments">All investments</a> <a class="panel-link" href="#/holdings">With brokers</a>' })}
+    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings <span aria-hidden="true">→</span></a>' })}
     ${notes.length ? panel('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
     ${promptChips([
       ['Explain my allocation', 'Explain my current asset allocation and what stands out.'],
@@ -696,17 +699,19 @@ function holdingsTable(holdings, { compact = false } = {}) {
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-/* ── Holdings (INDmoney and connected brokers) ──────────────────────── */
-function holdingsTotals(figures) {
-  if (!figures) return '';
-  const t = figures.totals || {};
-  const pnl = figures.pnl || {};
-  return `<div class="stat-grid stat-grid-3">
-    ${statTile('Current value', moneyShort(t.current_value_inr), 'Holdings only')}
-    ${statTile('Holdings', String(figures.concentration?.holdings_count ?? 0))}
-    ${pnl.pnl_inr === null || pnl.pnl_inr === undefined ? '' : statTile('P&L', signedMoney(pnl.pnl_inr), percent(pnl.pnl_pct, { signed: true }), toneOf(pnl.pnl_inr))}
-  </div>`;
-}
+/* ── Holdings (INDmoney, connected brokers and CAS statements) ──────── */
+// One page for every holding: a tab per source (All, INDmoney, then each broker), the selected
+// source's figures, its rows with filters, and the CAS statements card (index.html, app.js).
+// The asset-type filter, search and sort stay while moving between tabs.
+const holdingsView = { type: 'ALL', query: '', sort: 'value' };
+// The selected source's rows: the table, its filters and Download CSV read them.
+let latestHoldings = [];
+// The largest share in the selected source, so share bars keep their length while filtering.
+let largestShare = 0;
+
+const HOLDING_SORT_LABELS = [['value', 'Value'], ['pnl', 'Gain (₹)'], ['pnlPct', 'Gain (%)'], ['day', '1-day change'], ['name', 'Name']];
+// Tile colours by asset type; anything else gets the neutral tile.
+const HOLDING_TONES = { MF: 'tone-mf', IND_STOCK: 'tone-stock', US_STOCK: 'tone-us' };
 
 function holdingsSourceNote(tab, source, data) {
   if (tab.id === 'all') {
@@ -723,11 +728,120 @@ function holdingsSourceNote(tab, source, data) {
   return source.stale ? `${when} The login has ended, so these are the last holdings fetched.${moved}` : `${when}${moved}`;
 }
 
+// Nothing to show from any source: say why, then one action.
+function holdingsEmpty() {
+  if (isConnected) return storageMode === 'private' ? accessNotice('private') : noSnapshotNotice();
+  return notice('No holdings yet', 'Connect a broker to see every holding here, with search and CSV download. Access is read-only.', CONNECT_BUTTON);
+}
+
+function costNote(pnl) {
+  const counted = Number(pnl.holdings_counted);
+  const excluded = Number(pnl.holdings_excluded);
+  if (!Number.isFinite(counted)) return '';
+  return Number.isFinite(excluded) && excluded > 0 ? `${counted} of ${counted + excluded} holdings report a cost` : `${counted} holdings with a cost`;
+}
+
+function holdingsKpis(figures, rows) {
+  const totals = figures?.totals || {};
+  const pnl = figures?.pnl || {};
+  const day = dayChange(rows);
+  const hasGain = Number.isFinite(pnl.pnl_inr);
+  return kpiCard('Current value', money(totals.current_value_inr), `All ${rows.length} ${rows.length === 1 ? 'holding' : 'holdings'}`)
+    + kpiCard('Invested', money(pnl.invested_inr), costNote(pnl))
+    + kpiCard('Gain', signedMoney(pnl.pnl_inr), hasGain ? `${percent(pnl.pnl_pct, { signed: true })} on those holdings` : 'No holding reports a cost', toneOf(pnl.pnl_inr))
+    + kpiCard("Today's change", day ? signedMoney(day.change) : '—', day ? `${day.up} up, ${day.down} down` : 'No moves in this data', day ? toneOf(day.change) : '');
+}
+
+function sourceTabs(tabs, active, data) {
+  const count = (id) => (id === 'all' ? data.combined : data.sources.find((item) => item.id === id))?.holdings?.length;
+  return `<div class="source-tabs" role="group" aria-label="Holdings source">${tabs.map((item) => {
+    const rows = item.available !== false ? count(item.id) : undefined;
+    return `<button type="button" class="source-tab" data-holdings-tab="${escHtml(item.id)}" aria-pressed="${item.id === active.id}">
+      ${item.logo ? brokerLogoHtml(item.id, item.label, item.logo) : ''}<span>${escHtml(item.id === 'all' ? 'All holdings' : item.label)}</span>
+      ${Number.isFinite(rows) ? `<span class="seg-count">${rows}</span>` : ''}${item.stale ? '<span class="tone-pill is-behind">Stale</span>' : ''}</button>`;
+  }).join('')}</div>`;
+}
+
+function holdingsFilters(rows) {
+  const types = holdingTypeCounts(rows);
+  if (holdingsView.type !== 'ALL' && !types.some((item) => item.type === holdingsView.type)) holdingsView.type = 'ALL';
+  const chip = (type, label) => `<button type="button" class="filter-chip" data-holding-type="${escHtml(type)}" aria-pressed="${type === holdingsView.type}">${escHtml(label)}</button>`;
+  return `<div class="holdings-filters">
+      <div class="filter-chips" role="group" aria-label="Filter by asset type">
+        ${chip('ALL', `All · ${rows.length}`)}${types.length > 1 ? types.map(({ type, count }) => chip(type, `${assetTypeLabel(type)} · ${count}`)).join('') : ''}
+      </div>
+      <div class="holdings-find">
+        <label class="holdings-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <span class="sr-only">Search holdings by name, code or broker</span>
+          <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
+        </label>
+        <label class="holdings-sort"><span>Sort</span>
+          <select id="holding-sort">${HOLDING_SORT_LABELS.map(([value, label]) =>
+            `<option value="${value}" ${value === holdingsView.sort ? 'selected' : ''}>${label}</option>`).join('')}</select>
+        </label>
+      </div>
+    </div>`;
+}
+
+// One row per holding. Below 640px of page width the same rows become cards (css: .holdings-table).
+function holdingsRows(rows) {
+  if (!rows.length) return '<p class="page-muted holdings-none">No holdings match these filters.</p>';
+  const body = rows.map((item) => {
+    const name = item.name || item.code || 'Unnamed holding';
+    const kind = [ASSET_TYPE_SINGULAR[item.asset_type] || assetTypeLabel(item.asset_type), item.asset_type === 'MF' ? item.asset_class : '', item.broker]
+      .filter(Boolean).join(' · ');
+    const hasCost = Number.isFinite(item.pnl_inr);
+    const share = item.share_of_portfolio_pct;
+    const bar = Number.isFinite(share) && largestShare > 0 ? Math.max(2, Math.min(100, share / largestShare * 100)) : 0;
+    const day = Number.isFinite(item.one_day_change_inr) && item.one_day_change_inr !== 0 ? item.one_day_change_inr : null;
+    const ask = `Tell me about my holding ${name}: its value, P&L, share of my portfolio, and anything to keep an eye on.`;
+    return `<tr>
+      <th scope="row" class="h-name"><span class="holding-cell">
+        <span class="holding-tile ${HOLDING_TONES[item.asset_type] || 'tone-other'}" aria-hidden="true">${escHtml(holdingInitials(name))}</span>
+        <span class="holding-text"><span class="holding-name">${escHtml(name)}</span><small>${escHtml(kind)}</small></span></span></th>
+      <td class="h-value">${escHtml(money(item.current_value_inr))}${Number.isFinite(item.current_value_usd) ? `<small>$${escHtml(plainNumber.format(item.current_value_usd))}</small>` : ''}</td>
+      <td class="h-invested" data-label="Invested">${escHtml(money(item.invested_inr))}</td>
+      <td class="h-gain ${hasCost ? toneOf(item.pnl_inr) : ''}">${hasCost
+        ? `${escHtml(signedMoney(item.pnl_inr))}<small>${escHtml(percent(item.pnl_pct, { signed: true }))}</small>`
+        : '—<small>No cost reported</small>'}</td>
+      <td class="h-share"><span class="share-cell">${bar ? `<span class="share-bar" aria-hidden="true"><span style="width:${bar.toFixed(1)}%"></span></span>` : ''}<span class="share-pct">${escHtml(percent(share))}</span><span class="share-of"> of holdings</span></span></td>
+      <td class="h-day ${toneOf(day)}" data-label="1 day">${escHtml(day === null ? '—' : signedMoney(day))}</td>
+      <td class="h-ask"><button class="table-action" type="button" data-agent="portfolio" data-prompt="${escHtml(ask)}" aria-label="Ask AI about ${escHtml(name)}">Ask</button></td>
+    </tr>`;
+  }).join('');
+  return `<div class="holdings-scroll"><table class="holdings-table">
+    <caption class="sr-only">Holdings, ${rows.length} shown</caption>
+    <thead><tr><th scope="col">Holding</th><th scope="col">Value</th><th scope="col">Invested</th><th scope="col">Gain</th><th scope="col">Share</th><th scope="col">1 day</th><th scope="col"><span class="sr-only">Ask AI</span></th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+// Value by broker within the selected source, as a stacked bar and a list (like Home's allocation).
+function brokerSplit(rows) {
+  const shown = (rows || []).filter((row) => Number.isFinite(row.current_value_inr) && row.current_value_inr > 0);
+  if (shown.length < 2) return '';
+  const series = (index) => `series-${(index % SERIES_COUNT) + 1}`;
+  const label = shown.map((row) => `${row.broker} ${percent(row.share_of_listed_holdings_pct)}`).join(', ');
+  return `<section class="panel home-card" aria-labelledby="by-broker-title">
+    <div class="card-head"><h2 id="by-broker-title" class="card-title">By broker</h2></div>
+    <div class="stack-bar" role="img" aria-label="${escHtml(label)}">${shown.map((row, index) =>
+      `<span class="${series(index)}" style="width:${(Number(row.share_of_listed_holdings_pct) || 0).toFixed(2)}%"></span>`).join('')}</div>
+    <ul class="alloc-list">${shown.map((row, index) => {
+      const count = Number(row.holdings) || 0;
+      return `<li><span class="alloc-swatch ${series(index)}" aria-hidden="true"></span>
+        <span class="alloc-name">${escHtml(row.broker || 'Other')}<small>${count} ${count === 1 ? 'holding' : 'holdings'}</small></span>
+        <span class="alloc-value">${escHtml(money(row.current_value_inr))}</span><strong class="alloc-pct">${escHtml(percent(row.share_of_listed_holdings_pct))}</strong></li>`;
+    }).join('')}</ul>
+  </section>`;
+}
+
 async function renderHoldings() {
   const isCurrent = startRender('holdings');
   const body = document.getElementById('holdings-body');
   const asOf = document.getElementById('holdings-asof');
+  const csv = document.getElementById('holdings-csv');
   asOf.textContent = '';
+  csv.hidden = true;
   setHtml(body, loadingBlock());
   let data;
   try {
@@ -737,32 +851,64 @@ async function renderHoldings() {
     return;
   }
   if (!isCurrent()) return;
+  latestHoldings = [];
   const tabs = holdingsTabs(data);
   if (!tabs.length) {
-    setHtml(body, notice('No holdings yet', 'Connect a broker from your profile to see your holdings here. Access is read-only.', CONNECT_BUTTON));
+    setHtml(body, holdingsEmpty());
     return;
   }
   const tab = tabs.find((item) => item.id === currentSub) || tabs[0];
   const source = tab.id === 'all' ? data.combined : data.sources.find((item) => item.id === tab.id);
-  const isBroker = tab.id !== 'all' && data.sources.find((item) => item.id === tab.id)?.kind === 'broker';
+  const isBroker = source.kind === 'broker';
   asOf.textContent = holdingsSourceNote(tab, source, data);
-  const stale = tab.stale ? ' <span class="pill">Stale</span>' : '';
-  setHtml(body, `
-    <div class="table-controls">
-      <div class="seg seg-small" role="group" aria-label="Holdings source">
-        ${tabs.map((item) => `<button type="button" class="holdings-tab" data-holdings-tab="${escHtml(item.id)}" aria-pressed="${item.id === tab.id}">${item.logo ? brokerLogoHtml(item.id, item.label, item.logo) : ''}<span>${escHtml(item.label)}${item.stale ? ' (stale)' : ''}</span></button>`).join('')}
-      </div>
-      ${isBroker ? `<button class="gate-secondary" type="button" data-broker-refresh="${escHtml(tab.id)}">Refresh from ${escHtml(tab.label)}</button>` : ''}
-    </div>
-    ${source.available === false ? notice('No holdings to show', source.problem || 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.') : `
-      ${holdingsTotals(source.figures)}
-      <section class="panel"><div class="rail-head"><h2>${escHtml(tab.label)}${stale}</h2></div>${holdingsTable(source.holdings || [])}</section>`}`);
+  const refresh = isBroker ? `<button class="gate-secondary" type="button" data-broker-refresh="${escHtml(tab.id)}">Refresh from ${escHtml(tab.label)}</button>` : '';
+  const head = `<div class="source-bar">${sourceTabs(tabs, tab, data)}${refresh}</div>`;
+  if (source.available === false) {
+    setHtml(body, head + notice('No holdings to show', source.problem || 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.'));
+    showActiveSourceTab(body);
+    return;
+  }
+  latestHoldings = source.holdings || [];
+  largestShare = Math.max(0, ...latestHoldings.map((item) => item.share_of_portfolio_pct).filter(Number.isFinite));
+  csv.hidden = !latestHoldings.length;
+  const notes = source.figures?.data_notes || [];
+  setHtml(body, `${head}
+    <div class="kpi-strip" aria-label="Key figures">${holdingsKpis(source.figures, latestHoldings)}</div>
+    ${latestHoldings.length ? `<section class="panel holdings-panel" aria-label="${escHtml(tab.id === 'all' ? 'All holdings' : `${tab.label} holdings`)}">
+      ${holdingsFilters(latestHoldings)}
+      <div id="holdings-table"></div>
+    </section>` : '<section class="panel"><p class="page-muted">No holdings in this view.</p></section>'}
+    ${notes.length ? `<ul class="holdings-notes">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>` : ''}
+    ${brokerSplit(source.figures?.by_broker)}`);
+  renderHoldingsTable();
+  showActiveSourceTab(body);
+}
+
+// On a phone the tabs scroll sideways; keep the selected one in sight.
+function showActiveSourceTab(body) {
+  const active = body.querySelector('.source-tab[aria-pressed="true"]');
+  const bar = active?.parentElement;
+  if (!bar || bar.scrollWidth <= bar.clientWidth) return;
+  bar.scrollLeft = Math.max(0, active.offsetLeft - bar.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
+}
+
+function renderHoldingsTable() {
+  const container = document.getElementById('holdings-table');
+  if (!container) return;
+  container.innerHTML = holdingsRows(filterHoldings(latestHoldings, holdingsView));
 }
 
 document.addEventListener('click', async (event) => {
   const tab = event.target.closest('[data-holdings-tab]');
   if (tab) {
     navigate('holdings', tab.dataset.holdingsTab === 'all' ? '' : tab.dataset.holdingsTab);
+    return;
+  }
+  const type = event.target.closest('[data-holding-type]');
+  if (type) {
+    holdingsView.type = type.dataset.holdingType;
+    type.parentElement.querySelectorAll('button').forEach((item) => item.setAttribute('aria-pressed', String(item === type)));
+    renderHoldingsTable();
     return;
   }
   const refresh = event.target.closest('[data-broker-refresh]');
@@ -776,66 +922,36 @@ document.addEventListener('click', async (event) => {
   pageCache.delete('combined');
   if (currentRoute === 'holdings') renderPage('holdings');
 });
+document.addEventListener('input', (event) => {
+  if (event.target.id === 'holding-search') {
+    holdingsView.query = event.target.value;
+    renderHoldingsTable();
+  }
+});
+document.addEventListener('change', (event) => {
+  if (event.target.id === 'holding-sort') {
+    holdingsView.sort = event.target.value;
+    renderHoldingsTable();
+  }
+});
 document.addEventListener('ca:holdings', () => {
   pageCache.delete('combined');
   if (currentRoute === 'holdings') renderPage('holdings');
 });
 
-/* ── Investments ────────────────────────────────────────────────────── */
-const holdingsView = { type: 'ALL', query: '', sort: 'value' };
-let latestHoldings = [];
-
-async function renderInvestments() {
-  const isCurrent = startRender('investments');
-  const body = document.getElementById('investments-body');
-  const asOf = document.getElementById('investments-asof');
-  const csv = document.getElementById('holdings-csv');
-  csv.hidden = true;
-  asOf.textContent = 'Every holding from your latest snapshot, plus holdings at other brokers from your CAS.';
-  const access = portfolioAccess();
-  if (access !== 'ok') {
-    setHtml(body, accessNotice(access));
-    return;
-  }
-  setHtml(body, loadingBlock());
-  let data;
-  try {
-    data = await getPortfolio();
-  } catch (error) {
-    if (isCurrent()) setHtml(body, errorBlock(error));
-    return;
-  }
-  if (!isCurrent()) return;
-  if (!data.available) {
-    setHtml(body, noSnapshotNotice());
-    return;
-  }
-  latestHoldings = data.holdings || [];
-  csv.hidden = !latestHoldings.length;
-  asOf.textContent = `${latestHoldings.length} holdings from your snapshot of ${formatCaptured(data.capturedAt)}.`;
-  const types = [...new Set(latestHoldings.map((item) => item.asset_type).filter(Boolean))];
-  if (holdingsView.type !== 'ALL' && !types.includes(holdingsView.type)) holdingsView.type = 'ALL';
-  const brokers = (data.figures.by_broker || []).map((row) =>
-    `<tr><td>${escHtml(row.broker)}</td><td>${Number(row.holdings) || 0}</td><td>${money(row.current_value_inr)}</td><td>${percent(row.share_of_listed_holdings_pct)}</td></tr>`).join('');
-  setHtml(body, `
-    <section class="panel">
-      <div class="table-controls">
-        <div class="seg seg-small" role="group" aria-label="Filter by asset type">
-          ${['ALL', ...types].map((type) => `<button type="button" data-holding-type="${escHtml(type)}" aria-pressed="${type === holdingsView.type}">${escHtml(type === 'ALL' ? 'All' : assetTypeLabel(type))}</button>`).join('')}
-        </div>
-        <label class="search-box table-search"><input id="holding-search" type="search" placeholder="Search holdings…" aria-label="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" /></label>
-        <label class="field inline-field"><span>Sort by</span>
-          <select id="holding-sort">
-            ${[['value', 'Value'], ['pnl', 'P&L (₹)'], ['pnlPct', 'P&L (%)'], ['day', '1-day change'], ['name', 'Name']].map(([value, label]) =>
-              `<option value="${value}" ${value === holdingsView.sort ? 'selected' : ''}>${label}</option>`).join('')}
-          </select>
-        </label>
-      </div>
-      <div id="holdings-table"></div>
-    </section>
-    ${brokers ? panel('By broker', `<table class="data-table compact"><thead><tr><th>Broker</th><th>Holdings</th><th>Value</th><th>Share</th></tr></thead><tbody>${brokers}</tbody></table>`) : ''}`);
-  renderHoldingsTable();
+function holdingsCsvRows(holdings) {
+  return [
+    ['Holding', 'Code', 'Asset type', 'Broker', 'Units', 'Price (INR)', 'Value (INR)', 'Invested (INR)', 'P&L (INR)', 'P&L (%)', 'Share (%)', '1-day change (INR)', 'Value (USD)'],
+    ...holdings.map((item) => [item.name, item.code, assetTypeLabel(item.asset_type), item.broker, item.units, item.unit_price_inr,
+      item.current_value_inr, item.invested_inr, item.pnl_inr, item.pnl_pct, item.share_of_portfolio_pct, item.one_day_change_inr, item.current_value_usd]),
+  ];
 }
+
+// Every row of the selected source, whatever the filters show.
+document.getElementById('holdings-csv').addEventListener('click', () => {
+  const source = currentSub && currentSub !== 'all' ? `-${currentSub.replace(/[^a-z0-9-]/gi, '')}` : '';
+  downloadCsv(`ca-mode-holdings${source}-${new Date().toISOString().slice(0, 10)}.csv`, holdingsCsvRows(latestHoldings));
+});
 
 /* ── Returns & tax ──────────────────────────────────────────────────── */
 // Mutual fund returns from GET /api/returns; every figure is computed on the server.
@@ -878,7 +994,7 @@ async function renderReturns() {
   if (!isCurrent()) return;
   if (!data.available) {
     setHtml(body, notice('No detailed CAS yet', data.hint || 'Upload a detailed CAS from CAMS or KFintech.',
-      '<a class="rail-button inline-button" href="#/investments">Upload a CAS</a>'));
+      '<a class="rail-button inline-button" href="#/holdings">Upload a CAS</a>'));
     return;
   }
   const p = data.portfolio;
@@ -908,56 +1024,6 @@ async function renderReturns() {
     </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
     <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
-
-function renderHoldingsTable() {
-  const container = document.getElementById('holdings-table');
-  if (!container) return;
-  const query = holdingsView.query.trim().toLowerCase();
-  const sorters = {
-    value: (a, b) => (b.current_value_inr || 0) - (a.current_value_inr || 0),
-    pnl: (a, b) => (b.pnl_inr ?? -Infinity) - (a.pnl_inr ?? -Infinity),
-    pnlPct: (a, b) => (b.pnl_pct ?? -Infinity) - (a.pnl_pct ?? -Infinity),
-    day: (a, b) => (b.one_day_change_inr || 0) - (a.one_day_change_inr || 0),
-    name: (a, b) => String(a.name || '').localeCompare(String(b.name || '')),
-  };
-  const rows = latestHoldings
-    .filter((item) => holdingsView.type === 'ALL' || item.asset_type === holdingsView.type)
-    .filter((item) => !query || [item.name, item.code, item.broker].some((value) => String(value || '').toLowerCase().includes(query)))
-    .sort(sorters[holdingsView.sort] || sorters.value);
-  container.innerHTML = holdingsTable(rows);
-}
-
-document.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-holding-type]');
-  if (!button) return;
-  holdingsView.type = button.dataset.holdingType;
-  button.parentElement.querySelectorAll('button').forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
-  renderHoldingsTable();
-});
-document.addEventListener('input', (event) => {
-  if (event.target.id === 'holding-search') {
-    holdingsView.query = event.target.value;
-    renderHoldingsTable();
-  }
-});
-document.addEventListener('change', (event) => {
-  if (event.target.id === 'holding-sort') {
-    holdingsView.sort = event.target.value;
-    renderHoldingsTable();
-  }
-});
-
-function holdingsCsvRows(holdings) {
-  return [
-    ['Holding', 'Code', 'Asset type', 'Broker', 'Units', 'Price (INR)', 'Value (INR)', 'Invested (INR)', 'P&L (INR)', 'P&L (%)', 'Share (%)', '1-day change (INR)', 'Value (USD)'],
-    ...holdings.map((item) => [item.name, item.code, assetTypeLabel(item.asset_type), item.broker, item.units, item.unit_price_inr,
-      item.current_value_inr, item.invested_inr, item.pnl_inr, item.pnl_pct, item.share_of_portfolio_pct, item.one_day_change_inr, item.current_value_usd]),
-  ];
-}
-
-document.getElementById('holdings-csv').addEventListener('click', () => {
-  downloadCsv(`ca-mode-holdings-${new Date().toISOString().slice(0, 10)}.csv`, holdingsCsvRows(latestHoldings));
-});
 
 /* ── Planning Tools ─────────────────────────────────────────────────── */
 const CALCULATORS = {
