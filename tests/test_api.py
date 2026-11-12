@@ -14,7 +14,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, limits, main, privacy, snapshots, users
+from app import accounts, brokers, limits, main, privacy, snapshots, users
 from app.agent import AgentRunError
 from conftest import sign_up
 
@@ -818,6 +818,46 @@ def test_user_access_token_refused_refresh_reads_as_disconnected(stored_user, mo
     monkeypatch.setattr(users.httpx, "AsyncClient", TokenEndpoint(400).client)
 
     assert asyncio.run(users.user_access_token(stored_user)) is None
+
+
+def test_refused_refresh_shows_indmoney_as_needing_login(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+    endpoint = TokenEndpoint(400)
+    monkeypatch.setattr(users.httpx, "AsyncClient", endpoint.client)
+
+    assert asyncio.run(users.user_access_token(stored_user)) is None
+    item = brokers.indmoney_item(stored_user)
+    assert item["status"] == "needs_login" and item["needsAttention"] is True
+    # The refused refresh token is not sent again on every snapshot attempt.
+    assert asyncio.run(users.user_access_token(stored_user)) is None
+    assert endpoint.sent == ["refresh"]
+
+
+def test_refused_refresh_keeps_a_reconnect_made_meanwhile(stored_user, monkeypatch):
+    connect_user_to_indmoney(stored_user, accessToken="expired", expiresAt=1)
+
+    class ReconnectingEndpoint(TokenEndpoint):
+        def client(self, **kwargs):
+            inner = super().client(**kwargs)
+
+            class Client:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return None
+
+                async def post(self, url, data):
+                    connect_user_to_indmoney(stored_user, accessToken="new-access", refreshToken="new-refresh")
+                    return await inner.post(url, data)
+
+            return Client()
+
+    monkeypatch.setattr(users.httpx, "AsyncClient", ReconnectingEndpoint(400).client)
+
+    asyncio.run(users.user_access_token(stored_user))
+    assert users.get_indmoney(stored_user)["refreshToken"] == "new-refresh"
+    assert brokers.indmoney_item(stored_user)["status"] == "connected"
 
 
 def test_concurrent_indmoney_refreshes_spend_the_refresh_token_once(stored_user, monkeypatch):
