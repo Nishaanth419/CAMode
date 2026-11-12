@@ -28,14 +28,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=53" />
+  <link rel="stylesheet" href="/css/app.css?v=54" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
-  <script src="/js/finance.js?v=12" defer></script>
+  <script src="/js/finance.js?v=13" defer></script>
   <script src="/js/trace.js?v=13" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
   <script src="/js/app.js?v=48" defer></script>
-  <script src="/js/pages.js?v=32" defer></script>
+  <script src="/js/pages.js?v=33" defer></script>
   <script src="/js/rail.js?v=9" defer></script>
 </head>
 <body>
@@ -484,9 +484,11 @@
           <header class="page-head">
             <div>
               <h1 id="goals-title" class="page-title">Goals</h1>
-              <p class="page-sub">Track what you are saving for. Goals are locked with your PIN; Finance Agent and Portfolio Analyzer see a goal only when your question is about it.</p>
+              <p class="page-sub">What you are saving for. Goals are locked with your PIN, and the assistant reads one only when your question is about it.</p>
             </div>
-            <button id="add-goal" class="rail-button page-cta" type="button">Add a goal</button>
+            <div class="page-actions">
+              <button id="add-goal" class="rail-button" type="button">Add a goal</button>
+            </div>
           </header>
           <div id="goals-body"></div>
           <div id="goal-investments-body"></div>

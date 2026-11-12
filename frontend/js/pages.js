@@ -1328,24 +1328,6 @@ let goalDateChosen = false;
 let goalPreviewTimer = null;
 let goalPreviewSeq = 0;
 
-// Shared by the Goals page and the right rail; tones repeat after five goals.
-const GOAL_ICONS = {
-  home: '<path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1Z"/>',
-  education: '<path d="m3 9 9-4 9 4-9 4Z"/><path d="M7 11v4.5c0 1.4 2.2 2.5 5 2.5s5-1.1 5-2.5V11"/><path d="M21 9v5"/>',
-  financial_independence: '<path d="M12 3.5v17"/><path d="M7 7.5h7a3 3 0 0 1 0 6H9.5a3 3 0 0 0 0 6H17"/>',
-  retirement: '<path d="M3.5 12a8.5 8.5 0 0 1 17 0Z"/><path d="M12 12v6.5a1.5 1.5 0 0 1-3 0"/><path d="M12 3.5V2"/>',
-  car: '<path d="M5 16v-4l2-5h10l2 5v4Z"/><path d="M5 12h14"/><circle cx="8" cy="16.5" r="1.5"/><circle cx="16" cy="16.5" r="1.5"/>',
-  travel: '<path d="M2.5 13.5 21 6l-4.5 13-4-5.5Z"/><path d="m12.5 13.5 3-3"/>',
-  wedding: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10Z"/>',
-  emergency: '<path d="M12 3.5 19 6v5.5c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6Z"/>',
-  other: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/>',
-};
-const GOAL_TONES = ['green', 'blue', 'violet', 'amber', 'red'];
-
-function goalIconHtml(goal, tone, className = 'insight-icon') {
-  return `<span class="${className} tone-${tone}" aria-hidden="true"><svg viewBox="0 0 24 24">${GOAL_ICONS[goalIcon(goal)]}</svg></span>`;
-}
-
 function isoDay(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -1356,31 +1338,15 @@ function yearsFromToday(years) {
   return isoDay(date);
 }
 
-// One sentence on where the goal stands, from its plan.
-function goalSummary(plan) {
-  if (!plan) return '';
-  const cur = plan.currency;
-  const base = baseScenario(plan);
-  const by = formatDate(plan.targetDate);
-  switch (plan.status) {
-    case 'reached':
-      return `The ${amountShort(plan.startingAmount ?? plan.savedAmount, cur)} counted so far already covers the target.`;
-    case 'past_due':
-    case 'due_now':
-      return `${amount(plan.remainingGap, cur)} is still needed, and no monthly contributions are left before ${by}.`;
-    case 'insufficient_data':
-      return (plan.warnings || [])[0] || 'Some details this goal needs are missing.';
-    default:
-      if (!base) return '';
-      if (base.onTrack) return `Projected ${amountShort(base.projectedAmount, cur)} by ${by} at ${base.annualReturnPct}% a year, ${amountShort(base.difference, cur)} more than the target.`;
-      return `Projected ${amountShort(base.projectedAmount, cur)} by ${by} at ${base.annualReturnPct}% a year, ${amountShort(-base.difference, cur)} short. `
-        + (base.requiredMonthly != null ? `About ${amount(base.requiredMonthly, cur)} a month would close the gap under the same assumption.` : '');
-  }
-}
-
 const RISK_NOTE = 'Illustrations under stated assumptions, not advice or promised returns. Market-linked investments can lose value.';
 
-function scenarioDetails(plan) {
+function savedLine(goal) {
+  return `<p class="goal-meta">Saved ${escHtml(timeAgo(goal.updatedAt))} by you${goal.migratedFrom ? ' · moved from your earlier goal list (target date set to 31 Dec)' : ''}</p>`;
+}
+
+// The Scenarios disclosure: what the plan concludes, every scenario, the ways to close a no-growth gap when the
+// goal is on track only if returns hold, and the assumptions behind the figures.
+function scenarioDetails(plan, goal) {
   if (!plan || !(plan.scenarios || []).length) return '';
   const cur = plan.currency;
   const rows = plan.scenarios.map((item) => `<tr>
@@ -1389,24 +1355,38 @@ function scenarioDetails(plan) {
       <td class="${item.difference >= 0 ? 'is-up' : 'is-down'}">${item.difference >= 0 ? '+' : '−'}${amountShort(Math.abs(item.difference), cur)}</td>
       <td>${item.requiredMonthly == null ? '—' : amount(item.requiredMonthly, cur)}</td>
     </tr>`).join('');
-  const notes = [...(plan.warnings || []), ...(plan.assumptions || []), RISK_NOTE];
+  const notes = [...(plan.assumptions || []), RISK_NOTE];
   const inflation = plan.inflation
     ? `<p class="goal-meta">Target ${amount(plan.inflation.targetInTodayMoney, cur)} in today's money becomes ${amount(plan.inflation.inflatedTarget, cur)} at ${plan.inflation.inflationPct}% a year. Projected amounts are in money of the target date and are compared with that raised target. Total planned contributions: ${amount(plan.totalFutureContributions, cur)}.</p>`
     : `<p class="goal-meta">Projected amounts are in money of the target date; inflation is not taken into account. Total planned contributions: ${amount(plan.totalFutureContributions, cur)}.</p>`;
-  return `<details class="goal-scenarios"><summary>Scenarios and assumptions</summary>
-    ${inflation}
+  const feasibility = plan.feasibility?.summary && plan.feasibility.status !== 'insufficient_data' ? `<p class="goal-advice">${escHtml(plan.feasibility.summary)}</p>` : '';
+  // A goal that falls short shows these in its own panel; any other goal with options keeps them here.
+  const alternatives = gapOptions(plan) ? '' : alternativesList(plan.alternatives, cur, 'If returns do not hold, ways to close the gap');
+  return `${feasibility}${inflation}
     <div class="table-scroll"><table class="data-table compact"><thead><tr><th>Yearly return</th><th>Projected</th><th>vs target</th><th>Needed a month</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${alternatives}
     <ul class="goal-notes">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>
-  </details>`;
+    ${savedLine(goal)}`;
 }
 
-function alternativesList(plan) {
-  const items = plan.alternatives || [];
-  if (!items.length) return '';
-  return `<div class="goal-section"><h4>Ways to close the gap</h4><ul class="goal-alts">${items.map((item) => {
-    const { tag, text } = alternativeLabel(item, plan.currency, formatDate);
+function alternativesList(items, currency, title) {
+  if (!(items || []).length) return '';
+  return `<div class="goal-section"><h4>${escHtml(title)}</h4><ul class="goal-alts">${items.map((item) => {
+    const { tag, text } = alternativeLabel(item, currency, formatDate);
     return `<li><span class="basis-tag ${item.basis === 'zero_return' ? 'is-certain' : ''}">${escHtml(tag)}</span> ${escHtml(text)}</li>`;
   }).join('')}</ul></div>`;
+}
+
+// "Ways to close the gap", only for a goal that falls short: up to three tiles with the server's figures, the
+// other options it gave one line each.
+function gapPanel(plan) {
+  const gap = gapOptions(plan, monthYear);
+  if (!gap) return '';
+  const others = gap.others.length ? `<details class="goal-more"><summary>Other ways (${gap.others.length})</summary>
+    <ul class="goal-alts">${gap.others.map(({ tag, text }) => `<li><span class="basis-tag ${tag === 'No growth' ? 'is-certain' : ''}">${escHtml(tag)}</span> ${escHtml(text)}</li>`).join('')}</ul></details>` : '';
+  return `<section class="goal-gap"><h3 class="goal-gap-title">${escHtml(gap.title)}</h3>
+    <ul class="goal-gap-options">${gap.options.map((option) => `<li><strong>${escHtml(option.title)}</strong><span>${escHtml(option.note)}</span></li>`).join('')}</ul>
+    ${others}</section>`;
 }
 
 const VERDICT_LABELS = { allowed: 'Allowed', caution: 'Caution', unsuitable: 'Unsuitable' };
@@ -1476,7 +1456,7 @@ document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-compare-funds]');
   if (!button) return;
   const host = button.closest('[data-fund-host]');
-  const goalName = host.closest('.goal-card')?.querySelector('h3')?.textContent || '';
+  const goalName = host.closest('.goal-card')?.querySelector('.goal-name')?.textContent || '';
   host.innerHTML = loadingBlock();
   try {
     const data = await fetchJson(`/api/goals/${encodeURIComponent(button.dataset.compareFunds)}/funds`);
@@ -1506,22 +1486,22 @@ function mappingBlock(goal) {
     <ul class="goal-notes">${rows}${missing}</ul>${notes.map((note) => `<p class="goal-meta">${escHtml(note)}</p>`).join('')}</div>`;
 }
 
-// A total tile: the first currency as the value and any others beside it, never added together.
-function totalTile(label, totals, sub) {
+// A total: the first currency as the figure and any others in the note, never added together.
+function totalKpi(label, totals, note) {
   const [first, ...rest] = totals;
-  if (!first) return statTile(label, '—', sub);
-  return statTile(label, amountShort(first[1], first[0]), rest.length ? `+ ${formatTotals(rest)}, kept separate` : sub);
+  if (!first) return kpiCard(label, '—', note);
+  return kpiCard(label, amountShort(first[1], first[0]), rest.length ? `+ ${formatTotals(rest)}, kept separate` : note);
 }
 
 function goalStats(goals) {
   const active = goals.filter((goal) => !isDraft(goal));
   const onTrack = active.filter(goalIsOnTrack).length;
   const drafts = goals.length - active.length;
-  return `<div class="stat-grid">
-    ${statTile('On track', `${onTrack} of ${active.length}`, drafts ? `${drafts} draft${drafts === 1 ? '' : 's'} not counted` : 'Under each goal\'s own assumption', onTrack === active.length ? 'is-up' : '')}
-    ${totalTile('Total targets', totalsByCurrency(goals.map((goal) => ({ currency: goal.currency, target: headlineTarget(goal).amount })), 'target'), 'Needed by each goal\'s date')}
-    ${totalTile('Earmarked so far', totalsByCurrency(goals, 'savedAmount'), 'Amounts you entered')}
-    ${totalTile('Contributing monthly', totalsByCurrency(goals, 'monthlyContribution'), 'Planned, across goals')}
+  return `<div class="kpi-strip goal-kpis">
+    ${kpiCard('On track', `${onTrack} of ${active.length}`, drafts ? `${drafts} draft${drafts === 1 ? '' : 's'} not counted` : 'Each under its own assumption', active.length && onTrack === active.length ? 'is-up' : '')}
+    ${totalKpi('Total targets', totalsByCurrency(goals.map((goal) => ({ currency: goal.currency, target: headlineTarget(goal).amount })), 'target'), 'Needed by each goal\'s date')}
+    ${totalKpi('Saved so far', totalsByCurrency(goals, 'savedAmount'), 'Amounts you entered')}
+    ${totalKpi('Saving each month', totalsByCurrency(goals, 'monthlyContribution'), 'Planned, across goals')}
   </div>`;
 }
 
@@ -1548,51 +1528,98 @@ async function renderGoals() {
   }
   const fundNote = data.fundData && !data.fundData.available ? `<p class="goal-meta">No fund shortlist: ${escHtml(data.fundData.reason)}</p>` : '';
   const summary = data.portfolio?.available && (data.portfolio.underfunded || []).length
-    ? `<p class="goal-meta is-warn">Short of target after assigned holdings: ${escHtml(data.portfolio.underfunded.join(', '))}.</p>` : '';
+    ? `<p class="goal-callout">Short of target after assigned holdings: ${escHtml(data.portfolio.underfunded.join(', '))}.</p>` : '';
   body.innerHTML = `${goalStats(goals)}${summary}
-    <div class="goal-grid">${goals.map((goal, index) => goalCard(goal, GOAL_TONES[index % GOAL_TONES.length])).join('')}</div>
+    <div class="goal-list">${goals.map(goalCard).join('')}</div>
     ${fundNote}
     ${promptChips([['Review my goals', 'Review my goals: which are on track, which need more, and which kinds of investment fit each goal\'s timeline and risk?', goalAgent()]])}`;
 }
 
-function goalCard(goal, tone) {
+// The share of the target counted so far as a ring; unknown progress shows a dash, never 0%.
+const RING_CIRCUMFERENCE = 2 * Math.PI * 30;
+
+function goalRing(progressPct, toneClass) {
+  const known = Number.isFinite(progressPct);
+  const pct = known ? Math.min(100, Math.max(0, progressPct)) : 0;
+  const label = known ? `${Math.floor(pct)}%` : '—';
+  const fill = pct > 0
+    ? `<circle class="goal-ring-fill" cx="36" cy="36" r="30" stroke-dasharray="${(RING_CIRCUMFERENCE * pct / 100).toFixed(1)} ${RING_CIRCUMFERENCE.toFixed(1)}" transform="rotate(-90 36 36)"/>` : '';
+  return `<svg class="goal-ring ${toneClass}" viewBox="0 0 72 72" role="img" aria-label="${known ? `${label} of the target counted so far` : 'Progress unknown'}">
+    <circle class="goal-ring-track" cx="36" cy="36" r="30"/>${fill}<text x="36" y="41" text-anchor="middle">${label}</text></svg>`;
+}
+
+function goalFigures(goal, plan) {
+  const cur = goal.currency;
+  const sum = (value) => (cur && value != null && Number.isFinite(Number(value)) ? amount(Number(value), cur) : '—');
+  const linked = goal.mapping?.counted && plan.mappedAmount
+    ? `<small>${amountShort(goal.savedAmount, cur)} saved + ${amountShort(plan.mappedAmount, cur)} from ${goal.mapping.holdings.length} holding${goal.mapping.holdings.length === 1 ? '' : 's'}</small>` : '';
+  return `<dl class="goal-figures">
+    <div><dt>Saved and linked</dt><dd>${sum(plan.startingAmount ?? goal.savedAmount)}${linked}</dd></div>
+    <div><dt>Each month</dt><dd>${sum(goal.monthlyContribution)}</dd></div>
+    <div><dt>Assumed return</dt><dd>${goal.assumedReturnPct == null ? 'None' : `${escHtml(goal.assumedReturnPct)}%`}${goal.assumedReturnPct == null ? '' : '<small>a year</small>'}</dd></div>
+  </dl>`;
+}
+
+function goalCard(goal) {
   const plan = goal.plan || {};
   const cur = goal.currency;
   const draft = isDraft(goal);
-  const [label, pill] = draft ? ['Draft', 'is-behind'] : goalStatus(plan);
-  const progress = Number.isFinite(plan.progressPct) ? plan.progressPct : 0;
-  const assumption = goal.assumedReturnPct == null ? 'no return assumed' : `${goal.assumedReturnPct}% a year assumed`;
-  const ask = `Explain the plan for my goal "${goal.name}": is it feasible, what are my options, and which kinds of investment suit its timeline and risk?`;
-  const mapped = goal.mapping?.counted && plan.mappedAmount
-    ? ` · + ${amountShort(plan.mappedAmount, cur)} from ${goal.mapping.holdings.length} assigned holding${goal.mapping.holdings.length === 1 ? '' : 's'} (snapshot ${escHtml(formatDate(goal.mapping.snapshotDate))})` : '';
+  const tone = draft ? 'is-draft' : GOAL_TONE_CLASSES[goalTone(plan)];
+  const label = draft ? 'Draft' : goalStatus(plan)[0];
   const headline = headlineTarget(goal);
   const target = headline.amount != null && goal.targetDate
-    ? `<strong>${amountShort(headline.amount, cur)}</strong> by ${escHtml(formatDate(goal.targetDate))}${goal.targetDateFrom === 'horizon' && goal.horizonYears ? ` (set as ${goal.horizonYears} years)` : ''}${cur !== 'INR' ? ` · ${escHtml(cur)}` : ''}`
-    : '<strong>Target not set yet</strong>';
-  const feasibility = plan.feasibility && plan.feasibility.status !== 'insufficient_data' ? `<p class="goal-advice">${escHtml(plan.feasibility.summary)}</p>` : '';
-  return `<article class="goal-card ${draft ? 'is-draft' : ''}">
-    <header>${goalIconHtml(goal, tone, 'insight-icon goal-card-icon')}<h3>${escHtml(goal.name)}</h3><span class="pill ${pill}">${escHtml(label)}</span></header>
-    <p class="goal-target">${target}</p>
-    ${headline.todayMoney != null ? `<p class="goal-meta">${amountShort(headline.todayMoney, cur)} in today's money, raised by ${escHtml(headline.inflationPct)}% a year of inflation</p>` : ''}
-    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress.toFixed(0)}" aria-label="Counted so far"><span style="width:${progress.toFixed(1)}%"></span></div>
-    <p class="goal-meta">${amountShort(goal.savedAmount, cur)} earmarked${mapped} (${percent(progress)}) · ${amount(goal.monthlyContribution, cur)} a month · ${escHtml(assumption)}</p>
-    <p class="goal-advice">${escHtml(goalSummary(plan))}</p>
-    ${feasibility}
-    ${alternativesList(plan)}
-    ${suitabilityBlock(goal.suitability)}
-    ${fundBlock(goal)}
-    ${mappingBlock(goal)}
-    ${followUpsBlock(goal)}
-    ${goal.notes ? `<p class="goal-meta goal-note">${escHtml(goal.notes)}</p>` : ''}
-    ${scenarioDetails(plan)}
-    <p class="goal-meta">Saved ${escHtml(timeAgo(goal.updatedAt))} by you${goal.migratedFrom ? ' · moved from your earlier goal list (target date set to 31 Dec)' : ''}</p>
-    <div class="goal-actions">
-      <button class="table-action" type="button" data-edit-goal="${escHtml(goal.id)}">Edit</button>
-      <button class="table-action" type="button" data-delete-goal="${escHtml(goal.id)}">Delete</button>
-      <button class="table-action" type="button" data-agent="${goalAgent()}" data-prompt="${escHtml(ask)}">Ask AI</button>
+    ? `${amountShort(headline.amount, cur)} by ${escHtml(formatDate(goal.targetDate))}${goal.targetDateFrom === 'horizon' && goal.horizonYears ? ` (set as ${goal.horizonYears} years)` : ''}${cur !== 'INR' ? ` · ${escHtml(cur)}` : ''}`
+    : 'Target not set yet';
+  // A plan missing details already says so in the verdict, which is its first warning.
+  const warnings = (plan.warnings || []).slice(plan.status === 'insufficient_data' ? 1 : 0);
+  const scenarios = scenarioDetails(plan, goal);
+  const panels = [
+    ['scenarios', 'Scenarios', scenarios],
+    ['suitability', 'Suitable investment types', suitabilityBlock(goal.suitability)],
+    ['funds', 'Fund figures', fundBlock(goal)],
+    ['holdings', 'Assigned holdings', mappingBlock(goal)],
+    ['follow-ups', `Still to answer (${(goal.followUps || []).length})`, followUpsBlock(goal)],
+  ].filter(([, , html]) => html);
+  const id = (key) => `goal-${escHtml(goal.id)}-${key}`;
+  const ask = `Explain the plan for my goal "${goal.name}": is it feasible, what are my options, and which kinds of investment suit its timeline and risk?`;
+  return `<article class="goal-card ${tone}${draft ? ' is-draft' : ''}" aria-labelledby="${id('name')}">
+    <div class="goal-main">
+      ${goalRing(plan.progressPct, tone)}
+      <div class="goal-head">
+        <div class="goal-title-row"><h2 id="${id('name')}" class="goal-name">${escHtml(goal.name)}</h2><span class="tone-pill ${tone}">${escHtml(label)}</span></div>
+        <p class="goal-target">${target}</p>
+        ${headline.todayMoney != null ? `<p class="goal-meta">${amountShort(headline.todayMoney, cur)} in today's money, raised by ${escHtml(headline.inflationPct)}% a year of inflation</p>` : ''}
+        <p class="goal-verdict">${escHtml(goalVerdict(plan, formatDate))}</p>
+        ${goal.notes ? `<p class="goal-meta goal-note">${escHtml(goal.notes)}</p>` : ''}
+        ${scenarios ? '' : savedLine(goal)}
+      </div>
+      ${goalFigures(goal, plan)}
     </div>
+    ${warnings.length ? `<ul class="goal-checks">${warnings.map((warning) => `<li>${escHtml(warning)}</li>`).join('')}</ul>` : ''}
+    ${gapPanel(plan)}
+    <div class="goal-foot">
+      ${panels.map(([key, text]) => `<button class="goal-toggle" type="button" aria-expanded="false" aria-controls="${id(key)}" data-goal-panel>${escHtml(text)}</button>`).join('')}
+      <span class="goal-foot-gap" aria-hidden="true"></span>
+      <button class="goal-action" type="button" data-edit-goal="${escHtml(goal.id)}">Edit</button>
+      <button class="goal-action is-danger" type="button" data-delete-goal="${escHtml(goal.id)}">Delete</button>
+      <button class="goal-ask" type="button" data-agent="${goalAgent()}" data-prompt="${escHtml(ask)}">Ask about this goal</button>
+    </div>
+    ${panels.map(([key, text, html]) => `<div class="goal-panel" id="${id(key)}" role="region" aria-label="${escHtml(text)}" hidden>${html}</div>`).join('')}
   </article>`;
 }
+
+// One footer disclosure open at a time in a card.
+document.addEventListener('click', (event) => {
+  const toggle = event.target.closest('[data-goal-panel]');
+  if (!toggle) return;
+  const open = toggle.getAttribute('aria-expanded') !== 'true';
+  toggle.closest('.goal-card').querySelectorAll('[data-goal-panel]').forEach((button) => {
+    const show = open && button === toggle;
+    button.setAttribute('aria-expanded', String(show));
+    const target = document.getElementById(button.getAttribute('aria-controls'));
+    if (target) target.hidden = !show;
+  });
+});
 
 /* Your investments and goals */
 async function renderGoalInvestments(goals, isCurrent) {
@@ -1616,10 +1643,10 @@ async function renderGoalInvestments(goals, isCurrent) {
     const general = item.generalWealthPct ? `<span class="verdict-chip">General ${item.generalWealthPct}%</span>` : '';
     return `<tr>
       <td>${escHtml(item.name)}<br><small class="goal-meta">${escHtml(assetTypeLabel(item.assetType))}${item.broker ? ` · ${escHtml(item.broker)}` : ''}</small></td>
-      <td>${amount(item.currentValueInr, 'INR')}</td>
-      <td class="alloc-goals">${chips || '<span class="goal-meta">None</span>'} ${general}</td>
-      <td>${item.unassignedPct}%</td>
-      <td><button class="table-action" type="button" data-assign-holding="${escHtml(item.key)}">Assign</button></td>
+      <td data-label="Value">${amount(item.currentValueInr, 'INR')}</td>
+      <td class="alloc-goals" data-label="Assigned to">${chips || '<span class="goal-meta">None</span>'} ${general}</td>
+      <td data-label="Unassigned">${item.unassignedPct}%</td>
+      <td class="alloc-action"><button class="table-action" type="button" data-assign-holding="${escHtml(item.key)}" aria-label="Assign ${escHtml(item.name)}">Assign</button></td>
     </tr>`;
   }).join('');
   const missing = data.missing.length
@@ -1627,8 +1654,8 @@ async function renderGoalInvestments(goals, isCurrent) {
   const unassigned = data.holdings.filter((item) => item.unassignedPct > 0);
   host.innerHTML = panel('Your investments and goals', `
     <p class="goal-meta">Assign what you already hold to a goal. Only INR holdings count toward an INR goal, and a holding is never counted twice. This is bookkeeping: nothing is bought or sold. Snapshot ${escHtml(formatDate(data.asOfDate))}${data.stale ? ' (old)' : ''}.</p>
-    <div class="table-scroll"><table class="data-table"><thead><tr><th>Holding</th><th>Value</th><th>Assigned to</th><th>Unassigned</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="goal-meta">${unassigned.length} of ${data.holdings.length} holdings have some of their value unassigned.</p>${missing}`);
+    <div class="table-scroll"><table class="data-table alloc-table"><thead><tr><th>Holding</th><th>Value</th><th>Assigned to</th><th>Unassigned</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="goal-meta">${unassigned.length} of ${data.holdings.length} holdings have some of their value unassigned.</p>${missing}`, { className: 'goal-alloc' });
 }
 
 /* Goal editor */
@@ -1709,7 +1736,7 @@ async function renderGoalPreview() {
     });
     if (seq !== goalPreviewSeq) return;
     const groups = suitabilityGroups(plan.suitability);
-    const lines = [goalSummary(plan), plan.feasibility?.summary];
+    const lines = [goalVerdict(plan, formatDate), plan.feasibility?.summary];
     if (plan.mappedAmount) lines.push(`Includes ${amount(plan.mappedAmount, 'INR')} from holdings assigned to this goal.`);
     // Warnings about the return assumption itself belong next to the projection that uses it.
     lines.push(...(plan.warnings || []).filter((warning) => /high return|Equity is unsuitable/.test(warning)));
