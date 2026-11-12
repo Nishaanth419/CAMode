@@ -486,6 +486,23 @@ def _expires_in(result: dict[str, Any]) -> int:
     return seconds if seconds > 0 else 3600
 
 
+def _forget_refused_refresh_token(user_id: str, sent: str) -> None:
+    """Drop a refresh token INDmoney refused, so the connection reads as ``needs_login`` and it is not sent again.
+
+    Left alone when the stored token is no longer the one sent (the user reconnected meanwhile).
+    """
+    with connect_db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT indmoney FROM users WHERE id = ?", (user_id,)).fetchone()
+        stored = _decode_secret(row["indmoney"]) if row else {}
+        if stored.get("refreshToken") != sent:
+            return
+        stored.pop("refreshToken")
+        connection.execute(
+            "UPDATE users SET indmoney = ?, updated_at = ? WHERE id = ?", (_encode_secret(stored), now_ms(), user_id),
+        )
+
+
 async def user_access_token(user_id: str, *, force_refresh: bool = False) -> str | None:
     """Return a usable INDmoney access token for ``user_id``, refreshing it when needed.
 
@@ -519,6 +536,7 @@ async def user_access_token(user_id: str, *, force_refresh: bool = False) -> str
             raise IndmoneyUnavailable("INDmoney is not responding. Try again in a moment.")
         if not response.is_success:
             logger.warning("INDmoney token refresh failed: HTTP %s", response.status_code)
+            _forget_refused_refresh_token(user_id, sent)
             return None
         try:
             result = response.json()
