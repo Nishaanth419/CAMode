@@ -1,5 +1,5 @@
 /* ── Pages behind the sidebar ───────────────────────────────────────────
-   Home, Portfolio Overview, Holdings, Planning Tools, Market Insights,
+   Home, Portfolio Overview, Holdings, Calculators, Markets,
    Goals, Reports, Activity and All chats. Loaded after app.js and uses its state
    (currentUser, isConnected, storageMode, chats) and helpers. */
 
@@ -11,8 +11,8 @@ const ROUTE_META = {
   portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
   holdings: ['Holdings', 'Every holding from INDmoney and each connected broker, with search, CSV download and CAS statements.'],
   returns: ['Returns & tax', 'True returns (XIRR) on your mutual funds from a detailed CAS.'],
-  planning: ['Planning tools', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
-  markets: ['Market insights', 'Mutual fund figures from INDmoney for your goals.'],
+  planning: ['Calculators', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
+  markets: ['Markets', 'How your holdings moved, stock price charts and mutual fund comparisons from INDmoney.'],
   goals: ['Goals', 'Your savings goals, their plans and the investments assigned to them.'],
   reports: ['Reports', 'Portfolio reports from your saved snapshots, ready to print.'],
   activity: ['Activity', 'Portfolio change investigations and the steps behind each answer, with their evidence.'],
@@ -115,10 +115,6 @@ function portfolioAccess() {
 }
 
 /* ── Shared building blocks ─────────────────────────────────────────── */
-function statTile(label, value, sub = '', tone = '') {
-  return `<div class="stat-tile"><span class="stat-label">${escHtml(label)}</span><strong class="stat-value ${tone}">${escHtml(value)}</strong>${sub ? `<small class="stat-sub ${tone}">${escHtml(sub)}</small>` : ''}</div>`;
-}
-
 function panel(title, body, { action = '', className = '' } = {}) {
   return `<section class="panel ${className}"><div class="rail-head"><h2>${escHtml(title)}</h2>${action}</div>${body}</section>`;
 }
@@ -630,7 +626,7 @@ async function renderPortfolio() {
     <div class="kpi-strip kpi-strip-5" aria-label="Key figures">${stats}</div>
     ${panel('Net worth trend', '<div id="trend-chart"></div>', { action: trendControls() })}
     <div class="page-columns">
-      ${panel('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }))}
+      ${panel('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }, { page: true }))}
       <div class="page-stack">
         ${panel('Concentration', concentration)}
         ${classes ? panel('Asset classes', `<table class="data-table compact"><thead><tr><th>Class</th><th>Value</th><th>Share</th></tr></thead><tbody>${classes}</tbody></table>`) : ''}
@@ -971,11 +967,11 @@ function returnsSchemeRow(item) {
   const reason = item.reason ? `<small class="stat-sub">${escHtml(item.reason)}</small>` : '';
   return `<tr>
     <td>${escHtml(item.name)}${chip}${reason}</td>
-    <td>${returnCell(item)}</td>
-    <td>${money(item.currentValue)}<small class="stat-sub">${escHtml(navNote(item))}</small></td>
-    <td>${money(item.invested)}</td>
-    <td>${money(item.unrealisedGain)}</td>
-    <td>${money(item.realisedGain)}</td>
+    <td data-label="Return">${returnCell(item)}</td>
+    <td data-label="Current value">${money(item.currentValue)}<small class="stat-sub">${escHtml(navNote(item))}</small></td>
+    <td data-label="Invested">${money(item.invested)}</td>
+    <td data-label="Unrealised">${money(item.unrealisedGain)}</td>
+    <td data-label="Realised">${money(item.realisedGain)}</td>
   </tr>`;
 }
 
@@ -1012,21 +1008,21 @@ async function renderReturns() {
     <div class="seg seg-small" role="tablist" aria-label="Returns and tax">
       <button type="button" role="tab" aria-selected="true" aria-pressed="true">Returns</button>
     </div>
-    <div class="stat-grid">
-      ${statTile('Mutual fund return', headline.short, [headline.label, headline.note || coverageText].filter(Boolean).join(' · '))}
-      ${statTile('Current value', money(p.includedValue), `${money(p.totalValue)} across ${unknown ? 'funds with a known value' : 'all funds'}`)}
-      ${statTile('Invested (units still held)', money(p.invested), 'Cost of the units you hold')}
-      ${statTile('Unrealised gain', money(p.unrealisedGain), '', toneOf(p.unrealisedGain))}
-      ${statTile('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}
+    <div class="kpi-strip kpi-strip-5">
+      ${kpiCard('Mutual fund return', headline.short, [headline.label, headline.note || coverageText].filter(Boolean).join(' · '))}
+      ${kpiCard('Current value', money(p.includedValue), `${money(p.totalValue)} across ${unknown ? 'funds with a known value' : 'all funds'}`)}
+      ${kpiCard('Invested (units still held)', money(p.invested), 'Cost of the units you hold')}
+      ${kpiCard('Unrealised gain', money(p.unrealisedGain), '', toneOf(p.unrealisedGain))}
+      ${kpiCard('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}
     </div>
-    ${excluded ? panel('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul>${excluded}</ul>`) : ''}
-    ${panel('By fund', `<div class="table-scroll"><table class="data-table"><thead><tr>
+    ${excluded ? reportCard('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul class="note-list">${excluded}</ul>`) : ''}
+    ${reportCard('By fund', `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
       <th>Fund</th><th>Return</th><th>Current value</th><th>Invested</th><th>Unrealised</th><th>Realised</th>
     </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
     <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
 
-/* ── Planning Tools ─────────────────────────────────────────────────── */
+/* ── Calculators ───────────────────────────────────────────────────── */
 const CALCULATORS = {
   sip: {
     title: 'SIP calculator',
@@ -1165,10 +1161,14 @@ function renderPlanning() {
       <input type="number" data-calc-input="${id}" value="${calcValues[activeCalc][id]}" min="${min}" max="${max}" step="any" inputmode="decimal" />
       <input type="range" data-calc-input="${id}" value="${calcValues[activeCalc][id]}" min="${min}" max="${Math.min(max, rangeMax(id, max))}" step="${step}" aria-hidden="true" tabindex="-1" />
     </label>`).join('');
+  // Inputs on the left, results on the right; they stack when the page is narrow (container query on #calc-body).
   setHtml(document.getElementById('calc-body'), `
     <div class="calc-layout">
-      ${panel(calc.title, `<div class="calc-inputs">${inputs}</div>`)}
-      <div class="page-stack" id="calc-output"></div>
+      <section class="panel home-card calc-inputs-card" aria-labelledby="calc-inputs-title">
+        <div class="card-head"><h2 id="calc-inputs-title" class="card-title">${escHtml(calc.title)}</h2></div>
+        <div class="calc-inputs">${inputs}</div>
+      </section>
+      <div class="calc-results" id="calc-output" aria-live="polite"></div>
     </div>`);
   renderCalcOutput();
 }
@@ -1189,14 +1189,16 @@ function renderCalcOutput() {
     return;
   }
   const result = calc.compute(values);
+  const card = (title, body) => `<section class="panel home-card"><div class="card-head"><h3 class="card-title">${escHtml(title)}</h3></div>${body}</section>`;
   setHtml(output, `
-    <div class="stat-grid stat-grid-3">${result.results.map(([label, value, sub]) => statTile(label, value, sub)).join('')}</div>
-    ${result.series ? panel('Year by year', chartHtml({ type: 'line', title: calc.title, unit: '₹', series: result.series })) : ''}
-    ${result.table ? panel('How it adds up', result.table) : ''}
+    <div class="kpi-strip kpi-strip-3">${result.results.map(([label, value, note]) => kpiCard(label, value, note)).join('')}</div>
+    ${result.series ? card('Year by year', chartHtml({ type: 'line', title: calc.title, unit: '₹', series: result.series },
+    { history: true, xTitle: 'Year', yTitle: 'Amount (₹)', height: 300 })) : ''}
+    ${result.table ? card('How it adds up', result.table) : ''}
     ${result.note ? `<p class="page-muted calc-note">${escHtml(result.note)}</p>` : ''}
-    <div class="page-actions">
+    <div class="calc-actions">
       <button class="gate-secondary" type="button" data-agent="finance" data-prompt="${escHtml(result.prompt)}">Ask Finance Agent about this</button>
-      ${result.goal ? `<button class="rail-button page-cta" type="button" data-save-calc-goal>Save as a goal</button>` : ''}
+      ${result.goal ? `<button class="rail-button" type="button" data-save-calc-goal>Save as a goal</button>` : ''}
     </div>`);
 }
 
@@ -1224,7 +1226,7 @@ document.addEventListener('click', (event) => {
   openGoalDialog({ name: '', ...result.goal });
 });
 
-/* ── Market Insights ────────────────────────────────────────────────── */
+/* ── Markets ────────────────────────────────────────────────────────── */
 async function renderMarkets() {
   const isCurrent = startRender('markets');
   if (currentSub === 'funds') {
@@ -1236,12 +1238,8 @@ async function renderMarkets() {
   }
   const body = document.getElementById('markets-body');
   const access = portfolioAccess();
-  if (access === 'disconnected') {
+  if (access !== 'ok') {
     setHtml(body, accessNotice(access));
-    return;
-  }
-  if (access === 'private') {
-    setHtml(body, '');
     return;
   }
   setHtml(body, loadingBlock());
@@ -1265,23 +1263,31 @@ async function renderMarkets() {
   const down = moved.filter((item) => item.one_day_change_inr < 0).sort((a, b) => a.one_day_change_inr - b.one_day_change_inr);
   const flat = holdings.filter((item) => item.one_day_change_inr === 0).length;
   const unreported = holdings.length - moved.length - flat;
-  const breadth = [`${flat} unchanged`, unreported ? `${unreported} not reported` : '', `${holdings.length} holdings`].filter(Boolean).join(' · ');
-  const moverTable = (items) => items.length ? `<table class="data-table compact"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${items.slice(0, 5).map((item) => {
-    const base = (item.current_value_inr || 0) - item.one_day_change_inr;
-    return `<tr><td>${escHtml(item.name || item.code)}</td><td>${money(item.current_value_inr)}</td><td class="${toneOf(item.one_day_change_inr)}">${signedMoney(item.one_day_change_inr)}<small>${percent(base ? item.one_day_change_inr / base * 100 : NaN, { signed: true })}</small></td></tr>`;
-  }).join('')}</tbody></table>` : '<p class="page-muted">None.</p>';
   const caps = (data.figures.by_market_cap_direct_stocks || []).map((row) => ({ label: row.market_cap || 'Other', value: row.current_value_inr }));
   document.getElementById('markets-asof').textContent = `Day moves from your snapshot of ${formatCaptured(data.capturedAt)}. Live prices come from INDmoney through Portfolio Analyzer.`;
+  const card = (title, bodyHtml, className = '') => `<section class="panel home-card ${className}"><div class="card-head"><h2 class="card-title">${escHtml(title)}</h2></div>${bodyHtml}</section>`;
   setHtml(body, `
-    <div class="stat-grid">
-      ${statTile('Day change', moved.length ? signedMoney(dayChange) : '—', moved.length ? percent(previous ? dayChange / previous * 100 : NaN, { signed: true }) : 'No day change reported', toneOf(dayChange))}
-      <div class="stat-tile"><span class="stat-label">Holdings up / down</span><strong class="stat-value"><span class="${up.length ? 'is-up' : ''}">${up.length} up</span> · <span class="${down.length ? 'is-down' : ''}">${down.length} down</span></strong><small class="stat-sub">${escHtml(breadth)}</small></div>
+    <div class="kpi-strip">
+      ${kpiCard('Day change', moved.length ? signedMoney(dayChange) : '—', moved.length ? `${percent(previous ? dayChange / previous * 100 : NaN, { signed: true })} of the day before` : 'No day change reported', toneOf(dayChange))}
+      ${kpiCard('Holdings up', String(up.length), up.length ? `Most: ${up[0].name || up[0].code}` : 'None rose', up.length ? 'is-up' : '')}
+      ${kpiCard('Holdings down', String(down.length), down.length ? `Most: ${down[0].name || down[0].code}` : 'None fell', down.length ? 'is-down' : '')}
+      ${kpiCard('Unchanged', String(flat), [unreported ? `${unreported} not reported` : '', `${holdings.length} holdings`].filter(Boolean).join(' · '))}
     </div>
-    <div class="page-columns">
-      ${panel('Top gainers', moverTable(up))}
-      ${panel('Top losers', moverTable(down))}
+    <div class="page-columns markets-movers">
+      ${card('Top gainers', moverTable(up, 'No holding rose in this snapshot.'))}
+      ${card('Top losers', moverTable(down, 'No holding fell in this snapshot.'))}
     </div>
-    ${caps.length ? panel('Your stocks by market cap', chartHtml({ type: 'donut', title: 'Direct stocks by market cap', unit: '₹', data: caps })) : ''}`);
+    ${caps.length ? card('Your stocks by market cap', chartHtml({ type: 'donut', title: 'Direct stocks by market cap', unit: '₹', data: caps }, { page: true })) : ''}`);
+}
+
+// Up to five movers; on phones each row becomes a card (CSS, .mover-table).
+function moverTable(items, emptyText) {
+  if (!items.length) return `<p class="page-muted">${escHtml(emptyText)}</p>`;
+  const rows = items.slice(0, 5).map((item) => {
+    const base = (item.current_value_inr || 0) - item.one_day_change_inr;
+    return `<tr><td class="m-name" data-label="Holding">${escHtml(item.name || item.code)}</td><td class="m-value" data-label="Value">${money(item.current_value_inr)}</td><td class="m-change ${toneOf(item.one_day_change_inr)}" data-label="Day change">${signedMoney(item.one_day_change_inr)}<small>${percent(base ? item.one_day_change_inr / base * 100 : NaN, { signed: true })}</small></td></tr>`;
+  }).join('');
+  return `<div class="table-scroll"><table class="data-table card-table mover-table"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 document.getElementById('stock-chart-form').addEventListener('submit', (event) => {
@@ -2100,9 +2106,9 @@ async function renderReports() {
     const base = reportPoints.find((point) => new Date(`${point.date}T00:00:00`) >= cutoff);
     // A period only counts when the history reaches back close to its start.
     const lateDays = base ? (new Date(`${base.date}T00:00:00`) - cutoff) / 86_400_000 : Infinity;
-    if (!base || base.date === latest.date || lateDays > Math.max(3, days * 0.1)) return `<tr><td>${label}</td><td colspan="4" class="page-muted">Not enough history yet</td></tr>`;
+    if (!base || base.date === latest.date || lateDays > Math.max(3, days * 0.1)) return `<tr class="is-empty"><td class="r-label">${label}</td><td colspan="4" class="page-muted r-missing">Not enough history yet</td></tr>`;
     const change = latest.networthInr - base.networthInr;
-    return `<tr><td>${label}</td><td>${formatDate(base.date)}<small>${money(base.networthInr)}</small></td><td>${money(latest.networthInr)}</td><td class="${toneOf(change)}">${signedMoney(change)}</td><td class="${toneOf(change)}">${percent(base.networthInr ? change / base.networthInr * 100 : NaN, { signed: true })}</td></tr>`;
+    return `<tr><td class="r-label">${label}</td><td class="r-from" data-label="From">${formatDate(base.date)}<small>${money(base.networthInr)}</small></td><td class="r-to" data-label="To">${money(latest.networthInr)}</td><td class="r-change ${toneOf(change)}" data-label="Change">${signedMoney(change)}</td><td class="r-pct ${toneOf(change)}" data-label="%">${percent(base.networthInr ? change / base.networthInr * 100 : NaN, { signed: true })}</td></tr>`;
   }).join('');
   const values = reportPoints.map((point) => point.networthInr);
   const high = reportPoints[values.indexOf(Math.max(...values))];
@@ -2115,26 +2121,30 @@ async function renderReports() {
     const pct = previous?.networthInr ? change / previous.networthInr * 100 : NaN;
     previous = point;
     const label = new Date(`${month}-01T00:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
-    return `<tr><td>${label}</td><td>${money(point.networthInr)}<small>on ${formatDate(point.date)}</small></td><td class="${toneOf(change)}">${Number.isFinite(change) ? signedMoney(change) : '—'}</td><td class="${toneOf(change)}">${percent(pct, { signed: true })}</td></tr>`;
+    return `<tr><td class="r-label">${label}</td><td class="r-to" data-label="Net worth">${money(point.networthInr)}<small>on ${formatDate(point.date)}</small></td><td class="r-change ${toneOf(change)}" data-label="Change">${Number.isFinite(change) ? signedMoney(change) : '—'}</td><td class="r-pct ${toneOf(change)}" data-label="%">${percent(pct, { signed: true })}</td></tr>`;
   }).reverse().join('');
   setHtml(body, `
-    <div class="stat-grid stat-grid-3">
-      ${statTile('Latest net worth', moneyShort(latest.networthInr), formatDate(latest.date))}
-      ${statTile('12-month high', moneyShort(high.networthInr), formatDate(high.date))}
-      ${statTile('12-month low', moneyShort(low.networthInr), formatDate(low.date))}
+    <div class="kpi-strip kpi-strip-3">
+      ${kpiCard('Latest net worth', moneyShort(latest.networthInr), formatDate(latest.date))}
+      ${kpiCard('12-month high', moneyShort(high.networthInr), formatDate(high.date))}
+      ${kpiCard('12-month low', moneyShort(low.networthInr), formatDate(low.date))}
     </div>
-    ${panel('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
-    ${panel('Change by period', `<div class="table-scroll"><table class="data-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table></div>`)}
-    ${panel('Month-end net worth', `<div class="table-scroll"><table class="data-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table></div>`)}
+    ${reportCard('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
+    ${reportCard('Change by period', `<div class="table-scroll"><table class="data-table card-table report-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table></div>`)}
+    ${reportCard('Month-end net worth', `<div class="table-scroll"><table class="data-table card-table report-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table></div>`)}
     ${downloadsPanel(true)}`);
 }
 
+function reportCard(title, body, className = '') {
+  return `<section class="panel home-card ${className}"><div class="card-head"><h2 class="card-title">${escHtml(title)}</h2></div>${body}</section>`;
+}
+
 function downloadsPanel(hasSnapshots) {
-  return panel('Downloads', `<div class="page-actions wrap">
+  return reportCard('Downloads', `<div class="download-actions">
       ${hasSnapshots ? '<button class="gate-secondary" type="button" data-download="history">Net worth history (CSV)</button><button class="gate-secondary" type="button" data-download="holdings">Holdings (CSV)</button>' : ''}
       <button class="gate-secondary" type="button" data-download="export">Export all my data</button>
     </div>
-    <p class="page-muted">CSV files open in Excel or Google Sheets. The full export (JSON) includes chats, snapshots, goals and CAS holdings and asks for your PIN.</p>`);
+    <p class="page-muted">CSV files open in Excel or Google Sheets. The full export (JSON) includes chats, snapshots, goals and CAS holdings and asks for your PIN.</p>`, 'downloads-card');
 }
 
 document.addEventListener('click', async (event) => {
@@ -2273,17 +2283,21 @@ function drawActivityList(refreshError = null) {
   const items = activityState.items;
   const stale = refreshError ? `<div class="page-error" role="alert">Could not refresh: ${escHtml(refreshError.message)} The list below may be out of date.</div>` : '';
   if (storageMode === 'private') {
-    setHtml(activityBody, stale + notice('Private mode', 'Private mode keeps no snapshots, investigations or answer records. Turn on saving from your profile to keep them here.'));
+    setHtml(activityBody, stale + notice('Private mode', 'Private mode keeps no snapshots, investigations or answer records. Turn on saving from your profile to keep them here.',
+      '<button class="gate-secondary inline-button" type="button" data-open-profile>Open profile settings</button>'));
     return;
   }
   const chatIds = new Set(chats.map((chat) => chat.id));
+  const section = (id, title, count, body) => `<section class="activity-section" aria-labelledby="${id}">
+    <div class="card-head"><h2 id="${id}" class="card-title">${title}${count === null ? '' : ` <span class="seg-count">${count}</span>`}</h2></div>${body}</section>`;
   const investigationsHtml = items.length
-    ? `<section class="panel activity-panel"><h2>Portfolio investigations</h2>${renderActivityList(items, { filter: activityState.filter, chatIds })}</section>`
-    : notice('No investigations yet', 'An investigation compares two saved daily snapshots, checks the data and saves the evidence. Ask Portfolio Analyzer why your portfolio changed, or investigate the latest change now.');
+    ? section('activity-investigations-title', 'Portfolio investigations', items.length, renderActivityList(items, { filter: activityState.filter, chatIds }))
+    : notice('No investigations yet', 'An investigation compares two saved daily snapshots, checks the data and saves the evidence. Ask Portfolio Analyzer why your portfolio changed, or use Investigate latest change above.',
+      '<button class="gate-secondary inline-button" type="button" data-agent="portfolio" data-prompt="Why did my portfolio change since last week?">Ask Portfolio Analyzer</button>');
   const runsBody = activityState.runsError
     ? `<p class="page-error" role="alert">Could not load answers: ${escHtml(activityState.runsError.message)}</p>`
     : renderRunList(activityState.runs, { chatIds });
-  setHtml(activityBody, `${stale}${investigationsHtml}<section class="panel activity-panel"><h2>Answers</h2>${runsBody}</section>`);
+  setHtml(activityBody, `${stale}${investigationsHtml}${section('activity-answers-title', 'Answers', activityState.runsError ? null : activityState.runs.length, runsBody)}`);
   restoreActivityFocus(focus);
 }
 
@@ -2409,7 +2423,14 @@ function renderAllChats() {
     + (storageMode === 'private' ? 'Private mode: they end when you sign out.' : 'Each is kept for 30 days after its last message.');
   container.innerHTML = '';
   if (!visible.length) {
-    container.innerHTML = `<p class="page-muted">${query ? 'No chats match your search.' : 'No conversations yet.'}</p>`;
+    // Say why, then one action.
+    container.innerHTML = query
+      ? notice('No chats match your search', `No chat title contains "${chatSearch.value.trim()}". Titles come from each chat's first question.`,
+        '<button class="gate-secondary inline-button" type="button" data-clear-chat-search>Clear search</button>')
+      : notice('No conversations yet', storageMode === 'private'
+        ? 'Private mode keeps chats only until you sign out. Ask a question to start one.'
+        : 'Each question you ask in Ask AI starts a chat, kept here for 30 days after its last message.',
+      '<button class="rail-button inline-button" type="button" data-go="chat" data-new-chat>Ask a question</button>');
     return;
   }
   const groups = new Map();
@@ -2419,13 +2440,32 @@ function renderAllChats() {
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(chat);
   }
+  // One card per period, rows like Home's "Continue a chat".
   for (const [label, items] of groups) {
+    const card = document.createElement('section');
+    card.className = 'panel home-card chat-group-card';
     const heading = document.createElement('h2');
-    heading.className = 'chat-group';
+    heading.className = 'card-title chat-group';
     heading.textContent = label;
-    container.appendChild(heading);
-    items.forEach((chat) => container.appendChild(chatRow(chat, { showAgent: true })));
+    const count = document.createElement('span');
+    count.className = 'seg-count';
+    count.textContent = String(items.length);
+    const head = document.createElement('div');
+    head.className = 'card-head';
+    head.append(heading, count);
+    const list = document.createElement('div');
+    list.className = 'mini-chat-list home-chat-list';
+    items.forEach((chat) => list.appendChild(chatRow(chat, { showAgent: true })));
+    card.append(head, list);
+    container.appendChild(card);
   }
 }
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-clear-chat-search]')) return;
+  chatSearch.value = '';
+  renderAllChats();
+  chatSearch.focus();
+});
 
 renderRoute();

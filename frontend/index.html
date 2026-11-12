@@ -28,14 +28,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=54" />
+  <link rel="stylesheet" href="/css/app.css?v=55" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
   <script src="/js/finance.js?v=13" defer></script>
-  <script src="/js/trace.js?v=13" defer></script>
+  <script src="/js/trace.js?v=14" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
-  <script src="/js/app.js?v=48" defer></script>
-  <script src="/js/pages.js?v=33" defer></script>
+  <script src="/js/app.js?v=49" defer></script>
+  <script src="/js/pages.js?v=34" defer></script>
   <script src="/js/rail.js?v=9" defer></script>
 </head>
 <body>
@@ -415,11 +415,11 @@
         <section class="page" data-page="planning" aria-labelledby="planning-title">
           <header class="page-head">
             <div>
-              <h1 id="planning-title" class="page-title">Planning Tools</h1>
-              <p class="page-sub">Quick calculators that run in your browser. They assume a steady return, which real markets never give, so treat the results as estimates, not advice.</p>
+              <h1 id="planning-title" class="page-title">Calculators</h1>
+              <p class="page-sub">They run in your browser and assume a steady return, which real markets never give, so treat the results as estimates, not advice.</p>
             </div>
           </header>
-          <div class="seg" role="tablist" aria-label="Calculators" id="calc-tabs">
+          <div class="seg calc-tabs" role="tablist" aria-label="Calculators" id="calc-tabs">
             <button type="button" role="tab" data-calc="sip">SIP</button>
             <button type="button" role="tab" data-calc="lumpsum">Lumpsum</button>
             <button type="button" role="tab" data-calc="goal">Goal planner</button>
@@ -432,14 +432,14 @@
         <section class="page" data-page="markets" aria-labelledby="markets-title">
           <header class="page-head">
             <div>
-              <h1 id="markets-title" class="page-title">Market Insights</h1>
+              <h1 id="markets-title" class="page-title">Markets</h1>
               <p class="page-sub" id="markets-asof">How your holdings moved, plus live prices from INDmoney through Portfolio Analyzer.</p>
             </div>
           </header>
           <div id="markets-body"></div>
-          <div class="page-columns">
-            <section class="panel">
-              <div class="rail-head"><h2>Stock price chart</h2></div>
+          <div class="markets-forms">
+            <section class="panel home-card" aria-labelledby="stock-chart-title">
+              <div class="card-head"><h2 id="stock-chart-title" class="card-title">Stock price chart</h2></div>
               <form id="stock-chart-form" class="inline-form">
                 <label class="field"><span>NSE symbol</span><input id="stock-symbol" type="text" maxlength="20" placeholder="e.g. INFY" autocapitalize="characters" spellcheck="false" required /></label>
                 <label class="field"><span>Period</span>
@@ -447,9 +447,10 @@
                 </label>
                 <button class="rail-button" type="submit">Show chart</button>
               </form>
+              <p class="form-note">Opens in Ask AI as a candlestick chart from INDmoney's daily prices.</p>
             </section>
-            <section class="panel">
-              <div class="rail-head"><h2>Mutual fund categories</h2></div>
+            <section class="panel home-card" aria-labelledby="mf-category-title">
+              <div class="card-head"><h2 id="mf-category-title" class="card-title">Compare mutual funds</h2></div>
               <form id="mf-category-form" class="inline-form">
                 <label class="field"><span>Category</span>
                   <select id="mf-category">
@@ -459,24 +460,25 @@
                 </label>
                 <button class="rail-button" type="submit">Compare top funds</button>
               </form>
+              <p class="form-note">Opens in Ask AI: returns, expense ratio and risk from INDmoney, with the ones you hold marked.</p>
             </section>
           </div>
-          <section class="panel">
-            <div class="rail-head"><h2>Live questions</h2></div>
-            <div class="feature-cards">
-              <button class="feature-card tone-blue" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices and today's change.">
-                <span class="feature-copy"><strong>Watchlist prices</strong><small>Latest prices for stocks you track</small></span><span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-              <button class="feature-card tone-green" type="button" data-agent="portfolio" data-prompt="Which of my holdings moved the most today? Show the top gainers and losers.">
-                <span class="feature-copy"><strong>Today's movers</strong><small>Live gainers and losers you hold</small></span><span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-              <button class="feature-card tone-amber" type="button" data-agent="portfolio" data-prompt="List my active SIPs across stocks and mutual funds with their monthly amounts and next dates.">
-                <span class="feature-copy"><strong>SIP calendar</strong><small>Your active SIPs and amounts</small></span><span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-              <button class="feature-card tone-violet" type="button" data-agent="portfolio" data-prompt="How are my US stocks doing? Show their value in USD and INR.">
-                <span class="feature-copy"><strong>US stocks</strong><small>Your US holdings in USD and INR</small></span><span class="feature-arrow" aria-hidden="true">→</span>
-              </button>
-            </div>
+          <section class="panel home-card" aria-labelledby="markets-live-title">
+            <div class="card-head"><h2 id="markets-live-title" class="card-title">Live questions</h2></div>
+            <ul class="prompt-rows prompt-grid" aria-label="Live questions">
+              <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices and today's change.">
+                <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></span>
+                <span class="prompt-row-text">Watchlist prices<small>Latest prices for stocks you track</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+              <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Which of my holdings moved the most today? Show the top gainers and losers.">
+                <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></svg></span>
+                <span class="prompt-row-text">Today's movers<small>Live gainers and losers you hold</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+              <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="List my active SIPs across stocks and mutual funds with their monthly amounts and next dates.">
+                <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></span>
+                <span class="prompt-row-text">SIP calendar<small>Your active SIPs and amounts</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+              <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="How are my US stocks doing? Show their value in USD and INR.">
+                <span class="prompt-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span>
+                <span class="prompt-row-text">US stocks<small>Your US holdings in USD and INR</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+            </ul>
           </section>
         </section>
 
@@ -530,20 +532,19 @@
               <h1 id="chats-title" class="page-title">All chats</h1>
               <p class="page-sub" id="chats-summary"></p>
             </div>
-            <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>New chat</button>
+            <div class="page-actions">
+              <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>New chat</button>
+            </div>
           </header>
-          <div id="all-chats" class="panel"></div>
+          <div id="all-chats" class="chat-groups"></div>
         </section>
 
         <section class="page" data-page="not-found" aria-labelledby="not-found-title">
-          <div class="panel not-found">
+          <div class="not-found">
             <p class="not-found-code" aria-hidden="true">404</p>
             <h1 id="not-found-title" class="page-title">Page not found</h1>
-            <p class="page-sub">There is no page at this address in CA Mode. Check the link, or pick a page from the menu.</p>
-            <div class="not-found-actions">
-              <a class="rail-button page-cta" href="#/">Go to Home</a>
-              <button class="gate-secondary" type="button" data-go="chat" data-new-chat>Ask AI</button>
-            </div>
+            <p class="page-sub">There is no page at this address in CA Mode. The link may be old or mistyped; every page is also in the menu.</p>
+            <a class="rail-button not-found-action" href="#/">Go to Home</a>
           </div>
         </section>
       </div>
@@ -696,16 +697,21 @@
         </button>
       </header>
       <section id="brokers-section" class="brokers-section" aria-labelledby="brokers-title" hidden>
-        <h3 id="brokers-title" class="brokers-title">Brokers</h3>
+        <h3 id="brokers-title" class="dialog-section-title">Brokers</h3>
         <p class="dialog-sub">Connect any broker you use. Read-only. You log in on the broker's own site; CA Mode never sees your password.</p>
         <p id="brokers-limit" class="dialog-sub" hidden></p>
         <div id="brokers-list"></div>
         <p id="brokers-status" class="dialog-status" role="status"></p>
       </section>
-      <div class="connection-row">
-        <span><strong id="plan-name">Free plan</strong><small id="plan-usage"></small><small id="plan-brokers"></small></span>
-        <a class="gate-secondary plan-link" href="/pricing" target="_blank" rel="noopener">See plans</a>
-      </div>
+      <section class="dialog-section" aria-labelledby="plan-title">
+        <h3 id="plan-title" class="dialog-section-title">Plan</h3>
+        <div class="connection-row">
+          <span><strong id="plan-name">Free plan</strong><small id="plan-usage"></small><small id="plan-brokers"></small></span>
+          <a class="gate-secondary plan-link" href="/pricing" target="_blank" rel="noopener">See plans</a>
+        </div>
+      </section>
+      <section class="dialog-section" aria-labelledby="about-title">
+      <h3 id="about-title" class="dialog-section-title">About you</h3>
       <p class="dialog-sub">Optional. Portfolio Analyzer uses this to relate its analysis to your goals. It is not personalised investment advice.</p>
       <div class="field-grid">
         <label class="field"><span>Risk appetite</span>
@@ -723,6 +729,7 @@
         <button id="switch-profile" class="gate-secondary" type="button">Switch profile</button>
         <button class="rail-button dialog-save" type="submit">Save</button>
       </div>
+      </section>
       <details id="data-zone" class="data-zone">
         <summary>Your data and privacy</summary>
         <p id="data-summary" class="data-summary"></p>
@@ -755,7 +762,7 @@
           <p id="backup-status" class="data-summary"></p>
           <button id="backup-now" class="gate-secondary" type="button">Back up now</button>
         </div>
-        <button id="clear-history" class="gate-secondary" type="button">Clear saved chats and snapshots</button>
+        <button id="clear-history" class="danger-button" type="button">Clear saved chats and snapshots</button>
         <p id="data-status" class="dialog-status" role="status"></p>
       </details>
       <details class="danger-zone">
@@ -826,7 +833,7 @@
       <p id="goal-preview" class="goal-preview" aria-live="polite"></p>
       <p id="goal-status" class="dialog-status is-error" role="alert"></p>
       <div class="dialog-actions">
-        <button id="goal-delete" class="gate-secondary danger-text" type="button" hidden>Delete</button>
+        <button id="goal-delete" class="danger-button danger-text" type="button" hidden>Delete</button>
         <button class="gate-secondary" type="button" data-close-goal>Cancel</button>
         <button class="gate-secondary" type="submit" value="draft" formnovalidate>Save as draft</button>
         <button class="rail-button dialog-save" type="submit" value="active">Save goal</button>

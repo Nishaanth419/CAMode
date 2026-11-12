@@ -686,15 +686,15 @@
         <div class="timeline-head"><a class="activity-title" href="#/activity/${id}">${esc(investigationTitle(item))}</a>${statusPill(item.status)}</div>
         ${outcomeText(item) ? `<p class="activity-outcome">${esc(outcomeText(item))}</p>` : ''}
         ${meta ? `<p class="timeline-meta"${absolute ? ` title="${esc(absolute)}"` : ''}>${esc(meta)}</p>` : ''}
-        <div class="activity-actions">${actions}</div>
       </div>
+      <div class="activity-actions">${actions}</div>
     </li>`;
   }
 
   function activityFilters(items, selected) {
     const counts = filterCounts(items);
-    return `<div class="seg seg-small" role="group" aria-label="Filter investigations">${ACTIVITY_FILTERS.map((filter) =>
-      `<button type="button" data-activity-filter="${filter.id}" aria-pressed="${filter.id === selected}">${esc(filter.label)} <span class="seg-count">${counts[filter.id]}</span></button>`).join('')}</div>`;
+    return `<div class="filter-chips activity-filters" role="group" aria-label="Filter investigations">${ACTIVITY_FILTERS.map((filter) =>
+      `<button type="button" class="filter-chip" data-activity-filter="${filter.id}" aria-pressed="${filter.id === selected}">${esc(filter.label)} <span class="seg-count">${counts[filter.id]}</span></button>`).join('')}</div>`;
   }
 
   const EMPTY_FILTER_TEXT = {
@@ -772,8 +772,8 @@
         <div class="timeline-head"><a class="activity-title" href="${href}">${esc(runTitle(item))}</a>${statusPill(runStatus(item))}</div>
         ${item.error ? `<p class="activity-outcome">${esc(redactText(item.error))}</p>` : ''}
         ${meta ? `<p class="timeline-meta">${esc(meta)}</p>` : ''}
-        <div class="activity-actions">${actions}</div>
       </div>
+      <div class="activity-actions">${actions}</div>
     </li>`;
   }
 
