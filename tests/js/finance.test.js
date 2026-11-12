@@ -528,3 +528,73 @@ test('mutual fund returns: status chips and NAV notes', () => {
   assert.equal(finance.navNote({ navSource: 'statement', navDate: '2026-09-30' }), 'Statement NAV of 30 Sep 2026');
   assert.equal(finance.navNote({ navSource: null, navDate: null }), 'No NAV available');
 });
+
+/* Goal cards: verdict sentence and ways to close the gap (plan shapes as the server returns them) */
+const scenario = (name, basis, annualReturnPct, projectedAmount, difference) => ({ name, basis, annualReturnPct, projectedAmount, difference, onTrack: difference >= 0 });
+
+test('goalVerdict reads only the plan: projection, no-growth cover, reliance on returns or the shortfall', () => {
+  const covered = {
+    status: 'on_track', currency: 'INR', targetDate: '2027-11-01', baseScenario: 'assumed',
+    scenarios: [scenario('no_growth', 'zero_return', 0, 376549, 76549), scenario('assumed', 'assumed_return', 6.5, 396508, 96508)],
+    feasibility: { status: 'covered_without_growth' },
+  };
+  assert.equal(finance.goalVerdict(covered), 'Reaches the target even with no growth. Projected ₹3.97 L at 6.5% a year.');
+  const relies = {
+    status: 'on_track', currency: 'INR', baseScenario: 'assumed',
+    scenarios: [scenario('no_growth', 'zero_return', 0, 1343006, -156994), scenario('assumed', 'assumed_return', 11, 1962432, 462432)],
+    feasibility: { status: 'depends_on_returns' },
+  };
+  assert.equal(finance.goalVerdict(relies), 'Projected ₹19.62 L at 11% a year. With no growth it falls short, so it relies on returns.');
+  const behind = {
+    status: 'behind', currency: 'INR', baseScenario: 'assumed',
+    scenarios: [scenario('no_growth', 'zero_return', 0, 244000, -156000), scenario('assumed', 'assumed_return', 7, 266037, -133963)],
+    feasibility: { status: 'shortfall' },
+  };
+  assert.equal(finance.goalVerdict(behind), 'Projected ₹2.66 L at 7% a year, ₹1.34 L short of the target.');
+});
+
+test('goalVerdict never invents a return and keeps the missing-details wording', () => {
+  const noAssumption = {
+    status: 'behind', currency: 'INR', baseScenario: 'no_growth',
+    scenarios: [scenario('no_growth', 'zero_return', 0, 244000, -156000)], feasibility: { status: 'shortfall' },
+  };
+  assert.equal(finance.goalVerdict(noAssumption), 'Projected ₹2.44 L with no growth, ₹1.56 L short of the target.');
+  const coveredNoAssumption = { ...noAssumption, status: 'on_track', targetDate: '2028-10-31', scenarios: [scenario('no_growth', 'zero_return', 0, 410000, 10000)], feasibility: { status: 'covered_without_growth' } };
+  assert.equal(finance.goalVerdict(coveredNoAssumption, () => 'Oct 2028'), 'Reaches the target even with no growth, with ₹4.10 L projected by Oct 2028.');
+  assert.equal(finance.goalVerdict({ status: 'insufficient_data', warnings: ['Cannot plan this goal without: target date.'] }), 'Cannot plan this goal without: target date.');
+  assert.equal(finance.goalVerdict({ status: 'insufficient_data' }), 'Some details this goal needs are missing.');
+  assert.equal(finance.goalVerdict({ status: 'reached', currency: 'USD', startingAmount: 12000 }), 'The $12K counted so far already covers the target.');
+  assert.equal(finance.goalVerdict(null), '');
+});
+
+test('gapOptions shows up to three options on the first basis with the exact figures, and keeps the rest', () => {
+  const alt = (kind, basis, extra) => ({ kind, basis, label: basis === 'zero_return' ? 'with no growth' : 'if your 7% a year assumption held', annualReturnPct: basis === 'zero_return' ? 0 : 7, ...extra });
+  const plan = {
+    status: 'behind', currency: 'INR',
+    feasibility: { status: 'shortfall', shortfallZeroReturn: 156000, shortfallAssumed: 133964 },
+    alternatives: [
+      alt('increase_monthly', 'zero_return', { requiredMonthly: 14783, additionalMonthly: 6783 }),
+      alt('extend_deadline', 'zero_return', { extraMonths: 20, newTargetDate: '2030-06-30' }),
+      alt('reduce_target', 'zero_return', { reachableTarget: 244000, inTodayMoney: false }),
+      alt('earmark_lump_sum', 'zero_return', { lumpSum: 156000 }),
+      alt('increase_monthly', 'assumed_return', { requiredMonthly: 13428, additionalMonthly: 5428 }),
+    ],
+  };
+  const gap = finance.gapOptions(plan, () => 'Jun 2030');
+  assert.equal(gap.title, 'Ways to close the ₹1,56,000 gap (with no growth)');
+  assert.deepEqual(gap.options, [
+    { title: 'Save ₹14,783 a month', note: '₹6,783 more than now' },
+    { title: 'Move the date to Jun 2030', note: '20 more months' },
+    { title: 'Lower the target to ₹2,44,000', note: 'What the plan reaches' },
+  ]);
+  assert.deepEqual(gap.others.map((item) => item.tag), ['No growth', 'At your 7%']);
+  assert.equal(gap.others[0].text, 'Earmark ₹1,56,000 more today');
+  // Only a goal that falls short gets the panel; on track (even only if returns hold) does not.
+  assert.equal(finance.gapOptions({ ...plan, feasibility: { status: 'depends_on_returns' } }), null);
+  assert.equal(finance.gapOptions({ ...plan, alternatives: [] }), null);
+  assert.equal(finance.gapOptions(null), null);
+  // With no months left only the date and a lump sum remain.
+  const late = finance.gapOptions({ currency: 'INR', feasibility: { status: 'no_time_left', shortfallZeroReturn: 5000 }, alternatives: [alt('earmark_lump_sum', 'zero_return', { lumpSum: 5000 })] });
+  assert.deepEqual(late.options, [{ title: 'Set aside ₹5,000 more today', note: 'On top of what is saved and linked' }]);
+  assert.deepEqual(late.others, []);
+});

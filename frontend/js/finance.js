@@ -190,6 +190,78 @@
     return scenarios.find((item) => item.name === plan.baseScenario) || scenarios[0] || null;
   }
 
+  // One sentence on where a goal stands, built only from the server's plan: the projection under the goal's own
+  // assumption (or with no growth when there is none), whether no growth still reaches the target, or the shortfall.
+  function goalVerdict(plan, dateLabel = (isoDate) => isoDate) {
+    if (!plan) return '';
+    const cur = plan.currency;
+    switch (plan.status) {
+      case 'reached':
+        return `The ${amountShort(plan.startingAmount ?? plan.savedAmount, cur)} counted so far already covers the target.`;
+      case 'past_due':
+      case 'due_now':
+        return `${amount(plan.remainingGap, cur)} is still needed, and no monthly contributions are left before ${dateLabel(plan.targetDate)}.`;
+      case 'insufficient_data':
+        return (plan.warnings || [])[0] || 'Some details this goal needs are missing.';
+      default:
+        break;
+    }
+    const base = baseScenario(plan);
+    if (!base) return (plan.feasibility && plan.feasibility.summary) || '';
+    const assumed = base.basis !== 'zero_return';
+    const projected = amountShort(base.projectedAmount, cur);
+    const feasibility = plan.feasibility && plan.feasibility.status;
+    if (feasibility === 'covered_without_growth') {
+      return assumed
+        ? `Reaches the target even with no growth. Projected ${projected} at ${base.annualReturnPct}% a year.`
+        : `Reaches the target even with no growth, with ${projected} projected by ${dateLabel(plan.targetDate)}.`;
+    }
+    const where = assumed ? `Projected ${projected} at ${base.annualReturnPct}% a year` : `Projected ${projected} with no growth`;
+    if (feasibility === 'depends_on_returns') return `${where}. With no growth it falls short, so it relies on returns.`;
+    if (base.onTrack) return `${where}, ${amountShort(base.difference, cur)} more than the target.`;
+    return `${where}, ${amountShort(-base.difference, cur)} short of the target.`;
+  }
+
+  const GAP_KINDS = ['increase_monthly', 'extend_deadline', 'reduce_target', 'earmark_lump_sum'];
+
+  // A tile for one way to close a gap: the server's exact figure as the title and what it means as the note.
+  function gapOption(item, currency = 'INR', dateLabel = (isoDate) => isoDate) {
+    if (item.kind === 'increase_monthly') {
+      return {
+        title: `Save ${amount(item.requiredMonthly, currency)} a month`,
+        note: item.additionalMonthly > 0 ? `${amount(item.additionalMonthly, currency)} more than now` : 'What you plan to save now',
+      };
+    }
+    if (item.kind === 'extend_deadline') {
+      return { title: `Move the date to ${dateLabel(item.newTargetDate)}`, note: `${item.extraMonths} more month${item.extraMonths === 1 ? '' : 's'}` };
+    }
+    if (item.kind === 'reduce_target') {
+      return {
+        title: `Lower the target to ${amount(item.reachableTarget, currency)}`,
+        note: item.inTodayMoney ? "What the plan reaches, in today's money" : 'What the plan reaches',
+      };
+    }
+    return { title: `Set aside ${amount(item.lumpSum, currency)} more today`, note: 'On top of what is saved and linked' };
+  }
+
+  // The "Ways to close the gap" panel for a goal that falls short (null otherwise): up to three options on the
+  // first basis the server lists (no growth when it falls short there), and every other option it gave as a line.
+  function gapOptions(plan, dateLabel = (isoDate) => isoDate) {
+    const feasibility = plan && plan.feasibility;
+    if (!feasibility || !['shortfall', 'no_time_left'].includes(feasibility.status)) return null;
+    const items = plan.alternatives || [];
+    if (!items.length) return null;
+    const { basis, label } = items[0];
+    const shown = GAP_KINDS.map((kind) => items.find((item) => item.basis === basis && item.kind === kind)).filter(Boolean).slice(0, 3);
+    const gap = Number(basis === 'zero_return' ? feasibility.shortfallZeroReturn : feasibility.shortfallAssumed);
+    const what = Number.isFinite(gap) && gap > 0 ? `the ${amount(gap, plan.currency)} gap` : 'the gap';
+    return {
+      title: `Ways to close ${what}${label ? ` (${label})` : ''}`,
+      options: shown.map((item) => gapOption(item, plan.currency, dateLabel)),
+      others: items.filter((item) => !shown.includes(item)).map((item) => alternativeLabel(item, plan.currency, dateLabel)),
+    };
+  }
+
   const GOAL_KINDS = [
     ['home', /\b(home|house|flat|apartment|property|down ?payment)\b/i],
     ['education', /\b(education|college|school|university|study|studies|child|kid|son|daughter)\b/i],
@@ -696,7 +768,7 @@
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
-    GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario,
+    GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario, goalVerdict, gapOption, gapOptions,
     spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, holdingInitials, holdingTypeCounts, filterHoldings, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
