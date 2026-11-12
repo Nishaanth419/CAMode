@@ -202,7 +202,7 @@ themeToggle.addEventListener('click', () => {
     const view = graph.closest('.data-chart')?.dataset.chartView;
     if (!spec || !window.Plotly || view === 'table') return;
     // History charts take their line and shading colours from the theme too.
-    if (spec.history) window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
+    if (spec.history || spec.page) window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
     else window.Plotly.relayout(graph, plotlyLayout(spec, view));
   });
 });
@@ -2198,8 +2198,10 @@ function chartCandles(spec) {
 }
 
 // ``history`` draws a line chart as a page's net-worth history (see historyLayout); ``compact`` leaves out the axis
-// titles for a small card and ``area`` shades under the line.
-function renderDataChart(spec, { history = false, compact = false, area = false, height = 0 } = {}) {
+// titles for a small card and ``area`` shades under the line. ``xTitle`` / ``yTitle`` name the axes of a page line
+// chart whose labels are not dates (calculators: years), drawn as categories. ``page`` draws a bar or donut on a page:
+// no toolbar or zoom, and rupees in Indian format on hover.
+function renderDataChart(spec, { history = false, compact = false, area = false, height = 0, xTitle = '', yTitle = '', page = false } = {}) {
   if (!spec || !['bar', 'donut', 'line', 'candlestick'].includes(spec.type)) return '';
   const isLine = spec.type === 'line';
   const isCandlestick = spec.type === 'candlestick';
@@ -2212,16 +2214,16 @@ function renderDataChart(spec, { history = false, compact = false, area = false,
   const safeSpec = isCandlestick
     ? { type: 'candlestick', title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), candles }
     : isLine
-    ? { type: 'line', title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), series, ...(history ? { history, compact, area, height } : {}) }
-    : { type: spec.type, title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), data: rows };
+    ? { type: 'line', title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), series, ...(history ? { history, compact, area, height, xTitle, yTitle } : {}) }
+    : { type: spec.type, title: cleanChartText(spec.title), unit: cleanChartText(spec.unit, 16), data: rows, ...(page ? { page } : {}) };
   chartSpecRegistry.set(id, safeSpec);
   const title = escHtml(safeSpec.title || 'Portfolio data');
   const initialView = isLine ? 'line' : isCandlestick ? 'candlestick' : spec.type === 'donut' && canPie ? 'pie' : 'bar';
   const controls = isLine ? '' : isCandlestick
-    ? `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button is-active" aria-pressed="true" onclick="setChartView(this, 'candlestick')">Candles</button><button type="button" class="chart-view-button" aria-pressed="false" onclick="setChartView(this, 'table')">Data</button></div>`
-    : `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button ${initialView === 'bar' ? 'is-active' : ''}" aria-pressed="${initialView === 'bar'}" onclick="setChartView(this, 'bar')">Bars</button>${canPie ? `<button type="button" class="chart-view-button ${initialView === 'pie' ? 'is-active' : ''}" aria-pressed="${initialView === 'pie'}" onclick="setChartView(this, 'pie')">Donut</button>` : ''}<button type="button" class="chart-view-button" aria-pressed="false" onclick="setChartView(this, 'table')">Data</button></div>`;
+    ? `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button is-active" aria-pressed="true" data-set-chart-view="candlestick">Candles</button><button type="button" class="chart-view-button" aria-pressed="false" data-set-chart-view="table">Data</button></div>`
+    : `<div class="chart-view-controls" role="group" aria-label="Choose chart view"><button type="button" class="chart-view-button ${initialView === 'bar' ? 'is-active' : ''}" aria-pressed="${initialView === 'bar'}" data-set-chart-view="bar">Bars</button>${canPie ? `<button type="button" class="chart-view-button ${initialView === 'pie' ? 'is-active' : ''}" aria-pressed="${initialView === 'pie'}" data-set-chart-view="pie">Donut</button>` : ''}<button type="button" class="chart-view-button" aria-pressed="false" data-set-chart-view="table">Data</button></div>`;
   const table = renderChartTable(safeSpec);
-  const hint = safeSpec.history ? '' : '<p class="chart-hint">Hover for values. Use the Plotly toolbar to zoom, pan, reset, or export the chart.</p>';
+  const hint = safeSpec.history || safeSpec.page ? '' : '<p class="chart-hint">Hover for values. Use the Plotly toolbar to zoom, pan, reset, or export the chart.</p>';
   return `<figure class="data-chart${isLine ? ' line-chart' : ' category-chart'}${safeSpec.history ? ' history-chart' : ''}" data-chart-id="${id}" data-chart-view="${initialView}"><div class="chart-heading"><figcaption class="data-chart-title">${title}</figcaption>${controls}</div><div class="plotly-chart" id="${id}" role="img" aria-label="Interactive chart: ${title}"></div><div class="chart-data-panel" hidden>${table}</div>${hint}</figure>`;
 }
 
@@ -2264,12 +2266,23 @@ function plotlyLayout(spec, view) {
     hoverlabel: { bgcolor: surface, bordercolor: border, font: { color: text } },
   };
   if (spec.history) return historyLayout(spec, layout, muted);
+  if (spec.page) {
+    // On a page the card's own heading names the chart, and the card shows through behind it.
+    Object.assign(layout, { title: { text: '' }, paper_bgcolor: 'rgba(0, 0, 0, 0)', plot_bgcolor: 'rgba(0, 0, 0, 0)', height: 320 });
+    layout.xaxis = { ...layout.xaxis, fixedrange: true };
+    layout.yaxis = { ...layout.yaxis, fixedrange: true };
+  }
   if (view === 'pie') {
-    layout.margin = { l: 24, r: 24, t: 56, b: 24 };
+    layout.margin = { l: 24, r: 24, t: spec.page ? 16 : 56, b: 24 };
     layout.showlegend = true;
   } else if (view === 'bar') {
     layout.barmode = 'group';
     layout.yaxis = { ...layout.yaxis, autorange: 'reversed' };
+    if (spec.page) {
+      layout.margin = { l: 64, r: 24, t: 16, b: 48 };
+      layout.yaxis.title = { text: '' };
+      layout.xaxis = { ...layout.xaxis, title: { text: spec.unit ? `Value (${spec.unit})` : 'Value', font: { size: 11, color: muted } } };
+    }
   } else if (spec.type === 'line') {
     const slider = spec.series[0]?.points.length > 8;
     layout.hovermode = 'x unified';
@@ -2301,6 +2314,8 @@ function historyLayout(spec, layout, muted) {
   const label = (value) => (spec.unit === '₹' ? moneyShort(value) : chartValueText(value, spec.unit));
   const axisTitle = (text) => (spec.compact ? { text: '' } : { text, font: { size: 11, color: muted }, standoff: 10 });
   const name = spec.series.length === 1 ? spec.series[0].name : 'Value';
+  // Calculator charts label their points with years, not dates.
+  const dates = !spec.xTitle;
   return {
     ...layout,
     title: { text: '' },
@@ -2313,13 +2328,13 @@ function historyLayout(spec, layout, muted) {
     legend: { orientation: 'h', x: 1, xanchor: 'right', y: 1.02, yanchor: 'bottom', font: { color: muted } },
     xaxis: {
       // Level labels, fewer of them on a phone, rather than Plotly turning crowded dates on their side.
-      ...layout.xaxis, type: 'date', fixedrange: true, showgrid: false, nticks: window.innerWidth < 640 ? 4 : 6, tickangle: 0, hoverformat: '%d %b %Y',
-      tickfont: { color: muted, size: 11 }, title: axisTitle('Date'),
+      ...layout.xaxis, type: dates ? 'date' : 'category', fixedrange: true, showgrid: false, nticks: window.innerWidth < 640 ? 4 : 6, tickangle: 0,
+      ...(dates ? { hoverformat: '%d %b %Y' } : {}), tickfont: { color: muted, size: 11 }, title: axisTitle(spec.xTitle || 'Date'),
     },
     yaxis: {
       ...layout.yaxis, fixedrange: true, zeroline: false, tickmode: 'array', tickvals: ticks, ticktext: ticks.map(label),
       range: ticks.length ? [ticks[0], ticks[ticks.length - 1]] : undefined,
-      tickfont: { color: muted, size: 11 }, title: axisTitle(`${name}${spec.unit ? ` (${spec.unit})` : ''}`),
+      tickfont: { color: muted, size: 11 }, title: axisTitle(spec.yTitle || `${name}${spec.unit ? ` (${spec.unit})` : ''}`),
     },
   };
 }
@@ -2342,9 +2357,9 @@ function historyTraces(spec) {
   }));
 }
 
-// Page history charts stay still and drop the toolbar; answer charts keep zoom and the toolbar.
+// Page charts stay still and drop the toolbar; answer charts keep zoom and the toolbar.
 function plotlyConfig(spec) {
-  return spec.history
+  return spec.history || spec.page
     ? { responsive: true, displayModeBar: false, scrollZoom: false, displaylogo: false }
     : { responsive: true, scrollZoom: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d'] };
 }
@@ -2369,17 +2384,20 @@ function plotlyTraces(spec, view) {
     hovertemplate: '%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>',
     line: { width: 2.5 }, marker: { size: 7 },
   }));
+  // A page chart shows rupees in Indian grouping on hover (Plotly's own format groups in thousands).
+  const pageValues = spec.page ? { customdata: spec.data.map(row => chartValueText(row.value, spec.unit)) } : {};
   if (view === 'pie') return [{
     type: 'pie', hole: 0.52, labels: spec.data.map(row => row.label),
     values: spec.data.map(row => row.value), sort: false,
     textinfo: 'label+percent', textposition: 'outside', automargin: true,
-    hovertemplate: '%{label}<br>%{value:,.2f} (%{percent})<extra></extra>',
+    ...(spec.page ? { customdata: pageValues.customdata.map(text => [text]) } : {}),
+    hovertemplate: spec.page ? '%{label}<br>%{customdata[0]} (%{percent})<extra></extra>' : '%{label}<br>%{value:,.2f} (%{percent})<extra></extra>',
   }];
   return [{
     type: 'bar', orientation: 'h',
     x: spec.data.map(row => row.value), y: spec.data.map(row => row.label),
-    name: spec.title || 'Value',
-    hovertemplate: '%{y}<br>%{x:,.2f}<extra></extra>',
+    name: spec.title || 'Value', ...pageValues,
+    hovertemplate: spec.page ? '%{y}<br>%{customdata}<extra></extra>' : '%{y}<br>%{x:,.2f}<extra></extra>',
   }];
 }
 
@@ -2406,6 +2424,12 @@ function destroyPlotlyCharts(container) {
     chartSpecRegistry.delete(graph.id);
   });
 }
+
+// The view buttons under a chart (Bars, Donut, Candles, Data). Delegated: the Content-Security-Policy blocks inline handlers.
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-set-chart-view]');
+  if (button) setChartView(button, button.dataset.setChartView);
+});
 
 function setChartView(button, view) {
   const chart = button.closest('.category-chart');
