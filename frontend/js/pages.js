@@ -273,6 +273,7 @@ function renderRoute() {
   const changed = route !== currentRoute;
   currentRoute = route;
   currentSub = sub;
+  chatHead.hidden = !isChat;
   chatScroll.hidden = !isChat;
   inputArea.hidden = !isChat;
   pageView.hidden = isChat;

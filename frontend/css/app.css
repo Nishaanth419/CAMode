@@ -142,7 +142,8 @@
 
 /* ── Reset ──────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100%; height: 100%; }
+/* --viewport-h is set while a phone's on-screen keyboard is open (app.js), so the composer stays above it. */
+html, body { width: 100%; height: var(--viewport-h, 100%); }
 body {
   overflow: hidden;
   background: var(--canvas);
@@ -582,60 +583,70 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 .feature-arrow { color: var(--tone); font-size: 14px; }
 
 /* ── Messages ───────────────────────────────────────────────────── */
-#messages { display: none; }
-#messages.has-messages { display: block; padding-top: 6px; }
-
-.message {
-  display: grid;
-  width: min(880px, 100%);
-  grid-template-columns: 40px minmax(0, 1fr);
-  column-gap: 14px;
-  margin: 0 auto 22px;
-  animation: rise-in .22s ease-out;
+/* ── Ask AI: header, conversation and composer ─────────────────── */
+/* The conversation and the composer share one centred column (--chat-w plus the side padding, about 780px). */
+#chat-area { --chat-w: 724px; }
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 28px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
 }
+.chat-back { display: none; }
+.chat-head-text { flex: 1; min-width: 0; }
+.chat-head-title { overflow: hidden; color: var(--text); font-size: 15px; font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.chat-head-sub { overflow: hidden; color: var(--text-muted); font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.chat-head-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.chat-head .chat-head-button { display: inline-flex; width: auto; height: 36px; align-items: center; gap: 6px; padding: 0 12px; border-radius: var(--radius-md); font-size: 13px; }
+.chat-head-button.is-primary { border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.chat-head-button.is-primary:hover { background: var(--accent-3); }
+.chat-head-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chat-head .chat-head-button svg { display: none; }
+
+#messages { display: none; }
+#messages.has-messages { display: flex; width: min(var(--chat-w), 100%); flex-direction: column; gap: 24px; margin: 0 auto; padding: 12px 0 8px; }
+
+.message { min-width: 0; animation: rise-in .22s ease-out; }
 @keyframes rise-in {
   from { transform: translateY(8px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
-.message-header { display: contents; }
-.message-avatar {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  grid-row: span 3;
-  place-items: center;
-  border-radius: 50%;
-  font-size: 12px;
-  font-weight: 800;
+.message.user { align-self: flex-end; max-width: 80%; }
+.message.user .message-body {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px 16px 4px 16px;
+  background: var(--surface);
+  line-height: 1.6;
 }
-.message-avatar.user { background: var(--surface-3); color: var(--text-soft); }
-.message-avatar.assistant { background: var(--accent-wash); color: var(--accent-3); box-shadow: inset 0 0 0 1px var(--accent-glow); }
-.message-avatar svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.message-meta { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 6px; }
-.message-role { color: var(--text); font-size: 13px; font-weight: 600; }
-.message-time { color: var(--text-muted); font-size: 11px; }
+:root[data-theme="dark"] .message.user .message-body { border-color: #26302a; background: #1a221d; }
+.message.assistant { display: flex; gap: 14px; }
+.message-avatar.assistant {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+.message-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 12px; }
+.message-meta { margin-top: 6px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 
 .message-body {
   min-width: 0;
   color: var(--text);
   font-size: 14px;
-  line-height: 1.75;
+  line-height: 1.65;
   overflow-wrap: anywhere;
 }
-.message.assistant .message-body {
-  padding: 16px 20px;
-  border: 1px solid var(--border);
-  border-radius: 4px 18px 18px 18px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-.message.user .message-body {
-  width: fit-content;
-  max-width: min(680px, 100%);
-  padding: 12px 18px;
-  border-radius: 4px 18px 18px 18px;
-  background: var(--surface-3);
-}
+/* The answer opens with a 16px lead paragraph. */
+.message.assistant .message-body > p:first-child { font-size: 16px; line-height: 1.6; }
 .message-body p { margin: 0; }
 .message-body strong { color: var(--text); font-weight: 700; }
 .message-body a { color: var(--accent-3); text-decoration: underline; text-underline-offset: 2px; }
@@ -671,16 +682,14 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 .message-body h2 { font-size: 17px; }
 .message-body h3 { font-size: 15px; }
 .message-body h4, .message-body h5, .message-body h6 { font-size: 14px; }
-.message .chat-trace { grid-column: 2; }
+/* Answer tables scroll sideways in their own box instead of squeezing the figures. */
+.message-body .markdown-table-wrap { border-radius: 12px; }
+.message-body .markdown-table { min-width: 460px; font-size: 13px; }
+.message-body .markdown-table { overflow-wrap: normal; }
 
-/* ── Input area ─────────────────────────────────────────────────── */
-#input-area {
-  width: min(936px, calc(100% - 56px));
-  margin: 0 auto;
-  padding: 8px 0 18px;
-  flex-shrink: 0;
-}
+/* Suggestions under the latest answer. */
 .follow-ups { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.answer-follow-ups { margin: 0; }
 .chip {
   padding: 7px 14px;
   border: 1px solid var(--border);
@@ -694,62 +703,91 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 }
 .chip:hover { border-color: var(--accent); background: var(--accent-wash2); color: var(--accent-3); }
 .chip:disabled { cursor: wait; opacity: .5; }
-#input-wrap {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 10px 10px 10px 20px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
+.answer-follow-ups .chip { min-height: 36px; padding: 0 12px; border-color: var(--border-hover); border-radius: 999px; background: transparent; font-size: 13px; box-shadow: none; white-space: nowrap; }
+:root[data-theme="dark"] .answer-follow-ups .chip { border-color: #2a332d; }
+
+/* ── Composer ───────────────────────────────────────────────────── */
+#input-area {
+  width: 100%;
+  max-width: calc(var(--chat-w) + 56px);
+  margin: 0 auto;
+  padding: 16px 28px 24px;
+  flex-shrink: 0;
+}
+.composer {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "input input input input input"
+    "agent model . hint send";
+  align-items: center;
+  gap: 10px 8px;
+  padding: 12px 12px 10px 16px;
+  border: 1px solid var(--border-hover);
+  border-radius: 16px;
   background: var(--surface);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   transition: border-color .15s, box-shadow .15s;
 }
-#input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash), var(--shadow-md); }
+:root[data-theme="dark"] .composer { border-color: #2a332d; }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
 #user-input {
-  flex: 1;
-  min-height: 44px;
+  grid-area: input;
+  width: 100%;
+  min-height: 48px;
   max-height: 180px;
-  padding: 11px 0;
+  padding: 2px 0;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.55;
 }
 #user-input::placeholder { color: var(--text-muted); }
-.provider-picker {
-  max-width: 190px;
-  height: 44px;
+.composer .agent-switch { grid-area: agent; flex-wrap: nowrap; }
+.composer .agent-switch button { min-height: 30px; padding: 0 10px; white-space: nowrap; }
+.agent-option:disabled { cursor: wait; opacity: .6; }
+/* The native select lies over the label, so the list, keyboard and screen readers behave as a select. */
+.model-picker {
+  position: relative;
+  display: inline-flex;
+  height: 36px;
+  grid-area: model;
+  align-items: center;
+  gap: 6px;
   padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
 }
-.provider-picker:hover:not(:disabled) { border-color: var(--border-hover); }
+:root[data-theme="dark"] .model-picker { border-color: #2a332d; }
+.model-picker:hover { color: var(--text); }
+.model-picker:focus-within { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.model-picker.is-disabled { cursor: not-allowed; opacity: .6; }
+.model-caret { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.provider-picker { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: inherit; appearance: none; }
+.composer-hint { grid-area: hint; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 #send-btn {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
+  grid-area: send;
   flex-shrink: 0;
   place-items: center;
   border: 0;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
-  box-shadow: 0 6px 16px var(--accent-glow);
+  color: var(--accent-ink);
   transition: transform .15s, background .15s, opacity .15s;
 }
-:root[data-theme="dark"] #send-btn { color: #0c2a1e; }
 #send-btn:hover:not(:disabled) { transform: translateY(-1px); background: var(--accent-3); }
-#send-btn:disabled { cursor: not-allowed; opacity: .4; box-shadow: none; }
-#send-btn svg { width: 20px; height: 20px; stroke-width: 2.2; }
-#input-hint { padding-top: 8px; color: var(--text-muted); font-size: 11px; text-align: center; }
+#send-btn:disabled { cursor: not-allowed; opacity: .4; }
+#send-btn svg { width: 18px; height: 18px; stroke-width: 2.4; }
 kbd {
   padding: 1px 5px;
   border: 1px solid var(--border);
@@ -765,10 +803,36 @@ kbd {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 16px;
   overflow-y: auto;
-  padding: 16px 20px 20px 4px;
+  padding: 20px;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
 }
+:root[data-theme="dark"] #right-rail { border-left-color: var(--side-border); background: var(--side-bg); }
+/* "This answer used", then the portfolio, then recent chats, divided by rules rather than cards. */
+.rail-section { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; padding-bottom: 20px; }
+.rail-section + .rail-section { padding-top: 20px; border-top: 1px solid var(--border); }
+:root[data-theme="dark"] .rail-section + .rail-section { border-top-color: var(--side-border); }
+.rail-kicker { color: var(--text-muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+#right-rail .rail-copy { margin: 0 0 4px; }
+#right-rail .rail-button { margin-top: 4px; }
+.source-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.source-row { display: flex; align-items: flex-start; gap: 10px; }
+.source-dot { width: 8px; height: 8px; flex: 0 0 8px; margin-top: 7px; border-radius: 50%; background: var(--tone, var(--text-muted)); }
+.source-row.is-good { --tone: var(--accent); }
+.source-row.is-info { --tone: var(--blue); }
+.source-row.is-warn { --tone: var(--amber); }
+.source-text { display: grid; min-width: 0; gap: 1px; }
+.source-text strong { color: var(--text); font-size: 13.5px; font-weight: 500; line-height: 1.45; }
+.source-text small { color: var(--text-muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+#right-rail .rail-figure { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
+#right-rail .rail-change { margin-top: -6px; font-size: 13px; font-weight: 600; white-space: normal; }
+#right-rail .rail-note { margin: 0; color: var(--text-muted); font-size: 12px; opacity: 1; }
+#right-rail .rail-note.is-warn { color: var(--amber); }
+.rail-open { justify-self: start; font-size: 13px; }
+.rail-chat-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0 -8px; padding: 0; list-style: none; }
+.rail-chat { display: block; width: 100%; overflow: hidden; padding: 7px 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-soft); font-size: 13.5px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.rail-chat:hover { background: var(--surface-2); color: var(--text); }
 .rail-card {
   padding: 18px;
   border: 1px solid var(--border);
@@ -854,9 +918,15 @@ kbd {
 .is-pending > .timeline-marker { border-style: dashed; }
 
 /* The answer's trace: a collapsed timeline of how it was made. */
-.chat-trace { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-soft); font-size: 11.5px; }
-.chat-trace > summary { padding: 9px 12px; cursor: pointer; color: var(--text-soft); font-weight: 600; }
-.chat-trace[open] > summary { border-bottom: 1px solid var(--border); color: var(--text); }
+.chat-trace { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-soft); font-size: 11.5px; }
+.chat-trace > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; list-style: none; color: var(--text); font-size: 13px; }
+.chat-trace > summary::-webkit-details-marker { display: none; }
+.chat-trace > summary::before { color: var(--text-muted); font-size: 11px; content: "▸"; transition: transform .15s; }
+.chat-trace[open] > summary::before { transform: rotate(90deg); }
+.chat-trace-title { font-weight: 500; }
+.chat-trace-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.chat-trace-tag { padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-soft); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.chat-trace[open] > summary { border-bottom: 1px solid var(--border); }
 .chat-trace .timeline { padding: 4px 12px; }
 .timeline { display: grid; margin: 0; padding: 0; list-style: none; }
 .timeline-step { position: relative; display: flex; gap: 10px; padding: 10px 0; }
@@ -880,7 +950,6 @@ kbd {
 .trace-code { max-height: 180px; margin: 0; padding: 8px 10px; overflow: auto; border-radius: 7px; background: var(--surface-2); color: var(--text-soft); font: 10px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Investigation evidence card: figures from a saved investigation, under the answer and in Activity. */
-.message .evidence-card { grid-column: 2; }
 .evidence-card { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); font-size: 12.5px; }
 .evidence-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; color: var(--text); }
 .evidence-head strong { font-size: 13.5px; }
@@ -1153,8 +1222,68 @@ body:not(.route-chat) #right-rail { display: none; }
   }
   .topbar-account .account-avatar { width: 36px; height: 36px; background: var(--surface-3); color: var(--text); }
   .topbar-account .account-avatar.is-connected { background: var(--mint); color: #0c2a1e; }
-  #chat-scroll { padding: 12px 16px 10px; }
-  #input-area { width: calc(100% - 32px); padding-bottom: 12px; }
+  #chat-scroll { padding: 16px 16px 8px; }
+
+  /* Ask AI on a phone: the chat header replaces the top bar, with Back and icon-only actions. */
+  body.route-chat #topbar { display: none; }
+  .chat-head { gap: 4px; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left)); }
+  .chat-back { display: grid; border: 0; }
+  .chat-head .chat-head-button { width: var(--control-h); height: var(--control-h); justify-content: center; padding: 0; border: 0; background: transparent; color: var(--text-soft); }
+  .chat-head .chat-head-button:hover { background: var(--surface-2); color: var(--text); }
+  .chat-head .chat-head-button svg { display: block; width: 20px; height: 20px; }
+  .chat-head-button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #messages.has-messages { gap: 18px; }
+  .message.user { max-width: 85%; }
+  .message.assistant .message-avatar { display: none; }
+  .message-meta { margin-top: 0; }
+  .message.assistant .message-body > p:first-child { font-size: 15px; }
+  /* Suggestions scroll sideways in one row, to the screen edge. */
+  .answer-follow-ups { flex-wrap: nowrap; margin-right: -16px; padding-right: 16px; overflow-x: auto; scrollbar-width: none; }
+  .answer-follow-ups::-webkit-scrollbar { display: none; }
+  .answer-follow-ups .chip { flex: 0 0 auto; }
+
+  /* The composer sits above the tab bar: agent switch and model on top, then the question box with Send. */
+  #input-area {
+    max-width: none;
+    padding: 10px max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left));
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  :root[data-theme="dark"] #input-area { border-top-color: var(--side-border); background: var(--side-bg); }
+  .composer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "agent model"
+      "input send";
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .composer:focus-within { box-shadow: none; }
+  /* The question box is drawn behind the second row, so the switch stays outside it. */
+  .composer::before {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    align-self: stretch;
+    border: 1px solid var(--border-hover);
+    border-radius: 14px;
+    background: var(--surface-2);
+    content: "";
+  }
+  :root[data-theme="dark"] .composer::before { border-color: #2a332d; background: var(--surface); }
+  .composer:has(#user-input:focus)::before { border-color: var(--accent); }
+  .composer .agent-switch { display: flex; justify-self: stretch; }
+  .composer .agent-switch button { flex: 1; min-height: 34px; padding: 0 8px; }
+  .model-picker { height: 40px; }
+  #user-input { min-height: 50px; padding: 13px 0 13px 14px; align-self: center; }
+  #send-btn { margin: 5px 5px 5px 0; align-self: end; }
+  .composer-hint { display: none; }
+  /* While the keyboard is open the tab bar steps aside and the composer takes the bottom inset. */
+  body.keyboard-open #tabbar { display: none; }
+  body.keyboard-open #input-area { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .hero { grid-template-columns: 1fr; padding: 22px 20px; }
   .hero-art { display: none; }
 
@@ -1210,14 +1339,11 @@ body:not(.route-chat) #right-rail { display: none; }
   .feature-cards { grid-template-columns: 1fr; gap: 10px; }
   .feature-card { padding: 12px; }
   .hero-sub { font-size: 13px; }
-  .message { grid-template-columns: 32px minmax(0, 1fr); column-gap: 10px; }
-  .message-avatar { width: 32px; height: 32px; }
-  .message.assistant .message-body { padding: 12px 14px; }
-  #input-wrap { flex-wrap: wrap; padding: 8px 8px 8px 14px; }
-  #user-input { flex-basis: 100%; }
-  .provider-picker { flex: 1; min-width: 0; max-width: none; height: var(--control-h); }
-  #send-btn { width: 44px; height: 44px; }
-  #input-hint { display: none; }
+}
+
+/* The collapsed trace stays one row on a phone; its labels show again when it is opened. */
+@media (max-width: 640px) {
+  .chat-trace:not([open]) .chat-trace-tags { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1658,12 +1784,6 @@ a.tool-tile { text-decoration: none; }
 .pill.is-behind { background: var(--amber-soft); color: var(--amber); }
 .goal-form { display: grid; gap: 14px; }
 
-.agent-switch { display: inline-flex; gap: 4px; margin-bottom: 10px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); }
-.agent-option { padding: 6px 14px; border: 0; border-radius: 9px; background: transparent; color: var(--text-soft); font-size: 12.5px; font-weight: 600; transition: background .15s, color .15s; }
-.agent-option:hover { color: var(--text); }
-.agent-option[aria-pressed="true"] { background: var(--accent); color: #fff; }
-:root[data-theme="dark"] .agent-option[aria-pressed="true"] { color: #0c2a1e; }
-.agent-option:disabled { cursor: wait; opacity: .6; }
 
 .connection-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); }
 .connection-row span { display: grid; line-height: 1.35; }
@@ -1901,7 +2021,7 @@ a.tool-tile { text-decoration: none; }
 /* Answer runs in Activity (trace.js renderRunCard) and the link under an answer's trace */
 .run-card { display: grid; gap: 12px; }
 .run-title { margin: 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
-.chat-trace-link { display: inline-block; margin-top: 8px; font-size: 12px; }
+.chat-trace-link { display: inline-block; margin: 0 14px 12px; font-size: 12px; }
 .activity-panel > h2 { margin: 0; font-size: 15px; }
 
 /* ── Dark dashboard look ─────────────────────────────────────────── */

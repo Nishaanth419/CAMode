@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="theme-color" content="#070a08" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -28,15 +28,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=52" />
+  <link rel="stylesheet" href="/css/app.css?v=53" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=3" defer></script>
   <script src="/js/finance.js?v=12" defer></script>
-  <script src="/js/trace.js?v=12" defer></script>
+  <script src="/js/trace.js?v=13" defer></script>
   <script src="/js/ui.js?v=1" defer></script>
-  <script src="/js/app.js?v=47" defer></script>
-  <script src="/js/pages.js?v=31" defer></script>
-  <script src="/js/rail.js?v=8" defer></script>
+  <script src="/js/app.js?v=48" defer></script>
+  <script src="/js/pages.js?v=32" defer></script>
+  <script src="/js/rail.js?v=9" defer></script>
 </head>
 <body>
   <div id="app">
@@ -167,12 +167,32 @@
         </button>
       </header>
 
+      <header id="chat-head" class="chat-head">
+        <button id="chat-back" class="icon-button chat-back" type="button" aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div class="chat-head-text">
+          <h1 id="chat-title" class="chat-head-title">New chat</h1>
+          <p id="chat-sub" class="chat-head-sub">Finance Agent</p>
+        </div>
+        <div class="chat-head-actions">
+          <button id="chat-delete" class="gate-secondary chat-head-button" type="button" aria-label="Delete chat" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+            <span>Delete chat</span>
+          </button>
+          <button id="chat-new" class="chat-head-button is-primary" type="button" aria-label="New chat" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>New chat</span>
+          </button>
+        </div>
+      </header>
+
       <div id="chat-scroll">
         <div id="empty-state">
           <div class="hero">
             <div class="hero-copy">
               <p class="hero-eyebrow"><span id="welcome-agent-name">Finance Agent</span></p>
-              <h1 class="hero-title"><span id="greeting">Hi there</span> <span aria-hidden="true">👋</span><br>How can I help with your finances today?</h1>
+              <h2 class="hero-title"><span id="greeting">Hi there</span> <span aria-hidden="true">👋</span><br>How can I help with your finances today?</h2>
               <p class="hero-sub" id="welcome-description">Ask basic finance questions and get clear explanations in plain language.</p>
             </div>
             <div class="hero-art" aria-hidden="true">
@@ -227,26 +247,25 @@
       </div>
 
       <div id="input-area">
-        <div class="agent-switch" role="group" aria-label="Choose an agent">
-          <button class="agent-option" type="button" data-agent="finance" aria-pressed="false" title="General finance questions">Finance Agent</button>
-          <button class="agent-option" type="button" data-agent="portfolio" aria-pressed="false" title="Questions about the holdings at your connected brokers">Portfolio Analyzer</button>
-        </div>
-        <div id="follow-ups" class="follow-ups" aria-label="Follow-up suggestions" hidden>
-          <button class="chip" type="button" data-prompt="Can you explain that in more detail?">Show more detail</button>
-          <button class="chip" type="button" data-prompt="Explain that in simple terms.">Explain in simple terms</button>
-          <button class="chip" type="button" data-prompt="Summarize the key takeaways as a short list.">Key takeaways</button>
-          <button class="chip" type="button" data-prompt="Show that as a chart.">Show as a chart</button>
-        </div>
-        <div id="input-wrap">
-          <textarea id="user-input" rows="1" placeholder="Ask anything about your finances…" aria-label="Message input"></textarea>
-          <select id="provider-picker" class="provider-picker" aria-label="Choose AI provider" disabled>
-            <option>Loading…</option>
-          </select>
+        <!-- One box: the question, then the agent, the model, the hint and Send. Below 900px the agent switch
+             and model sit above the box (CSS grid areas), so the order here is the reading order on desktop. -->
+        <div id="input-wrap" class="composer">
+          <textarea id="user-input" rows="1" placeholder="Ask anything about your finances…" aria-label="Your question" aria-describedby="input-hint"></textarea>
+          <div class="agent-switch seg" role="group" aria-label="Choose an agent">
+            <button class="agent-option" type="button" data-agent="finance" aria-pressed="false" title="General finance questions">Finance Agent</button>
+            <button class="agent-option" type="button" data-agent="portfolio" aria-pressed="false" title="Questions about the holdings at your connected brokers">Portfolio Analyzer</button>
+          </div>
+          <label class="model-picker" id="model-picker">
+            <span id="model-label" class="model-label">Loading…</span><svg class="model-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            <select id="provider-picker" class="provider-picker" aria-label="Choose the AI model" disabled>
+              <option>Loading…</option>
+            </select>
+          </label>
+          <span id="input-hint" class="composer-hint" title="Shift + Enter for a new line">Enter to send<span class="sr-only">, Shift + Enter for a new line</span></span>
           <button id="send-btn" type="button" title="Send message (Enter)" aria-label="Send message">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
           </button>
         </div>
-        <div id="input-hint">Press <kbd>Enter</kbd> to send · <kbd>Shift + Enter</kbd> for a new line</div>
       </div>
 
       <div id="page-view" hidden>
@@ -529,54 +548,19 @@
     </section>
 
     <!-- ── Right rail ───────────────────────────────────────────────── -->
-    <aside id="right-rail" aria-label="Portfolio summary, goals, insights and tools">
-      <section class="rail-card" aria-labelledby="rail-portfolio-title">
-        <div class="rail-head">
-          <h2 id="rail-portfolio-title">Your Financial Portfolio</h2>
-          <a class="rail-more" href="#/portfolio">View Details <span aria-hidden="true">→</span></a>
-        </div>
-        <div id="rail-portfolio" aria-live="polite"></div>
+    <aside id="right-rail" aria-label="What the latest answer used, your portfolio and recent chats">
+      <section class="rail-section" aria-labelledby="rail-sources-title">
+        <h2 id="rail-sources-title" class="rail-kicker">This answer used</h2>
+        <div id="rail-sources" aria-live="polite"></div>
       </section>
-
-      <section class="rail-card" aria-labelledby="rail-goals-title">
-        <div class="rail-head">
-          <h2 id="rail-goals-title">Financial Goals</h2>
-          <a class="rail-more" href="#/goals">See all</a>
-        </div>
-        <div id="rail-goals"></div>
+      <section class="rail-section" aria-labelledby="rail-portfolio-title">
+        <h2 id="rail-portfolio-title" class="rail-kicker">Your portfolio</h2>
+        <div id="rail-portfolio"></div>
+        <a class="panel-link rail-open" href="#/holdings">Open holdings <span aria-hidden="true">→</span></a>
       </section>
-
-      <section class="rail-card" aria-labelledby="rail-insights-title">
-        <div class="rail-head">
-          <h2 id="rail-insights-title">Market Insights</h2>
-          <a class="rail-more" href="#/markets">See all</a>
-        </div>
-        <div id="rail-insights"></div>
-      </section>
-
-      <section class="rail-card" aria-labelledby="rail-tools-title">
-        <div class="rail-head">
-          <h2 id="rail-tools-title">Quick Tools</h2>
-          <a class="rail-more" href="#/planning">See all</a>
-        </div>
-        <div class="tool-grid">
-          <a class="tool-tile tone-green" href="#/planning/sip">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M8 18h2M12 18h4"/></svg>
-            <span>SIP Calculator</span>
-          </a>
-          <a class="tool-tile tone-red" href="#/planning/goal">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg>
-            <span>Goal Planner</span>
-          </a>
-          <a class="tool-tile tone-blue" href="#/planning/tax">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5 5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/></svg>
-            <span>Tax Calculator</span>
-          </a>
-          <a class="tool-tile tone-violet" href="#/markets/funds">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M20 20H3"/></svg>
-            <span>Compare Funds</span>
-          </a>
-        </div>
+      <section class="rail-section" aria-labelledby="rail-chats-title">
+        <h2 id="rail-chats-title" class="rail-kicker">Recent chats</h2>
+        <div id="rail-chats"></div>
       </section>
     </aside>
 

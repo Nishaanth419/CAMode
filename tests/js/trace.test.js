@@ -457,3 +457,67 @@ test('the general agent analysis tools and retries have labels', () => {
   assert.deepEqual([views[0].title, views[0].purpose], ['Calculate an option position', 'Payoff, maximum profit and loss and breakevens, exactly, in code']);
   assert.match(views[1].purpose, /figures no tool produced/);
 });
+
+/* ── What an answer used ───────────────────────────────────────────── */
+
+// Shaped like a saved chat answer's trace (agent.py ChatTrace steps).
+const SNAPSHOT_ANSWER = [
+  { kind: 'route', status: 'completed', category: 'account_data', source: 'model', model: 'ca-mode' },
+  { kind: 'model', provider: 'Ollama (private model)', model: 'ca-mode', attempt: 1, status: 'completed', tokens: 10379 },
+  { kind: 'tool', name: 'get_portfolio_snapshot', source: 'local', status: 'completed', arguments: '{"date":"2026-11-02"}',
+    result_preview: '{"available":true,"asOfDate":"2026-11-02","capturedAt":"2026-11-02T09:00+05:30","figures":{"tot' },
+  { kind: 'tool', name: 'inspect_result', source: 'local', status: 'completed' },
+  { kind: 'tool', name: 'inspect_result', source: 'local', status: 'completed' },
+  { kind: 'tool', name: 'networth_holdings', source: 'indmoney', status: 'failed', error_kind: 'unavailable' },
+  { kind: 'omitted', status: 'completed', count: 4 },
+  { kind: 'model', provider: 'Ollama (private model)', model: 'ca-mode', attempt: 2, status: 'completed' },
+  { kind: 'check', check: 'numbers', status: 'passed' },
+  { kind: 'check', check: 'task_contract', status: 'passed', detail: 'account_data: met' },
+];
+
+test('answer sources are read off the trace: snapshot, tools once each, the figure check and the model', () => {
+  const sources = trace.answerSources(SNAPSHOT_ANSWER);
+  assert.equal(sources.route, 'Account data');
+  assert.deepEqual(sources.snapshot, { capturedAt: '2026-11-02T09:00+05:30', asOfDate: '2026-11-02' });
+  assert.deepEqual(sources.tools.map((tool) => [tool.name, tool.source, tool.calls, tool.failed]), [
+    ['get_portfolio_snapshot', 'local', 1, 0], ['inspect_result', 'local', 2, 0], ['networth_holdings', 'live', 1, 1],
+  ]);
+  assert.equal(sources.tools[0].title, 'Read your saved snapshot');
+  assert.equal(sources.tools[2].title, 'Live INDmoney data');
+  assert.equal(sources.numbers.status, 'passed');
+  assert.equal(sources.numbers.label, 'Figures checked');
+  assert.equal(sources.provider, 'Ollama (private model)');
+  assert.equal(sources.model, 'ca-mode');
+  assert.equal(sources.omitted, 4);
+  assert.match(trace.snapshotLabel(sources.snapshot), /Nov/);
+  assert.equal(trace.snapshotLabel({ capturedAt: '', asOfDate: '2026-11-02' }), trace.formatIsoDate('2026-11-02'));
+  assert.equal(trace.snapshotLabel(null), '');
+});
+
+test('answer sources leave out whatever the trace does not carry', () => {
+  const empty = trace.answerSources([]);
+  assert.deepEqual(empty, { route: '', snapshot: null, tools: [], numbers: null, context: [], provider: '', model: '', omitted: 0 });
+  assert.deepEqual(trace.answerSources(undefined).tools, []);
+  // A failed snapshot read, or one whose preview holds no date, gives no snapshot date.
+  assert.equal(trace.answerSources([{ kind: 'tool', name: 'get_portfolio_snapshot', source: 'local', status: 'failed', result_preview: '{"asOfDate":"2026-11-02"}' }]).snapshot, null);
+  assert.equal(trace.answerSources([{ kind: 'tool', name: 'get_portfolio_snapshot', source: 'local', status: 'completed', result_preview: '{"available":false}' }]).snapshot, null);
+  const warned = trace.answerSources([{ kind: 'check', check: 'numbers', status: 'warning', detail: '₹4.5 lakh' }]);
+  assert.equal(warned.numbers.label, 'Some figures not traced');
+  const context = trace.answerSources([{ kind: 'context', items: ['Goal: Home', 'token "x" Bearer abc.def'] }]);
+  assert.deepEqual(context.context, ['Goal: Home', 'token "x" Bearer [redacted]']);
+});
+
+test('the collapsed trace row shows up to three labels from the steps and stays closed', () => {
+  assert.deepEqual(trace.traceHighlights(SNAPSHOT_ANSWER), ['Account data', 'Snapshot read', 'Figures checked']);
+  assert.deepEqual(trace.traceHighlights([
+    { kind: 'route', category: 'general_finance' }, { kind: 'context', items: ['Goal: Home'] }, { kind: 'model' },
+  ]), ['General finance', 'Saved details used']);
+  assert.deepEqual(trace.traceHighlights([{ kind: 'tool', name: 'calculate_goal_plan', source: 'local' }]), ['Calculate the goal']);
+  assert.deepEqual(trace.traceHighlights([]), []);
+  const html = trace.renderChatTrace(SNAPSHOT_ANSWER, { runId: 'r1' });
+  assert.match(html, /^<details class="chat-trace"><summary><span class="chat-trace-title">How this answer was made · 13 steps · 1 did not complete<\/span>/);
+  assert.equal((html.match(/class="chat-trace-tag"/g) || []).length, 3);
+  assert.doesNotMatch(html, /<details class="chat-trace" open/);
+  assert.match(html, /href="#\/activity\/answer-r1"/);
+  assert.doesNotMatch(trace.renderChatTrace([{ kind: 'model' }]), /chat-trace-tags/);
+});

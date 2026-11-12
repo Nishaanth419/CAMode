@@ -348,6 +348,90 @@
     return Math.max(0, Math.floor(Number(step.count)) || 0);
   }
 
+  /* ── What an answer used ──────────────────────────────────────────── */
+  // Facts read straight off the trace steps, for the collapsed trace row, the answer's meta line and the
+  // "This answer used" rail. Nothing is inferred: a fact the trace does not carry is left out.
+  const ROUTE_SHORT = {
+    account_data: 'Account data', general_finance: 'General finance', code_request: 'Declined', off_topic: 'Declined',
+  };
+  const NUMBER_CHECK = {
+    passed: ['Figures checked', 'Every amount and percentage matches a number a tool returned'],
+    warning: ['Some figures not traced', 'Some amounts match no number a tool returned; the answer says which'],
+    failed: ['Figure check failed', 'The figures could not be checked against the tools'],
+  };
+
+  const stepsOf = (trace) => (Array.isArray(trace) ? trace : []).filter((step) => step && typeof step === 'object');
+  const isDone = (step) => !['failed', 'running', 'pending', 'cancelled'].includes(String(step.status || 'completed').toLowerCase());
+
+  // The snapshot a get_portfolio_snapshot call read, from its (possibly cut-off) result preview.
+  function snapshotRead(steps) {
+    for (const step of [...steps].reverse()) {
+      if (step.kind !== 'tool' || step.name !== 'get_portfolio_snapshot' || !isDone(step)) continue;
+      const preview = typeof step.result_preview === 'string' ? step.result_preview : '';
+      const capturedAt = preview.match(/"capturedAt"\s*:\s*"([^"]{10,40})"/)?.[1] || '';
+      const asOfDate = preview.match(/"asOfDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"/)?.[1] || '';
+      if (capturedAt || asOfDate) return { capturedAt, asOfDate };
+    }
+    return null;
+  }
+
+  function snapshotLabel(snapshot) {
+    if (!snapshot) return '';
+    const when = new Date(snapshot.capturedAt);
+    if (snapshot.capturedAt && !Number.isNaN(when.getTime())) {
+      return when.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    return formatIsoDate(snapshot.asOfDate);
+  }
+
+  function answerSources(trace) {
+    const steps = stepsOf(trace);
+    const tools = [];
+    for (const step of steps.filter((item) => item.kind === 'tool')) {
+      const name = String(step.name || 'tool');
+      let entry = tools.find((item) => item.name === name);
+      if (!entry) {
+        const known = step.source === 'local' ? LOCAL_TOOLS[name] : null;
+        entry = {
+          name, source: step.source === 'local' ? 'local' : 'live', title: known ? known[0] : step.source === 'local' ? 'Read saved data' : 'Live INDmoney data',
+          calls: 0, failed: 0,
+        };
+        tools.push(entry);
+      }
+      entry.calls += 1;
+      if (!isDone(step) || step.error_kind) entry.failed += 1;
+    }
+    const numbers = [...steps].reverse().find((step) => step.kind === 'check' && step.check === 'numbers');
+    const numberStatus = numbers ? String(numbers.status || '').toLowerCase() : '';
+    const context = steps.filter((step) => step.kind === 'context')
+      .flatMap((step) => (Array.isArray(step.items) ? step.items.map((item) => redactText(String(item))) : []));
+    const model = [...steps].reverse().find((step) => step.kind === 'model' && (step.provider || step.model));
+    const route = steps.find((step) => step.kind === 'route');
+    return {
+      route: route && ROUTE_SHORT[route.category] ? ROUTE_SHORT[route.category] : '',
+      snapshot: snapshotRead(steps),
+      tools,
+      numbers: NUMBER_CHECK[numberStatus] ? { status: numberStatus, label: NUMBER_CHECK[numberStatus][0], note: NUMBER_CHECK[numberStatus][1] } : null,
+      context,
+      provider: model ? String(model.provider || '') : '',
+      model: model ? String(model.model || '') : '',
+      omitted: steps.filter((step) => step.kind === 'omitted').reduce((sum, step) => sum + omittedCount(step), 0),
+    };
+  }
+
+  // Up to three short labels for the collapsed trace row: the route, the first data read, the figure check.
+  function traceHighlights(trace) {
+    const sources = answerSources(trace);
+    const labels = [];
+    if (sources.route) labels.push(sources.route);
+    const read = sources.tools[0];
+    if (sources.snapshot) labels.push('Snapshot read');
+    else if (read) labels.push(read.title);
+    if (sources.numbers) labels.push(sources.numbers.label);
+    else if (sources.context.length) labels.push('Saved details used');
+    return labels.slice(0, 3);
+  }
+
   function renderChatTrace(trace, { runId = null } = {}) {
     if (!Array.isArray(trace) || !trace.length) return '';
     const views = trace.map((step) => chatStepView(step, true));
@@ -356,7 +440,8 @@
     const total = trace.reduce((sum, step) => sum + (step && step.kind === 'omitted' ? omittedCount(step) : 1), 0);
     const link = typeof runId === 'string' && runId
       ? `<a class="panel-link chat-trace-link" href="#/activity/answer-${encodeURIComponent(runId)}">Open the full record in Activity</a>` : '';
-    return `<details class="chat-trace"><summary>How this answer was made · ${total} step${total === 1 ? '' : 's'}${extra}</summary>${renderTimeline(views, { label: 'Answer steps' })}${link}</details>`;
+    const tags = traceHighlights(trace).map((label) => `<span class="chat-trace-tag">${esc(label)}</span>`).join('');
+    return `<details class="chat-trace"><summary><span class="chat-trace-title">How this answer was made · ${total} step${total === 1 ? '' : 's'}${extra}</span>${tags ? `<span class="chat-trace-tags">${tags}</span>` : ''}</summary>${renderTimeline(views, { label: 'Answer steps' })}${link}</details>`;
   }
 
   function stoppedNote(record) {
@@ -766,6 +851,7 @@
   const api = {
     STATUSES, ACTIVITY_FILTERS, statusInfo, settledStatus, statusPill, formatDuration, formatIsoDate,
     redactText, chatStepView, orderedSteps, investigationStepView, renderTimeline, renderChatTrace,
+    answerSources, traceHighlights, snapshotLabel,
     renderInvestigationTimeline, renderInvestigationCard,
     filterInvestigations, filterCounts, isActive, newerRun, reconcileInvestigations, createSequencer, pollDelay,
     investigationTitle, canRetry, activityItem, renderActivityList, activitySkeleton,

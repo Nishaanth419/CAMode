@@ -1,20 +1,13 @@
-/* ── Right rail ─────────────────────────────────────────────────────────
-   Portfolio summary, goals, and insights from the latest snapshot. Loaded
-   after finance.js, app.js and pages.js, and reuses their data loaders,
-   so the rail and the pages share one request per resource. */
+/* ── Right rail (Ask AI only) ───────────────────────────────────────────
+   "This answer used": the latest answer's sources read off its trace (trace.js answerSources(), so nothing is
+   guessed), then the net worth from the latest snapshot with a link to Holdings, then recent chats. Loaded after
+   finance.js, trace.js, app.js and pages.js, and reuses their data loaders, so the rail and the pages share one
+   request per resource. */
 
+const railSources = document.getElementById('rail-sources');
 const railPortfolio = document.getElementById('rail-portfolio');
-const railGoals = document.getElementById('rail-goals');
-const railInsights = document.getElementById('rail-insights');
-const RAIL_GOALS = 3;
-
-const INSIGHT_ICONS = {
-  day: ['<path d="M5 19v-6M10 19V9M15 19v-5M20 19V6"/>', 'blue'],
-  gainer: ['<path d="m4 16 6-6 4 4 6-7"/><path d="M15 7h5v5"/>', 'green'],
-  loser: ['<path d="m4 8 6 6 4-4 6 7"/><path d="M15 17h5v-5"/>', 'red'],
-  concentration: ['<circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/>', 'amber'],
-  global: ['<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5Z"/>', 'violet'],
-};
+const railChats = document.getElementById('rail-chats');
+const RAIL_CHATS = 4;
 
 function railMessage(text, action = '') {
   return `<p class="rail-copy">${escHtml(text)}</p>${action}`;
@@ -28,41 +21,40 @@ function railError(error) {
   return `<p class="rail-copy rail-error" role="alert">${escHtml(error.message || 'Could not load this.')}</p>`;
 }
 
-// Exact rupees like the mock-up, falling back to lakh/crore when they would not fit a column.
-function railAmount(value) {
-  const exact = money(value);
-  return exact.length > 10 ? moneyShort(value) : exact;
+/* ── This answer used ───────────────────────────────────────────────── */
+function sourceRow(title, note, tone) {
+  return `<li class="source-row is-${tone}"><span class="source-dot" aria-hidden="true"></span><span class="source-text"><strong>${escHtml(title)}</strong>${note ? `<small>${escHtml(note)}</small>` : ''}</span></li>`;
 }
 
-function sparkline(points, tone) {
-  const values = thin(points, 60).map((point) => point.networthInr);
-  if (values.length < 2) return '';
-  const width = 280;
-  const height = 110;
-  const min = Math.min(...values);
-  const range = Math.max(...values) - min || 1;
-  const coords = values.map((value, index) => [
-    (index / (values.length - 1)) * (width - 6),
-    height - 8 - ((value - min) / range) * (height - 22),
-  ]);
-  const line = coords.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(' L');
-  // Round dots that stay round when the chart stretches: zero-length strokes with round caps.
-  const markerEvery = Math.max(1, Math.round(values.length / 7));
-  const markers = coords.filter((_, index) => index > 0 && index < coords.length - 1 && index % markerEvery === 0)
-    .map(([x, y]) => `M${x.toFixed(1)} ${y.toFixed(1)}h0`).join(' ');
-  const [lastX, lastY] = coords[coords.length - 1];
-  return `<svg class="rail-spark ${tone}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Net worth trend">
-    <defs><linearGradient id="rail-spark-fill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="currentColor" stop-opacity=".32"/><stop offset="1" stop-color="currentColor" stop-opacity=".02"/>
-    </linearGradient></defs>
-    <path d="M${line} V${height} H0 Z" fill="url(#rail-spark-fill)"/>
-    <path d="M${line}" class="spark-line"/>
-    ${markers ? `<path d="${markers}" class="spark-dots"/>` : ''}
-    <path d="M${lastX.toFixed(1)} ${lastY.toFixed(1)}h0" class="spark-dot-end"/>
-  </svg>`;
+const SOURCE_NOTES = {
+  local: 'Saved in CA Mode; no live INDmoney call',
+  live: 'Read-only call to your INDmoney account',
+};
+
+function renderRailSources() {
+  const trace = typeof latestAnswerTrace === 'undefined' ? null : latestAnswerTrace;
+  if (!trace) {
+    railSources.innerHTML = railMessage('After an answer, the data it read and the checks on its figures show here.');
+    return;
+  }
+  const sources = answerSources(trace);
+  const rows = [];
+  if (sources.snapshot) rows.push(sourceRow('Saved snapshot', snapshotLabel(sources.snapshot), 'good'));
+  for (const tool of sources.tools.slice(0, 5)) {
+    const calls = tool.calls > 1 ? ` · ${tool.calls} calls` : '';
+    const failed = tool.failed ? ` · ${tool.failed} did not complete` : '';
+    rows.push(sourceRow(tool.title, `${tool.name}${calls}${failed} · ${SOURCE_NOTES[tool.source]}`, tool.failed ? 'warn' : 'info'));
+  }
+  if (sources.tools.length > 5) rows.push(sourceRow(`${sources.tools.length - 5} more tools`, 'Listed in the answer\'s steps', 'info'));
+  if (sources.context.length) rows.push(sourceRow('Your saved details', sources.context.join(' · '), 'info'));
+  if (sources.numbers) rows.push(sourceRow(sources.numbers.label, sources.numbers.note, sources.numbers.status === 'passed' ? 'good' : 'warn'));
+  if (sources.omitted) rows.push(sourceRow(`${sources.omitted} steps not kept`, 'Long answers keep only their first and last steps', 'muted'));
+  railSources.innerHTML = rows.length
+    ? `<ul class="source-list">${rows.join('')}</ul>`
+    : railMessage(trace.length ? 'This answer read none of your data.' : 'No steps were recorded for this answer.');
 }
 
-/* ── Portfolio card ─────────────────────────────────────────────────── */
+/* ── Portfolio summary ──────────────────────────────────────────────── */
 // One line when a connected broker's login has ended or its holdings are old (brokerAttention is set in app.js).
 function attentionLine() {
   const found = typeof brokerAttention === 'undefined' ? [] : brokerAttention;
@@ -74,16 +66,15 @@ function attentionLine() {
 async function renderRailPortfolio(isCurrent) {
   const access = portfolioAccess();
   if (access === 'disconnected') {
-    railPortfolio.innerHTML = railMessage('Connect INDmoney to track your net worth, returns and how they change every day. Access is read-only.',
+    railPortfolio.innerHTML = railMessage('Connect INDmoney to track your net worth and how it changes every day. Access is read-only.',
       '<button class="rail-button" type="button" data-connect>Connect INDmoney</button>');
     return;
   }
   if (access === 'private') {
-    railPortfolio.innerHTML = railMessage('Private mode saves no daily snapshots, so there is no trend to show. Portfolio Analyzer can still read INDmoney live.',
-      '<button class="rail-button" type="button" data-agent="portfolio" data-prompt="Give me a snapshot of my current net worth.">Ask about my net worth</button>');
+    railPortfolio.innerHTML = railMessage('Private mode saves no daily snapshots, so there is no net worth to show here. Portfolio Analyzer can still read INDmoney live.');
     return;
   }
-  railPortfolio.innerHTML = railSkeleton(4);
+  railPortfolio.innerHTML = railSkeleton(2);
   let portfolio;
   let history;
   try {
@@ -98,122 +89,38 @@ async function renderRailPortfolio(isCurrent) {
       '<button class="rail-button" type="button" data-refresh-snapshot>Save a snapshot now</button>');
     return;
   }
-  const totals = portfolio.figures.totals;
-  const pnl = portfolio.figures.pnl;
-  const netWorth = totals.net_worth_inr ?? portfolio.networthInr;
+  const netWorth = portfolio.figures.totals.net_worth_inr ?? portfolio.networthInr;
   const series = historySeries(history);
-  const points = series.points;
-  const change = historyChange(points);
+  const change = historyChange(series.points);
   const tone = change && change.change < 0 ? 'is-down' : 'is-up';
   const changeHtml = change
-    ? `<span class="rail-change ${tone}" title="Change since ${escHtml(formatDate(change.from))}"><span aria-hidden="true">${change.change < 0 ? '↓' : '↑'}</span> ${percent(change.pct, { signed: true })} <small>(${change.label})</small></span>`
+    ? `<p class="rail-change ${tone}" title="Change since ${escHtml(formatDate(change.from))}"><span aria-hidden="true">${change.change < 0 ? '▼' : '▲'}</span> ${escHtml(signedMoney(change.change))} · ${escHtml(percent(change.pct))} ${escHtml(spanPhrase(change.days))}</p>`
     : '';
-  const updated = `Net worth from your snapshot, updated ${timeAgo(portfolio.capturedAt)}`;
-  const basis = `Over ${pnl.holdings_counted} holdings with a reported cost${pnl.holdings_excluded ? `; ${pnl.holdings_excluded} without one (usually linked brokers) are left out` : ''}.`;
-  const returnsTone = pnl.pnl_inr < 0 ? 'is-down' : '';
   railPortfolio.innerHTML = `
-    <div class="rail-figure-row">
-      <strong class="rail-figure" title="${escHtml(updated)}">${money(netWorth)}</strong>
-      ${changeHtml}
-    </div>
-    <span class="sr-only">${escHtml(updated)}.</span>
-    ${sparkline(points, tone)}
-    ${series.includesBrokers ? '<small class="rail-note">Trend includes your connected brokers.</small>' : ''}
-    ${attentionLine()}
-    <dl class="rail-metrics" title="${escHtml(basis)}">
-      <div><dt>Total Invested</dt><dd>${railAmount(pnl.invested_inr)}</dd></div>
-      <div><dt>Total Returns</dt><dd class="${returnsTone}">${railAmount(pnl.pnl_inr)}</dd></div>
-      <div><dt>Return</dt><dd class="${returnsTone}">${percent(pnl.pnl_pct)}</dd></div>
-    </dl>`;
+    <p class="rail-figure">${escHtml(money(netWorth))}</p>
+    ${changeHtml}
+    <small class="rail-note">From your snapshot, updated ${escHtml(timeAgo(portfolio.capturedAt))}${series.includesBrokers ? '; the change includes your connected brokers' : ''}.</small>
+    ${attentionLine()}`;
 }
 
-/* ── Goals card ─────────────────────────────────────────────────────── */
-async function renderRailGoals(isCurrent) {
-  railGoals.innerHTML = railSkeleton(3);
-  let goals;
-  try {
-    goals = await getGoals();
-  } catch (error) {
-    if (isCurrent()) railGoals.innerHTML = railError(error);
+/* ── Recent chats ───────────────────────────────────────────────────── */
+function renderRailChats() {
+  const recent = (typeof chats === 'undefined' ? [] : chats).filter((chat) => chat.id !== activeChatId).slice(0, RAIL_CHATS);
+  if (!recent.length) {
+    railChats.innerHTML = railMessage('Your other conversations show here.');
     return;
   }
-  if (!isCurrent()) return;
-  document.querySelector('#right-rail a[href="#/goals"]').textContent = goals.length > RAIL_GOALS ? `See all (${goals.length})` : 'See all';
-  // Drafts and goals without a date have no target to rank by; they stay on the Goals page.
-  const dated = goals.filter((goal) => !isDraft(goal) && goal.targetDate);
-  if (!dated.length) {
-    railGoals.innerHTML = railMessage('Set what you are saving for, like a home or your child\'s education, and track your progress here.',
-      '<button class="rail-button" type="button" data-add-goal>Set a goal</button>');
-    return;
-  }
-  // The nearest targets first; tones follow the user's own order so a goal keeps its colour.
-  const shown = goals.map((goal, index) => ({ goal, index })).filter(({ goal }) => !isDraft(goal) && goal.targetDate)
-    .sort((a, b) => String(a.goal.targetDate).localeCompare(String(b.goal.targetDate)) || a.index - b.index)
-    .slice(0, RAIL_GOALS);
-  const rows = shown.map(({ goal, index }) => {
-    const progress = Number.isFinite(goal.plan?.progressPct) ? goal.plan.progressPct : 0;
-    const tone = GOAL_TONES[index % GOAL_TONES.length];
-    const pct = Math.floor(progress);
-    const status = goalStatus(goal.plan)[0].toLowerCase();
-    return `<li><button class="rail-goal tone-${tone}" type="button" data-edit-goal="${escHtml(goal.id)}" title="${escHtml(`Edit ${goal.name} (${status}, target ${formatDate(goal.targetDate)})`)}">
-      ${goalIconHtml(goal, tone, 'rail-goal-icon')}
-      <strong class="rail-goal-name">${escHtml(goal.name)}</strong>
-      <span class="rail-goal-pct">${pct}%</span>
-      <small class="rail-goal-target">Target: ${amount(headlineTarget(goal).amount, goal.currency)}${headlineTarget(goal).todayMoney != null ? ' with inflation' : ''}</small>
-      <span class="progress rail-progress" role="progressbar" aria-label="${escHtml(goal.name)} earmarked" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${progress.toFixed(1)}%"></span></span>
-    </button></li>`;
-  }).join('');
-  const add = goals.length < MAX_GOALS ? '<button class="rail-add" type="button" data-add-goal><span aria-hidden="true">+</span> Add a goal</button>' : '';
-  railGoals.innerHTML = `<ul class="rail-list rail-goals">${rows}</ul>${add}`;
+  railChats.innerHTML = `<ul class="rail-chat-list">${recent.map((chat) => `<li><button class="rail-chat" type="button" data-rail-chat="${escHtml(chat.id)}" title="${escHtml(chat.title || 'New chat')}">${escHtml(chat.title || 'New chat')}</button></li>`).join('')}</ul>`;
 }
 
-/* ── Insights card ──────────────────────────────────────────────────── */
-async function renderRailInsights(isCurrent) {
-  const access = portfolioAccess();
-  if (access === 'disconnected') {
-    railInsights.innerHTML = railMessage('Connect INDmoney to see how your holdings move each day.');
-    return;
-  }
-  if (access === 'private') {
-    railInsights.innerHTML = railMessage('Private mode keeps no snapshots to compare. Market Insights can still fetch live prices.');
-    return;
-  }
-  railInsights.innerHTML = railSkeleton(4);
-  let portfolio;
-  try {
-    portfolio = await getPortfolio();
-  } catch (error) {
-    if (isCurrent()) railInsights.innerHTML = railError(error);
-    return;
-  }
-  if (!isCurrent()) return;
-  if (!portfolio.available) {
-    railInsights.innerHTML = railMessage('Insights about your holdings appear after your first snapshot.');
-    return;
-  }
-  const insights = portfolioInsights(portfolio, 4);
-  if (!insights.length) {
-    railInsights.innerHTML = railMessage('Nothing stood out in your latest snapshot.');
-    return;
-  }
-  const when = timeAgo(portfolio.capturedAt);
-  railInsights.innerHTML = `<ul class="rail-list">${insights.map((insight) => {
-    const [icon, color] = INSIGHT_ICONS[insight.kind] || INSIGHT_ICONS.day;
-    const tone = insight.kind === 'day' ? (insight.tone === 'down' ? 'red' : 'green') : color;
-    return `<li><button class="rail-row" type="button" data-agent="portfolio" data-prompt="${escHtml(insight.prompt)}">
-      <span class="insight-icon tone-${tone}" aria-hidden="true"><svg viewBox="0 0 24 24">${icon}</svg></span>
-      <span class="rail-row-body">
-        <span class="rail-row-head"><strong>${escHtml(insight.title)}</strong><span class="rail-when">${escHtml(when)}</span></span>
-        <small>${escHtml(insight.detail)}</small>
-      </span>
-    </button></li>`;
-  }).join('')}</ul>
-  <p class="rail-foot">From your latest snapshot, not market news. Select one to ask about it.</p>`;
-}
+railChats.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-rail-chat]');
+  if (button) selectChat(button.dataset.railChat).catch(showError);
+});
 
 /* ── Wiring ─────────────────────────────────────────────────────────── */
 let railToken = 0;
-// The rail shows only beside Ask AI, so it loads its cards only there; elsewhere a change marks it stale.
+// The rail shows only beside Ask AI, so it loads the portfolio only there; elsewhere a change marks it stale.
 let railStale = true;
 let railQueued = false;
 
@@ -234,9 +141,9 @@ function renderRail() {
     return;
   }
   railStale = false;
-  for (const render of [renderRailPortfolio, renderRailGoals, renderRailInsights]) {
-    render(isCurrent).catch((error) => console.warn('Rail card failed to render:', error));
-  }
+  renderRailSources();
+  renderRailChats();
+  renderRailPortfolio(isCurrent).catch((error) => console.warn('Rail portfolio failed to render:', error));
 }
 
 // Sign-in fires both ca:route and ca:session in one go; render once for both.
@@ -250,9 +157,9 @@ function queueRail() {
 }
 
 function clearRail() {
+  railSources.innerHTML = '';
   railPortfolio.innerHTML = '';
-  railGoals.innerHTML = '';
-  railInsights.innerHTML = '';
+  railChats.innerHTML = '';
 }
 
 document.addEventListener('ca:route', () => { if (railShown() && railStale) queueRail(); });
@@ -260,26 +167,18 @@ document.addEventListener('ca:session', () => {
   railStale = true;
   queueRail();
 });
-document.addEventListener('ca:snapshot', () => {
-  railStale = true;
-  queueRail();
-});
-document.addEventListener('ca:brokers', () => {
-  if (!sessionReady()) return;
-  railStale = true;
-  queueRail();
-});
+for (const name of ['ca:snapshot', 'ca:brokers']) {
+  document.addEventListener(name, () => {
+    if (!sessionReady()) return;
+    railStale = true;
+    queueRail();
+  });
+}
 document.addEventListener('ca:session-ended', () => {
   railToken += 1;
   railStale = true;
   clearRail();
 });
-document.addEventListener('ca:goals', () => {
-  if (!sessionReady()) return;
-  if (!railShown()) {
-    railStale = true;
-    return;
-  }
-  const token = railToken;
-  renderRailGoals(() => token === railToken).catch((error) => console.warn('Rail goals failed to render:', error));
-});
+// The sources and chat list are cheap and already in memory, so they follow every answer and list change.
+document.addEventListener('ca:answer', () => { if (sessionReady()) renderRailSources(); });
+document.addEventListener('ca:chats', () => { if (sessionReady()) renderRailChats(); });

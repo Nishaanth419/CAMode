@@ -27,7 +27,14 @@ const providerPicker = document.getElementById('provider-picker');
 const greeting = document.getElementById('greeting');
 const welcomeAgentName = document.getElementById('welcome-agent-name');
 const welcomeDescription = document.getElementById('welcome-description');
-const followUps = document.getElementById('follow-ups');
+const chatHead = document.getElementById('chat-head');
+const chatTitle = document.getElementById('chat-title');
+const chatSub = document.getElementById('chat-sub');
+const chatDeleteButton = document.getElementById('chat-delete');
+const chatNewButton = document.getElementById('chat-new');
+const chatBackButton = document.getElementById('chat-back');
+const modelLabel = document.getElementById('model-label');
+const modelPicker = document.getElementById('model-picker');
 const accountName = document.getElementById('account-name');
 const accountPlan = document.getElementById('account-plan');
 const accountAvatars = document.querySelectorAll('.account-avatar');
@@ -149,13 +156,27 @@ async function loadProviders() {
     providerPicker.value = selectedProvider;
     providerPicker.disabled = false;
   }
+  providerModels = Object.fromEntries(configured.map((provider) => [provider.id, provider.model || provider.label]));
   providerReady = true;
   localStorage.setItem('ca-mode-provider', selectedProvider);
+  updateModelLabel();
+}
+
+// The composer shows the chosen model's short name ("ca-mode ▾"); the native select laid over it opens the list
+// with the full "provider · model" names, and its title says the whole choice.
+let providerModels = {};
+function updateModelLabel() {
+  const option = providerPicker.selectedOptions[0];
+  const full = option?.textContent?.trim() || '';
+  modelLabel.textContent = providerPicker.disabled ? 'No model' : (providerModels[providerPicker.value] || full || 'Model');
+  modelPicker.title = full ? `AI model: ${full}` : 'AI model';
+  modelPicker.classList.toggle('is-disabled', providerPicker.disabled);
 }
 
 providerPicker.addEventListener('change', () => {
   selectedProvider = providerPicker.value;
   localStorage.setItem('ca-mode-provider', selectedProvider);
+  updateModelLabel();
 });
 
 function applyTheme(theme) {
@@ -217,12 +238,44 @@ document.addEventListener('keydown', (event) => {
 });
 if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) document.getElementById('search-kbd').textContent = '⌘K';
 
+/* ── Phone keyboard ───────────────────────────────────────────────────── */
+// iOS shrinks only the visual viewport when the on-screen keyboard opens, which would leave the composer under
+// the keyboard. While a text field is focused and the visible area is clearly shorter than the page, the app is
+// sized to the visible area (--viewport-h) and the tab bar steps aside (body.keyboard-open).
+if (window.visualViewport) {
+  const viewport = window.visualViewport;
+  let fullHeight = viewport.height;
+  const fitKeyboard = () => {
+    const typing = document.activeElement?.matches?.('textarea, input:not([type="checkbox"]):not([type="radio"]), select, [contenteditable="true"]');
+    if (!typing) fullHeight = Math.max(viewport.height, document.documentElement.clientHeight);
+    const open = Boolean(typing) && fullHeight - viewport.height > 120 && window.matchMedia('(max-width: 900px)').matches;
+    const wasOpen = document.body.classList.contains('keyboard-open');
+    document.body.classList.toggle('keyboard-open', open);
+    // Where the browser already resized the page for the keyboard (Android), nothing needs sizing.
+    const resize = open && document.documentElement.clientHeight - viewport.height > 1;
+    document.documentElement.style.setProperty('--viewport-h', resize ? `${Math.round(viewport.height)}px` : '');
+    if (resize) window.scrollTo(0, 0);
+    if (open && !wasOpen && document.activeElement === userInput) requestAnimationFrame(scrollToBottom);
+  };
+  viewport.addEventListener('resize', fitKeyboard);
+  document.addEventListener('focusin', () => setTimeout(fitKeyboard, 50));
+  document.addEventListener('focusout', () => setTimeout(fitKeyboard, 50));
+}
+
 function agentName(agent = selectedAgent) {
   return agent === 'portfolio' ? 'Portfolio Analyzer' : 'Finance Agent';
 }
 
-function assistantLabel() {
-  return `${agentName()} · ${providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || 'AI'}`;
+function providerName() {
+  return providerPicker.disabled ? '' : providerPicker.selectedOptions[0]?.textContent?.split(' · ')[0] || '';
+}
+
+// The line above an answer: agent, model and, when the trace shows one was read, the snapshot's date. The model
+// comes from the answer's own trace (a saved chat may have used another one), else the current choice.
+function answerMeta(trace = []) {
+  const sources = answerSources(trace);
+  const snapshot = snapshotLabel(sources.snapshot);
+  return [agentName(), sources.provider || providerName(), snapshot ? `from the ${snapshot} snapshot` : ''].filter(Boolean).join(' · ');
 }
 
 function setAgent(agent) {
@@ -235,6 +288,7 @@ function setAgent(agent) {
     : 'Ask basic finance questions and get clear explanations in plain language.';
   userInput.placeholder = isPortfolio ? 'Ask about your portfolio…' : 'Ask anything about your finances…';
   localStorage.setItem('ca-mode-agent', selectedAgent);
+  renderChatHead();
 }
 
 async function switchAgent(agent) {
@@ -1518,8 +1572,24 @@ function chatRow(chat, { showAgent = false } = {}) {
   return row;
 }
 
+// The header above the conversation: its title, agent and last message day, with Delete and New chat once there
+// is something to delete or leave. Chats keep no start date, so the day shown is the latest message's.
+function renderChatHead() {
+  const chat = activeChatId ? chats.find((item) => item.id === activeChatId) : null;
+  const title = chat?.title || 'New chat';
+  chatTitle.textContent = title;
+  chatTitle.title = title;
+  const day = chat ? relativeDay(chat.updatedAt) : '';
+  const when = day ? `last message ${/^(Today|Yesterday)$/.test(day) ? day.toLowerCase() : day}` : '';
+  chatSub.textContent = [agentName(chat?.agentType || selectedAgent), when].filter(Boolean).join(' · ');
+  chatDeleteButton.hidden = !chat;
+  chatDeleteButton.setAttribute('aria-label', chat ? `Delete chat: ${title}` : 'Delete chat');
+  chatNewButton.hidden = !chat && !messages.classList.contains('has-messages');
+}
+
 function renderChats() {
   chatList.innerHTML = '';
+  renderChatHead();
   document.dispatchEvent(new CustomEvent('ca:chats'));
   if (!chats.length) {
     const empty = document.createElement('div');
@@ -1549,8 +1619,9 @@ function resetConversationView() {
   messages.innerHTML = '';
   messages.classList.remove('has-messages');
   emptyState.hidden = false;
-  followUps.hidden = true;
   chatScroll.scrollTop = 0;
+  setLatestAnswer(null);
+  renderChatHead();
 }
 
 // A new conversation stays a draft (no activeChatId) until its first message is
@@ -1609,7 +1680,7 @@ async function selectChat(chatId) {
   resetConversationView();
   for (const message of data.messages || []) {
     if (message.role === 'user') addMessage('user', escHtml(message.content).replace(/\n/g, '<br>'));
-    else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content), message.trace || [], message.runId);
+    else if (message.role === 'assistant') addMessage('assistant', renderMarkdown(message.content), message.trace || [], message.runId, { answer: true });
   }
   renderChats();
 }
@@ -1632,49 +1703,86 @@ newChatButton.addEventListener('click', () => {
   navigate('chat');
   startNewChat().catch(showError);
 });
+chatNewButton.addEventListener('click', () => startNewChat().catch(showError));
+chatDeleteButton.addEventListener('click', () => {
+  if (activeChatId) deleteChat(activeChatId).catch(showError);
+});
+
+// Back (phone header) returns to the page Ask AI was opened from, else Home.
+let chatReturnHash = '#/';
+document.addEventListener('ca:route', (event) => {
+  if (event.detail?.route !== 'chat') chatReturnHash = location.hash || '#/';
+});
+chatBackButton.addEventListener('click', () => {
+  if (location.hash !== chatReturnHash) location.hash = chatReturnHash;
+  else navigate('home');
+});
 
 /* ── Chat ────────────────────────────────────────────────────────────── */
 function showMessages() {
   emptyState.hidden = true;
   messages.classList.add('has-messages');
-  followUps.hidden = false;
+  chatNewButton.hidden = false;
 }
 
 function scrollToBottom() {
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
-function timeStr() {
-  return new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+// Suggestions under the latest answer (the data-prompt buttons send them; setBusy disables them while answering).
+const FOLLOW_UPS = [
+  ['Show more detail', 'Can you explain that in more detail?'],
+  ['Explain in simple terms', 'Explain that in simple terms.'],
+  ['Key takeaways', 'Summarize the key takeaways as a short list.'],
+  ['Show as a chart', 'Show that as a chart.'],
+];
+
+function placeFollowUps(messageDiv) {
+  messages.querySelectorAll('.answer-follow-ups').forEach((item) => item.remove());
+  if (!messageDiv) return;
+  const holder = document.createElement('div');
+  holder.className = 'follow-ups answer-follow-ups';
+  holder.setAttribute('role', 'group');
+  holder.setAttribute('aria-label', 'Follow-up suggestions');
+  holder.innerHTML = FOLLOW_UPS.map(([label, prompt]) =>
+    `<button class="chip" type="button" data-prompt="${escHtml(prompt)}"${isStreaming ? ' disabled' : ''}>${escHtml(label)}</button>`).join('');
+  messageDiv.querySelector('.message-main').appendChild(holder);
 }
 
-const ASSISTANT_AVATAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="4"/><path d="M12 4v4M9.5 13h0M14.5 13h0"/></svg>';
-
-function messageShell(role, label, time = '') {
-  const avatar = role === 'user' ? 'You' : ASSISTANT_AVATAR;
-  return `
-    <div class="message-header">
-      <div class="message-avatar ${role}">${avatar}</div>
-      <div class="message-meta">
-        <div class="message-role">${escHtml(label)}</div>
-        ${time ? `<div class="message-time">${time}</div>` : ''}
-      </div>
-    </div>`;
+// The latest answer's trace feeds the rail's "This answer used" (rail.js listens for ca:answer).
+let latestAnswerTrace = null;
+function setLatestAnswer(trace) {
+  latestAnswerTrace = Array.isArray(trace) ? trace : null;
+  document.dispatchEvent(new CustomEvent('ca:answer', { detail: { trace: latestAnswerTrace } }));
 }
 
-function addMessage(role, content, trace = [], runId = null) {
+const ASSISTANT_AVATAR = '<span class="message-avatar assistant" aria-hidden="true">₹</span>';
+
+// A question is a bubble on the right; an answer has the mark, a meta line, the body, its trace and, for the
+// latest answer, follow-up suggestions. ``answer`` marks a real answer (not a notice such as a limit message).
+function addMessage(role, content, trace = [], runId = null, { answer = false } = {}) {
   showMessages();
   const div = document.createElement('div');
   div.className = `message ${role}`;
-  const label = role === 'user' ? 'You' : assistantLabel();
-  div.innerHTML = `
-    ${messageShell(role, label, timeStr())}
-    <div class="message-body">${content}</div>
-    ${role === 'assistant' ? renderChatTrace(trace, { runId }) : ''}
-  `;
+  if (role === 'user') {
+    div.innerHTML = `<span class="sr-only">You:</span><div class="message-body">${content}</div>`;
+  } else {
+    div.innerHTML = `${ASSISTANT_AVATAR}
+      <div class="message-main">
+        <p class="message-meta">${escHtml(answerMeta(trace))}</p>
+        <div class="message-body">${content}</div>
+        ${renderChatTrace(trace, { runId })}
+      </div>`;
+  }
+  // A new question or notice ends the previous answer's suggestions.
+  messages.querySelectorAll('.answer-follow-ups').forEach((item) => item.remove());
   messages.appendChild(div);
   renderPlotlyCharts(div);
-  if (role === 'assistant') attachInvestigationCard(div, trace).catch(() => { /* The answer and trace still show. */ });
+  if (role === 'assistant') {
+    if (answer || (Array.isArray(trace) && trace.length)) setLatestAnswer(trace);
+    if (answer) placeFollowUps(div);
+    attachInvestigationCard(div, trace).catch(() => { /* The answer and trace still show. */ });
+  }
   scrollToBottom();
   return div;
 }
@@ -1700,7 +1808,7 @@ async function attachInvestigationCard(messageDiv, trace) {
   holder.innerHTML = renderInvestigationCard(await response.json(), { chart: renderDataChart });
   const card = holder.firstElementChild;
   const traceDetails = messageDiv.querySelector('.chat-trace');
-  if (traceDetails) traceDetails.before(card); else messageDiv.appendChild(card);
+  if (traceDetails) traceDetails.before(card); else messageDiv.querySelector('.message-main')?.appendChild(card);
   renderPlotlyCharts(card);
 }
 
@@ -1709,12 +1817,13 @@ function addTypingIndicator() {
   const div = document.createElement('div');
   div.className = 'message assistant';
   div.id = 'typing-indicator';
-  div.innerHTML = `
-    ${messageShell('assistant', assistantLabel())}
-    <div class="message-body">
-      <div class="typing-indicator"><span></span><span></span><span></span></div>
-    </div>
-  `;
+  div.innerHTML = `${ASSISTANT_AVATAR}
+    <div class="message-main">
+      <p class="message-meta">${escHtml(answerMeta())}</p>
+      <div class="message-body">
+        <div class="typing-indicator" role="status" aria-label="Answering"><span></span><span></span><span></span></div>
+      </div>
+    </div>`;
   messages.appendChild(div);
   scrollToBottom();
   return div;
@@ -1764,7 +1873,7 @@ async function sendMessage(text) {
         const saved = await waitForSavedAnswer(chatId, text, sinceUpdatedAt);
         if (saved) {
           removeTypingIndicator();
-          addMessage('assistant', renderMarkdown(saved.content), saved.trace || [], saved.runId);
+          addMessage('assistant', renderMarkdown(saved.content), saved.trace || [], saved.runId, { answer: true });
           createdChatId = null;
           await refreshChats().catch(() => {});
           return;
@@ -1828,7 +1937,7 @@ async function sendMessage(text) {
     const creditsLeft = res.headers.get('X-Credits-Remaining');
     if (creditsLeft !== null) updateCreditsLeft(Number(creditsLeft));
     removeTypingIndicator();
-    const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'));
+    const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'), { answer: true });
     const bodyDiv = msgDiv.querySelector('.message-body');
     bodyDiv.innerHTML = '';
 
@@ -1862,6 +1971,8 @@ async function sendMessage(text) {
         if (savedAssistant?.trace?.length) {
           const currentTrace = msgDiv.querySelector('.chat-trace');
           if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace, { runId: savedAssistant.runId });
+          msgDiv.querySelector('.message-meta').textContent = answerMeta(savedAssistant.trace);
+          if (msgDiv === messages.querySelector('.message.assistant:last-child')) setLatestAnswer(savedAssistant.trace);
         }
       }
     } catch { /* The compact trace from the response header is still visible. */ }
