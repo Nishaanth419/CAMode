@@ -71,7 +71,7 @@ RETRY_SECONDS: Final = amfi.RETRY_SECONDS
 SEED_AGAIN_SECONDS: Final = 24 * 3600
 TIMEOUT_SECONDS: Final = 30
 
-# Normalised AMFI sub-category (see _sub_category) → benchmark. Exact matches only.
+# Normalised AMFI sub-category (see sub_category) → benchmark. Exact matches only.
 CATEGORY_BENCHMARK: Final[dict[str, str]] = {
     "large cap": "nifty50", "flexi cap": "nifty50", "elss": "nifty50", "focused": "nifty50", "value": "nifty50",
     "contra": "nifty50", "dividend yield": "nifty50",
@@ -114,7 +114,7 @@ def mfapi_url() -> str:
     return (os.getenv("MFAPI_URL", "").strip() or DEFAULT_MFAPI_URL).rstrip("/")
 
 
-def _sub_category(category: str) -> str:
+def sub_category(category: str) -> str:
     sub = category.split(" - ", 1)[-1].strip().lower()
     sub = re.sub(r"\s+fund$", "", sub)
     return "elss" if sub.startswith("elss") else sub
@@ -138,7 +138,7 @@ def benchmark_for(amfi_category: str | None, scheme_name: str) -> tuple[str | No
                 if needle in name:
                     return benchmark_id, None
         return None, INDEX_VARIANT_REASON
-    if benchmark_id := CATEGORY_BENCHMARK.get(_sub_category(amfi_category)):
+    if benchmark_id := CATEGORY_BENCHMARK.get(sub_category(amfi_category)):
         return benchmark_id, None
     for words, reason in NO_BENCHMARK_REASONS:
         if any(word in lowered for word in words):

@@ -62,3 +62,8 @@
 {"message": "Show BEL's OHLC candles for the past year", "history": [], "expected": "account_data", "note": "price history"}
 {"message": "What is a candlestick chart?", "history": [], "expected": "general_finance", "note": "concept, not data"}
 {"message": "How do I read OHLC candles?", "history": [], "expected": "general_finance", "note": "concept, not data"}
+{"message": "How much LTCG exemption do I have left this year?", "history": [], "expected": "account_data", "note": "tax exemption on own gains"}
+{"message": "Which of my mutual funds could I harvest losses from?", "history": [], "expected": "account_data", "note": "loss harvesting on own funds"}
+{"message": "What is my mutual fund XIRR?", "history": [], "expected": "account_data", "note": "own returns"}
+{"message": "What is the LTCG tax rate on equity mutual funds?", "history": [], "expected": "general_finance", "note": "tax concept, not data"}
+{"message": "How does tax-loss harvesting work?", "history": [], "expected": "general_finance", "note": "concept, not data"}

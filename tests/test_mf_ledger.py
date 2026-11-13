@@ -177,7 +177,7 @@ def test_notice_describes_the_ledger_and_the_amfi_download():
     assert "mutual fund transactions" in saved and "folio number" in saved
     fetched = sections["Public fund data"]
     assert "AMFI" in fetched and "nothing about you" in fetched
-    assert privacy.POLICY_VERSION == "2026-11-13.1"
+    assert privacy.POLICY_VERSION == "2026-11-13.2"
 
 
 def test_export_includes_the_ledger_without_folio_numbers(client, signed_in, detailed_upload):

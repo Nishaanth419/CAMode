@@ -1507,6 +1507,7 @@ body.gate-open #app { visibility: hidden; }
 .dialog-section + .dialog-section, .brokers-section + .dialog-section { padding-top: 16px; border-top: 1px solid var(--border); }
 .dialog-section-title { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; }
 .dialog-sub { color: var(--text-soft); font-size: 13px; line-height: 1.5; }
+.field-hint { color: var(--text-muted); font-size: 12px; font-weight: 400; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .field-wide { grid-column: 1 / -1; }
 .dialog-status { min-height: 18px; color: var(--accent); font-size: 12.5px; }
@@ -1752,6 +1753,7 @@ body.gate-open #app { visibility: hidden; }
 .fact-list dt { color: var(--text-soft); }
 .fact-list dd { color: var(--text); font-weight: 600; text-align: right; }
 .note-list { display: grid; gap: 6px; padding-left: 18px; color: var(--text-soft); font-size: 13px; }
+.planning-list .stat-sub { display: block; margin-top: 2px; }
 
 /* Chat rows outside the dark sidebar (Home and All chats). */
 .mini-chat-list, #all-chats { display: grid; gap: 2px; }

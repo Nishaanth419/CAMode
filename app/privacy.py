@@ -34,7 +34,8 @@ from .db import connect_db
 # 2026-11-12.1: the mutual fund transactions from a detailed CAS (folio numbers replaced by a code) and the
 # daily download of AMFI's public NAV file.
 # 2026-11-13.1: the benchmark NAV history downloaded from mfapi.in.
-POLICY_VERSION: Final = "2026-11-13.1"
+# 2026-11-13.2: the optional income-tax slab profile field (mutual fund tax estimates).
+POLICY_VERSION: Final = "2026-11-13.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -44,7 +45,7 @@ NOTICE: Final = (
         "title": "What is saved, and where",
         "body": (
             "Everything below is saved on the computer that runs CA Mode: this computer, or the server your team "
-            "hosts it on. Your profile name, a scrypt hash of your PIN, the optional profile details, savings goals and decisions you "
+            "hosts it on. Your profile name, a scrypt hash of your PIN, the optional profile details (including an optional income-tax slab, used only to estimate tax on mutual fund gains), savings goals and decisions you "
             "enter yourself, your INDmoney connection tokens and, with Google sign-in, your Google account ID and "
             "email address. CA Mode never saves details the assistant infers "
             "from your chats. If you choose to save history: your chats (each kept 30 days after its last message, "

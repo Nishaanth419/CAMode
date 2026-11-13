@@ -21,7 +21,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from . import vault
 from .sealing import ProfileKeys, scrypt
@@ -74,6 +74,16 @@ class ProfileFields(BaseModel):
     primaryGoal: str | None = Field(default=None, max_length=200)
     monthlyInvestmentInr: int | None = Field(default=None, ge=0, le=1_000_000_000)
     ageBand: Literal["under-25", "25-34", "35-44", "45-54", "55+"] | None = None
+    # Used only by mf_tax to estimate tax on slab-taxed mutual fund gains; never added to the prompt.
+    taxSlabPct: Literal[0, 5, 10, 15, 20, 25, 30] | None = None
+
+    @field_validator("taxSlabPct", mode="before")
+    @classmethod
+    def _slab_is_a_number(cls, value: Any) -> Any:
+        # Only a plain number: never "20" or a boolean.
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise ValueError("Use one of 0, 5, 10, 15, 20, 25 or 30.")
+        return value
 
 
 # Keys stored in the sealed profile JSON beside the fields: when the user last saved

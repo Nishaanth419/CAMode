@@ -62,7 +62,7 @@ def _pct(rate: Decimal | None) -> float | None:
     return None if rate is None else _round(rate * 100)
 
 
-def _nav(scheme: LedgerScheme, navs: dict[str, NavRow]) -> tuple[Decimal | None, date | None, str | None]:
+def nav_for(scheme: LedgerScheme, navs: dict[str, NavRow]) -> tuple[Decimal | None, date | None, str | None]:
     row = navs.get(scheme.isin) if scheme.isin else None
     statement = (scheme.valuation_nav, scheme.valuation_date) if scheme.valuation_nav and scheme.valuation_date else None
     if row and (statement is None or row.nav_date >= statement[1]):
@@ -86,7 +86,7 @@ def _returns(flows: Flows, end: date | None) -> dict[str, Any]:
 
 def _scheme(scheme: LedgerScheme, navs: dict[str, NavRow], today: date) -> _Computed:
     """The scheme's figures with the exact amounts the portfolio adds up."""
-    nav, nav_date, source = _nav(scheme, navs)
+    nav, nav_date, source = nav_for(scheme, navs)
     # A scheme with no units is worth exactly zero: it needs no NAV.
     value = _ZERO if scheme.close == 0 else (scheme.close * nav if nav is not None else None)
     status, reason = scheme.status, scheme.reason

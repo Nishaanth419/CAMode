@@ -1,0 +1,804 @@
+"""Capital gains tax on mutual fund units: dated rules, tax lots, the year's position and sell-planning.
+
+Pure ``Decimal`` apart from ``nav_2018`` (an offline lookup in ``casparser_isin``) and the
+``tax_for`` loader at the end.
+
+Rules are data (``MF_TAX_RULES``): each row says which tax class it covers, the sale and
+purchase dates it applies to, when a holding becomes long-term, the short- and long-term
+rates (``"slab"`` for the investor's slab rate), the equity long-term exemption, whether
+cost is indexed, the sections in the act in force on the sale date and the citation.
+Every gain carries the id of the rule that produced it. Read from the Finance (No. 2)
+Bill, 2024 as introduced and its Memorandum, and the Finance Bill, 2026 rates for the
+Income-tax Act, 2025, on 2026-11-13; see docs/superpowers/plans/2026-11-13-mf-returns-batch-3.md
+for what could not be confirmed. Figures are estimates for information, never advice.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from decimal import Decimal, localcontext
+from functools import lru_cache
+from typing import Final, Literal
+
+from . import benchmarks, mf_math
+from .amfi import NavRow
+from .goal_planning import add_months
+from .mf_ledger import LedgerScheme
+from .mf_math import SELL_TYPES, FifoResult, Lot, Origin, Txn
+
+SLAB: Final = "slab"
+ACT_1961: Final = "Income-tax Act, 1961"
+ACT_2025: Final = "Income-tax Act, 2025"
+MIN_FY: Final = "2023-24"
+TURNING_LONG_TERM_DAYS: Final = 90
+ELSS_LOCK_MONTHS: Final = 36
+GRANDFATHER_DATE: Final = date(2018, 1, 31)
+CESS_RATE: Final = Decimal("0.04")
+
+EXEMPTION_NOTE: Final = "Shares, equity ETFs or funds sold outside this statement also use this exemption."
+CARRY_FORWARD_NOTE: Final = "Unused losses can be carried forward 8 years if your return is filed on time."
+ESTIMATE_NOTE: Final = "An estimate: 4% cess included; surcharge, rebates and losses carried from earlier years are not."
+SLAB_NOTE: Final = "Depends on your tax slab. Add it in your profile to include it in the estimate."
+EXIT_LOAD_NOTE: Final = "Check the exit load before redeeming; the statement does not include it."
+DEADLINE_NOTE: Final = "Redeem by about 25 March so the sale is dated in this financial year."
+SET_OFF_NOTE: Final = (
+    "Losses are set off against slab-taxed gains first, then other short-term gains, then long-term gains; your "
+    "return may use another order the law allows."
+)
+FIGURES_NOTE: Final = "Figures and options for information, not advice or a recommendation to redeem or invest."
+
+FY_FORMAT_ERROR: Final = "Use a financial year like 2026-27."
+FY_FUTURE_ERROR: Final = "That financial year has not started."
+FY_EARLY_ERROR: Final = f"Tax figures start from FY {MIN_FY}."
+
+
+# ── Rules ──────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class TaxRule:
+    id: str
+    tax_classes: tuple[str, ...]
+    sold_from: date
+    sold_to: date | None
+    bought_from: date | None
+    bought_to: date | None
+    long_term_after_months: int | None  # None: always short-term.
+    st_rate: Decimal | Literal["slab"]
+    lt_rate: Decimal | None
+    lt_exemption_inr: Decimal | None  # Per financial year, in aggregate across that year's equity rules.
+    indexation: bool
+    sections: dict[str, str | None]
+    act: str
+    source: str
+
+
+_D = Decimal
+_SPECIFIED_FROM = date(2023, 4, 1)  # s. 50AA applies to specified fund units acquired on or after this date.
+_BEFORE_SPECIFIED = date(2023, 3, 31)
+_FNO2_2024 = "Finance (No. 2) Act, 2024"
+
+MF_TAX_RULES: Final[tuple[TaxRule, ...]] = (
+    TaxRule("equity_fy2023_24", ("equity",), date(2023, 4, 1), date(2024, 3, 31), None, None, 12,
+            _D("15"), _D("10"), _D("100000"), False, {"st": "111A", "lt": "112A"}, ACT_1961,
+            "Income-tax Act, 1961 ss. 111A (15%), 112A (10% above Rs 1,00,000), 2(42A) first proviso (12 months); "
+            "s. 55(2)(ac) for units acquired before 1 Feb 2018."),
+    TaxRule("equity_2024_before_jul23", ("equity",), date(2024, 4, 1), date(2024, 7, 22), None, None, 12,
+            _D("15"), _D("10"), _D("125000"), False, {"st": "111A", "lt": "112A"}, ACT_1961,
+            "Income-tax Act, 1961 ss. 111A(1)(i)(a) and 112A(2)(i)(a), substituted by the Finance (No. 2) Act, 2024 "
+            "ss. 29 and 31; the Rs 1,25,000 limit applies to the year's long-term gains in aggregate (proviso to "
+            "s. 112A(2)(i))."),
+    TaxRule("equity_from_2024_07_23", ("equity",), date(2024, 7, 23), date(2026, 3, 31), None, None, 12,
+            _D("20"), _D("12.5"), _D("125000"), False, {"st": "111A", "lt": "112A"}, ACT_1961,
+            "Income-tax Act, 1961 ss. 111A(1)(i)(b) (20%) and 112A(2)(i)(b) (12.5% above Rs 1,25,000), "
+            "Finance (No. 2) Act, 2024 ss. 29 and 31."),
+    TaxRule("equity_ita2025", ("equity",), date(2026, 4, 1), None, None, None, 12,
+            _D("20"), _D("12.5"), _D("125000"), False, {"st": "196", "lt": "198"}, ACT_2025,
+            "Income-tax Act, 2025 ss. 196 (20%) and 198 (12.5% above Rs 1,25,000), rates as in the Finance Act, 2026 "
+            "(Bill No. 3 of 2026 as introduced)."),
+    TaxRule("specified_debt", ("debt",), date(2023, 4, 1), date(2026, 3, 31), _SPECIFIED_FROM, None, None,
+            SLAB, None, None, False, {"st": "50AA", "lt": None}, ACT_1961,
+            "Income-tax Act, 1961 s. 50AA (Finance Act, 2023): gains on specified mutual fund units acquired on or "
+            "after 1 Apr 2023 are short-term; Explanation (ii) substituted by the Finance (No. 2) Act, 2024 s. 21(b) "
+            "from AY 2026-27 (more than 65% in debt and money market instruments)."),
+    TaxRule("specified_debt_ita2025", ("debt",), date(2026, 4, 1), None, _SPECIFIED_FROM, None, None,
+            SLAB, None, None, False, {"st": "76", "lt": None}, ACT_2025,
+            "Income-tax Act, 2025 s. 76 (specified mutual fund units acquired on or after 1 Apr 2023)."),
+    TaxRule("specified_other_old_definition", ("other",), date(2023, 4, 1), date(2025, 3, 31), _SPECIFIED_FROM, None,
+            None, SLAB, None, None, False, {"st": "50AA", "lt": None}, ACT_1961,
+            "Income-tax Act, 1961 s. 50AA, Explanation (ii) as inserted by the Finance Act, 2023: a fund with not "
+            "more than 35% in equity shares of domestic companies was a specified mutual fund until AY 2025-26."),
+    TaxRule("other_new_definition", ("other",), date(2025, 4, 1), date(2026, 3, 31), _SPECIFIED_FROM, None, 24,
+            SLAB, _D("12.5"), None, False, {"st": None, "lt": "112"}, ACT_1961,
+            "Income-tax Act, 1961 s. 50AA Explanation (ii) as substituted from AY 2026-27 (no longer a specified "
+            "fund); ss. 2(42A) (24 months) and 112 (12.5%) as amended by the Finance (No. 2) Act, 2024 ss. 3(b) "
+            "and 30."),
+    TaxRule("other_new_definition_ita2025", ("other",), date(2026, 4, 1), None, _SPECIFIED_FROM, None, 24,
+            SLAB, _D("12.5"), None, False, {"st": None, "lt": "197"}, ACT_2025,
+            "Income-tax Act, 2025 ss. 76 (not a specified fund) and 197 (12.5%)."),
+    TaxRule("non_equity_indexed", ("debt", "other"), date(2023, 4, 1), date(2024, 7, 22), None, _BEFORE_SPECIFIED, 36,
+            SLAB, _D("20"), None, True, {"st": None, "lt": "112"}, ACT_1961,
+            "Income-tax Act, 1961 s. 2(42A) (36 months for units other than of an equity-oriented fund) and "
+            "s. 112(1)(a) (20% after indexation under the second proviso to s. 48)."),
+    TaxRule("non_equity", ("debt", "other"), date(2024, 7, 23), date(2026, 3, 31), None, _BEFORE_SPECIFIED, 24,
+            SLAB, _D("12.5"), None, False, {"st": None, "lt": "112"}, ACT_1961,
+            "Income-tax Act, 1961 ss. 2(42A) (24 months) and 112 (12.5%, no indexation), Finance (No. 2) Act, 2024 "
+            "ss. 3(b) and 30."),
+    TaxRule("non_equity_ita2025", ("debt", "other"), date(2026, 4, 1), None, None, _BEFORE_SPECIFIED, 24,
+            SLAB, _D("12.5"), None, False, {"st": None, "lt": "197"}, ACT_2025,
+            "Income-tax Act, 2025 s. 197 (12.5%)."),
+)
+
+# The equity long-term exemption per financial year (the limit, not per rule row).
+EQUITY_LT_EXEMPTION_INR: Final = {"2023-24": _D("100000")}
+DEFAULT_EXEMPTION_INR: Final = _D("125000")
+
+# Cost Inflation Index, 2001-02 series (Income Tax Department chart; FY 2024-25 by Notification 44/2024).
+COST_INFLATION_INDEX: Final = {
+    "2001-02": 100, "2002-03": 105, "2003-04": 109, "2004-05": 113, "2005-06": 117, "2006-07": 122,
+    "2007-08": 129, "2008-09": 137, "2009-10": 148, "2010-11": 167, "2011-12": 184, "2012-13": 200,
+    "2013-14": 220, "2014-15": 240, "2015-16": 254, "2016-17": 264, "2017-18": 272, "2018-19": 280,
+    "2019-20": 289, "2020-21": 301, "2021-22": 317, "2022-23": 331, "2023-24": 348, "2024-25": 363,
+}
+
+
+def _applies(rule: TaxRule, tax_class: str, bought: date, sold: date) -> bool:
+    return (tax_class in rule.tax_classes and rule.sold_from <= sold
+            and (rule.sold_to is None or sold <= rule.sold_to)
+            and (rule.bought_from is None or bought >= rule.bought_from)
+            and (rule.bought_to is None or bought <= rule.bought_to))
+
+
+def rule_for(tax_class: str, bought: date, sold: date) -> TaxRule | None:
+    return next((rule for rule in MF_TAX_RULES if _applies(rule, tax_class, bought, sold)), None)
+
+
+def long_term_on(rule: TaxRule, bought: date) -> date | None:
+    """The first sale date on which units bought on ``bought`` are long-term ("held for more than N months")."""
+    if rule.long_term_after_months is None:
+        return None
+    return add_months(bought, rule.long_term_after_months) + timedelta(days=1)
+
+
+def is_long_term(rule: TaxRule, bought: date, sold: date) -> bool:
+    first = long_term_on(rule, bought)
+    return first is not None and sold >= first
+
+
+def indexed_cost(cost: Decimal, bought: date, sold: date) -> tuple[Decimal, str | None]:
+    """Cost x CII(sale year) / CII(purchase year); actual cost with ``no_index`` when either year has no index."""
+    start, end = COST_INFLATION_INDEX.get(fy_of(bought)), COST_INFLATION_INDEX.get(fy_of(sold))
+    if start is None or end is None:
+        return cost, "no_index"
+    return cost * end / start, None
+
+
+# ── Financial years ────────────────────────────────────────────────────────────
+
+_FY_PATTERN: Final = re.compile(r"^(\d{4})-(\d{2})$")
+
+
+def fy_of(day: date) -> str:
+    start = day.year if day.month >= 4 else day.year - 1
+    return f"{start}-{(start + 1) % 100:02d}"
+
+
+def _fy_start(fy: str) -> int:
+    return int(fy[:4])
+
+
+def fy_bounds(fy: str) -> tuple[date, date]:
+    start = _fy_start(fy)
+    return date(start, 4, 1), date(start + 1, 3, 31)
+
+
+def parse_fy(text: str, today: date) -> str:
+    """A valid, started financial year from ``MIN_FY`` on; ``ValueError`` with the message to show otherwise."""
+    match = _FY_PATTERN.match((text or "").strip())
+    if not match or int(match.group(2)) != (int(match.group(1)) + 1) % 100:
+        raise ValueError(FY_FORMAT_ERROR)
+    fy = match.group(0)
+    if _fy_start(fy) > _fy_start(fy_of(today)):
+        raise ValueError(FY_FUTURE_ERROR)
+    if _fy_start(fy) < _fy_start(MIN_FY):
+        raise ValueError(FY_EARLY_ERROR)
+    return fy
+
+
+def fy_options(today: date) -> list[str]:
+    """Supported financial years, newest first."""
+    return [fy_of(date(year, 4, 1)) for year in range(_fy_start(fy_of(today)), _fy_start(MIN_FY) - 1, -1)]
+
+
+def exemption_for(fy: str) -> Decimal:
+    return EQUITY_LT_EXEMPTION_INR.get(fy, DEFAULT_EXEMPTION_INR)
+
+
+# ── Tax class ──────────────────────────────────────────────────────────────────
+
+EQUITY_SUBS: Final = frozenset({"aggressive hybrid", "arbitrage", "equity savings"})
+DEBT_INDEX_WORDS: Final = ("sdl", "g-sec", "gsec", "gilt", "bond", "crisil ibx", "debt", "t-bill", "money market",
+                           "liquid", "target maturity")
+STT_REASON: Final = "Classified as equity-oriented because its redemptions paid STT."
+MIXED_REASON: Final = (
+    "Balanced advantage, multi-asset, fund-of-funds and similar schemes can be taxed either way; no redemption paid "
+    "STT, so tax is not estimated."
+)
+UNKNOWN_REASON: Final = "The fund's AMFI category is not known and no redemption paid STT, so tax is not estimated."
+
+
+def _paid_stt(transactions: Sequence[Txn]) -> bool:
+    sale_days = {t.date for t in transactions if t.type in SELL_TYPES}
+    return any(t.type == "STT_TAX" and t.amount and t.date in sale_days for t in transactions)
+
+
+def tax_class(amfi_category: str | None, scheme_name: str, transactions: Sequence[Txn]) -> tuple[str, str]:
+    """``equity``, ``debt`` (a specified fund), ``other`` (gold, international, FoFs) or ``unclassified``, with why.
+
+    The law's tests depend on a fund's actual holdings; the AMFI category is the proxy.
+    """
+    if not amfi_category:
+        return ("equity", STT_REASON) if _paid_stt(transactions) else ("unclassified", UNKNOWN_REASON)
+    lowered = re.sub(r"\s+", " ", amfi_category.lower())
+    major = lowered.split(" - ", 1)[0]
+    sub = benchmarks.sub_category(amfi_category)
+    name = scheme_name.lower()
+    if major.startswith("equity") or sub == "elss" or sub in EQUITY_SUBS or "equity etf" in lowered \
+            or lowered == "index funds - equity funds":
+        return "equity", "Equity-oriented AMFI category (over 65% in domestic equity)."
+    if major.startswith(("debt", "income")) or lowered == "gilt" or lowered == "index funds - debt funds" \
+            or "debt etf" in lowered or sub in {"conservative hybrid", "fixed term plan"}:
+        return "debt", "Debt-oriented AMFI category: a specified mutual fund (over 65% in debt)."
+    if any(word in lowered for word in ("fof overseas", "investing overseas", "gold etf", "silver etf")) \
+            or (("fof domestic" in lowered or "fund of funds" in lowered) and ("gold" in name or "silver" in name)):
+        return "other", "Gold, silver or international fund (not equity-oriented, not mainly debt)."
+    if "index fund" in lowered and "hybrid" not in lowered:
+        if any(word in name for word in DEBT_INDEX_WORDS):
+            return "debt", "Index fund on a debt index: a specified mutual fund."
+        if "gold" in name or "silver" in name:
+            return "other", "Index fund on gold or silver (not equity-oriented, not mainly debt)."
+        return "equity", "Index fund on an equity index."
+    return ("equity", STT_REASON) if _paid_stt(transactions) else ("unclassified", MIXED_REASON)
+
+
+# ── Tax lots ───────────────────────────────────────────────────────────────────
+
+MERGE_OUT: Final = "SWITCH_OUT_MERGER"
+MERGE_IN: Final = "SWITCH_IN_MERGER"
+FLAG_MESSAGES: Final = {
+    "no_2018_nav": "No NAV for 31 Jan 2018 was found, so the gain uses the actual cost without grandfathering.",
+    "no_index": "No cost inflation index for the purchase year, so the gain uses the actual cost.",
+    "no_rule": "No tax rule here covers this sale, so no tax is estimated on it.",
+    "merged_in_without_source": (
+        "Merged in from a scheme not in this statement: the holding period and cost may start earlier."),
+    "merged_out_without_target": (
+        "Merged into a scheme not in this statement: the merger is not counted as a sale."),
+}
+
+
+@dataclass(frozen=True)
+class Gain:
+    scheme: str
+    isin: str | None
+    folio_key: str
+    tax_class: str
+    rule_id: str | None
+    term: str | None  # short or long; None when no rule applies.
+    bought: date
+    sold: date
+    units: Decimal
+    sale_value: Decimal
+    cost: Decimal
+    tax_cost: Decimal  # The cost the law uses: grandfathered or indexed when those apply.
+    fmv_2018: Decimal | None
+    gain: Decimal
+    flags: tuple[str, ...] = ()
+
+
+@dataclass
+class SchemeLots:
+    scheme: LedgerScheme
+    tax_class: str
+    class_reason: str
+    status: str
+    reason: str | None
+    open_lots: list[Lot] = field(default_factory=list)
+    gains: list[Gain] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+
+
+@lru_cache(maxsize=4096)
+def nav_2018(isin: str) -> Decimal | None:
+    """The fund's NAV on 31 Jan 2018 from casparser's offline database (``casparser_isin``)."""
+    try:
+        from casparser.analysis.utils import nav_search
+
+        return nav_search(isin)
+    except Exception:  # noqa: BLE001 - a missing or unreadable database means no grandfathering, flagged
+        return None
+
+
+def _grandfathered(lot_isin: str | None, ratio: Decimal, units: Decimal, cost: Decimal, sale: Decimal,
+                   fmv: Callable[[str], Decimal | None]) -> tuple[Decimal, Decimal | None, str | None]:
+    """s. 55(2)(ac): max(cost, min(FMV on 31 Jan 2018, sale value)); actual cost when there is no 2018 NAV."""
+    nav = fmv(lot_isin) if lot_isin else None
+    if nav is None:
+        return cost, None, "no_2018_nav"
+    value = nav * units * ratio
+    return max(cost, min(value, sale)), value, None
+
+
+def _gain(item: SchemeLots, d: mf_math.Disposal, fmv: Callable[[str], Decimal | None]) -> Gain:
+    scheme = item.scheme
+    flags = ["merged_in_without_source"] if d.buy_type == MERGE_IN else []
+    rule = rule_for(item.tax_class, d.buy_date, d.sell_date)
+    tax_cost, fmv_value, term = d.cost, None, None
+    if rule is None:
+        if item.tax_class != "unclassified":
+            flags.append("no_rule")
+    else:
+        term = "long" if is_long_term(rule, d.buy_date, d.sell_date) else "short"
+        if term == "long" and item.tax_class == "equity" and d.buy_date <= GRANDFATHER_DATE:
+            isin = d.origin.isin if d.origin else scheme.isin
+            ratio = d.origin.ratio if d.origin else Decimal(1)
+            tax_cost, fmv_value, flag = _grandfathered(isin, ratio, d.units, d.cost, d.sale_value, fmv)
+            flags += [flag] if flag else []
+        elif term == "long" and rule.indexation:
+            tax_cost, flag = indexed_cost(d.cost, d.buy_date, d.sell_date)
+            flags += [flag] if flag else []
+    return Gain(scheme.name, scheme.isin, scheme.folio_key, item.tax_class, rule.id if rule else None, term,
+                d.buy_date, d.sell_date, d.units, d.sale_value, d.cost, tax_cost, fmv_value,
+                d.sale_value - tax_cost, tuple(flags))
+
+
+def _merger_days(scheme: LedgerScheme, kind: str) -> set[date]:
+    return {t.date for t in scheme.transactions if t.type == kind and t.units}
+
+
+def tax_lots(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], *,
+             fmv: Callable[[str], Decimal | None] = nav_2018) -> list[SchemeLots]:
+    """Each scheme's tax class, open lots and realised gains (FIFO), in the order given.
+
+    Only schemes whose ledger status is ``ok`` and whose lots add up to the closing units have
+    gains: the others keep their status and reason, never a gain at zero cost. A merger is not
+    a sale: the receiving scheme takes over the old lots' buy dates and costs when exactly one
+    scheme in the folio merged out and one merged in that day; otherwise it is flagged.
+    """
+    items: list[SchemeLots] = []
+    results: dict[int, FifoResult] = {}
+    with localcontext() as context:
+        context.prec = mf_math.PRECISION
+        for index, scheme in enumerate(schemes):
+            row = navs.get(scheme.isin) if scheme.isin else None
+            tax_class_, why = tax_class(row.amfi_category if row else None, scheme.name, scheme.transactions)
+            item = SchemeLots(scheme, tax_class_, why, scheme.status, scheme.reason)
+            items.append(item)
+            if scheme.status != "ok":
+                continue
+            result = mf_math.fifo(scheme.transactions)
+            held = sum((lot.units for lot in result.open_lots), Decimal(0))
+            if abs(held - scheme.close) > mf_math.UNIT_TOLERANCE:
+                item.status, item.reason = "unreconciled", (
+                    f"Units bought and sold ({held}) do not match the closing units ({scheme.close}).")
+                continue
+            results[index] = result
+
+        outs: dict[tuple[str, date], list[int]] = defaultdict(list)
+        ins: dict[tuple[str, date], list[int]] = defaultdict(list)
+        for index in results:
+            for day in _merger_days(schemes[index], MERGE_OUT):
+                outs[(schemes[index].folio_key, day)].append(index)
+            for day in _merger_days(schemes[index], MERGE_IN):
+                ins[(schemes[index].folio_key, day)].append(index)
+
+        def carried_for(index: int) -> dict[date, list[Lot]]:
+            scheme, carried = schemes[index], {}
+            for day in sorted(_merger_days(scheme, MERGE_IN)):
+                key = (scheme.folio_key, day)
+                sources = [i for i in outs.get(key, []) if i != index]
+                if len(sources) != 1 or len(ins[key]) != 1:
+                    continue
+                source = schemes[sources[0]]
+                old = [d for d in results[sources[0]].disposals if d.sell_type == MERGE_OUT and d.sell_date == day]
+                old_units = sum((d.units for d in old), Decimal(0))
+                new_units = sum((abs(t.units) for t in scheme.transactions if t.type == MERGE_IN and t.date == day),
+                                Decimal(0))
+                if not old_units or not new_units:
+                    continue
+                ratio = old_units / new_units
+                carried[day] = [
+                    Lot(d.buy_date, d.units, d.cost, d.buy_type,
+                        Origin(d.origin.isin, d.origin.ratio * ratio) if d.origin else Origin(source.isin, ratio))
+                    for d in old
+                ]
+            return carried
+
+        for _ in range(len(results)):  # Chains (A into B into C) settle in at most one pass per scheme.
+            changed = False
+            for index in [i for i in results if _merger_days(schemes[i], MERGE_IN)]:
+                updated = mf_math.fifo(schemes[index].transactions, carried=carried_for(index))
+                if updated.open_lots != results[index].open_lots or updated.disposals != results[index].disposals:
+                    results[index], changed = updated, True
+            if not changed:
+                break
+
+        for index, result in results.items():
+            item, scheme = items[index], schemes[index]
+            folio = scheme.folio_key
+            if any(len([i for i in outs.get((folio, day), []) if i != index]) != 1 or len(ins[(folio, day)]) != 1
+                   for day in _merger_days(scheme, MERGE_IN)):
+                item.flags.append("merged_in_without_source")
+            if any(len(ins.get((folio, day), [])) != 1 or len(outs[(folio, day)]) != 1
+                   for day in _merger_days(scheme, MERGE_OUT)):
+                item.flags.append("merged_out_without_target")
+            item.open_lots = result.open_lots
+            item.gains = [_gain(item, d, fmv) for d in result.disposals if d.sell_type != MERGE_OUT]
+    return items
+
+
+# ── This year's position ───────────────────────────────────────────────────────
+
+_RULES_BY_ID: Final = {rule.id: rule for rule in MF_TAX_RULES}
+EXCLUDED_NOTE: Final = "Gains from funds left out are not included."
+LEFT_OUT_TAX_NOTE: Final = "Gains from funds left out or not classified are not in this estimate."
+_ZERO: Final = Decimal(0)
+
+
+def _money(value: Decimal | None) -> float | None:
+    from .mf_returns import _round
+
+    return _round(value)
+
+
+def _rate(rule: TaxRule, term: str) -> Decimal | Literal["slab"] | None:
+    return rule.st_rate if term == "short" else rule.lt_rate
+
+
+def _rate_out(rate: Decimal | str | None) -> float | str | None:
+    return rate if isinstance(rate, str) or rate is None else float(rate)
+
+
+def _fixed_rate(row: dict) -> Decimal:
+    return _ZERO if row["rate"] == SLAB else row["rate"]
+
+
+def _sold_in(scheme: LedgerScheme, start: date, end: date) -> bool:
+    return any(t.type in SELL_TYPES and t.type != MERGE_OUT and start <= t.date <= end for t in scheme.transactions)
+
+
+def act_for(fy: str) -> str:
+    return ACT_2025 if fy_bounds(fy)[0] >= date(2026, 4, 1) else ACT_1961
+
+
+def position(lots: Sequence[SchemeLots], fy: str, slab_pct: int | None) -> dict:
+    """Realised gains of the financial year by rule and term, set-off, the equity exemption and an estimated tax.
+
+    Short-term losses are set off against slab-taxed short-term gains, then other short-term gains; long-term
+    losses against long-term gains (non-equity first); what is left of short-term losses then against long-term
+    gains. The equity exemption absorbs the highest-rate equity long-term gains first. Unclassified gains are
+    shown, never taxed or set off.
+    """
+    start, end = fy_bounds(fy)
+    rows: dict[tuple[str, str], dict] = {}
+    unclassified_gain, unclassified_schemes, scheme_rows = _ZERO, [], []
+    for item in lots:
+        in_year = [gain for gain in item.gains if start <= gain.sold <= end]
+        if not in_year:
+            continue
+        flags = sorted({flag for gain in in_year for flag in gain.flags} | set(item.flags))
+        scheme_rows.append({
+            "name": item.scheme.name, "isin": item.scheme.isin, "taxClass": item.tax_class,
+            "classReason": item.class_reason, "status": item.status, "reason": item.reason,
+            "shortTerm": sum((x.gain for x in in_year if x.term == "short"), _ZERO),
+            "longTerm": sum((x.gain for x in in_year if x.term == "long"), _ZERO),
+            "flags": [FLAG_MESSAGES[flag] for flag in flags if flag in FLAG_MESSAGES],
+        })
+        for gain in in_year:
+            if gain.rule_id is None:
+                unclassified_gain += gain.gain
+                reason = item.class_reason if item.tax_class == "unclassified" else FLAG_MESSAGES["no_rule"]
+                if not any(s["name"] == item.scheme.name for s in unclassified_schemes):
+                    unclassified_schemes.append({"name": item.scheme.name, "reason": reason})
+                continue
+            rule = _RULES_BY_ID[gain.rule_id]
+            row = rows.setdefault((gain.rule_id, gain.term), {
+                "taxClass": gain.tax_class, "term": gain.term, "ruleId": gain.rule_id, "rate": _rate(rule, gain.term),
+                "section": rule.sections["st" if gain.term == "short" else "lt"], "gains": _ZERO, "losses": _ZERO,
+            })
+            if gain.gain >= 0:
+                row["gains"] += gain.gain
+            else:
+                row["losses"] -= gain.gain
+    for row in rows.values():
+        row["remaining"] = row["gains"] - row["losses"]
+
+    with localcontext() as context:
+        context.prec = mf_math.PRECISION
+        set_off: list[dict] = []
+        short_loss = sum((-r["remaining"] for r in rows.values() if r["term"] == "short" and r["remaining"] < 0), _ZERO)
+        long_loss = sum((-r["remaining"] for r in rows.values() if r["term"] == "long" and r["remaining"] < 0), _ZERO)
+        for row in rows.values():
+            row["remaining"] = max(row["remaining"], _ZERO)
+
+        def ordered(term: str, *, equity: bool | None = None, slab_first: bool = False) -> list[dict]:
+            chosen = [r for r in rows.values() if r["term"] == term and r["remaining"] > 0
+                      and (equity is None or (r["taxClass"] == "equity") == equity)]
+            return sorted(chosen, key=lambda r: (not (slab_first and r["rate"] == SLAB), -_fixed_rate(r)))
+
+        def absorb(loss: Decimal, kind: str, targets: list[dict]) -> Decimal:
+            for row in targets:
+                if not loss:
+                    break
+                used = min(loss, row["remaining"])
+                row["remaining"] -= used
+                loss -= used
+                set_off.append({"loss": kind, "against": row["ruleId"], "term": row["term"], "amount": _money(used)})
+            return loss
+
+        short_loss = absorb(short_loss, "short", ordered("short", slab_first=True))
+        long_loss = absorb(long_loss, "long", ordered("long", equity=False) + ordered("long", equity=True))
+        short_loss = absorb(short_loss, "short", ordered("long", equity=False) + ordered("long", equity=True))
+
+        limit = exemption_for(fy)
+        left = limit
+        for row in ordered("long", equity=True):
+            row["exempt"] = min(left, row["remaining"])
+            left -= row["exempt"]
+        items, before_cess, slab_taxable = [], _ZERO, _ZERO
+        for row in rows.values():
+            taxable = row["remaining"] - row.get("exempt", _ZERO)
+            if taxable <= 0:
+                continue
+            if row["rate"] == SLAB and slab_pct is None:
+                slab_taxable += taxable
+                items.append({"ruleId": row["ruleId"], "term": row["term"], "taxable": _money(taxable),
+                              "rate": SLAB, "tax": None})
+                continue
+            rate = Decimal(slab_pct) if row["rate"] == SLAB else row["rate"]
+            tax = taxable * rate / 100
+            before_cess += tax
+            items.append({"ruleId": row["ruleId"], "term": row["term"], "taxable": _money(taxable),
+                          "rate": float(rate), "tax": _money(tax)})
+        has_fixed = any(item["tax"] is not None for item in items)
+        sold_left_out = any(item.status != "ok" and _sold_in(item.scheme, start, end) for item in lots)
+        missing = (["slab"] if slab_taxable else []) + (["funds"] if unclassified_schemes or sold_left_out else [])
+        if not missing:
+            status = "estimated"
+        elif missing == ["slab"] and not has_fixed:
+            status = "none"  # Only slab-taxed gains and no slab: nothing to estimate, never Rs 0.
+        else:
+            status = "partial"
+        cess = before_cess * CESS_RATE
+        tax_notes = [ESTIMATE_NOTE] + ([SLAB_NOTE] if slab_taxable else []) \
+            + ([LEFT_OUT_TAX_NOTE] if "funds" in missing else [])
+        tax_block = {
+            "status": status, "missing": missing, "items": items, "slabPct": slab_pct, "slabTaxable": _money(slab_taxable),
+            "beforeCess": _money(before_cess) if status != "none" else None,
+            "cess": _money(cess) if status != "none" else None,
+            "total": _money(before_cess + cess) if status != "none" else None, "notes": tax_notes,
+        }
+
+    excluded = [{"name": item.scheme.name, "status": item.status, "reason": item.reason,
+                 "soldThisYear": _sold_in(item.scheme, start, end)} for item in lots if item.status != "ok"]
+    notes = [ESTIMATE_NOTE, SET_OFF_NOTE, FIGURES_NOTE] + ([SLAB_NOTE] if slab_taxable else []) \
+        + ([EXCLUDED_NOTE] if excluded else [])
+    used = limit - left
+    return {
+        "fy": fy, "from": start.isoformat(), "to": end.isoformat(), "act": act_for(fy),
+        "rows": [{"taxClass": r["taxClass"], "term": r["term"], "ruleId": r["ruleId"], "rate": _rate_out(r["rate"]),
+                  "section": r["section"], "gains": _money(r["gains"]), "losses": _money(r["losses"]),
+                  "net": _money(r["gains"] - r["losses"])} for r in rows.values()],
+        "totals": {term + "Term": _money(sum((r["gains"] - r["losses"] for r in rows.values() if r["term"] == term),
+                                             _ZERO)) for term in ("short", "long")},
+        "setOff": set_off,
+        "exemption": {"limit": _money(limit), "used": _money(used), "left": _money(left), "note": EXEMPTION_NOTE},
+        "tax": tax_block,
+        "carryForward": ({"short": _money(short_loss), "long": _money(long_loss), "note": CARRY_FORWARD_NOTE}
+                         if short_loss or long_loss else None),
+        "unclassified": ({"gain": _money(unclassified_gain), "schemes": unclassified_schemes}
+                         if unclassified_schemes else None),
+        "schemes": [{**s, "shortTerm": _money(s["shortTerm"]), "longTerm": _money(s["longTerm"])} for s in scheme_rows],
+        "excluded": excluded, "notes": notes,
+    }
+
+
+# ── Sell-planning ──────────────────────────────────────────────────────────────
+
+NO_NAV_REASON: Final = "No NAV is available, so redemption figures cannot be worked out."
+EXEMPTION_SHARED_NOTE: Final = "These options each use the same exemption left; together they cannot use more than it."
+EXEMPTION_SAVING_NOTE: Final = "If the gain also fits within the exemption, the saving is larger."
+_UNITS: Final = Decimal("0.001")
+
+
+def _units(value: Decimal) -> float:
+    return float(value.quantize(_UNITS))
+
+
+@dataclass
+class _LotView:
+    lot: Lot
+    value: Decimal
+    gain: Decimal
+    rule: TaxRule | None
+    term: str | None
+    locked_until: date | None  # ELSS: the last locked day.
+
+
+def _lot_views(item: SchemeLots, nav: Decimal, today: date, elss: bool,
+               fmv: Callable[[str], Decimal | None]) -> list[_LotView]:
+    views = []
+    for lot in item.open_lots:
+        value = lot.units * nav
+        rule = rule_for(item.tax_class, lot.buy_date, today)
+        term = None if rule is None else ("long" if is_long_term(rule, lot.buy_date, today) else "short")
+        cost = lot.cost
+        if term == "long" and item.tax_class == "equity" and lot.buy_date <= GRANDFATHER_DATE:
+            isin = lot.origin.isin if lot.origin else item.scheme.isin
+            cost, _, _ = _grandfathered(isin, lot.origin.ratio if lot.origin else Decimal(1), lot.units, lot.cost,
+                                        value, fmv)
+        lock_end = add_months(lot.buy_date, ELSS_LOCK_MONTHS) if elss else None
+        views.append(_LotView(lot, value, value - cost, rule, term, lock_end if lock_end and today <= lock_end else None))
+    return views
+
+
+def _nav_fields(nav: Decimal, nav_date: date, source: str | None, today: date) -> dict:
+    from . import fund_data
+
+    return {"nav": float(nav.quantize(Decimal("0.0001"))), "navDate": nav_date.isoformat(), "navSource": source,
+            "navStale": (today - nav_date).days > fund_data.stale_days()}
+
+
+def _gain_harvest(views: list[_LotView], left: Decimal) -> tuple[Decimal, Decimal, Decimal, str] | None:
+    units = value = gain = _ZERO
+    stopped = "all_units"
+    for view in views:
+        if view.locked_until:
+            stopped = "elss_lock"
+            break
+        if view.term != "long":
+            stopped = "short_term"
+            break
+        if gain + view.gain > left and view.gain > 0:
+            share = ((left - gain) / view.gain * view.lot.units).quantize(_UNITS, rounding="ROUND_DOWN")
+            if share > 0:
+                units += share
+                value += view.value * share / view.lot.units
+                gain += view.gain * share / view.lot.units
+            stopped = "exemption"
+            break
+        units, value, gain = units + view.lot.units, value + view.value, gain + view.gain
+    return (units, value, gain, stopped) if units > 0 and gain > 0 else None
+
+
+def _loss_harvest(views: list[_LotView]) -> tuple[int, Decimal] | None:
+    """The FIFO prefix (number of lots) with the largest loss, and that loss; None when no prefix loses."""
+    best, best_count, running = _ZERO, 0, _ZERO
+    for count, view in enumerate(views, start=1):
+        if view.locked_until or view.rule is None:
+            break
+        running += view.gain
+        if running < best:
+            best, best_count = running, count
+    return (best_count, -best) if best_count else None
+
+
+def _taxable(position: dict, term: str) -> Decimal:
+    return sum((Decimal(str(item["taxable"])) for item in position.get("tax", {}).get("items", [])
+                if item.get("term") == term and item.get("taxable")), _ZERO)
+
+
+def planning(lots: Sequence[SchemeLots], navs: dict[str, NavRow], today: date, position: dict,
+             slab_pct: int | None, *, fmv: Callable[[str], Decimal | None] = nav_2018) -> dict:
+    """Options for the rest of the current financial year, in FIFO order (a redemption takes the oldest units).
+
+    Gain harvesting: long-term equity units whose gain fits in the exemption left, stopping before the first
+    short-term or locked lot. Loss harvesting: the oldest units whose redemption gives the largest loss.
+    Turning long-term: lots crossing their long-term date in the next 90 days with a gain. Locked ELSS units
+    are never offered. Figures and options only.
+    """
+    from .mf_returns import nav_for
+
+    left = Decimal(str(position["exemption"]["left"]))
+    taxable_short, taxable_long = _taxable(position, "short"), _taxable(position, "long")
+    result: dict = {"asOf": today.isoformat(), "exemptionLeft": _money(left), "gainHarvest": [], "lossHarvest": [],
+                    "turningLongTerm": [], "elssLocked": [], "left": [],
+                    "notes": [DEADLINE_NOTE, EXIT_LOAD_NOTE, EXEMPTION_SHARED_NOTE, FIGURES_NOTE]}
+    with localcontext() as context:
+        context.prec = mf_math.PRECISION
+        for item in lots:
+            if item.status != "ok" or not item.open_lots:
+                continue
+            scheme = item.scheme
+            nav, nav_date, source = nav_for(scheme, navs)
+            if nav is None:
+                result["left"].append({"name": scheme.name, "reason": NO_NAV_REASON})
+                continue
+            row = navs.get(scheme.isin) if scheme.isin else None
+            elss = bool(row and row.amfi_category and benchmarks.sub_category(row.amfi_category) == "elss")
+            views = _lot_views(item, nav, today, elss, fmv)
+            base = {"name": scheme.name, "isin": scheme.isin}
+            nav_info = _nav_fields(nav, nav_date, source, today)
+            for view in views:
+                if view.locked_until:
+                    result["elssLocked"].append({"name": scheme.name, "units": _units(view.lot.units),
+                                                 "unlocksOn": (view.locked_until + timedelta(days=1)).isoformat()})
+            if item.tax_class == "equity" and (harvest := _gain_harvest(views, left)):
+                units, value, gain, stopped = harvest
+                result["gainHarvest"].append({**base, "units": _units(units), "value": _money(value),
+                                              "gain": _money(gain), "tax": 0.0, **nav_info, "stoppedBy": stopped})
+            if (loss := _loss_harvest(views)):
+                count, amount = loss
+                chosen = views[:count]
+                short = sum((v.gain for v in chosen if v.term == "short"), _ZERO)
+                long = sum((v.gain for v in chosen if v.term == "long"), _ZERO)
+                off_long = min(max(-long, _ZERO), taxable_long)
+                offset = min(off_long + min(max(-short, _ZERO), taxable_short + taxable_long - off_long), amount)
+                result["lossHarvest"].append({
+                    **base, "taxClass": item.tax_class, "units": _units(sum((v.lot.units for v in chosen), _ZERO)),
+                    "value": _money(sum((v.value for v in chosen), _ZERO)), "loss": _money(amount),
+                    "shortTermResult": _money(short), "longTermResult": _money(long), "couldOffset": _money(offset),
+                    **nav_info,
+                })
+            before = _ZERO
+            for view in views:
+                turns = long_term_on(view.rule, view.lot.buy_date) if view.rule and view.term == "short" else None
+                if turns and not view.locked_until and today < turns <= today + timedelta(days=TURNING_LONG_TERM_DAYS) \
+                        and view.gain > 0:
+                    later = rule_for(item.tax_class, view.lot.buy_date, turns) or view.rule
+                    now_rate = view.rule.st_rate if view.rule.st_rate != SLAB else (
+                        Decimal(slab_pct) if slab_pct is not None else None)
+                    tax_now = view.gain * now_rate / 100 if now_rate is not None else None
+                    tax_after = view.gain * later.lt_rate / 100
+                    if tax_now is not None and tax_now <= tax_after:
+                        before += view.lot.units
+                        continue  # Waiting would not lower the tax (a low slab against 12.5%).
+                    result["turningLongTerm"].append({
+                        **base, "taxClass": item.tax_class, "units": _units(view.lot.units),
+                        "unitsBefore": _units(before), "longTermOn": turns.isoformat(), "gain": _money(view.gain),
+                        "taxNow": _money(tax_now), "taxAfter": _money(tax_after),
+                        "extraTax": _money(tax_now - tax_after) if tax_now is not None else None,
+                        "extraTaxNote": SLAB_NOTE if tax_now is None else (
+                            EXEMPTION_SAVING_NOTE if item.tax_class == "equity" else None),
+                        **nav_info,
+                    })
+                before += view.lot.units
+    return result
+
+
+# ── Figures for the API, the page and the tool ─────────────────────────────────
+
+def tax_from(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], today: date, fy: str | None,
+             slab_pct: int | None, *, fmv: Callable[[str], Decimal | None] = nav_2018) -> dict:
+    """This year's (or ``fy``'s) position, and planning for the current year. ``ValueError`` for a bad ``fy``."""
+    from . import mf_ledger
+
+    chosen = parse_fy(fy, today) if fy else fy_of(today)
+    if not schemes:
+        return {"available": False, "hint": mf_ledger.HINT}
+    lots = tax_lots(schemes, navs, fmv=fmv)
+    current = chosen == fy_of(today)
+    result: dict = {"available": True, "fy": chosen, "fys": fy_options(today), "current": current}
+    result["position"] = position(lots, chosen, slab_pct)
+    if current:
+        result["planning"] = planning(lots, navs, today, result["position"], slab_pct, fmv=fmv)
+    nav_dates = [navs[s.isin].nav_date for s in schemes if s.isin in navs]
+    starts = [s.period_from for s in schemes if s.period_from]
+    ends = [s.period_to for s in schemes if s.period_to]
+    result["navDate"] = max(nav_dates).isoformat() if nav_dates else None
+    result["statementPeriod"] = {"from": min(starts).isoformat() if starts else None,
+                                 "to": max(ends).isoformat() if ends else None}
+    return result
+
+
+def tax_for(user_id: str, keys, today: date, fy: str | None, slab_pct: int | None) -> dict:
+    """Figures from the profile's stored statements. Raises ``sealing.LockedError`` when locked."""
+    from . import amfi, mf_ledger
+
+    if fy:
+        parse_fy(fy, today)  # A bad year is refused before anything is read.
+    schemes = mf_ledger.ledger_for(user_id, keys)
+    navs = amfi.navs_for([s.isin for s in schemes if s.isin])
+    return tax_from(schemes, navs, today, fy, slab_pct)

@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, mf_returns, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -1288,6 +1288,24 @@ async def mutual_fund_returns(request: Request, benchmark: str = benchmarks.DEFA
         return JSONResponse({"error": "Unknown benchmark.", "benchmarks": list(benchmarks.BENCHMARK_IDS)}, status_code=422)
     today = snapshots.local_now().date()
     return await asyncio.to_thread(mf_returns.returns_for, user["id"], user["keys"], today, benchmark)
+
+
+@app.get("/api/tax")
+async def mutual_fund_tax(request: Request, fy: str | None = None):
+    """Capital gains on mutual funds for a financial year (default: the current one), with an estimated tax and,
+    for the current year, sell-planning figures. Reading needs no consent, like the returns.
+    """
+    user = current_user(request)
+    if blocked := history_gate(user):
+        return blocked
+    today = snapshots.local_now().date()
+    if fy:
+        try:
+            mf_tax.parse_fy(fy, today)
+        except ValueError as error:
+            return JSONResponse({"error": str(error), "fys": mf_tax.fy_options(today)}, status_code=422)
+    slab = users.profile_fields(user, user["keys"]).get("taxSlabPct")
+    return await asyncio.to_thread(mf_tax.tax_for, user["id"], user["keys"], today, fy, slab)
 
 
 # ── Backups ────────────────────────────────────────────────────────────────────

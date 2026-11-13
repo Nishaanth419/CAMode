@@ -56,6 +56,8 @@ _FINANCE_TOPIC_RE = re.compile(
     r"real\s+estate|margin|breakeven|risk.?reward|call\s+oi|put\s+oi|"
     r"parag\s+parikh|flexi.?cap|ifsc|swift|isin|bic|micr|hsn|cheque\w*|"
     r"zerodha|kite|upstox|groww|dhan|angel\s+one|"
+    # Capital gains tax on mutual funds (mf_tax).
+    r"ltcg|stcg|capital\s+gains?|exemption\w*|harvest\w*|grandfather\w*|indexation|"
     # Savings goals, which the Goals page saves and both agents can use.
     r"goals?|down\s?payment|corpus|earmark\w*|lakhs?|lacs?|crores?)\b",
     re.IGNORECASE,
@@ -80,7 +82,9 @@ MAX_TOOL_ERROR_CHARS = 600
 TRUNCATION_NOTICE = "\n\n_(This response was cut off at the model's length limit. Ask a narrower question for the rest.)_"
 _INDMONEY_DATA_REQUEST_RE = re.compile(
     r"\b(?:my\s+(?:portfolio|net\s+worth|holdings?|stocks?|funds?|sips?|watchlist|accounts?|investments?|"
-    r"shares|positions?|demat|mutual\s+funds?|brokers?|brokerage\s+accounts?)|(?:grouped\s+)?by\s+broker|"
+    r"shares|positions?|demat|mutual\s+funds?|brokers?|brokerage\s+accounts?|capital\s+gains?|ltcg|stcg|"
+    r"(?:tax\s+)?(?:gains?|losses)|exemption)|(?:grouped\s+)?by\s+broker|"
+    r"exemption\s+(?:is\s+|do\s+i\s+have\s+)?left|"
     r"zerodha|kite|upstox|groww|dhan|angel\s+one|"
     r"portfolio|holdings|net\s+worth|allocation|watchlist|sips?|option\s+chain|options?|"
     r"derivatives?|f\s*&\s*o|iron\s+condor|put\s+spread|call\s+spread|strangle|straddle|"
@@ -466,6 +470,16 @@ MF_RETURNS_RULES: Final = (
     "and the coverage. These are information, not a recommendation to buy or sell. Compare with a benchmark only "
     "as the tool gives it: name the benchmark index fund and its NAV date, quote its XIRR and differenceInr as "
     "given, and say why a fund is not compared when it is not. A benchmark comparison is not a recommendation."
+)
+# Added when get_mf_tax is offered (Portfolio Analyzer with a detailed CAS ledger).
+MF_TAX_RULES: Final = (
+    "get_mf_tax gives the user's mutual fund capital gains and an estimated tax for a financial year, computed in "
+    "code from their detailed CAS. For capital gains, tax, the exemption or which funds could harvest gains or "
+    "losses, call get_mf_tax and answer from it, never from get_mf_returns' unrealised gains. Quote its figures as given and never recompute them; always call the tax an "
+    "estimate and name the rule ids or sections it gives; say which funds are left out or unclassified and why; "
+    "when the slab is not set, say slab-taxed gains depend on the slab. Planning figures are options for "
+    "information: never tell the user to sell, buy or redeem, and mention the exit load and the 25 March note when "
+    "giving them."
 )
 # Replaces NO_FUND_DATA_RULE when get_goal_fund_comparison is offered (Portfolio Analyzer with a saved goal).
 FUND_COMPARISON_RULES: Final = (
@@ -1340,6 +1354,8 @@ async def stream_agent(
         prompt += "\n\n" + GOAL_TOOL_RULES + " " + (FUND_COMPARISON_RULES if funds else NO_FUND_DATA_RULE)
     if "get_mf_returns" in local_tools:
         prompt += "\n\n" + MF_RETURNS_RULES
+    if "get_mf_tax" in local_tools:
+        prompt += "\n\n" + MF_TAX_RULES
     if graph:
         from .agent_graph import guide
 
