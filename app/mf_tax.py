@@ -16,15 +16,19 @@ for what could not be confirmed. Figures are estimates for information, never ad
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections import defaultdict
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
+from functools import lru_cache
 from typing import Final, Literal
 
-from . import benchmarks
+from . import benchmarks, mf_math
+from .amfi import NavRow
 from .goal_planning import add_months
-from .mf_math import SELL_TYPES, Txn
+from .mf_ledger import LedgerScheme
+from .mf_math import SELL_TYPES, FifoResult, Lot, Origin, Txn
 
 SLAB: Final = "slab"
 ACT_1961: Final = "Income-tax Act, 1961"
@@ -258,3 +262,178 @@ def tax_class(amfi_category: str | None, scheme_name: str, transactions: Sequenc
             return "other", "Index fund on gold or silver (not equity-oriented, not mainly debt)."
         return "equity", "Index fund on an equity index."
     return ("equity", STT_REASON) if _paid_stt(transactions) else ("unclassified", MIXED_REASON)
+
+
+# ── Tax lots ───────────────────────────────────────────────────────────────────
+
+MERGE_OUT: Final = "SWITCH_OUT_MERGER"
+MERGE_IN: Final = "SWITCH_IN_MERGER"
+FLAG_MESSAGES: Final = {
+    "no_2018_nav": "No NAV for 31 Jan 2018 was found, so the gain uses the actual cost without grandfathering.",
+    "no_index": "No cost inflation index for the purchase year, so the gain uses the actual cost.",
+    "no_rule": "No tax rule here covers this sale, so no tax is estimated on it.",
+    "merged_in_without_source": (
+        "Merged in from a scheme not in this statement: the holding period and cost may start earlier."),
+    "merged_out_without_target": (
+        "Merged into a scheme not in this statement: the merger is not counted as a sale."),
+}
+
+
+@dataclass(frozen=True)
+class Gain:
+    scheme: str
+    isin: str | None
+    folio_key: str
+    tax_class: str
+    rule_id: str | None
+    term: str | None  # short or long; None when no rule applies.
+    bought: date
+    sold: date
+    units: Decimal
+    sale_value: Decimal
+    cost: Decimal
+    tax_cost: Decimal  # The cost the law uses: grandfathered or indexed when those apply.
+    fmv_2018: Decimal | None
+    gain: Decimal
+    flags: tuple[str, ...] = ()
+
+
+@dataclass
+class SchemeLots:
+    scheme: LedgerScheme
+    tax_class: str
+    class_reason: str
+    status: str
+    reason: str | None
+    open_lots: list[Lot] = field(default_factory=list)
+    gains: list[Gain] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+
+
+@lru_cache(maxsize=4096)
+def nav_2018(isin: str) -> Decimal | None:
+    """The fund's NAV on 31 Jan 2018 from casparser's offline database (``casparser_isin``)."""
+    try:
+        from casparser.analysis.utils import nav_search
+
+        return nav_search(isin)
+    except Exception:  # noqa: BLE001 - a missing or unreadable database means no grandfathering, flagged
+        return None
+
+
+def _grandfathered(lot_isin: str | None, ratio: Decimal, units: Decimal, cost: Decimal, sale: Decimal,
+                   fmv: Callable[[str], Decimal | None]) -> tuple[Decimal, Decimal | None, str | None]:
+    """s. 55(2)(ac): max(cost, min(FMV on 31 Jan 2018, sale value)); actual cost when there is no 2018 NAV."""
+    nav = fmv(lot_isin) if lot_isin else None
+    if nav is None:
+        return cost, None, "no_2018_nav"
+    value = nav * units * ratio
+    return max(cost, min(value, sale)), value, None
+
+
+def _gain(item: SchemeLots, d: mf_math.Disposal, fmv: Callable[[str], Decimal | None]) -> Gain:
+    scheme = item.scheme
+    flags = ["merged_in_without_source"] if d.buy_type == MERGE_IN else []
+    rule = rule_for(item.tax_class, d.buy_date, d.sell_date)
+    tax_cost, fmv_value, term = d.cost, None, None
+    if rule is None:
+        if item.tax_class != "unclassified":
+            flags.append("no_rule")
+    else:
+        term = "long" if is_long_term(rule, d.buy_date, d.sell_date) else "short"
+        if term == "long" and item.tax_class == "equity" and d.buy_date <= GRANDFATHER_DATE:
+            isin = d.origin.isin if d.origin else scheme.isin
+            ratio = d.origin.ratio if d.origin else Decimal(1)
+            tax_cost, fmv_value, flag = _grandfathered(isin, ratio, d.units, d.cost, d.sale_value, fmv)
+            flags += [flag] if flag else []
+        elif term == "long" and rule.indexation:
+            tax_cost, flag = indexed_cost(d.cost, d.buy_date, d.sell_date)
+            flags += [flag] if flag else []
+    return Gain(scheme.name, scheme.isin, scheme.folio_key, item.tax_class, rule.id if rule else None, term,
+                d.buy_date, d.sell_date, d.units, d.sale_value, d.cost, tax_cost, fmv_value,
+                d.sale_value - tax_cost, tuple(flags))
+
+
+def _merger_days(scheme: LedgerScheme, kind: str) -> set[date]:
+    return {t.date for t in scheme.transactions if t.type == kind and t.units}
+
+
+def tax_lots(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], *,
+             fmv: Callable[[str], Decimal | None] = nav_2018) -> list[SchemeLots]:
+    """Each scheme's tax class, open lots and realised gains (FIFO), in the order given.
+
+    Only schemes whose ledger status is ``ok`` and whose lots add up to the closing units have
+    gains: the others keep their status and reason, never a gain at zero cost. A merger is not
+    a sale: the receiving scheme takes over the old lots' buy dates and costs when exactly one
+    scheme in the folio merged out and one merged in that day; otherwise it is flagged.
+    """
+    items: list[SchemeLots] = []
+    results: dict[int, FifoResult] = {}
+    with localcontext() as context:
+        context.prec = mf_math.PRECISION
+        for index, scheme in enumerate(schemes):
+            row = navs.get(scheme.isin) if scheme.isin else None
+            tax_class_, why = tax_class(row.amfi_category if row else None, scheme.name, scheme.transactions)
+            item = SchemeLots(scheme, tax_class_, why, scheme.status, scheme.reason)
+            items.append(item)
+            if scheme.status != "ok":
+                continue
+            result = mf_math.fifo(scheme.transactions)
+            held = sum((lot.units for lot in result.open_lots), Decimal(0))
+            if abs(held - scheme.close) > mf_math.UNIT_TOLERANCE:
+                item.status, item.reason = "unreconciled", (
+                    f"Units bought and sold ({held}) do not match the closing units ({scheme.close}).")
+                continue
+            results[index] = result
+
+        outs: dict[tuple[str, date], list[int]] = defaultdict(list)
+        ins: dict[tuple[str, date], list[int]] = defaultdict(list)
+        for index in results:
+            for day in _merger_days(schemes[index], MERGE_OUT):
+                outs[(schemes[index].folio_key, day)].append(index)
+            for day in _merger_days(schemes[index], MERGE_IN):
+                ins[(schemes[index].folio_key, day)].append(index)
+
+        def carried_for(index: int) -> dict[date, list[Lot]]:
+            scheme, carried = schemes[index], {}
+            for day in sorted(_merger_days(scheme, MERGE_IN)):
+                key = (scheme.folio_key, day)
+                sources = [i for i in outs.get(key, []) if i != index]
+                if len(sources) != 1 or len(ins[key]) != 1:
+                    continue
+                source = schemes[sources[0]]
+                old = [d for d in results[sources[0]].disposals if d.sell_type == MERGE_OUT and d.sell_date == day]
+                old_units = sum((d.units for d in old), Decimal(0))
+                new_units = sum((abs(t.units) for t in scheme.transactions if t.type == MERGE_IN and t.date == day),
+                                Decimal(0))
+                if not old_units or not new_units:
+                    continue
+                ratio = old_units / new_units
+                carried[day] = [
+                    Lot(d.buy_date, d.units, d.cost, d.buy_type,
+                        Origin(d.origin.isin, d.origin.ratio * ratio) if d.origin else Origin(source.isin, ratio))
+                    for d in old
+                ]
+            return carried
+
+        for _ in range(len(results)):  # Chains (A into B into C) settle in at most one pass per scheme.
+            changed = False
+            for index in [i for i in results if _merger_days(schemes[i], MERGE_IN)]:
+                updated = mf_math.fifo(schemes[index].transactions, carried=carried_for(index))
+                if updated.open_lots != results[index].open_lots or updated.disposals != results[index].disposals:
+                    results[index], changed = updated, True
+            if not changed:
+                break
+
+        for index, result in results.items():
+            item, scheme = items[index], schemes[index]
+            folio = scheme.folio_key
+            if any(len([i for i in outs.get((folio, day), []) if i != index]) != 1 or len(ins[(folio, day)]) != 1
+                   for day in _merger_days(scheme, MERGE_IN)):
+                item.flags.append("merged_in_without_source")
+            if any(len(ins.get((folio, day), [])) != 1 or len(outs[(folio, day)]) != 1
+                   for day in _merger_days(scheme, MERGE_OUT)):
+                item.flags.append("merged_out_without_target")
+            item.open_lots = result.open_lots
+            item.gains = [_gain(item, d, fmv) for d in result.disposals if d.sell_type != MERGE_OUT]
+    return items

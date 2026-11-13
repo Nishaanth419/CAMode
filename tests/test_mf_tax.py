@@ -171,3 +171,153 @@ def test_mixed_funds_are_equity_only_with_stt(category):
 def test_stt_must_be_on_a_redemption_day():
     stray = [txn("2025-01-10", "PURCHASE", "1000", "10"), txn("2025-01-10", "STT_TAX", "0.01")]
     assert mf_tax.tax_class("Other Scheme - FoF Domestic", "A Fund", stray)[0] == "unclassified"
+
+
+# ── Tax lots ───────────────────────────────────────────────────────────────────
+
+from app.amfi import NavRow  # noqa: E402
+from app.mf_ledger import LedgerScheme  # noqa: E402
+
+EQUITY = "Equity Scheme - Large Cap Fund"
+DEBT = "Debt Scheme - Corporate Bond Fund"
+
+
+def scheme(isin: str, transactions: list[Txn], close: str, *, folio: str = "F", status: str = "ok",
+           name: str | None = None, reason: str | None = None) -> LedgerScheme:
+    return LedgerScheme(isin=isin, amfi=None, name=name or f"Fund {isin}", amc="AMC", rta="CAMS", folio_key=folio,
+                        open=D(0), close=D(close), valuation_date=None, valuation_nav=None,
+                        transactions=transactions, status=status, reason=reason)
+
+
+def nav_row(isin: str, category: str, nav: str = "10", on: str = "2026-11-10") -> NavRow:
+    return NavRow(isin, "1", f"Fund {isin}", category, D(nav), day(on))
+
+
+def lots_for(schemes, categories: dict[str, str], fmv: dict[str, D] | None = None):
+    navs = {isin: nav_row(isin, category) for isin, category in categories.items()}
+    return mf_tax.tax_lots(schemes, navs, fmv=(fmv or {}).get)
+
+
+@pytest.mark.parametrize(("fmv_nav", "sale", "tax_cost", "gain"), [
+    ("150", "2000", "1500", "500"),  # max(1000, min(1500, 2000)) = 1500
+    ("250", "2000", "2000", "0"),  # max(1000, min(2500, 2000)) = 2000
+    ("150", "800", "1000", "-200"),  # max(1000, min(1500, 800)) = 1000: a sale below cost keeps the actual cost
+])
+def test_grandfathering_cases(fmv_nav, sale, tax_cost, gain):
+    fund = scheme("INF1", [txn("2017-06-01", "PURCHASE", "1000", "10"),
+                           txn("2025-01-10", "REDEMPTION", f"-{sale}", "-10")], "0")
+    (result,) = lots_for([fund], {"INF1": EQUITY}, {"INF1": D(fmv_nav)})
+
+    (row,) = result.gains
+    assert (row.rule_id, row.term, row.tax_class) == ("equity_from_2024_07_23", "long", "equity")
+    assert row.fmv_2018 == D(fmv_nav) * 10
+    assert row.tax_cost == D(tax_cost) and row.gain == D(gain)
+
+
+def test_grandfathering_date_and_missing_nav():
+    on_the_day = scheme("INF1", [txn("2018-01-31", "PURCHASE", "1000", "10"),
+                                 txn("2025-01-10", "REDEMPTION", "-2000", "-10")], "0")
+    after = scheme("INF2", [txn("2018-02-01", "PURCHASE", "1000", "10"),
+                            txn("2025-01-10", "REDEMPTION", "-2000", "-10")], "0")
+    missing = scheme("INF3", [txn("2017-06-01", "PURCHASE", "1000", "10"),
+                              txn("2025-01-10", "REDEMPTION", "-2000", "-10")], "0")
+    results = lots_for([on_the_day, after, missing], {"INF1": EQUITY, "INF2": EQUITY, "INF3": EQUITY},
+                       {"INF1": D("150"), "INF2": D("150")})
+
+    assert results[0].gains[0].tax_cost == D("1500")
+    assert results[1].gains[0].fmv_2018 is None and results[1].gains[0].tax_cost == D("1000")
+    assert results[2].gains[0].tax_cost == D("1000") and "no_2018_nav" in results[2].gains[0].flags
+
+
+def test_short_term_and_debt_sales_are_never_grandfathered():
+    short = scheme("INF1", [txn("2017-06-01", "PURCHASE", "1000", "10"),
+                            txn("2018-01-10", "REDEMPTION", "-2000", "-10")], "0")
+    debt = scheme("INF2", [txn("2017-06-01", "PURCHASE", "1000", "10"),
+                           txn("2024-08-01", "REDEMPTION", "-2000", "-10")], "0")
+    results = lots_for([short, debt], {"INF1": EQUITY, "INF2": DEBT}, {"INF1": D("150"), "INF2": D("150")})
+
+    assert results[0].gains[0].rule_id is None and results[0].gains[0].tax_cost == D("1000")  # sold before FY 2023-24
+    assert "no_rule" in results[0].gains[0].flags
+    assert results[1].gains[0].rule_id == "non_equity" and results[1].gains[0].tax_cost == D("1000")
+
+
+def test_one_sale_spans_lots():
+    fund = scheme("INF1", [txn("2017-06-01", "PURCHASE", "1000", "10"),
+                           txn("2024-12-01", "PURCHASE", "2000", "10"),
+                           txn("2025-06-02", "REDEMPTION", "-3750", "-15")], "5")
+    (result,) = lots_for([fund], {"INF1": EQUITY}, {"INF1": D("150")})
+
+    first, second = result.gains
+    # 10 units: sale 3750 x 10/15 = 2500, grandfathered cost max(1000, min(1500, 2500)) = 1500, gain 1000.
+    assert (first.units, first.sale_value, first.tax_cost, first.gain, first.term) == (D(10), D(2500), D(1500), D(1000), "long")
+    # 5 units of the Dec 2024 lot: sale 1250, cost 1000, short-term.
+    assert (second.units, second.sale_value, second.cost, second.gain, second.term) == (D(5), D(1250), D(1000), D(250), "short")
+    assert second.rule_id == "equity_from_2024_07_23"
+    (remaining,) = result.open_lots
+    assert (remaining.units, remaining.cost) == (D(5), D(1000))
+
+
+MERGED_OUT = scheme("INFA", [txn("2016-05-01", "PURCHASE", "1000", "100"),
+                             txn("2018-05-18", "SWITCH_OUT_MERGER", "-1500", "-100")], "0")
+
+
+def test_merger_is_carried_over():
+    merged_in = scheme("INFB", [txn("2018-05-18", "SWITCH_IN_MERGER", "1500", "50"),
+                                txn("2025-06-02", "REDEMPTION", "-5000", "-50")], "0")
+    source, target = lots_for([MERGED_OUT, merged_in], {"INFA": EQUITY, "INFB": EQUITY}, {"INFA": D("14")})
+
+    assert source.gains == []  # A merger is not a transfer.
+    (row,) = target.gains
+    # Bought 1 May 2016 at 1000; FMV = A's 31 Jan 2018 NAV 14 x 100 A units (50 B units x ratio 2) = 1400.
+    assert (row.bought, row.cost, row.term, row.fmv_2018, row.tax_cost, row.gain) == (
+        day("2016-05-01"), D(1000), "long", D(1400), D(1400), D(3600))
+
+
+def test_merged_lots_keep_their_origin():
+    merged_in = scheme("INFB", [txn("2018-05-18", "SWITCH_IN_MERGER", "1500", "50")], "50")
+    _, target = lots_for([MERGED_OUT, merged_in], {"INFA": EQUITY, "INFB": EQUITY})
+
+    (lot,) = target.open_lots
+    assert (lot.buy_date, lot.units, lot.cost) == (day("2016-05-01"), D(50), D(1000))
+    assert lot.origin.isin == "INFA" and lot.origin.ratio == D(2)
+
+
+def test_unmatched_merger_is_flagged():
+    merged_in = scheme("INFB", [txn("2018-05-18", "SWITCH_IN_MERGER", "1500", "50"),
+                                txn("2025-06-02", "REDEMPTION", "-5000", "-50")], "0")
+    (target,) = lots_for([merged_in], {"INFB": EQUITY})
+    (source,) = lots_for([MERGED_OUT], {"INFA": EQUITY})
+
+    assert "merged_in_without_source" in target.flags
+    assert target.gains[0].bought == day("2018-05-18") and "merged_in_without_source" in target.gains[0].flags
+    assert source.gains == [] and "merged_out_without_target" in source.flags
+    assert mf_tax.FLAG_MESSAGES["merged_in_without_source"] == (
+        "Merged in from a scheme not in this statement: the holding period and cost may start earlier.")
+
+
+@pytest.mark.parametrize("status", ["incomplete_history", "unreconciled", "unsupported"])
+def test_excluded_schemes_have_no_gains(status):
+    fund = scheme("INF1", [txn("2024-06-01", "REDEMPTION", "-2000", "-10")], "0", status=status, reason="Why.")
+    (result,) = lots_for([fund], {"INF1": EQUITY})
+
+    assert (result.status, result.reason, result.gains) == (status, "Why.", [])
+
+
+def test_units_that_do_not_add_up_are_excluded():
+    fund = scheme("INF1", [txn("2024-06-01", "PURCHASE", "1000", "10")], "12")
+    (result,) = lots_for([fund], {"INF1": EQUITY})
+
+    assert result.status == "unreconciled" and result.gains == [] and "12" in result.reason
+
+
+def test_indexation_applies_only_to_its_rule():
+    old = scheme("INF1", [txn("2019-05-01", "PURCHASE", "10000", "100"),
+                          txn("2023-06-01", "REDEMPTION", "-13000", "-100")], "0")
+    new = scheme("INF2", [txn("2019-05-01", "PURCHASE", "10000", "100"),
+                          txn("2024-08-01", "REDEMPTION", "-13000", "-100")], "0")
+    first, second = lots_for([old, new], {"INF1": DEBT, "INF2": DEBT})
+
+    assert first.gains[0].rule_id == "non_equity_indexed"
+    # FY 2019-20 = 289, FY 2023-24 = 348 (computed at 34 digits, so compared at 6 places).
+    assert first.gains[0].tax_cost.quantize(D("0.000001")) == (D("10000") * 348 / 289).quantize(D("0.000001"))
+    assert second.gains[0].rule_id == "non_equity" and second.gains[0].tax_cost == D("10000")
