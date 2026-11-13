@@ -105,3 +105,41 @@ def test_with_logos_only_cached():
     assert logos.with_logos(rows) is rows
     assert rows[0]["logo"] == "/api/logos/in:INFY"
     assert "logo" not in rows[1] and "logo" not in rows[2]
+
+
+@pytest.mark.parametrize("code", ["²", "١٢٣", "１２３", "1" * 13])
+def test_mf_code_must_be_ascii_digits(code):
+    assert logos.logo_key("MF", code) is None
+
+
+@pytest.mark.parametrize("code", ["straße", "ﬁnd", "ß"])
+def test_stock_symbol_must_be_ascii(code):
+    assert logos.logo_key("IND_STOCK", code) is None
+    assert logos.logo_key("US_STOCK", code) is None
+
+
+def test_download_never_raises_on_malformed_input():
+    def bad_location(request):
+        return httpx.Response(302, headers={"location": "http://[bad"})
+
+    assert _fetch(bad_location) is None
+    assert _fetch(lambda r: httpx.Response(200, content=PNG), url="https://[bad") is None
+
+
+def test_download_sends_no_client_default_headers():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, content=PNG)
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            headers={"Authorization": "Bearer x"},
+            cookies={"sid": "1"},
+        ) as client:
+            return await logos.download("https://x.test/a.png", client)
+
+    assert asyncio.run(run()) == (PNG, "png")
+    assert "authorization" not in seen[0].headers and "cookie" not in seen[0].headers

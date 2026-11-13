@@ -32,6 +32,7 @@ MAX_REDIRECTS: Final = 3
 
 # Same pattern as brokers.ISIN_RE (brokers imports this module, so it is copied here).
 _ISIN_RE: Final = re.compile(r"^IN[A-Z0-9]{9}[0-9]$")
+_MF_CODE_RE: Final = re.compile(r"^[0-9]{1,12}$")
 _SYMBOL_RE: Final = re.compile(r"^[A-Z0-9&.-]{1,20}$")
 _ALNUM_RE: Final = re.compile(r"[A-Z0-9]")
 
@@ -45,11 +46,14 @@ def enabled() -> bool:
 def logo_key(asset_type: str | None, code: str | None) -> str | None:
     """The cache key for a holding, from its asset type and code; None when it has no safe one."""
     kind = canonical_asset_type(asset_type)
-    text = str(code or "").strip().upper()
-    if not kind or not text:
+    text = str(code or "").strip()
+    if not kind or not text or not text.isascii():
+        return None
+    text = text.upper()
+    if not text:
         return None
     if kind == "MF":
-        return f"mf:{text}" if text.isdigit() else None
+        return f"mf:{text}" if _MF_CODE_RE.match(text) else None
     if kind in {"IND_STOCK", "US_STOCK"}:
         if not _SYMBOL_RE.match(text) or not _ALNUM_RE.search(text) or _ISIN_RE.match(text):
             return None
@@ -130,9 +134,13 @@ async def download(url: str, client: httpx.AsyncClient) -> tuple[bytes, str] | N
         for _ in range(MAX_REDIRECTS + 1):
             if urllib.parse.urlsplit(current).scheme != "https":
                 return None
-            async with client.stream(
-                "GET", current, follow_redirects=False, timeout=LOGO_TIMEOUT_SECONDS
-            ) as response:
+            # Built without the client's default headers and cookies (an API token must never
+            # reach a logo host, least of all after a redirect).
+            request = client.build_request("GET", current, timeout=LOGO_TIMEOUT_SECONDS)
+            request.headers.clear()
+            request.headers["Accept"] = "image/png,image/jpeg,image/webp"
+            response = await client.send(request, stream=True, follow_redirects=False)
+            try:
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
@@ -146,10 +154,12 @@ async def download(url: str, client: httpx.AsyncClient) -> tuple[bytes, str] | N
                     body.extend(chunk)
                     if len(body) > MAX_LOGO_BYTES:
                         return None
+            finally:
+                await response.aclose()
             extension = _extension(bytes(body))
             return (bytes(body), extension) if extension else None
-    except httpx.HTTPError:
-        logger.info("logo_download_failed", extra={"host": urllib.parse.urlsplit(url).hostname})
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError):
+        logger.info("logo_download_failed")
     return None
 
 
