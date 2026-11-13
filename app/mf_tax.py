@@ -437,3 +437,154 @@ def tax_lots(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], *,
             item.open_lots = result.open_lots
             item.gains = [_gain(item, d, fmv) for d in result.disposals if d.sell_type != MERGE_OUT]
     return items
+
+
+# ── This year's position ───────────────────────────────────────────────────────
+
+_RULES_BY_ID: Final = {rule.id: rule for rule in MF_TAX_RULES}
+EXCLUDED_NOTE: Final = "Gains from funds left out are not included."
+_ZERO: Final = Decimal(0)
+
+
+def _money(value: Decimal | None) -> float | None:
+    from .mf_returns import _round
+
+    return _round(value)
+
+
+def _rate(rule: TaxRule, term: str) -> Decimal | Literal["slab"] | None:
+    return rule.st_rate if term == "short" else rule.lt_rate
+
+
+def _rate_out(rate: Decimal | str | None) -> float | str | None:
+    return rate if isinstance(rate, str) or rate is None else float(rate)
+
+
+def _fixed_rate(row: dict) -> Decimal:
+    return _ZERO if row["rate"] == SLAB else row["rate"]
+
+
+def act_for(fy: str) -> str:
+    return ACT_2025 if fy_bounds(fy)[0] >= date(2026, 4, 1) else ACT_1961
+
+
+def position(lots: Sequence[SchemeLots], fy: str, slab_pct: int | None) -> dict:
+    """Realised gains of the financial year by rule and term, set-off, the equity exemption and an estimated tax.
+
+    Short-term losses are set off against slab-taxed short-term gains, then other short-term gains; long-term
+    losses against long-term gains (non-equity first); what is left of short-term losses then against long-term
+    gains. The equity exemption absorbs the highest-rate equity long-term gains first. Unclassified gains are
+    shown, never taxed or set off.
+    """
+    start, end = fy_bounds(fy)
+    rows: dict[tuple[str, str], dict] = {}
+    unclassified_gain, unclassified_schemes, scheme_rows = _ZERO, [], []
+    for item in lots:
+        in_year = [gain for gain in item.gains if start <= gain.sold <= end]
+        if not in_year:
+            continue
+        flags = sorted({flag for gain in in_year for flag in gain.flags} | set(item.flags))
+        scheme_rows.append({
+            "name": item.scheme.name, "isin": item.scheme.isin, "taxClass": item.tax_class,
+            "classReason": item.class_reason, "status": item.status, "reason": item.reason,
+            "shortTerm": sum((x.gain for x in in_year if x.term == "short"), _ZERO),
+            "longTerm": sum((x.gain for x in in_year if x.term == "long"), _ZERO),
+            "flags": [FLAG_MESSAGES[flag] for flag in flags if flag in FLAG_MESSAGES],
+        })
+        for gain in in_year:
+            if gain.rule_id is None:
+                unclassified_gain += gain.gain
+                reason = item.class_reason if item.tax_class == "unclassified" else FLAG_MESSAGES["no_rule"]
+                if not any(s["name"] == item.scheme.name for s in unclassified_schemes):
+                    unclassified_schemes.append({"name": item.scheme.name, "reason": reason})
+                continue
+            rule = _RULES_BY_ID[gain.rule_id]
+            row = rows.setdefault((gain.rule_id, gain.term), {
+                "taxClass": gain.tax_class, "term": gain.term, "ruleId": gain.rule_id, "rate": _rate(rule, gain.term),
+                "section": rule.sections["st" if gain.term == "short" else "lt"], "gains": _ZERO, "losses": _ZERO,
+            })
+            if gain.gain >= 0:
+                row["gains"] += gain.gain
+            else:
+                row["losses"] -= gain.gain
+    for row in rows.values():
+        row["remaining"] = row["gains"] - row["losses"]
+
+    with localcontext() as context:
+        context.prec = mf_math.PRECISION
+        set_off: list[dict] = []
+        short_loss = sum((-r["remaining"] for r in rows.values() if r["term"] == "short" and r["remaining"] < 0), _ZERO)
+        long_loss = sum((-r["remaining"] for r in rows.values() if r["term"] == "long" and r["remaining"] < 0), _ZERO)
+        for row in rows.values():
+            row["remaining"] = max(row["remaining"], _ZERO)
+
+        def ordered(term: str, *, equity: bool | None = None, slab_first: bool = False) -> list[dict]:
+            chosen = [r for r in rows.values() if r["term"] == term and r["remaining"] > 0
+                      and (equity is None or (r["taxClass"] == "equity") == equity)]
+            return sorted(chosen, key=lambda r: (not (slab_first and r["rate"] == SLAB), -_fixed_rate(r)))
+
+        def absorb(loss: Decimal, kind: str, targets: list[dict]) -> Decimal:
+            for row in targets:
+                if not loss:
+                    break
+                used = min(loss, row["remaining"])
+                row["remaining"] -= used
+                loss -= used
+                set_off.append({"loss": kind, "against": row["ruleId"], "term": row["term"], "amount": _money(used)})
+            return loss
+
+        short_loss = absorb(short_loss, "short", ordered("short", slab_first=True))
+        long_loss = absorb(long_loss, "long", ordered("long", equity=False) + ordered("long", equity=True))
+        short_loss = absorb(short_loss, "short", ordered("long", equity=False) + ordered("long", equity=True))
+
+        limit = exemption_for(fy)
+        left = limit
+        for row in ordered("long", equity=True):
+            row["exempt"] = min(left, row["remaining"])
+            left -= row["exempt"]
+        items, before_cess, slab_taxable = [], _ZERO, _ZERO
+        for row in rows.values():
+            taxable = row["remaining"] - row.get("exempt", _ZERO)
+            if taxable <= 0:
+                continue
+            if row["rate"] == SLAB and slab_pct is None:
+                slab_taxable += taxable
+                items.append({"ruleId": row["ruleId"], "term": row["term"], "taxable": _money(taxable),
+                              "rate": SLAB, "tax": None})
+                continue
+            rate = Decimal(slab_pct) if row["rate"] == SLAB else row["rate"]
+            tax = taxable * rate / 100
+            before_cess += tax
+            items.append({"ruleId": row["ruleId"], "term": row["term"], "taxable": _money(taxable),
+                          "rate": float(rate), "tax": _money(tax)})
+        has_fixed = any(item["tax"] is not None for item in items)
+        status = "estimated" if not slab_taxable else ("partial" if has_fixed else "none")
+        cess = before_cess * CESS_RATE
+        tax_notes = [ESTIMATE_NOTE] + ([SLAB_NOTE] if slab_taxable else [])
+        tax_block = {
+            "status": status, "items": items, "slabPct": slab_pct, "slabTaxable": _money(slab_taxable),
+            "beforeCess": _money(before_cess) if status != "none" else None,
+            "cess": _money(cess) if status != "none" else None,
+            "total": _money(before_cess + cess) if status != "none" else None, "notes": tax_notes,
+        }
+
+    excluded = [{"name": item.scheme.name, "status": item.status, "reason": item.reason}
+                for item in lots if item.status != "ok"]
+    notes = [ESTIMATE_NOTE, SET_OFF_NOTE, FIGURES_NOTE] + ([SLAB_NOTE] if slab_taxable else []) \
+        + ([EXCLUDED_NOTE] if excluded else [])
+    used = limit - left
+    return {
+        "fy": fy, "from": start.isoformat(), "to": end.isoformat(), "act": act_for(fy),
+        "rows": [{"taxClass": r["taxClass"], "term": r["term"], "ruleId": r["ruleId"], "rate": _rate_out(r["rate"]),
+                  "section": r["section"], "gains": _money(r["gains"]), "losses": _money(r["losses"]),
+                  "net": _money(r["gains"] - r["losses"])} for r in rows.values()],
+        "setOff": set_off,
+        "exemption": {"limit": _money(limit), "used": _money(used), "left": _money(left), "note": EXEMPTION_NOTE},
+        "tax": tax_block,
+        "carryForward": ({"short": _money(short_loss), "long": _money(long_loss), "note": CARRY_FORWARD_NOTE}
+                         if short_loss or long_loss else None),
+        "unclassified": ({"gain": _money(unclassified_gain), "schemes": unclassified_schemes}
+                         if unclassified_schemes else None),
+        "schemes": [{**s, "shortTerm": _money(s["shortTerm"]), "longTerm": _money(s["longTerm"])} for s in scheme_rows],
+        "excluded": excluded, "notes": notes,
+    }

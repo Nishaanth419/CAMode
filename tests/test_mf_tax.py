@@ -321,3 +321,152 @@ def test_indexation_applies_only_to_its_rule():
     # FY 2019-20 = 289, FY 2023-24 = 348 (computed at 34 digits, so compared at 6 places).
     assert first.gains[0].tax_cost.quantize(D("0.000001")) == (D("10000") * 348 / 289).quantize(D("0.000001"))
     assert second.gains[0].rule_id == "non_equity" and second.gains[0].tax_cost == D("10000")
+
+
+# ── This year's position ───────────────────────────────────────────────────────
+
+def g(rule_id: str, term: str, amount: str, sold: str = "2025-06-01", tax_class: str = "equity",
+      name: str = "Fund A", flags: tuple[str, ...] = ()) -> mf_tax.Gain:
+    return mf_tax.Gain(name, "INF1", "F", tax_class, rule_id, term, day("2020-01-01"), day(sold), D(1), D(0), D(0),
+                       D(0), None, D(amount), flags)
+
+
+def holding(*gains: mf_tax.Gain, name: str = "Fund A", tax_class: str = "equity", status: str = "ok",
+            reason: str | None = None) -> mf_tax.SchemeLots:
+    return mf_tax.SchemeLots(scheme(f"INF-{name}", [], "0", name=name), tax_class, "Why this class.", status, reason,
+                             gains=list(gains))
+
+
+def rows_by_rule(result):
+    return {(row["ruleId"], row["term"]): row for row in result["rows"]}
+
+
+def test_position_splits_by_class_and_term():
+    lots = [holding(g("equity_from_2024_07_23", "short", "30000"), g("equity_from_2024_07_23", "long", "200000")),
+            holding(g("specified_debt", "short", "10000", tax_class="debt"), name="Debt Fund", tax_class="debt")]
+
+    result = mf_tax.position(lots, "2025-26", 30)
+
+    rows = rows_by_rule(result)
+    assert (rows[("equity_from_2024_07_23", "short")]["rate"], rows[("equity_from_2024_07_23", "short")]["section"]) == (20.0, "111A")
+    assert rows[("specified_debt", "short")]["rate"] == "slab"
+    assert result["exemption"] == {"limit": 125000.0, "used": 125000.0, "left": 0.0, "note": mf_tax.EXEMPTION_NOTE}
+    tax = result["tax"]
+    # 30,000 x 20% + (2,00,000 - 1,25,000) x 12.5% + 10,000 x 30% = 6,000 + 9,375 + 3,000 = 18,375; cess 735.
+    assert (tax["status"], tax["beforeCess"], tax["cess"], tax["total"], tax["slabPct"]) == ("estimated", 18375.0, 735.0, 19110.0, 30)
+    assert result["act"] == "Income-tax Act, 1961"
+    assert mf_tax.ESTIMATE_NOTE in result["notes"] and mf_tax.FIGURES_NOTE in result["notes"]
+
+
+def test_position_without_a_slab_is_partial():
+    lots = [holding(g("equity_from_2024_07_23", "short", "30000"), g("equity_from_2024_07_23", "long", "200000")),
+            holding(g("specified_debt", "short", "10000", tax_class="debt"), name="Debt Fund", tax_class="debt")]
+
+    tax = mf_tax.position(lots, "2025-26", None)["tax"]
+
+    # The fixed-rate part only: (6,000 + 9,375) x 1.04 = 15,990.
+    assert (tax["status"], tax["slabTaxable"], tax["total"]) == ("partial", 10000.0, 15990.0)
+    assert mf_tax.SLAB_NOTE in tax["notes"]
+
+
+def test_fy_2024_25_exemption_is_one_for_the_year():
+    lots = [holding(g("equity_2024_before_jul23", "long", "80000", sold="2024-06-10"),
+                    g("equity_from_2024_07_23", "long", "100000", sold="2024-09-10"))]
+
+    result = mf_tax.position(lots, "2024-25", None)
+
+    # 1,25,000 absorbs the 12.5% gains first (1,00,000), then 25,000 of the 10% ones: 55,000 x 10% = 5,500.
+    assert result["exemption"]["used"] == 125000.0 and result["exemption"]["left"] == 0.0
+    items = {item["ruleId"]: item for item in result["tax"]["items"]}
+    assert items["equity_2024_before_jul23"]["taxable"] == 55000.0 and items["equity_2024_before_jul23"]["tax"] == 5500.0
+    assert "equity_from_2024_07_23" not in items
+    assert result["tax"]["total"] == 5720.0  # 5,500 + 4% cess
+
+
+def test_exemption_for_fy_2023_24_is_one_lakh():
+    result = mf_tax.position([holding(g("equity_fy2023_24", "long", "150000", sold="2023-09-01"))], "2023-24", None)
+
+    assert result["exemption"]["limit"] == 100000.0
+    assert result["tax"]["items"][0]["tax"] == 5000.0  # 50,000 x 10%
+
+
+def test_losses_set_off_in_order():
+    lots = [holding(g("other_new_definition", "short", "-50000", tax_class="other"),
+                    g("other_new_definition", "long", "-8000", tax_class="other"), name="Gold", tax_class="other"),
+            holding(g("specified_debt", "short", "20000", tax_class="debt"), name="Debt", tax_class="debt"),
+            holding(g("non_equity", "long", "15000", tax_class="debt"), name="Old Debt", tax_class="debt"),
+            holding(g("equity_from_2024_07_23", "short", "10000"), g("equity_from_2024_07_23", "long", "30000"))]
+
+    result = mf_tax.position(lots, "2025-26", None)
+
+    assert [(s["loss"], s["against"], s["term"], s["amount"]) for s in result["setOff"]] == [
+        ("short", "specified_debt", "short", 20000.0),
+        ("short", "equity_from_2024_07_23", "short", 10000.0),
+        ("long", "non_equity", "long", 8000.0),
+        ("short", "non_equity", "long", 7000.0),
+        ("short", "equity_from_2024_07_23", "long", 13000.0),
+    ]
+    assert result["exemption"]["used"] == 17000.0 and result["exemption"]["left"] == 108000.0
+    assert result["tax"]["total"] == 0.0 and result["tax"]["status"] == "estimated"
+    assert result["carryForward"] is None
+    assert mf_tax.SET_OFF_NOTE in result["notes"]
+
+
+def test_long_term_losses_never_offset_short_term_gains():
+    lots = [holding(g("equity_from_2024_07_23", "long", "-40000"), g("equity_from_2024_07_23", "short", "10000"))]
+
+    result = mf_tax.position(lots, "2025-26", None)
+
+    assert result["setOff"] == []
+    assert result["carryForward"] == {"short": 0.0, "long": 40000.0, "note": mf_tax.CARRY_FORWARD_NOTE}
+    assert result["tax"]["total"] == 2080.0  # 10,000 x 20% + cess
+
+
+def test_only_debt_without_slab_is_never_zero():
+    result = mf_tax.position([holding(g("specified_debt", "short", "25000", tax_class="debt"), tax_class="debt")],
+                             "2025-26", None)
+
+    assert result["tax"]["status"] == "none"
+    assert result["tax"]["total"] is None and result["tax"]["slabTaxable"] == 25000.0
+
+
+def test_unclassified_gains_shown_not_taxed():
+    mixed = holding(g(None, None, "12000", tax_class="unclassified"), name="Balanced", tax_class="unclassified")
+
+    result = mf_tax.position([mixed, holding(g("equity_from_2024_07_23", "short", "-5000"))], "2025-26", 30)
+
+    assert result["unclassified"] == {"gain": 12000.0, "schemes": [{"name": "Balanced", "reason": "Why this class."}]}
+    assert result["setOff"] == []  # the equity loss is not set off against a gain with no rule
+    assert result["carryForward"]["short"] == 5000.0
+    assert result["tax"]["total"] == 0.0
+
+
+def test_excluded_schemes_are_listed():
+    result = mf_tax.position([holding(name="Old Fund", status="incomplete_history", reason="History is missing.")],
+                             "2025-26", None)
+
+    assert result["excluded"] == [{"name": "Old Fund", "status": "incomplete_history", "reason": "History is missing."}]
+    assert "Gains from funds left out are not included." in result["notes"]
+
+
+def test_other_years_gains_are_ignored():
+    result = mf_tax.position([holding(g("equity_ita2025", "short", "10000", sold="2026-04-01"))], "2025-26", None)
+
+    assert result["rows"] == [] and result["tax"]["total"] == 0.0 and result["schemes"] == []
+
+
+def test_act_label_and_sections_follow_the_year():
+    result = mf_tax.position([holding(g("equity_ita2025", "long", "200000", sold="2026-06-01"))], "2026-27", None)
+
+    assert result["act"] == "Income-tax Act, 2025"
+    assert result["rows"][0]["section"] == "198"
+    assert (result["from"], result["to"]) == ("2026-04-01", "2027-03-31")
+
+
+def test_scheme_rows_carry_flags_in_words():
+    flagged = holding(g("equity_from_2024_07_23", "long", "1000", flags=("no_2018_nav",)))
+
+    (row,) = mf_tax.position([flagged], "2025-26", None)["schemes"]
+
+    assert (row["name"], row["taxClass"], row["shortTerm"], row["longTerm"]) == ("Fund A", "equity", 0.0, 1000.0)
+    assert row["flags"] == [mf_tax.FLAG_MESSAGES["no_2018_nav"]]
