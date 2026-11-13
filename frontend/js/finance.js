@@ -765,6 +765,29 @@
     return `${item.navSource === 'amfi' ? 'AMFI' : 'Statement'} NAV of ${date}`;
   }
 
+  // A fund's or the portfolio's benchmark comparison (GET /api/returns `benchmark`): the benchmark's return on the
+  // same cash flows, or why there is none.
+  function benchmarkFigure(b) {
+    if (b?.status === 'ok' && Number.isFinite(b.xirr)) return { short: fixedPct(b.xirr), label: `${b.label} (XIRR)`, note: '' };
+    if (b?.status === 'ok' && Number.isFinite(b.absoluteReturnPct) && b.returnReason === 'under_one_year') {
+      return { short: fixedPct(b.absoluteReturnPct), label: `${b.label}, held under a year`, note: '' };
+    }
+    return { short: 'Not compared', label: '', note: b?.reason || '' };
+  }
+
+  // The fund's value against what the same flows would be worth in the benchmark; never advice.
+  function benchmarkDifference(diff, label) {
+    if (!Number.isFinite(diff)) return '';
+    if (diff === 0) return `Same as in ${label}`;
+    return `${money(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than in ${label}`;
+  }
+
+  function benchmarkNavNote(b) {
+    const date = shortDate(b?.navDate);
+    if (!date) return 'No benchmark NAV yet';
+    return `${b.label}${/fund$/i.test(b.label || '') ? '' : ' index fund'} NAV of ${date}`;
+  }
+
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
@@ -772,7 +795,7 @@
     spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, holdingInitials, holdingTypeCounts, filterHoldings, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
-    returnFigure, returnStatus, navNote, shortDate,
+    returnFigure, returnStatus, navNote, shortDate, benchmarkFigure, benchmarkDifference, benchmarkNavNote,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

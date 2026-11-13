@@ -155,6 +155,13 @@ _SCHEMA = """
         nav TEXT NOT NULL,
         nav_date TEXT NOT NULL
     );
+    -- NAV history of the benchmark index funds (app.benchmarks): public data, nothing personal.
+    CREATE TABLE IF NOT EXISTS benchmark_navs (
+        benchmark_id TEXT NOT NULL,
+        nav_date TEXT NOT NULL,
+        nav TEXT NOT NULL,
+        PRIMARY KEY (benchmark_id, nav_date)
+    );
     -- Anonymous daily counts per app page: no profile, session, IP or browser details.
     CREATE TABLE IF NOT EXISTS page_views (
         day TEXT NOT NULL,

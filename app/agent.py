@@ -463,7 +463,9 @@ NO_FUND_DATA_RULE: Final = "No fund data is available here, so never name, rank 
 MF_RETURNS_RULES: Final = (
     "get_mf_returns gives mutual fund returns computed in code from the user's detailed CAS. Quote its figures as "
     "given and never recompute them; give each figure's NAV date and source; say which funds are left out and why, "
-    "and the coverage. These are information, not a recommendation to buy or sell."
+    "and the coverage. These are information, not a recommendation to buy or sell. Compare with a benchmark only "
+    "as the tool gives it: name the benchmark index fund and its NAV date, quote its XIRR and differenceInr as "
+    "given, and say why a fund is not compared when it is not. A benchmark comparison is not a recommendation."
 )
 # Replaces NO_FUND_DATA_RULE when get_goal_fund_comparison is offered (Portfolio Analyzer with a saved goal).
 FUND_COMPARISON_RULES: Final = (

@@ -529,6 +529,23 @@ test('mutual fund returns: status chips and NAV notes', () => {
   assert.equal(finance.navNote({ navSource: null, navDate: null }), 'No NAV available');
 });
 
+test('mutual fund returns: benchmark comparison', () => {
+  assert.deepEqual(finance.benchmarkFigure({ label: 'Nifty 50', status: 'ok', xirr: 11.2, absoluteReturnPct: null }),
+    { short: '11.20%', label: 'Nifty 50 (XIRR)', note: '' });
+  assert.deepEqual(finance.benchmarkFigure({ label: 'Nifty 50', status: 'ok', xirr: null, absoluteReturnPct: -2, returnReason: 'under_one_year' }),
+    { short: '−2.00%', label: 'Nifty 50, held under a year', note: '' });
+  const hybrid = 'Hybrid funds mix asset classes, so no single index fits.';
+  assert.deepEqual(finance.benchmarkFigure({ status: 'none', reason: hybrid }), { short: 'Not compared', label: '', note: hybrid });
+  assert.deepEqual(finance.benchmarkFigure(null), { short: 'Not compared', label: '', note: '' });
+  assert.equal(finance.benchmarkDifference(123456, 'Nifty 50'), '₹1,23,456 more than in Nifty 50');
+  assert.equal(finance.benchmarkDifference(-12345, 'Nifty 50'), '₹12,345 less than in Nifty 50');
+  assert.equal(finance.benchmarkDifference(0, 'Nifty 50'), 'Same as in Nifty 50');
+  assert.equal(finance.benchmarkDifference(null, 'Nifty 50'), '');
+  assert.equal(finance.benchmarkNavNote({ label: 'Nifty 50', navDate: '2026-11-12' }), 'Nifty 50 index fund NAV of 12 Nov 2026');
+  assert.equal(finance.benchmarkNavNote({ label: 'Liquid fund', navDate: '2026-11-12' }), 'Liquid fund NAV of 12 Nov 2026');
+  assert.equal(finance.benchmarkNavNote({ label: 'Nifty 50', navDate: null }), 'No benchmark NAV yet');
+});
+
 /* Goal cards: verdict sentence and ways to close the gap (plan shapes as the server returns them) */
 const scenario = (name, basis, annualReturnPct, projectedAmount, difference) => ({ name, basis, annualReturnPct, projectedAmount, difference, onTrack: difference >= 0 });
 

@@ -33,7 +33,8 @@ from .db import connect_db
 # in-progress question marker.
 # 2026-11-12.1: the mutual fund transactions from a detailed CAS (folio numbers replaced by a code) and the
 # daily download of AMFI's public NAV file.
-POLICY_VERSION: Final = "2026-11-12.1"
+# 2026-11-13.1: the benchmark NAV history downloaded from mfapi.in.
+POLICY_VERSION: Final = "2026-11-13.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -152,8 +153,10 @@ NOTICE: Final = (
         "body": (
             "Once a day CA Mode downloads the public file of mutual fund NAVs that AMFI (amfiindia.com) publishes, "
             "to value your funds at the latest NAV. The request is the same for everyone and sends nothing about "
-            "you. The NAVs are stored in the same SQLite file, are not linked to any profile, and are not part of "
-            "your export."
+            "you. To compare your funds with an index, it also downloads the public NAV history of five index and "
+            "liquid funds from mfapi.in and adds each day's NAV from the AMFI file. Those requests name only those "
+            "five funds and send nothing about you or your holdings. The NAVs are stored in the same SQLite file, are "
+            "not linked to any profile, and are not part of your export."
         ),
     },
     {

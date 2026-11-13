@@ -694,7 +694,7 @@ def test_export_never_holds_oauth_tokens(client, signed_in, mcp):
 
 def test_the_notice_explains_stored_tokens_and_the_version_is_bumped():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-12.1"
+    assert privacy.POLICY_VERSION == "2026-11-13.1"
     body = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")["body"]
     for word in ("refresh token", "encrypted", "never exported", "read-only", "Upstox", "Kotak"):
         assert word in body
@@ -834,7 +834,11 @@ def test_indmoney_tools_route_marks_the_allowlist(client, signed_in, monkeypatch
     assert tools == {read: "read", "place_order": "write", "mystery_tool": "not_enabled"}
 
 
-def test_free_plan_refuses_a_third_broker_on_every_connect_route(client, signed_in, oauth):
+def test_free_plan_refuses_a_third_broker_on_every_connect_route(client, signed_in, oauth, monkeypatch):
+    async def fake_registration(redirect_uri):  # INDmoney's own discovery and registration, never the network
+        return {"authorization_endpoint": "https://auth.example/authorize"}, {"client_id": "cid", "client_secret": "cs"}
+
+    monkeypatch.setattr(main, "register_oauth_client", fake_registration)
     seed(signed_in["id"], "indmoney", "zerodha")
     listed = client.get("/api/brokers").json()
     assert listed["limit"] == 2 and listed["connected"] == 2

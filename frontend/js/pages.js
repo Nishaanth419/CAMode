@@ -315,6 +315,7 @@ document.addEventListener('ca:session-ended', () => {
   document.getElementById('holdings-csv').hidden = true;
   Object.assign(holdingsView, { type: 'ALL', query: '', sort: 'value' });
   reportPoints = [];
+  returnsBenchmark = 'nifty50';
   resetActivity();
   for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'returns-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
@@ -953,12 +954,45 @@ document.getElementById('holdings-csv').addEventListener('click', () => {
 /* ── Returns & tax ──────────────────────────────────────────────────── */
 // Mutual fund returns from GET /api/returns; every figure is computed on the server.
 const RETURNS_NOTE = 'Figures are information, not advice or a recommendation to buy or sell.';
+let returnsBenchmark = 'nifty50'; // The portfolio's benchmark; each fund is compared with its category's own.
 
 function returnCell(item) {
   const figure = returnFigure(item);
   // An excluded fund's reason is already under its name.
   const note = figure.note && figure.note !== item.reason ? figure.note : '';
   return `${escHtml(figure.short)}${figure.label ? `<small class="stat-sub">${escHtml(figure.label)}</small>` : ''}${note ? `<small class="stat-sub">${escHtml(note)}</small>` : ''}`;
+}
+
+// A fund's benchmark: its return on the same cash flows and the rupee difference, or why it is not compared.
+function benchmarkCell(item) {
+  const b = item.benchmark || {};
+  const figure = benchmarkFigure(b);
+  const difference = b.status === 'ok' ? benchmarkDifference(b.differenceInr, b.label) : '';
+  const sub = [figure.label, difference || figure.note].filter(Boolean);
+  // An excluded fund's reason is already under its name.
+  if (b.status === 'excluded') sub.length = 0;
+  return `${escHtml(figure.short)}${sub.map((line) => `<small class="stat-sub">${escHtml(line)}</small>`).join('')}`;
+}
+
+function benchmarkPanel(data) {
+  const p = data.portfolio;
+  const b = p.benchmark || {};
+  const info = data.benchmark || {};
+  const chips = (info.options || []).map((option) =>
+    `<button type="button" class="filter-chip" data-returns-benchmark="${escHtml(option.id)}" aria-pressed="${option.id === info.id}">${escHtml(option.label)}</button>`).join('');
+  const own = returnFigure(p);
+  const theirs = benchmarkFigure(b);
+  const difference = b.status === 'ok' ? benchmarkDifference(b.differenceInr, b.label) : '';
+  return reportCard('Compared with a benchmark', `
+    <div class="filter-chips benchmark-chips" role="group" aria-label="Benchmark">${chips}</div>
+    <div class="kpi-strip kpi-strip-3">
+      ${kpiCard('Your mutual funds', own.short, own.label || own.note)}
+      ${kpiCard(info.label || 'Benchmark', theirs.short, b.status === 'ok' ? benchmarkNavNote({ label: info.label, navDate: b.navDate }) : theirs.note)}
+      ${b.status === 'ok'
+    ? kpiCard('Difference', signedMoney(b.differenceInr), `${difference}: your value minus the same cash flows in the benchmark`, toneOf(b.differenceInr))
+    : kpiCard('Difference', 'Not compared', theirs.note)}
+    </div>
+    <p class="page-muted">Benchmark fund: ${escHtml(info.schemeName || '')}${info.navDate ? `, latest NAV ${escHtml(formatDate(info.navDate))}` : ''}. ${escHtml(info.note || '')} Each fund below is compared with the index for its category.</p>`);
 }
 
 function returnsSchemeRow(item) {
@@ -968,6 +1002,7 @@ function returnsSchemeRow(item) {
   return `<tr>
     <td>${escHtml(item.name)}${chip}${reason}</td>
     <td data-label="Return">${returnCell(item)}</td>
+    <td data-label="vs benchmark">${benchmarkCell(item)}</td>
     <td data-label="Current value">${money(item.currentValue)}<small class="stat-sub">${escHtml(navNote(item))}</small></td>
     <td data-label="Invested">${money(item.invested)}</td>
     <td data-label="Unrealised">${money(item.unrealisedGain)}</td>
@@ -983,7 +1018,7 @@ async function renderReturns() {
   setHtml(body, loadingBlock());
   let data;
   try {
-    data = await fetchJson('/api/returns'); // Not cached: a new upload changes it.
+    data = await fetchJson(`/api/returns?benchmark=${encodeURIComponent(returnsBenchmark)}`); // Not cached: a new upload changes it.
   } catch (error) {
     if (isCurrent()) setHtml(body, errorBlock(error));
     return;
@@ -1015,12 +1050,20 @@ async function renderReturns() {
       ${kpiCard('Unrealised gain', money(p.unrealisedGain), '', toneOf(p.unrealisedGain))}
       ${kpiCard('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}
     </div>
+    ${data.benchmark ? benchmarkPanel(data) : ''}
     ${excluded ? reportCard('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul class="note-list">${excluded}</ul>`) : ''}
     ${reportCard('By fund', `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
-      <th>Fund</th><th>Return</th><th>Current value</th><th>Invested</th><th>Unrealised</th><th>Realised</th>
+      <th>Fund</th><th>Return</th><th>vs benchmark</th><th>Current value</th><th>Invested</th><th>Unrealised</th><th>Realised</th>
     </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
     <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
+
+document.getElementById('returns-body').addEventListener('click', (event) => {
+  const chip = event.target.closest('[data-returns-benchmark]');
+  if (!chip || chip.dataset.returnsBenchmark === returnsBenchmark) return;
+  returnsBenchmark = chip.dataset.returnsBenchmark;
+  renderReturns();
+});
 
 /* ── Calculators ───────────────────────────────────────────────────── */
 const CALCULATORS = {
