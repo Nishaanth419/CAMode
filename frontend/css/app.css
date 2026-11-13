@@ -2437,8 +2437,8 @@ body.gate-open #app { visibility: hidden; }
 .broker-logo { width: 24px; height: 24px; flex: none; border-radius: 6px; object-fit: cover; }
 .broker-head, .connection-row .broker-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .gate-secondary:disabled { opacity: .45; cursor: not-allowed; }
-.holdings-table .holding-name-cell { display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-width: 0; text-align: left; }
-.holdings-table .holding-name-cell .holding-text { min-width: 0; }
+.holding-name-cell { display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-width: 0; text-align: left; }
+.holding-name-cell .holding-text { min-width: 0; }
 .holding-cell .holding-logo { margin: 0; }
 .broker-monogram { display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2, #e6e8ec); color: var(--muted, #555); font-size: 13px; font-weight: 600; }
 
