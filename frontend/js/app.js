@@ -1379,7 +1379,8 @@ brokersList.addEventListener('click', async (event) => {
 document.addEventListener('error', (event) => {
   const image = event.target;
   if (!(image instanceof HTMLImageElement) || !image.classList.contains('broker-logo')) return;
-  image.replaceWith(Object.assign(document.createElement('span'), { className: 'broker-logo broker-monogram', textContent: image.dataset.monogram || '?', ariaHidden: 'true' }));
+  const holding = image.classList.contains('holding-logo') ? ' holding-logo' : '';
+  image.replaceWith(Object.assign(document.createElement('span'), { className: `broker-logo broker-monogram${holding}`, textContent: image.dataset.monogram || '?', ariaHidden: 'true' }));
 }, true);
 
 profileDialog.addEventListener('close', stopBrokerPolling);

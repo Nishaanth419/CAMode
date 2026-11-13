@@ -683,7 +683,7 @@ function holdingsTable(holdings, { compact = false } = {}) {
     const where = [item.broker, assetTypeLabel(item.asset_type)].filter(Boolean).join(' · ');
     const ask = `Tell me about my holding ${item.name}: its value, P&L, share of my portfolio, and anything to keep an eye on.`;
     return `<tr>
-      <td><span class="holding-name">${escHtml(item.name || item.code || 'Unnamed')}</span><small>${escHtml(where)}</small></td>
+      <td><div class="holding-name-cell">${holdingLogoHtml(item)}<span class="holding-text"><span class="holding-name">${escHtml(item.name || item.code || 'Unnamed')}</span><small>${escHtml(where)}</small></span></div></td>
       <td>${money(item.current_value_inr)}${Number.isFinite(item.current_value_usd) ? `<small>$${plainNumber.format(item.current_value_usd)}</small>` : ''}</td>
       ${compact ? '' : `<td>${money(item.invested_inr)}</td>`}
       <td class="${toneOf(item.pnl_inr)}">${item.pnl_inr === null ? '<span class="page-muted" title="No invested amount reported (usually a linked broker)">n/a</span>' : `${signedMoney(item.pnl_inr)}<small>${percent(item.pnl_pct, { signed: true })}</small>`}</td>
@@ -796,7 +796,7 @@ function holdingsRows(rows) {
     const ask = `Tell me about my holding ${name}: its value, P&L, share of my portfolio, and anything to keep an eye on.`;
     return `<tr>
       <th scope="row" class="h-name"><span class="holding-cell">
-        <span class="holding-tile ${HOLDING_TONES[item.asset_type] || 'tone-other'}" aria-hidden="true">${escHtml(holdingInitials(name))}</span>
+        ${item.logo ? holdingLogoHtml(item) : `<span class="holding-tile ${HOLDING_TONES[item.asset_type] || 'tone-other'}" aria-hidden="true">${escHtml(holdingInitials(name))}</span>`}
         <span class="holding-text"><span class="holding-name">${escHtml(name)}</span><small>${escHtml(kind)}</small></span></span></th>
       <td class="h-value">${escHtml(money(item.current_value_inr))}${Number.isFinite(item.current_value_usd) ? `<small>$${escHtml(plainNumber.format(item.current_value_usd))}</small>` : ''}</td>
       <td class="h-invested" data-label="Invested">${escHtml(money(item.invested_inr))}</td>

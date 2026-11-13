@@ -661,6 +661,16 @@
     return `<span class="broker-logo broker-monogram" aria-hidden="true">${escapeText(letter)}</span>`;
   }
 
+  // A holding's logo (served from our own /api/logos/ cache, never another host) or, when none is cached, its monogram.
+  function holdingLogoHtml(item) {
+    const name = item?.name || item?.code;
+    const logo = item?.logo;
+    if (typeof logo === 'string' && logo.startsWith('/api/logos/')) {
+      return `<img class="broker-logo holding-logo" src="${escapeText(logo)}" alt="" width="24" height="24" loading="lazy" data-monogram="${escapeText(monogram(name))}">`;
+    }
+    return monogramHtml(monogram(name)).replace('class="broker-logo broker-monogram"', 'class="broker-logo broker-monogram holding-logo"');
+  }
+
   // Whether Connect is disabled for a broker: not connected yet, a plan with a limit, and the limit already used.
   function brokerConnectBlocked(broker, limit, connected) {
     return broker?.status === 'disconnected' && Number.isFinite(limit) && Number.isFinite(connected) && connected >= limit;
@@ -792,7 +802,7 @@
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
     GOAL_CURRENCIES, amount, amountShort, totalsByCurrency, formatTotals, goalStatus, goalIsOnTrack, headlineTarget, isDraft, allocationRemaining, suitabilityGroups, alternativeLabel, baseScenario, goalVerdict, gapOption, gapOptions,
-    spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, holdingInitials, holdingTypeCounts, filterHoldings, brokerStatusLabel, monogram, brokerLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
+    spanLabel, spanPhrase, niceTicks, goalTone, allocationShares, historyChange, historySeries, portfolioInsights, fundMetricValue, fundMetricNote, holdingsTabs, holdingInitials, holdingTypeCounts, filterHoldings, brokerStatusLabel, monogram, brokerLogoHtml, holdingLogoHtml, monogramHtml, brokerConnectBlocked, LIMIT_NOTE,
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
     returnFigure, returnStatus, navNote, shortDate, benchmarkFigure, benchmarkDifference, benchmarkNavNote,

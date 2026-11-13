@@ -615,3 +615,19 @@ test('gapOptions shows up to three options on the first basis with the exact fig
   assert.deepEqual(late.options, [{ title: 'Set aside ₹5,000 more today', note: 'On top of what is saved and linked' }]);
   assert.deepEqual(late.others, []);
 });
+
+test('holdingLogoHtml shows a cached logo or a monogram and escapes names', () => {
+  const f = require('../../frontend/js/finance.js');
+  const logo = f.holdingLogoHtml({ name: 'Infosys', logo: '/api/logos/in:M%26M' });
+  assert.match(logo, /<img class="broker-logo holding-logo" src="\/api\/logos\/in:M%26M"/);
+  assert.match(logo, /alt=""/);
+  assert.match(logo, /data-monogram="I"/);
+  const none = f.holdingLogoHtml({ name: 'Infosys' });
+  assert.doesNotMatch(none, /<img/);
+  assert.match(none, /holding-logo/);
+  assert.match(none, />I</);
+  assert.doesNotMatch(f.holdingLogoHtml({ name: 'Infosys', logo: 'https://evil.example/x.png' }), /<img/);
+  assert.match(f.holdingLogoHtml({ code: 'abc' }), />A</);
+  const xss = f.holdingLogoHtml({ name: '<script>', logo: '/api/logos/in:X' });
+  assert.doesNotMatch(xss, /<script>/);
+});
