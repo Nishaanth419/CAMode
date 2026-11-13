@@ -568,6 +568,7 @@ def test_portfolio_and_broker_holdings_carry_logo(client, signed_in):
     _cache_infy()
     for holdings in (
         client.get("/api/portfolio").json()["holdings"],
+        client.get("/api/portfolio").json()["figures"]["top_holdings"],
         client.get("/api/holdings/combined").json()["sources"][0]["holdings"],
         client.get("/api/holdings/combined").json()["combined"]["holdings"],
     ):
