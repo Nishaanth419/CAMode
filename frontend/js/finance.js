@@ -788,6 +788,47 @@
     return `${b.label}${/fund$/i.test(b.label || '') ? '' : ' index fund'} NAV of ${date}`;
   }
 
+  // Mutual fund tax (GET /api/tax). The figures come from the server; these only word them.
+  const TAX_SLAB_NOTE = 'Depends on your tax slab. Add it in your profile to include it in the estimate.';
+  const TAX_CLASSES = {
+    equity: 'Equity-oriented', debt: 'Debt (specified fund)', other: 'Other (gold, international, FoFs)', unclassified: 'Not classified',
+  };
+
+  function fyLabel(fy) {
+    return fy ? `FY ${fy}` : '';
+  }
+
+  function taxClassLabel(taxClass) {
+    return TAX_CLASSES[taxClass] || 'Not classified';
+  }
+
+  function termLabel(term) {
+    return term === 'short' ? 'Short-term' : term === 'long' ? 'Long-term' : 'No rule';
+  }
+
+  function taxRate(rate) {
+    if (rate === 'slab') return 'Your slab';
+    return Number.isFinite(rate) ? `${rate}%` : '—';
+  }
+
+  // The equity long-term exemption: how much of the limit this statement's gains used.
+  function exemptionShare(exemption) {
+    if (!exemption || !Number.isFinite(exemption.limit) || !exemption.limit) return { usedPct: null, used: null, left: null, text: '' };
+    const usedPct = Math.min(100, Math.max(0, Math.round((exemption.used / exemption.limit) * 100)));
+    return {
+      usedPct, used: exemption.used, left: exemption.left,
+      text: `${money(exemption.used)} of ${money(exemption.limit)} used; ${money(exemption.left)} left`,
+    };
+  }
+
+  // The estimated tax for a stat tile: never ₹0 when the slab-taxed part is unknown.
+  function taxEstimate(tax) {
+    if (!tax) return { short: 'Not estimated', note: '' };
+    if (tax.status === 'estimated' && Number.isFinite(tax.total)) return { short: money(tax.total), note: 'Estimate incl. 4% cess' };
+    if (tax.status === 'partial' && Number.isFinite(tax.total)) return { short: `${money(tax.total)} + slab tax`, note: TAX_SLAB_NOTE };
+    return { short: 'Not estimated', note: TAX_SLAB_NOTE };
+  }
+
   const api = {
     inr, money, moneyShort, signedMoney, signedShort, percent, timeAgo,
     sipValue, grow, monthlyNeeded, goalKind, goalIcon,
@@ -796,6 +837,7 @@
     brokersNeedingAttention, brokerBannerText, brokerReconnectAction, bannerDismissed, dismissBanner, brokersToCheck, localDay,
     TAX_RULES, slabTax, regimeTax, incomeTax,
     returnFigure, returnStatus, navNote, shortDate, benchmarkFigure, benchmarkDifference, benchmarkNavNote,
+    TAX_SLAB_NOTE, fyLabel, taxClassLabel, termLabel, taxRate, exemptionShare, taxEstimate,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

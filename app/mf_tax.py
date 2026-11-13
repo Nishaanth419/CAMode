@@ -578,6 +578,8 @@ def position(lots: Sequence[SchemeLots], fy: str, slab_pct: int | None) -> dict:
         "rows": [{"taxClass": r["taxClass"], "term": r["term"], "ruleId": r["ruleId"], "rate": _rate_out(r["rate"]),
                   "section": r["section"], "gains": _money(r["gains"]), "losses": _money(r["losses"]),
                   "net": _money(r["gains"] - r["losses"])} for r in rows.values()],
+        "totals": {term + "Term": _money(sum((r["gains"] - r["losses"] for r in rows.values() if r["term"] == term),
+                                             _ZERO)) for term in ("short", "long")},
         "setOff": set_off,
         "exemption": {"limit": _money(limit), "used": _money(used), "left": _money(left), "note": EXEMPTION_NOTE},
         "tax": tax_block,

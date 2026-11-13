@@ -355,6 +355,7 @@ def test_position_splits_by_class_and_term():
     # 30,000 x 20% + (2,00,000 - 1,25,000) x 12.5% + 10,000 x 30% = 6,000 + 9,375 + 3,000 = 18,375; cess 735.
     assert (tax["status"], tax["beforeCess"], tax["cess"], tax["total"], tax["slabPct"]) == ("estimated", 18375.0, 735.0, 19110.0, 30)
     assert result["act"] == "Income-tax Act, 1961"
+    assert result["totals"] == {"shortTerm": 40000.0, "longTerm": 200000.0}  # net realised, before set-off
     assert mf_tax.ESTIMATE_NOTE in result["notes"] and mf_tax.FIGURES_NOTE in result["notes"]
 
 

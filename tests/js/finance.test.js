@@ -615,3 +615,37 @@ test('gapOptions shows up to three options on the first basis with the exact fig
   assert.deepEqual(late.options, [{ title: 'Set aside ₹5,000 more today', note: 'On top of what is saved and linked' }]);
   assert.deepEqual(late.others, []);
 });
+
+test('tax helpers label financial years, classes and terms', () => {
+  assert.equal(finance.fyLabel('2026-27'), 'FY 2026-27');
+  assert.equal(finance.taxClassLabel('equity'), 'Equity-oriented');
+  assert.equal(finance.taxClassLabel('debt'), 'Debt (specified fund)');
+  assert.equal(finance.taxClassLabel('other'), 'Other (gold, international, FoFs)');
+  assert.equal(finance.taxClassLabel('unclassified'), 'Not classified');
+  assert.equal(finance.termLabel('short'), 'Short-term');
+  assert.equal(finance.termLabel('long'), 'Long-term');
+  assert.equal(finance.termLabel(null), 'No rule');
+});
+
+test('exemptionShare describes the exemption used and left', () => {
+  assert.deepEqual(finance.exemptionShare({ limit: 125000, used: 75000, left: 50000 }),
+    { usedPct: 60, used: 75000, left: 50000, text: '₹75,000 of ₹1,25,000 used; ₹50,000 left' });
+  assert.equal(finance.exemptionShare({ limit: 125000, used: 200000, left: 0 }).usedPct, 100);
+  assert.deepEqual(finance.exemptionShare(null), { usedPct: null, used: null, left: null, text: '' });
+});
+
+test('taxEstimate never shows an unknown tax as zero', () => {
+  assert.deepEqual(finance.taxEstimate({ status: 'estimated', total: 19110 }), { short: '₹19,110', note: 'Estimate incl. 4% cess' });
+  assert.deepEqual(finance.taxEstimate({ status: 'estimated', total: 0 }), { short: '₹0', note: 'Estimate incl. 4% cess' });
+  assert.deepEqual(finance.taxEstimate({ status: 'partial', total: 15990 }), { short: '₹15,990 + slab tax', note: finance.TAX_SLAB_NOTE });
+  assert.deepEqual(finance.taxEstimate({ status: 'none', total: null }), { short: 'Not estimated', note: finance.TAX_SLAB_NOTE });
+  assert.deepEqual(finance.taxEstimate(null), { short: 'Not estimated', note: '' });
+  assert.equal(finance.TAX_SLAB_NOTE, 'Depends on your tax slab. Add it in your profile to include it in the estimate.');
+});
+
+test('taxRate shows slab or a percentage', () => {
+  assert.equal(finance.taxRate('slab'), 'Your slab');
+  assert.equal(finance.taxRate(12.5), '12.5%');
+  assert.equal(finance.taxRate(20), '20%');
+  assert.equal(finance.taxRate(null), '—');
+});

@@ -73,7 +73,7 @@ const settingsNotice = document.getElementById('settings-notice');
 const planBrokers = document.getElementById('plan-brokers');
 const planName = document.getElementById('plan-name');
 const planUsage = document.getElementById('plan-usage');
-const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal'];
+const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal', 'taxSlabPct'];
 // The sidebar lists this many recent chats; "See all" opens the full list.
 const SIDEBAR_CHATS = 6;
 let isConnected = false;
@@ -996,7 +996,8 @@ profileForm.addEventListener('submit', async (event) => {
     const input = document.getElementById(`field-${field}`);
     const value = input.value.trim();
     if (value === '') continue;
-    body[field] = input.type === 'number' ? Number(value) : value;
+    // A select of numbers (the tax slab) is marked data-number: the API takes a number, never "20".
+    body[field] = input.type === 'number' || 'number' in input.dataset ? Number(value) : value;
   }
   await withPending(button, profileFormStatus, async () => {
     const response = await fetch('/api/profile', {
@@ -1007,6 +1008,7 @@ profileForm.addEventListener('submit', async (event) => {
       throw new Error(Array.isArray(data.detail) ? 'Check the highlighted values and try again.' : plainError(response.status, data));
     }
     profileFormStatus.textContent = 'Saved.';
+    document.dispatchEvent(new CustomEvent('ca:profile'));
     setTimeout(() => profileDialog.close(), 600);
   });
 });
