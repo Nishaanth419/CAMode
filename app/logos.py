@@ -139,7 +139,7 @@ async def download(url: str, client: httpx.AsyncClient) -> tuple[bytes, str] | N
             request = client.build_request("GET", current, timeout=LOGO_TIMEOUT_SECONDS)
             request.headers.clear()
             request.headers["Accept"] = "image/png,image/jpeg,image/webp"
-            response = await client.send(request, stream=True, follow_redirects=False)
+            response = await client.send(request, stream=True, follow_redirects=False, auth=None)
             try:
                 if response.is_redirect:
                     location = response.headers.get("location")

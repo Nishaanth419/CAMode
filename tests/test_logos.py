@@ -143,3 +143,21 @@ def test_download_sends_no_client_default_headers():
 
     assert asyncio.run(run()) == (PNG, "png")
     assert "authorization" not in seen[0].headers and "cookie" not in seen[0].headers
+
+
+def test_download_ignores_client_level_auth_on_every_hop():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.host == "x.test":
+            return httpx.Response(302, headers={"location": "https://y.test/a.png"})
+        return httpx.Response(200, content=PNG)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), auth=("u", "p")) as client:
+            return await logos.download("https://x.test/a.png", client)
+
+    assert asyncio.run(run()) == (PNG, "png")
+    assert len(seen) == 2
+    assert all("authorization" not in request.headers for request in seen)
