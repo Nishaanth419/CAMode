@@ -163,13 +163,16 @@ NOTICE: Final = (
     {
         "title": "Logos",
         "body": (
-            "To show a logo beside each holding, the server looks up the ticker of each stock at logo.dev "
-            "(logo.dev) and the id of each mutual fund at INDmoney, using your own INDmoney connection. A request "
-            "names only that ticker or fund id: never your name, your amounts or your other holdings. The logo "
-            "images are kept on the server in a folder, with a small record of what was found, and are shared by "
-            "every profile. They are public images, not part of your data, so your export does not include them and "
-            "clearing your history or deleting your profile does not remove them. If no logo.dev key is set on this "
-            "copy, stocks show a letter instead of a logo."
+            "To show a logo beside each holding, the server asks for it. For mutual funds it asks INDmoney, which "
+            "already has your holdings: the ids of your funds go to INDmoney, up to 10 in one request, using your "
+            "own INDmoney connection. The fund house's image is then downloaded from the address INDmoney gives, "
+            "which may be another site. For stocks it asks logo.dev, one ticker per request, under this server's "
+            "own key. The requests for stocks newly in your holdings go out together just after your snapshot "
+            "or broker holdings are fetched, so that service could tell they belong together, but it sees this server's "
+            "network address, not who you are. The images are kept on the server and shared by every profile; "
+            "each profile's links to them are signed, so another profile cannot use them to see what you hold. "
+            "The images are not part of your export, and clearing your history or deleting your profile does not "
+            "remove them. If this copy has no such key, stocks show a letter instead of a logo."
         ),
     },
     {

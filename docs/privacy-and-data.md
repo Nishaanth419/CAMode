@@ -45,6 +45,10 @@ Keep `.env`, `.data/`, and any database backups private; none of them should be 
 
 Connecting a broker stores only what is needed to read it again: the MCP session id, or the OAuth tokens and registered client of Upstox, Dhan and Groww, or Kotak's login session, all encrypted with the master key; the latest holdings fetched and one holdings record per day, sealed with your PIN like snapshots. Passwords are never seen by CA Mode: you log in on the broker's own site. Tokens and session ids are never exported or shown (the export has each broker's holdings and history under `brokers`). Disconnecting a broker deletes its connection, holdings and history; private mode keeps none of them. INDmoney's tokens are still in `users.indmoney` and its snapshots in `portfolio_snapshots`, as before. The Free plan's 2-broker limit and the broker logos (static icons served from the app) store and share nothing new, so they needed no change to the privacy notice: `POLICY_VERSION` stays 2026-11-06.3, the version that added the daily broker holdings history (2026-11-06.1 added broker connections and 2026-11-06.2 the OAuth tokens).
 
+## Holding logos
+
+To show a logo beside each holding, the server sends your mutual fund ids to INDmoney (which already has your holdings), up to 10 per request, over your own INDmoney connection, then downloads each fund house's image from the address INDmoney gives, which may be another site. For stocks it asks logo.dev for one ticker per request under the server's own key (`LOGO_DEV_TOKEN`); the requests for stocks newly in your holdings go out together just after a snapshot or broker holdings fetch, and logo.dev sees the server's network address, not who you are. Without a key, stocks show a letter. The images and the `logos` table are shared by every profile and are not part of the export, history clearing or profile deletion. Because the cache is shared, a plain link would let one profile ask whether a ticker or fund is cached (and so whether someone on this copy holds it): every `logo` link the app hands out carries `?s=`, an HMAC-SHA256 of the profile id and the key under a key derived from the master key, and `GET /api/logos/{key}` gives a missing or wrong signature the same 404 as a logo that is not cached. Agent tools never return logo links.
+
 ## Consent and storage modes
 
 Each profile must accept the privacy notice before it can chat, connect INDmoney, or have snapshots captured. Every acceptance, including a later change of storage settings, is recorded in the `consents` table with the notice version and a timestamp. When the notice changes (`POLICY_VERSION` in `app/privacy.py`), every profile is asked again, and its snapshots pause until it accepts.
@@ -151,7 +155,7 @@ erDiagram
 | Table | Primary key | Columns (all plain) | Kept |
 | --- | --- | --- | --- |
 | `question_counts` | `user_id`, `day` | `questions`: answered questions on a local day, for the Free plan's daily cap | today and yesterday |
-| `logos` | `key` | `status` (`found`, `missing`, `failed`), `file`, `checked_at`: which holding logos are on disk under `<APP_DATA_DIR>/logos/`; public images shared by every profile, not linked to a profile, not exported, not cleared with history or profile deletion | until the server's data is removed |
+| `logos` | `key` | `status` (`found`, `missing`, `failed`), `file`, `checked_at`: which holding logos are on disk under `<APP_DATA_DIR>/logos/`; public images shared by every profile, not linked to a profile, not exported, not cleared with history or profile deletion; each profile's links to them are signed (see "Holding logos") | until the server's data is removed |
 | `page_views` | `day`, `route` | `views`: how often each app page was opened; no profile, session, IP or browser | 90 days |
 
 `chats_legacy` appears only in databases from before profiles existed: the old chats, adopted by the first profile that signs in from the same browser.

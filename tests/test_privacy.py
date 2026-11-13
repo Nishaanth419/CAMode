@@ -349,4 +349,7 @@ def test_notice_mentions_logos():
 
     logos = sections["Logos"]
     assert "logo.dev" in logos and "ticker" in logos and "INDmoney" in logos
+    assert "shared" in logos and "export" in logos and "letter" in logos
+    assert "up to 10" in logos and "network address" in logos and "signed" in logos
+    assert "(logo.dev)" not in logos and "never your name, your amounts or your other holdings" not in logos
     assert privacy.POLICY_VERSION == "2026-11-13.2"
