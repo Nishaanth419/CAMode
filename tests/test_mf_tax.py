@@ -470,3 +470,142 @@ def test_scheme_rows_carry_flags_in_words():
 
     assert (row["name"], row["taxClass"], row["shortTerm"], row["longTerm"]) == ("Fund A", "equity", 0.0, 1000.0)
     assert row["flags"] == [mf_tax.FLAG_MESSAGES["no_2018_nav"]]
+
+
+# ── Sell-planning ──────────────────────────────────────────────────────────────
+
+import re  # noqa: E402
+
+TODAY = day("2027-01-15")  # FY 2026-27
+NO_GAINS_YET = {"exemption": {"left": 125000.0}, "tax": {"items": []}}
+
+
+def plan_for(schemes, categories: dict[str, str], *, nav: str = "500", nav_on: str = "2027-01-14",
+             position: dict | None = None, slab: int | None = None, missing_nav: tuple[str, ...] = ()):
+    navs = {isin: nav_row(isin, category, nav, nav_on) for isin, category in categories.items()
+            if isin not in missing_nav}
+    lots = mf_tax.tax_lots(schemes, {isin: nav_row(isin, c) for isin, c in categories.items()}, fmv={}.get)
+    return mf_tax.planning(lots, navs, TODAY, position or NO_GAINS_YET, slab)
+
+
+HARVESTABLE = scheme("INF1", [txn("2020-01-01", "PURCHASE", "10000", "100"),  # value 50,000: gain 40,000, long
+                              txn("2021-01-01", "PURCHASE", "50000", "200"),  # value 1,00,000: gain 50,000, long
+                              txn("2026-06-01", "PURCHASE", "4000", "10")], "310")  # short-term
+
+
+def test_gain_harvest_stops_before_first_short_term_lot():
+    (option,) = plan_for([HARVESTABLE], {"INF1": EQUITY})["gainHarvest"]
+
+    assert (option["units"], option["value"], option["gain"], option["tax"], option["stoppedBy"]) == (
+        300.0, 150000.0, 90000.0, 0.0, "short_term")
+    assert (option["nav"], option["navDate"], option["navSource"]) == (500.0, "2027-01-14", "amfi")
+
+
+def test_gain_harvest_stays_within_the_exemption_left():
+    position = {"exemption": {"left": 60000.0}, "tax": {"items": []}}
+
+    (option,) = plan_for([HARVESTABLE], {"INF1": EQUITY}, position=position)["gainHarvest"]
+
+    # The first lot (40,000) and 200 x 20,000 / 50,000 = 80 units of the second: 180 units, gain 60,000.
+    assert (option["units"], option["value"], option["gain"], option["stoppedBy"]) == (180.0, 90000.0, 60000.0, "exemption")
+
+
+def test_gain_harvest_needs_a_long_term_equity_lot_first():
+    young = scheme("INF1", [txn("2026-06-01", "PURCHASE", "4000", "10"),
+                            txn("2026-07-01", "PURCHASE", "4000", "10")], "20")
+    debt = scheme("INF2", [txn("2020-01-01", "PURCHASE", "10000", "100")], "100")
+
+    result = plan_for([young, debt], {"INF1": EQUITY, "INF2": DEBT})
+
+    assert result["gainHarvest"] == []
+
+
+def test_loss_harvest_takes_the_most_loss_in_fifo_order():
+    fund = scheme("INF1", [txn("2020-01-01", "PURCHASE", "55000", "100"),  # 50,000: -5,000 long
+                           txn("2026-09-01", "PURCHASE", "8000", "10"),  # 5,000: -3,000 short
+                           txn("2026-10-01", "PURCHASE", "40000", "100")], "210")  # 50,000: +10,000 short
+    winner = scheme("INF2", [txn("2020-01-01", "PURCHASE", "1000", "10")], "10")
+    position = {"exemption": {"left": 125000.0}, "tax": {"items": [{"term": "short", "taxable": 6000.0}]}}
+
+    result = plan_for([fund, winner], {"INF1": EQUITY, "INF2": EQUITY}, position=position)
+
+    (option,) = result["lossHarvest"]
+    assert (option["name"], option["units"], option["value"], option["loss"]) == ("Fund INF1", 110.0, 55000.0, 8000.0)
+    assert (option["shortTermResult"], option["longTermResult"]) == (-3000.0, -5000.0)
+    # The long-term 5,000 finds no long-term gain; the short-term 3,000 offsets 3,000 of the 6,000 taxable.
+    assert option["couldOffset"] == 3000.0
+
+
+def test_turning_long_term_in_90_days():
+    fund = scheme("INF1", [txn("2020-01-01", "PURCHASE", "10000", "100"),
+                           txn("2026-03-19", "PURCHASE", "10000", "100"),  # long-term from 20 Mar 2027
+                           txn("2026-04-20", "PURCHASE", "10000", "100")], "300")  # 21 Apr 2027: 96 days away
+    gold = scheme("INF2", [txn("2025-03-20", "PURCHASE", "10000", "100")], "100")  # 24 months: 21 Mar 2027
+    debt = scheme("INF3", [txn("2024-01-01", "PURCHASE", "10000", "100")], "100")
+
+    result = plan_for([fund, gold, debt], {"INF1": EQUITY, "INF2": "Other Scheme - FoF Overseas", "INF3": DEBT}, nav="200")
+
+    equity_option, gold_option = result["turningLongTerm"]
+    assert (equity_option["longTermOn"], equity_option["units"], equity_option["unitsBefore"], equity_option["gain"]) == (
+        "2027-03-20", 100.0, 100.0, 10000.0)
+    # 10,000 x 20% now against 10,000 x 12.5% after 20 Mar 2027.
+    assert (equity_option["taxNow"], equity_option["taxAfter"], equity_option["extraTax"]) == (2000.0, 1250.0, 750.0)
+    assert equity_option["extraTaxNote"] == "If the gain also fits within the exemption, the saving is larger."
+    assert (gold_option["name"], gold_option["longTermOn"], gold_option["taxNow"], gold_option["taxAfter"],
+            gold_option["extraTax"], gold_option["extraTaxNote"]) == (
+        "Fund INF2", "2027-03-21", None, 1250.0, None, mf_tax.SLAB_NOTE)
+
+
+def test_turning_long_term_with_a_slab():
+    gold = scheme("INF2", [txn("2025-03-20", "PURCHASE", "10000", "100")], "100")
+
+    (option,) = plan_for([gold], {"INF2": "Other Scheme - FoF Overseas"}, nav="200", slab=30)["turningLongTerm"]
+
+    assert (option["taxNow"], option["taxAfter"], option["extraTax"]) == (3000.0, 1250.0, 1750.0)
+
+
+def test_elss_units_within_three_years_never_offered():
+    fund = scheme("INF1", [txn("2023-12-01", "PURCHASE", "10000", "100"),  # free since 2 Dec 2026
+                           txn("2024-02-01", "PURCHASE", "10000", "100")], "200")  # locked until 1 Feb 2027
+
+    result = plan_for([fund], {"INF1": "ELSS"}, nav="200")
+
+    (option,) = result["gainHarvest"]
+    assert (option["units"], option["gain"], option["stoppedBy"]) == (100.0, 10000.0, "elss_lock")
+    assert result["elssLocked"] == [{"name": "Fund INF1", "units": 100.0, "unlocksOn": "2027-02-02"}]
+
+
+def test_planning_without_or_with_a_stale_nav():
+    missing = scheme("INF1", [txn("2020-01-01", "PURCHASE", "10000", "100")], "100")
+    stale = scheme("INF2", [txn("2020-01-01", "PURCHASE", "10000", "100")], "100")
+    navs = {"INF2": nav_row("INF2", EQUITY, "500", "2026-12-01")}
+    lots = mf_tax.tax_lots([missing, stale], {"INF1": nav_row("INF1", EQUITY), "INF2": nav_row("INF2", EQUITY)},
+                           fmv={}.get)
+
+    result = mf_tax.planning(lots, navs, TODAY, NO_GAINS_YET, None)
+
+    assert result["left"] == [{"name": "Fund INF1",
+                               "reason": "No NAV is available, so redemption figures cannot be worked out."}]
+    (option,) = result["gainHarvest"]
+    assert option["navDate"] == "2026-12-01" and option["navStale"] is True
+
+
+def test_planning_notes_and_wording():
+    result = plan_for([HARVESTABLE], {"INF1": EQUITY})
+
+    for note in (mf_tax.DEADLINE_NOTE, mf_tax.EXIT_LOAD_NOTE, mf_tax.FIGURES_NOTE):
+        assert note in result["notes"]
+    assert result["asOf"] == "2027-01-15" and result["exemptionLeft"] == 125000.0
+
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+
+    for text in strings(result):
+        assert not re.search(r"\b(you should|sell|buy|recommend)\b", text, re.IGNORECASE), text

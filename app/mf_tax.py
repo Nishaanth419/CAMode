@@ -588,3 +588,163 @@ def position(lots: Sequence[SchemeLots], fy: str, slab_pct: int | None) -> dict:
         "schemes": [{**s, "shortTerm": _money(s["shortTerm"]), "longTerm": _money(s["longTerm"])} for s in scheme_rows],
         "excluded": excluded, "notes": notes,
     }
+
+
+# ── Sell-planning ──────────────────────────────────────────────────────────────
+
+NO_NAV_REASON: Final = "No NAV is available, so redemption figures cannot be worked out."
+EXEMPTION_SHARED_NOTE: Final = "These options each use the same exemption left; together they cannot use more than it."
+EXEMPTION_SAVING_NOTE: Final = "If the gain also fits within the exemption, the saving is larger."
+_UNITS: Final = Decimal("0.001")
+
+
+def _units(value: Decimal) -> float:
+    return float(value.quantize(_UNITS))
+
+
+@dataclass
+class _LotView:
+    lot: Lot
+    value: Decimal
+    gain: Decimal
+    rule: TaxRule | None
+    term: str | None
+    locked_until: date | None  # ELSS: the last locked day.
+
+
+def _lot_views(item: SchemeLots, nav: Decimal, today: date, elss: bool,
+               fmv: Callable[[str], Decimal | None]) -> list[_LotView]:
+    views = []
+    for lot in item.open_lots:
+        value = lot.units * nav
+        rule = rule_for(item.tax_class, lot.buy_date, today)
+        term = None if rule is None else ("long" if is_long_term(rule, lot.buy_date, today) else "short")
+        cost = lot.cost
+        if term == "long" and item.tax_class == "equity" and lot.buy_date <= GRANDFATHER_DATE:
+            isin = lot.origin.isin if lot.origin else item.scheme.isin
+            cost, _, _ = _grandfathered(isin, lot.origin.ratio if lot.origin else Decimal(1), lot.units, lot.cost,
+                                        value, fmv)
+        lock_end = add_months(lot.buy_date, ELSS_LOCK_MONTHS) if elss else None
+        views.append(_LotView(lot, value, value - cost, rule, term, lock_end if lock_end and today <= lock_end else None))
+    return views
+
+
+def _nav_fields(nav: Decimal, nav_date: date, source: str | None, today: date) -> dict:
+    from . import fund_data
+
+    return {"nav": float(nav.quantize(Decimal("0.0001"))), "navDate": nav_date.isoformat(), "navSource": source,
+            "navStale": (today - nav_date).days > fund_data.stale_days()}
+
+
+def _gain_harvest(views: list[_LotView], left: Decimal) -> tuple[Decimal, Decimal, Decimal, str] | None:
+    units = value = gain = _ZERO
+    stopped = "all_units"
+    for view in views:
+        if view.locked_until:
+            stopped = "elss_lock"
+            break
+        if view.term != "long":
+            stopped = "short_term"
+            break
+        if gain + view.gain > left and view.gain > 0:
+            share = ((left - gain) / view.gain * view.lot.units).quantize(_UNITS, rounding="ROUND_DOWN")
+            if share > 0:
+                units += share
+                value += view.value * share / view.lot.units
+                gain += view.gain * share / view.lot.units
+            stopped = "exemption"
+            break
+        units, value, gain = units + view.lot.units, value + view.value, gain + view.gain
+    return (units, value, gain, stopped) if units > 0 and gain > 0 else None
+
+
+def _loss_harvest(views: list[_LotView]) -> tuple[int, Decimal] | None:
+    """The FIFO prefix (number of lots) with the largest loss, and that loss; None when no prefix loses."""
+    best, best_count, running = _ZERO, 0, _ZERO
+    for count, view in enumerate(views, start=1):
+        if view.locked_until or view.rule is None:
+            break
+        running += view.gain
+        if running < best:
+            best, best_count = running, count
+    return (best_count, -best) if best_count else None
+
+
+def _taxable(position: dict, term: str) -> Decimal:
+    return sum((Decimal(str(item["taxable"])) for item in position.get("tax", {}).get("items", [])
+                if item.get("term") == term and item.get("taxable")), _ZERO)
+
+
+def planning(lots: Sequence[SchemeLots], navs: dict[str, NavRow], today: date, position: dict,
+             slab_pct: int | None, *, fmv: Callable[[str], Decimal | None] = nav_2018) -> dict:
+    """Options for the rest of the current financial year, in FIFO order (a redemption takes the oldest units).
+
+    Gain harvesting: long-term equity units whose gain fits in the exemption left, stopping before the first
+    short-term or locked lot. Loss harvesting: the oldest units whose redemption gives the largest loss.
+    Turning long-term: lots crossing their long-term date in the next 90 days with a gain. Locked ELSS units
+    are never offered. Figures and options only.
+    """
+    from .mf_returns import nav_for
+
+    left = Decimal(str(position["exemption"]["left"]))
+    taxable_short, taxable_long = _taxable(position, "short"), _taxable(position, "long")
+    result: dict = {"asOf": today.isoformat(), "exemptionLeft": _money(left), "gainHarvest": [], "lossHarvest": [],
+                    "turningLongTerm": [], "elssLocked": [], "left": [],
+                    "notes": [DEADLINE_NOTE, EXIT_LOAD_NOTE, EXEMPTION_SHARED_NOTE, FIGURES_NOTE]}
+    with localcontext() as context:
+        context.prec = mf_math.PRECISION
+        for item in lots:
+            if item.status != "ok" or not item.open_lots:
+                continue
+            scheme = item.scheme
+            nav, nav_date, source = nav_for(scheme, navs)
+            if nav is None:
+                result["left"].append({"name": scheme.name, "reason": NO_NAV_REASON})
+                continue
+            row = navs.get(scheme.isin) if scheme.isin else None
+            elss = bool(row and row.amfi_category and benchmarks.sub_category(row.amfi_category) == "elss")
+            views = _lot_views(item, nav, today, elss, fmv)
+            base = {"name": scheme.name, "isin": scheme.isin}
+            nav_info = _nav_fields(nav, nav_date, source, today)
+            for view in views:
+                if view.locked_until:
+                    result["elssLocked"].append({"name": scheme.name, "units": _units(view.lot.units),
+                                                 "unlocksOn": (view.locked_until + timedelta(days=1)).isoformat()})
+            if item.tax_class == "equity" and (harvest := _gain_harvest(views, left)):
+                units, value, gain, stopped = harvest
+                result["gainHarvest"].append({**base, "units": _units(units), "value": _money(value),
+                                              "gain": _money(gain), "tax": 0.0, **nav_info, "stoppedBy": stopped})
+            if (loss := _loss_harvest(views)):
+                count, amount = loss
+                chosen = views[:count]
+                short = sum((v.gain for v in chosen if v.term == "short"), _ZERO)
+                long = sum((v.gain for v in chosen if v.term == "long"), _ZERO)
+                off_long = min(max(-long, _ZERO), taxable_long)
+                offset = min(off_long + min(max(-short, _ZERO), taxable_short + taxable_long - off_long), amount)
+                result["lossHarvest"].append({
+                    **base, "taxClass": item.tax_class, "units": _units(sum((v.lot.units for v in chosen), _ZERO)),
+                    "value": _money(sum((v.value for v in chosen), _ZERO)), "loss": _money(amount),
+                    "shortTermResult": _money(short), "longTermResult": _money(long), "couldOffset": _money(offset),
+                    **nav_info,
+                })
+            before = _ZERO
+            for view in views:
+                turns = long_term_on(view.rule, view.lot.buy_date) if view.rule and view.term == "short" else None
+                if turns and not view.locked_until and today < turns <= today + timedelta(days=TURNING_LONG_TERM_DAYS) \
+                        and view.gain > 0:
+                    later = rule_for(item.tax_class, view.lot.buy_date, turns) or view.rule
+                    now_rate = view.rule.st_rate if view.rule.st_rate != SLAB else (
+                        Decimal(slab_pct) if slab_pct is not None else None)
+                    tax_now = view.gain * now_rate / 100 if now_rate is not None else None
+                    tax_after = view.gain * later.lt_rate / 100
+                    result["turningLongTerm"].append({
+                        **base, "taxClass": item.tax_class, "units": _units(view.lot.units),
+                        "unitsBefore": _units(before), "longTermOn": turns.isoformat(), "gain": _money(view.gain),
+                        "taxNow": _money(tax_now), "taxAfter": _money(tax_after),
+                        "extraTax": _money(tax_now - tax_after) if tax_now is not None else None,
+                        "extraTaxNote": SLAB_NOTE if tax_now is None else (
+                            EXEMPTION_SAVING_NOTE if item.tax_class == "equity" else None),
+                        **nav_info,
+                    })
+                before += view.lot.units
+    return result
