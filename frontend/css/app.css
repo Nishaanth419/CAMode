@@ -2276,6 +2276,8 @@ body.gate-open #app { visibility: hidden; }
   font-size: 12px;
   font-weight: 700;
 }
+/* A logo or letter tile in the #/holdings table takes the tone tile's size and shape. */
+.holding-cell .holding-logo { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 9px; }
 .tone-mf { --tone: var(--green); --tone-soft: var(--green-soft); }
 .tone-stock { --tone: var(--amber); --tone-soft: var(--amber-soft); }
 .tone-us { --tone: var(--violet); --tone-soft: var(--violet-soft); }
@@ -2380,6 +2382,7 @@ body.gate-open #app { visibility: hidden; }
   .h-ask .table-action { min-height: 40px; }
   .holding-cell { min-width: 0; }
   .holding-tile { flex-basis: 36px; height: 36px; border-radius: var(--radius-md); }
+  .holding-cell .holding-logo { flex-basis: 36px; width: 36px; height: 36px; border-radius: var(--radius-md); }
   .holdings-table .holding-name { font-weight: 600; }
 }
 
@@ -2439,7 +2442,6 @@ body.gate-open #app { visibility: hidden; }
 .gate-secondary:disabled { opacity: .45; cursor: not-allowed; }
 .holding-name-cell { display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-width: 0; text-align: left; }
 .holding-name-cell .holding-text { min-width: 0; }
-.holding-cell .holding-logo { margin: 0; }
 .broker-monogram { display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2, #e6e8ec); color: var(--muted, #555); font-size: 13px; font-weight: 600; }
 
 /* iOS Safari zooms the page in when a focused field's text is under 16px. On phones, tablets and narrow
