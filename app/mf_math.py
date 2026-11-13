@@ -20,6 +20,7 @@ Rules:
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -233,3 +234,78 @@ def absolute_return_pct(cashflows: Sequence[tuple[date, Decimal]]) -> Decimal | 
     with localcontext() as context:
         context.prec = PRECISION
         return (inflow - outflow) / outflow * 100
+
+
+MAX_NAV_GAP_DAYS: Final = 5
+
+
+@dataclass(frozen=True)
+class Replay:
+    """The user's cash flows replayed in a benchmark fund. Figures are ``None`` unless ``status`` is ``ok``."""
+
+    status: str  # ok, unavailable or not_comparable
+    reason: str | None = None
+    units: Decimal | None = None
+    value: Decimal | None = None
+    nav: Decimal | None = None
+    nav_date: date | None = None
+    flows: list[tuple[date, Decimal]] = field(default_factory=list)  # The user's flows plus the benchmark's value.
+    difference: Decimal | None = None  # The user's value minus the benchmark's.
+
+
+def _day(day: date) -> str:
+    return f"{day.day} {day:%b %Y}"
+
+
+def nav_on_or_before(navs: Sequence[tuple[date, Decimal]], day: date,
+                     max_gap_days: int = MAX_NAV_GAP_DAYS) -> tuple[date, Decimal] | None:
+    """The latest NAV on or before ``day``, if it is at most ``max_gap_days`` older. ``navs`` is ascending."""
+    index = bisect_right(navs, day, key=lambda row: row[0])
+    if not index:
+        return None
+    found = navs[index - 1]
+    return found if (day - found[0]).days <= max_gap_days else None
+
+
+def replay(cashflows: Sequence[tuple[date, Decimal]], navs: Sequence[tuple[date, Decimal]], end: date,
+           value: Decimal, *, label: str = "benchmark") -> Replay:
+    """Buy and sell benchmark units with the user's flows; value what is left on ``end``.
+
+    Outflows (negative, money invested) buy units at that date's NAV, inflows sell them;
+    a date without a NAV takes the previous one up to ``MAX_NAV_GAP_DAYS`` back, else the
+    comparison is ``unavailable``. A sale larger than the position is ``not_comparable``:
+    units never go negative.
+    """
+    summed: dict[date, Decimal] = defaultdict(Decimal)
+    for day, amount in cashflows:
+        summed[day] += amount
+    days = sorted(day for day, amount in summed.items() if amount)
+    if not days:
+        return Replay("unavailable", "No cash flows to compare.")
+
+    if not navs:
+        return Replay("unavailable", f"The {label} fund has no NAV history.")
+
+    def missing(day: date) -> Replay:
+        if day < navs[0][0]:
+            return Replay("unavailable", f"The {label} fund's NAV history starts on {_day(navs[0][0])}, after this "
+                                         f"fund's first investment on {_day(days[0])}.")
+        return Replay("unavailable", f"No benchmark NAV within {MAX_NAV_GAP_DAYS} days before {_day(day)}.")
+
+    units = _ZERO
+    with localcontext() as context:
+        context.prec = PRECISION
+        for day in days:
+            found = nav_on_or_before(navs, day)
+            if found is None:
+                return missing(day)
+            units -= summed[day] / found[1]
+            if units < 0:
+                return Replay("not_comparable", f"Redemptions on {_day(day)} are more than the same investments "
+                                                "would be worth in the benchmark, so the comparison does not hold.")
+        final = nav_on_or_before(navs, end)
+        if final is None:
+            return missing(end)
+        worth = units * final[1]
+        return Replay("ok", None, units, worth, final[1], final[0],
+                      [*cashflows, (end, worth)], value - worth)

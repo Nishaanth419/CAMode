@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from app import amfi, benchmarks, db, snapshots
+from app import amfi, benchmarks, db, mf_math, snapshots
 from app.amfi import NavRow
 from app.snapshots import SNAPSHOT_TIMEZONE
 
@@ -242,3 +242,84 @@ def test_scheduler_refreshes_benchmarks(monkeypatch):
 
     asyncio.run(run())
     assert seen == [moment]
+
+
+# ── Replaying the user's flows in a benchmark (mf_math.replay) ─────────────────
+
+D = date
+HISTORY = [(D(2024, 1, 1), Decimal("100")), (D(2024, 1, 29), Decimal("125")),
+           (D(2024, 3, 1), Decimal("120")), (D(2025, 3, 3), Decimal("150"))]
+
+
+def test_replay_on_sip_flows():
+    flows = [(D(2024, 1, 1), Decimal("-1000")), (D(2024, 2, 1), Decimal("-1000")), (D(2024, 3, 1), Decimal("-1200"))]
+
+    # 1000/100 = 10 units; 1000/125 (29 Jan, 3 days back) = 8; 1200/120 = 10; 28 units x 150 = 4200.
+    result = mf_math.replay(flows, HISTORY, D(2025, 3, 3), Decimal("4500"))
+
+    assert (result.status, result.reason) == ("ok", None)
+    assert result.units == Decimal("28") and result.value == Decimal("4200")
+    assert (result.nav, result.nav_date) == (Decimal("150"), D(2025, 3, 3))
+    assert result.difference == Decimal("300")
+    assert result.flows == flows + [(D(2025, 3, 3), Decimal("4200"))]
+
+
+def test_replay_uses_a_nav_up_to_five_days_back():
+    ok = mf_math.replay([(D(2024, 2, 3), Decimal("-1000"))], HISTORY, D(2025, 3, 3), Decimal("1"))
+    gap = mf_math.replay([(D(2024, 2, 4), Decimal("-1000"))], HISTORY, D(2025, 3, 3), Decimal("1"))
+
+    assert ok.status == "ok" and ok.units == Decimal("8")
+    assert (gap.status, gap.reason) == ("unavailable", "No benchmark NAV within 5 days before 4 Feb 2024.")
+    assert gap.units is None and gap.value is None and gap.flows == [] and gap.difference is None
+
+
+def test_replay_before_benchmark_history_is_unavailable():
+    result = mf_math.replay([(D(2023, 12, 1), Decimal("-1000")), (D(2024, 1, 1), Decimal("-1000"))], HISTORY,
+                            D(2025, 3, 3), Decimal("1"), label="Nifty 500")
+
+    assert (result.status, result.reason) == (
+        "unavailable",
+        "The Nifty 500 fund's NAV history starts on 1 Jan 2024, after this fund's first investment on 1 Dec 2023.",
+    )
+
+
+def test_replay_end_needs_a_recent_nav():
+    result = mf_math.replay([(D(2024, 1, 1), Decimal("-1000"))], HISTORY, D(2025, 3, 20), Decimal("1"))
+
+    assert (result.status, result.reason) == ("unavailable", "No benchmark NAV within 5 days before 20 Mar 2025.")
+
+
+def test_redemption_larger_than_the_benchmark_position_is_not_comparable():
+    # 10 units bought at 100; 1500 at 120 would need 12.5 units.
+    result = mf_math.replay([(D(2024, 1, 1), Decimal("-1000")), (D(2024, 3, 1), Decimal("1500"))], HISTORY,
+                            D(2025, 3, 3), Decimal("0"))
+
+    assert (result.status, result.reason) == (
+        "not_comparable",
+        "Redemptions on 1 Mar 2024 are more than the same investments would be worth in the benchmark, "
+        "so the comparison does not hold.",
+    )
+    assert result.units is None and result.value is None and result.difference is None
+
+
+def test_same_day_flows_are_summed_first():
+    result = mf_math.replay([(D(2024, 3, 1), Decimal("-1200")), (D(2024, 3, 1), Decimal("200"))], HISTORY,
+                            D(2024, 3, 1), Decimal("1000"))
+
+    assert result.status == "ok"
+    assert result.units.quantize(Decimal("1e-20")) == Decimal("8.33333333333333333333")
+    assert result.value == Decimal("1000") and result.difference == 0
+
+
+def test_replay_without_flows():
+    result = mf_math.replay([], HISTORY, D(2025, 3, 3), Decimal("0"))
+
+    assert (result.status, result.reason) == ("unavailable", "No cash flows to compare.")
+
+
+def test_nav_on_or_before():
+    assert mf_math.nav_on_or_before(HISTORY, D(2024, 1, 29)) == (D(2024, 1, 29), Decimal("125"))
+    assert mf_math.nav_on_or_before(HISTORY, D(2024, 2, 3)) == (D(2024, 1, 29), Decimal("125"))
+    assert mf_math.nav_on_or_before(HISTORY, D(2024, 2, 4)) is None
+    assert mf_math.nav_on_or_before(HISTORY, D(2023, 12, 31)) is None
+    assert mf_math.nav_on_or_before([], D(2024, 1, 1)) is None
