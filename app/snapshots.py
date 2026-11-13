@@ -509,7 +509,7 @@ def _snapshot_payload(snapshot: dict[str, Any], *, include_all_holdings: bool = 
 
 def portfolio_figures(snapshot: dict[str, Any]) -> dict[str, Any]:
     """The snapshot's computed figures plus every holding in full, for the app's portfolio pages."""
-    return {"figures": compute_metrics(snapshot["results"]), "holdings": all_holdings(snapshot["results"])}
+    return {"figures": compute_metrics(snapshot["results"]), "holdings": logos.with_logos(all_holdings(snapshot["results"]))}
 
 
 def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:

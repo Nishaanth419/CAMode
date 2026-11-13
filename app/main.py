@@ -19,12 +19,12 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, mf_returns, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -383,7 +383,8 @@ def is_same_origin(request: Request) -> bool:
 @app.middleware("http")
 async def no_store_api(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/api/"):
+    # A route that sets its own policy (cached logos) keeps it; every other API answer is never cached.
+    if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -1756,6 +1757,21 @@ async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, l
         "includesBrokers": has_combined,
         "schedule": f"{snapshots.SNAPSHOT_TIME:%H:%M} {snapshots.SNAPSHOT_TIMEZONE_NAME}",
     }
+
+
+_LOGO_TYPES: Final = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+
+
+@app.get("/api/logos/{key}")
+async def logo_file(key: str, request: Request):
+    """A cached company or fund-house logo. Only serves files already downloaded; never fetches."""
+    if not current_user(request):
+        return profile_required()
+    path = logos.cached_path(key) if logos.valid_key(key) else None
+    media_type = _LOGO_TYPES.get(path.suffix.lower()) if path else None
+    if path is None or media_type is None:
+        return JSONResponse({"error": "No logo for that key."}, status_code=404)
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=604800"})
 
 
 @app.get("/api/portfolio")

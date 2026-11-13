@@ -932,7 +932,7 @@ def rows_view(rows: list[dict[str, Any]], *, include_all_holdings: bool = False)
     held = sum((Decimal(str(row["current_value_inr"] or 0)) for row in figures.get("by_broker") or []), Decimal(0))
     if figures.get("totals") and figures["totals"].get("current_value_inr") is None:
         figures["totals"]["current_value_inr"] = float(held.quantize(Decimal("0.01")))
-    return {"figures": figures, "holdings": portfolio_math.all_holdings(results)}
+    return {"figures": figures, "holdings": logos.with_logos(portfolio_math.all_holdings(results))}
 
 
 def _store_rows(user_id: str, broker_id: str, rows: list[dict[str, Any]], keys: ProfileKeys) -> int:

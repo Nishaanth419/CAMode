@@ -181,24 +181,46 @@ async def _download(url: str, client: httpx.AsyncClient) -> tuple[tuple[bytes, s
     return None, not_found
 
 
+_KEY_CHUNK_DEFAULT: Final = 500
+_KEY_CHUNK = _KEY_CHUNK_DEFAULT
+_ASSET_TYPE_FOR_PREFIX: Final = {"mf": "MF", "in": "IND_STOCK", "us": "US_STOCK"}
+
+
+def valid_key(key: str) -> bool:
+    """True only for a string ``logo_key`` could have produced (the route's check)."""
+    prefix, _, rest = key.partition(":")
+    kind = _ASSET_TYPE_FOR_PREFIX.get(prefix)
+    return bool(kind and rest) and logo_key(kind, rest) == key
+
+
 def with_logos(holdings: list[dict]) -> list[dict]:
-    """Add ``logo`` (the app's own URL) to each holding whose logo is cached; same list back."""
-    keyed = [
-        (holding, logo_key(holding.get("asset_type"), holding.get("code") or holding.get("investment_code")))
-        for holding in holdings
-    ]
-    keys = sorted({key for _, key in keyed if key})
-    if not keys:
+    """Add ``logo`` (the app's own URL) to each holding whose logo is cached; same list back.
+
+    A failure here (a locked database, say) logs ``logo_lookup_failed`` and returns the holdings as they were.
+    """
+    try:
+        keyed = [
+            (holding, logo_key(holding.get("asset_type"), holding.get("code") or holding.get("investment_code")))
+            for holding in holdings
+        ]
+        keys = sorted({key for _, key in keyed if key})
+        if not keys:
+            return holdings
+        files: dict[str, str | None] = {}
+        with db.connect_db() as conn:
+            for start in range(0, len(keys), _KEY_CHUNK):
+                chunk = keys[start:start + _KEY_CHUNK]
+                rows = conn.execute(
+                    f"SELECT key, file FROM logos WHERE status = 'found' AND key IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+                files.update({row["key"]: row["file"] for row in rows})
+        found = [(holding, key) for holding, key in keyed if key and _file_ok(files.get(key))]
+    except Exception as exc:
+        logger.warning("logo_lookup_failed", extra={"error": type(exc).__name__})
         return holdings
-    with db.connect_db() as conn:
-        rows = conn.execute(
-            f"SELECT key, file FROM logos WHERE status = 'found' AND key IN ({','.join('?' * len(keys))})",
-            keys,
-        ).fetchall()
-    files = {row["key"]: row["file"] for row in rows}
-    for holding, key in keyed:
-        if key and _file_ok(files.get(key)):
-            holding["logo"] = "/api/logos/" + urllib.parse.quote(key, safe=":")
+    for holding, key in found:
+        holding["logo"] = "/api/logos/" + urllib.parse.quote(key, safe=":")
     return holdings
 
 
