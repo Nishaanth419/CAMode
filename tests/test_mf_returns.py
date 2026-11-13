@@ -6,7 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 
-from app import amfi, cas, mf_ledger, mf_math, mf_returns, unlock, users
+from app import amfi, benchmarks, cas, mf_ledger, mf_math, mf_returns, unlock, users
 from app.amfi import NavRow
 from mf_fixtures import scheme, statement
 
@@ -245,7 +245,7 @@ def test_tool_payload_and_scheme_filter(client, signed_in, detailed_pdf):
 def test_tool_payload_stays_small_with_many_schemes(monkeypatch):
     many = ledger(*[scheme(f"Fund number {i} with a fairly long scheme name - Direct Growth", f"INF00000{i:04d}")
                     for i in range(60)])
-    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today: mf_returns.returns_from(many, {}, TODAY))
+    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today, **_: mf_returns.returns_from(many, {}, TODAY))
 
     payload = asyncio.run(snapshots.mf_returns_tool("u", None).handler({}))
 
@@ -262,15 +262,19 @@ def test_the_agent_quotes_the_tool_figures(monkeypatch):
     from tests.test_agent_graph import reply, run
     from scripts import eval_workflows as ev
 
-    figures = mf_returns.returns_from(ledger(scheme()), nav(), TODAY)
-    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today: figures)
+    figures = mf_returns.returns_from(ledger(scheme()), nav(), TODAY, benchmark_navs=NIFTY)
+    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today, **_: figures)
     monkeypatch.setattr(ev, "build_context", lambda case: agent.PortfolioContext(
         local_tools=(snapshots.mf_returns_tool("u", None),), cached_mcp_tools=ev.TOOLS))
     xirr = figures["portfolio"]["xirr"]
 
+    gap = figures["portfolio"]["benchmark"]["differenceInr"]
+    assert gap is not None
+
     answer, events, payloads, _, _ = run(monkeypatch, "What is my mutual fund XIRR?", [
         reply(calls=[["get_mf_returns", {}]]),
-        reply(f"Your mutual fund XIRR is {xirr}% on ₹2,600 (AMFI NAV of 10 Nov 2026). This is information, not advice.")])
+        reply(f"Your mutual fund XIRR is {xirr}% on ₹2,600 (AMFI NAV of 10 Nov 2026), ₹{gap:,.2f} against the "
+              "same flows in the Nifty 50 index fund. This is information, not advice.")])
 
     assert agent.MF_RETURNS_RULES in payloads[0]["messages"][0]["content"]
     assert next(e for e in events if e["kind"] == "validation" and e["check"] == "numbers")["outcome"] == "passed"
@@ -311,10 +315,149 @@ def test_unknown_values_make_coverage_unknown():
 def test_tool_payload_stays_small_with_many_excluded_funds(monkeypatch):
     many = ledger(*[scheme(f"Fund number {i} with a fairly long scheme name - Direct Growth", f"INF00000{i:04d}", close="25")
                     for i in range(60)])
-    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today: mf_returns.returns_from(many, {}, TODAY))
+    monkeypatch.setattr(mf_returns, "returns_for", lambda user_id, keys, today, **_: mf_returns.returns_from(many, {}, TODAY))
 
     payload = asyncio.run(snapshots.mf_returns_tool("u", None).handler({}))
 
     body = json.loads(payload)
     assert len(payload) < 5500
     assert body["coverage"]["excludedCount"] == 60 and len(body["coverage"]["excluded"]) < 60
+
+
+# ── Benchmarks ─────────────────────────────────────────────────────────────────
+
+# Benchmark history covering the example scheme's flows (10 Jan 2024, 10 Jun 2024, 10 Mar 2025) and its NAV date.
+HISTORY = [(date(2024, 1, 10), Decimal("100")), (date(2024, 6, 10), Decimal("120")),
+           (date(2025, 3, 10), Decimal("110")), (date(2026, 11, 10), Decimal("130"))]
+NIFTY = {"nifty50": HISTORY}
+
+
+def round2(value: Decimal) -> float:
+    return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def test_scheme_is_compared_with_its_category_benchmark():
+    (item,) = ledger(scheme())
+
+    result = mf_returns.returns_from([item], nav(), TODAY, benchmark_navs=NIFTY)
+
+    expected = mf_math.replay(mf_math.fifo(item.transactions).cashflows, HISTORY, date(2026, 11, 10), Decimal("2600"))
+    bench = result["schemes"][0]["benchmark"]
+    assert (bench["id"], bench["label"], bench["status"], bench["reason"]) == ("nifty50", "Nifty 50", "ok", None)
+    assert bench["value"] == round2(expected.value) and bench["differenceInr"] == round2(expected.difference)
+    assert bench["xirr"] == pct(mf_math.xirr(expected.flows).rate) and bench["navDate"] == "2026-11-10"
+    assert bench["absoluteReturnPct"] is None and bench["returnReason"] is None
+
+
+def test_portfolio_uses_the_chosen_benchmark():
+    schemes = ledger(scheme())
+    histories = {**NIFTY, "midcap150": HISTORY}
+
+    default = mf_returns.returns_from(schemes, nav(), TODAY, benchmark_navs=histories)
+    midcap = mf_returns.returns_from(schemes, nav(), TODAY, benchmark="midcap150", benchmark_navs=histories)
+
+    assert default["portfolio"]["benchmark"]["id"] == "nifty50" and default["benchmark"]["id"] == "nifty50"
+    assert midcap["portfolio"]["benchmark"]["id"] == "midcap150" and midcap["portfolio"]["benchmark"]["status"] == "ok"
+    assert midcap["benchmark"]["label"] == "Nifty Midcap 150"
+    assert midcap["benchmark"]["schemeName"] == "Motilal Oswal Nifty Midcap 150 Index Fund - Direct Plan - Growth"
+    assert midcap["benchmark"]["schemeCode"] == "147622" and midcap["benchmark"]["navDate"] == "2026-11-10"
+    assert midcap["benchmark"]["note"] == benchmarks.INDEX_NOTE
+    assert [o["id"] for o in midcap["benchmark"]["options"]] == list(benchmarks.BENCHMARK_IDS)
+    assert midcap["schemes"][0]["benchmark"]["id"] == "nifty50"
+
+
+def test_unknown_or_unseeded_benchmarks():
+    schemes = ledger(scheme())
+    plain = mf_returns.returns_from(schemes, nav(), TODAY)
+
+    result = mf_returns.returns_from(schemes, nav(), TODAY, benchmark_navs={})
+
+    for bench in (result["schemes"][0]["benchmark"], result["portfolio"]["benchmark"]):
+        assert bench["status"] == "unavailable"
+        assert bench["reason"] == "Benchmark NAV history has not been downloaded yet."
+        assert bench["xirr"] is None and bench["differenceInr"] is None
+    assert result["benchmark"]["navDate"] is None
+    assert result["portfolio"]["xirr"] == plain["portfolio"]["xirr"] is not None
+    with pytest.raises(ValueError):
+        mf_returns.returns_from(schemes, nav(), TODAY, benchmark="sensex")
+
+
+def test_excluded_and_unmapped_schemes_say_why():
+    schemes = ledger(scheme(), scheme("Axis Bluechip", "INF846K01DP8", close="25"),
+                     scheme("Some Hybrid Fund", "INF000000009"))
+    navs = {**nav(), **nav("INF846K01DP8", "40"), **nav("INF000000009", "130", category="Hybrid Scheme - Aggressive Hybrid Fund")}
+
+    result = mf_returns.returns_from(schemes, navs, TODAY, benchmark_navs=NIFTY)
+
+    by_name = {item["name"]: item["benchmark"] for item in result["schemes"]}
+    assert by_name["Axis Bluechip"]["status"] == "excluded"
+    assert by_name["Axis Bluechip"]["reason"] == "Left out of the totals, so not compared."
+    hybrid = by_name["Some Hybrid Fund"]
+    assert (hybrid["id"], hybrid["label"], hybrid["status"]) == (None, None, "none")
+    assert hybrid["reason"] == "Hybrid funds mix asset classes, so no single index fits."
+    assert hybrid["xirr"] is None and hybrid["differenceInr"] is None
+
+
+def test_fully_redeemed_scheme_ends_at_its_last_flow():
+    (item,) = ledger(scheme(close="0", isin=None, valuation=("30-Sep-2026", "0"), transactions=[
+        ("2024-01-10", "PURCHASE", "10000", "100", "100"), ("2025-03-10", "REDEMPTION", "-10500", "-100", "105"),
+    ]))
+    navs_by_isin = {}
+
+    # No NAV row, so no category: compare with the portfolio benchmark only. 100 units at 100, 10500 at 110
+    # sells 95.4545...; 4.5454... units x 110 = 500 left in the benchmark, against 0 in the fund.
+    result = mf_returns.returns_from([item], navs_by_isin, TODAY, benchmark_navs=NIFTY)
+
+    bench = result["portfolio"]["benchmark"]
+    assert bench["status"] == "ok" and bench["navDate"] == "2025-03-10"
+    assert bench["value"] == 500.0 and bench["differenceInr"] == -500.0
+
+
+def test_returns_route_takes_a_benchmark(client, signed_in, detailed_pdf):
+    upload(client)
+    amfi.store_navs(list(nav().values()))
+    benchmarks.store_navs("liquid", HISTORY)
+
+    assert client.get("/api/returns").json()["benchmark"]["id"] == "nifty50"
+    body = client.get("/api/returns?benchmark=liquid").json()
+    assert body["benchmark"]["id"] == "liquid" and body["portfolio"]["benchmark"]["status"] == "ok"
+    wrong = client.get("/api/returns?benchmark=sensex")
+    assert wrong.status_code == 422
+    assert wrong.json() == {"error": "Unknown benchmark.", "benchmarks": list(benchmarks.BENCHMARK_IDS)}
+
+
+def test_tool_takes_a_benchmark(client, signed_in, detailed_pdf):
+    upload(client)
+    amfi.store_navs(list(nav().values()))
+    benchmarks.store_navs("nifty50", HISTORY)
+    benchmarks.store_navs("smallcap250", HISTORY)
+    _, user = tool_names(client, signed_in["id"])
+    tool = next(t for t in snapshots.portfolio_context(user).local_tools if t.name == "get_mf_returns")
+
+    assert tool.input_schema["properties"]["benchmark"]["enum"] == list(benchmarks.BENCHMARK_IDS)
+    default = json.loads(asyncio.run(tool.handler({})))
+    small = json.loads(asyncio.run(tool.handler({"benchmark": "smallcap250"})))
+    one = json.loads(asyncio.run(tool.handler({"scheme": "nifty 50", "benchmark": "smallcap250"})))
+    wrong = json.loads(asyncio.run(tool.handler({"benchmark": "sensex"})))
+
+    assert default["benchmark"]["id"] == "nifty50" and "options" not in default["benchmark"]
+    assert default["schemes"][0]["benchmark"]["status"] == "ok"
+    assert set(default["schemes"][0]["benchmark"]) == {"id", "xirr", "absoluteReturnPct", "differenceInr", "status", "reason"}
+    assert small["portfolio"]["benchmark"]["id"] == "smallcap250" and small["benchmark"]["label"] == "Nifty Smallcap 250"
+    assert one["scheme"]["benchmark"]["id"] == "nifty50" and one["benchmark"]["id"] == "smallcap250"
+    assert wrong == {"error": "Unknown benchmark 'sensex'.", "benchmarks": list(benchmarks.BENCHMARK_IDS)}
+
+
+def test_benchmark_payload_stays_small_with_many_schemes(monkeypatch):
+    many = ledger(*[scheme(f"Fund number {i} with a fairly long scheme name - Direct Growth", f"INF00000{i:04d}")
+                    for i in range(60)])
+    navs = {k: v for i in range(60)
+            for k, v in nav(f"INF00000{i:04d}", category="Equity Scheme - Large Cap Fund").items()}
+    monkeypatch.setattr(mf_returns, "returns_for",
+                        lambda user_id, keys, today, **_: mf_returns.returns_from(many, navs, TODAY, benchmark_navs=NIFTY))
+
+    payload = asyncio.run(snapshots.mf_returns_tool("u", None).handler({}))
+
+    body = json.loads(payload)
+    assert len(payload) < snapshots.MF_RETURNS_MAX_CHARS
+    assert body["schemes"] and body["schemes"][0]["benchmark"]["status"] == "ok"

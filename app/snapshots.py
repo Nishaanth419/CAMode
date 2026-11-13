@@ -628,6 +628,7 @@ _MF_ROW_KEYS = (
     "name", "isin", "status", "reason", "currentValue", "invested", "unrealisedGain", "realisedGain", "xirr",
     "absoluteReturnPct", "returnReason", "navDate", "navSource",
 )
+_MF_BENCHMARK_KEYS = ("id", "xirr", "absoluteReturnPct", "differenceInr", "status", "reason")
 
 
 def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> str:
@@ -635,7 +636,8 @@ def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> st
     dump = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # noqa: E731
     if not figures.get("available"):
         return dump(figures)
-    base = {key: figures[key] for key in ("navDate", "statementPeriod")}
+    benchmark = {key: value for key, value in figures["benchmark"].items() if key != "options"}
+    base = {key: figures[key] for key in ("navDate", "statementPeriod")} | {"benchmark": benchmark}
     if scheme:
         wanted = scheme.strip().lower()
         found = [item for item in figures["schemes"]
@@ -645,7 +647,8 @@ def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> st
                          "schemes": [item["name"] for item in figures["schemes"]][:40]})
         item = {key: value for key, value in found[0].items() if key != "folioKey"}
         return dump({"available": True, **base, "scheme": item, "otherMatches": len(found) - 1})
-    rows = [{key: item[key] for key in _MF_ROW_KEYS} for item in figures["schemes"]]
+    rows = [{key: item[key] for key in _MF_ROW_KEYS} | {"benchmark": {key: item["benchmark"][key] for key in _MF_BENCHMARK_KEYS}}
+            for item in figures["schemes"]]
     excluded = figures["coverage"]["excluded"]
     coverage = {**figures["coverage"], "excluded": excluded[:MF_EXCLUDED_ROWS], "excludedCount": len(excluded)}
     for count in range(len(rows), -1, -1):
@@ -659,11 +662,15 @@ def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> st
 
 def mf_returns_tool(user_id: str, keys: ProfileKeys | None) -> LocalTool:
     """Read-only returns (FIFO lots, XIRR) on the mutual funds in the user's detailed CAS ledger."""
+    from . import benchmarks
 
     async def get_mf_returns(arguments: dict[str, Any]) -> str:
         from . import mf_returns  # imports fund_data, which imports this module
 
-        figures = await asyncio.to_thread(mf_returns.returns_for, user_id, keys, local_now().date())
+        benchmark = arguments.get("benchmark") or benchmarks.DEFAULT_BENCHMARK
+        if benchmark not in benchmarks.BENCHMARK_IDS:
+            return json.dumps({"error": f"Unknown benchmark {benchmark!r}.", "benchmarks": list(benchmarks.BENCHMARK_IDS)})
+        figures = await asyncio.to_thread(mf_returns.returns_for, user_id, keys, local_now().date(), benchmark=benchmark)
         scheme = arguments.get("scheme")
         return mf_returns_payload(figures, scheme if isinstance(scheme, str) and scheme.strip() else None)
 
@@ -675,11 +682,19 @@ def mf_returns_tool(user_id: str, keys: ProfileKeys | None) -> LocalTool:
             "the statement's), amount invested in the units still held, unrealised and realised gain, and XIRR "
             "(annualised return on the user's own cash flows; absoluteReturnPct for holdings under a year). Each fund "
             "has a status: funds that are not ok or nav_stale are left out of the totals with a reason, and coverage "
-            "says how much of the value is included. Pass scheme (part of a fund name or its ISIN) for one fund."
+            "says how much of the value is included. Each fund is compared with the index fund for its category "
+            "(benchmark: XIRR on the same cash flows and differenceInr, the fund's value minus what the benchmark "
+            "would be worth); the portfolio with the benchmark you pass (default nifty50). Pass scheme (part of a "
+            "fund name or its ISIN) for one fund."
         ),
         input_schema={
             "type": "object",
-            "properties": {"scheme": {"type": "string", "description": "Part of a fund's name, or its ISIN."}},
+            "properties": {
+                "scheme": {"type": "string", "description": "Part of a fund's name, or its ISIN."},
+                "benchmark": {"type": "string", "enum": list(benchmarks.BENCHMARK_IDS),
+                              "description": "Benchmark for the portfolio: nifty50 (default), nifty500, midcap150, "
+                                             "smallcap250 or liquid."},
+            },
             "additionalProperties": False,
         },
         handler=get_mf_returns,
