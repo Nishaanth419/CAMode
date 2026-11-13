@@ -609,3 +609,118 @@ def test_planning_notes_and_wording():
 
     for text in strings(result):
         assert not re.search(r"\b(you should|sell|buy|recommend)\b", text, re.IGNORECASE), text
+
+
+# ── API ────────────────────────────────────────────────────────────────────────
+
+import base64  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+from mf_fixtures import statement  # noqa: E402
+
+from app import amfi, cas, mf_ledger, snapshots, unlock  # noqa: E402
+
+PDF = b"%PDF-1.7 synthetic"
+INDEX_NAV = NavRow("INF179K01VK6", "120716", "HDFC Index Fund", "Other Scheme - Index Funds", D("130"), day("2026-11-10"))
+
+
+@pytest.fixture
+def detailed_pdf(monkeypatch):
+    monkeypatch.setattr(cas.casparser, "read_cas_pdf", lambda file, password: statement())
+
+
+@pytest.fixture
+def at(monkeypatch):
+    def set_today(text: str) -> None:
+        moment = datetime.fromisoformat(f"{text}T10:00").replace(tzinfo=snapshots.SNAPSHOT_TIMEZONE)
+        monkeypatch.setattr(snapshots, "local_now", lambda: moment)
+
+    set_today("2026-11-13")
+    return set_today
+
+
+def upload(client):
+    response = client.post("/api/cas", json={"password": "x", "pdfBase64": base64.b64encode(PDF).decode()})
+    assert response.status_code == 201, response.text
+    amfi.store_navs([INDEX_NAV])
+
+
+def test_tax_requires_profile_and_unlock(client, signed_in, detailed_pdf, at):
+    upload(client)
+    unlock._unlocked.clear()
+    assert client.get("/api/tax").json()["unlockRequired"] is True
+    client.cookies.clear()
+    assert client.get("/api/tax").status_code == 401
+
+
+def test_tax_without_a_ledger_gives_the_hint(client, signed_in, at):
+    assert client.get("/api/tax").json() == {"available": False, "hint": mf_ledger.HINT}
+
+
+def test_tax_for_the_current_year_has_planning(client, signed_in, detailed_pdf, at):
+    upload(client)
+
+    body = client.get("/api/tax").json()
+
+    assert (body["available"], body["fy"], body["current"]) == (True, "2026-27", True)
+    assert body["fys"] == ["2026-27", "2025-26", "2024-25", "2023-24"]
+    assert body["position"]["rows"] == []
+    assert body["planning"]["asOf"] == "2026-11-13"
+    assert body["navDate"] == "2026-11-10"
+    assert body["statementPeriod"]["to"] == "2026-09-30"
+
+
+def test_tax_for_a_past_year_has_no_planning(client, signed_in, detailed_pdf, at):
+    upload(client)
+
+    body = client.get("/api/tax?fy=2024-25").json()
+
+    # The 10 Mar 2025 redemption: 100 units bought 10 Jan 2024 (long-term) and 20 bought 10 Jun 2024 (short-term).
+    assert (body["fy"], body["current"], "planning" in body) == ("2024-25", False, False)
+    assert {(row["ruleId"], row["term"]) for row in body["position"]["rows"]} == {
+        ("equity_from_2024_07_23", "long"), ("equity_from_2024_07_23", "short")}
+
+
+@pytest.mark.parametrize(("fy", "message"), [
+    ("2027-28", "That financial year has not started."),
+    ("26-27", "Use a financial year like 2026-27."),
+    ("2022-23", "Tax figures start from FY 2023-24."),
+])
+def test_tax_rejects_bad_years(client, signed_in, detailed_pdf, at, fy, message):
+    upload(client)
+
+    response = client.get(f"/api/tax?fy={fy}")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": message, "fys": ["2026-27", "2025-26", "2024-25", "2023-24"]}
+
+
+def test_tax_uses_the_profile_slab(client, signed_in, detailed_pdf, at):
+    upload(client)
+    client.put("/api/profile", json={"taxSlabPct": 30})
+
+    assert client.get("/api/tax?fy=2024-25").json()["position"]["tax"]["slabPct"] == 30
+
+
+def test_tax_is_per_profile(client, detailed_pdf, at):
+    from conftest import sign_up
+
+    sign_up(client, "Asha")
+    upload(client)
+    sign_up(client, "Ravi")
+    assert client.get("/api/tax").json()["available"] is False
+
+
+def test_tax_in_private_mode_has_no_ledger(client, at):
+    from conftest import sign_up
+
+    sign_up(client, "Asha", storage_mode="private")
+    assert client.get("/api/tax").json()["available"] is False
+
+
+def test_default_year_follows_the_local_date(client, signed_in, detailed_pdf, at):
+    upload(client)
+    at("2027-03-31")
+    assert client.get("/api/tax").json()["fy"] == "2026-27"
+    at("2027-04-01")
+    assert client.get("/api/tax").json()["fy"] == "2027-28"

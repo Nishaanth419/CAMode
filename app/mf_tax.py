@@ -748,3 +748,39 @@ def planning(lots: Sequence[SchemeLots], navs: dict[str, NavRow], today: date, p
                     })
                 before += view.lot.units
     return result
+
+
+# ── Figures for the API, the page and the tool ─────────────────────────────────
+
+def tax_from(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], today: date, fy: str | None,
+             slab_pct: int | None, *, fmv: Callable[[str], Decimal | None] = nav_2018) -> dict:
+    """This year's (or ``fy``'s) position, and planning for the current year. ``ValueError`` for a bad ``fy``."""
+    from . import mf_ledger
+
+    chosen = parse_fy(fy, today) if fy else fy_of(today)
+    if not schemes:
+        return {"available": False, "hint": mf_ledger.HINT}
+    lots = tax_lots(schemes, navs, fmv=fmv)
+    current = chosen == fy_of(today)
+    result: dict = {"available": True, "fy": chosen, "fys": fy_options(today), "current": current}
+    result["position"] = position(lots, chosen, slab_pct)
+    if current:
+        result["planning"] = planning(lots, navs, today, result["position"], slab_pct, fmv=fmv)
+    nav_dates = [navs[s.isin].nav_date for s in schemes if s.isin in navs]
+    starts = [s.period_from for s in schemes if s.period_from]
+    ends = [s.period_to for s in schemes if s.period_to]
+    result["navDate"] = max(nav_dates).isoformat() if nav_dates else None
+    result["statementPeriod"] = {"from": min(starts).isoformat() if starts else None,
+                                 "to": max(ends).isoformat() if ends else None}
+    return result
+
+
+def tax_for(user_id: str, keys, today: date, fy: str | None, slab_pct: int | None) -> dict:
+    """Figures from the profile's stored statements. Raises ``sealing.LockedError`` when locked."""
+    from . import amfi, mf_ledger
+
+    if fy:
+        parse_fy(fy, today)  # A bad year is refused before anything is read.
+    schemes = mf_ledger.ledger_for(user_id, keys)
+    navs = amfi.navs_for([s.isin for s in schemes if s.isin])
+    return tax_from(schemes, navs, today, fy, slab_pct)
