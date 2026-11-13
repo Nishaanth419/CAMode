@@ -42,6 +42,8 @@ def isolated_database(tmp_path, monkeypatch):
                  "PRICING_CONTACT_EMAIL"):
         monkeypatch.delenv(name, raising=False)
     limits.limiter.clear()
+    monkeypatch.setenv("LOGOS_ENABLED", "false")
+    monkeypatch.delenv("LOGO_DEV_TOKEN", raising=False)
     # Unlocked keys live in process memory; a key from another test's database must not carry over.
     unlock._unlocked.clear()
     # The model queue, its settings and the in-flight chat guard are process memory too.

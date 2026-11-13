@@ -161,3 +161,217 @@ def test_download_ignores_client_level_auth_on_every_hop():
     assert asyncio.run(run()) == (PNG, "png")
     assert len(seen) == 2
     assert all("authorization" not in request.headers for request in seen)
+
+
+# ── Sources and automatic fill ─────────────────────────────────────────────────
+
+import json  # noqa: E402
+
+from tests.fixtures import indmoney_funds  # noqa: E402
+
+
+@pytest.fixture
+def logo_transport(monkeypatch):
+    """Every logos HTTP client goes through one MockTransport; returns the list of requests seen."""
+    seen: list[httpx.Request] = []
+    state = {"handler": lambda request: httpx.Response(200, content=PNG)}
+    real = httpx.AsyncClient
+
+    def handler(request):
+        seen.append(request)
+        return state["handler"](request)
+
+    def make(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(logos.httpx, "AsyncClient", make)
+    seen_handler = state
+    seen_handler["requests"] = seen
+    return seen_handler
+
+
+def test_fill_fund_logos_batches_and_records(logo_transport):
+    ids = [str(100 + n) for n in range(12)]
+    calls = []
+
+    async def call(name, arguments):
+        calls.append((name, arguments))
+        wanted = arguments["fund_ids"].split(",")
+        # The last id of the second batch is missing from the reply.
+        return indmoney_funds.details({fund_id: None for fund_id in wanted if fund_id != "111"})
+
+    saved = asyncio.run(logos.fill_fund_logos(ids, call, now_ms=1000))
+
+    assert [len(arguments["fund_ids"].split(",")) for _, arguments in calls] == [10, 2]
+    assert all(name == "get_mf_funds_details" for name, _ in calls)
+    assert saved == 11
+    assert logos.status_of("mf:100")["status"] == "found"
+    assert logos.status_of("mf:111")["status"] == "missing"
+    assert logos.cached_path("mf:100").is_file()
+
+
+def test_fill_fund_logos_marks_no_image_missing_and_failures_failed(logo_transport):
+    reply = json.dumps({"success": True, "data": [
+        {"fund_id": "1", "data": {"fund_detail": {}}},
+        {"fund_id": "2", "data": {"fund_detail": {"image_url": "https://example.invalid/x.png"}}},
+    ]})
+    logo_transport["handler"] = lambda request: httpx.Response(500)
+
+    async def call(name, arguments):
+        return reply
+
+    assert asyncio.run(logos.fill_fund_logos(["1", "2"], call, now_ms=1000)) == 0
+    assert logos.status_of("mf:1")["status"] == "missing"
+    assert logos.status_of("mf:2")["status"] == "failed"
+
+    async def broken(name, arguments):
+        raise RuntimeError("down")
+
+    assert asyncio.run(logos.fill_fund_logos(["3"], broken, now_ms=1000)) == 0
+    assert logos.status_of("mf:3")["status"] == "failed"
+
+
+def test_fill_fund_logos_skips_fresh_rows(logo_transport):
+    logos.record("mf:100", "found", "mf-100.png", 1000)
+    (logos.logos_dir() / "mf-100.png").write_bytes(PNG)
+    calls = []
+
+    async def call(name, arguments):
+        calls.append(arguments)
+        return indmoney_funds.details({fund_id: None for fund_id in arguments["fund_ids"].split(",")})
+
+    asyncio.run(logos.fill_fund_logos(["100", "101"], call, now_ms=2000))
+    assert calls == [{"fund_ids": "101"}]
+
+
+def test_fill_stock_logos_needs_token(logo_transport, monkeypatch):
+    assert asyncio.run(logos.fill_stock_logos(["in:INFY"], now_ms=1000)) == 0
+    assert logo_transport["requests"] == []
+
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    replies = {"INFY.NS": httpx.Response(200, content=PNG), "AAPL": httpx.Response(404),
+               "BAD.NS": httpx.Response(200, content=b"<svg xmlns='http://www.w3.org/2000/svg'></svg>")}
+    logo_transport["handler"] = lambda request: replies[request.url.path.rsplit("/", 1)[1]]
+
+    saved = asyncio.run(logos.fill_stock_logos(["in:INFY", "us:AAPL", "in:BAD"], now_ms=1000))
+
+    assert saved == 1
+    assert logos.status_of("in:INFY")["status"] == "found"
+    assert logos.status_of("us:AAPL")["status"] == "missing"
+    assert logos.status_of("in:BAD")["status"] == "failed"
+    for request in logo_transport["requests"]:
+        assert request.url.host == "img.logo.dev"
+        assert dict(request.url.params).keys() <= {"token", "format", "size", "fallback"}
+        assert request.url.params["token"] == "pk_test"
+        assert not request.headers.get("authorization")
+
+
+def test_same_key_fetched_once(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+
+    async def both():
+        return await asyncio.gather(
+            logos.fill_stock_logos(["in:INFY"], now_ms=1000), logos.fill_stock_logos(["in:INFY"], now_ms=1000),
+        )
+
+    assert sorted(asyncio.run(both())) == [0, 1]
+    assert len(logo_transport["requests"]) == 1
+
+
+def test_downloads_never_exceed_the_concurrency_limit(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    running = {"now": 0, "peak": 0}
+    real_download = logos._download
+
+    async def counting(url, client):
+        running["now"] += 1
+        running["peak"] = max(running["peak"], running["now"])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        try:
+            return await real_download(url, client)
+        finally:
+            running["now"] -= 1
+
+    monkeypatch.setattr(logos, "_download", counting)
+    asyncio.run(logos.fill_stock_logos([f"in:S{n}" for n in range(12)], now_ms=1000))
+    assert running["peak"] <= logos.LOGO_CONCURRENCY
+
+
+def test_schedule_fill_does_nothing_when_disabled():
+    assert logos.schedule_fill([{"asset_type": "IND_STOCK", "code": "INFY"}]) is None
+
+
+def test_schedule_fill_logs_and_swallows_failures(monkeypatch, caplog):
+    monkeypatch.setenv("LOGOS_ENABLED", "true")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(logos, "fill_stock_logos", boom)
+
+    async def run():
+        task = logos.schedule_fill([{"asset_type": "IND_STOCK", "code": "INFY"}])
+        await task
+        return task
+
+    task = asyncio.run(run())
+    assert task.exception() is None
+    assert any(record.message == "logo_fill_failed" and record.error == "RuntimeError" for record in caplog.records)
+    assert not logos._pending
+
+
+def test_capture_survives_logo_failure(monkeypatch):
+    from tests.test_snapshots import at, fake_indmoney, make_user
+    from app import snapshots
+
+    monkeypatch.setenv("LOGOS_ENABLED", "true")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("logo host down")
+
+    monkeypatch.setattr(logos, "fill_fund_logos", boom)
+    monkeypatch.setattr(logos, "fill_stock_logos", boom)
+    user_id = make_user()
+    fake_indmoney(monkeypatch, offered=(*snapshots.SNAPSHOT_TOOL_NAMES, "get_mf_funds_details"))
+
+    async def run():
+        result = await snapshots.capture_snapshot(user_id, mcp_url="https://mcp", now=at(13, 9, 2))
+        await asyncio.gather(*logos._pending)
+        return result
+
+    result = asyncio.run(run())
+    assert result["asOfDate"] == "2026-10-13"
+    assert snapshots.latest_snapshot(user_id) is not None
+
+
+def test_capture_hands_the_fund_ids_to_the_fill(monkeypatch):
+    from tests.test_snapshots import at, fake_indmoney, make_user
+    from app import snapshots
+
+    monkeypatch.setenv("LOGOS_ENABLED", "true")
+    seen = {}
+
+    async def funds(ids, call, **kwargs):
+        seen["ids"] = sorted(ids)
+        seen["call"] = call
+        return 0
+
+    async def stocks(keys, **kwargs):
+        seen["stocks"] = sorted(keys)
+        return 0
+
+    monkeypatch.setattr(logos, "fill_fund_logos", funds)
+    monkeypatch.setattr(logos, "fill_stock_logos", stocks)
+    user_id = make_user()
+    fake_indmoney(monkeypatch, offered=(*snapshots.SNAPSHOT_TOOL_NAMES, "get_mf_funds_details"))
+
+    async def run():
+        await snapshots.capture_snapshot(user_id, mcp_url="https://mcp", now=at(13, 9, 2))
+        await asyncio.gather(*logos._pending)
+
+    asyncio.run(run())
+    assert seen["ids"] == ["118989", "120503"]
+    assert "in:INFY" in seen["stocks"]
+    assert callable(seen["call"])

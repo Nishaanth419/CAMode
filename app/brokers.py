@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import broker_history, broker_oauth, cas, mcp_client, plans, portfolio_math, snapshots, tool_results, users
+from . import broker_history, broker_oauth, cas, logos, mcp_client, plans, portfolio_math, snapshots, tool_results, users
 from .agent import LocalTool
 from .db import connect_db
 from .sealing import LockedError, ProfileKeys
@@ -1040,6 +1040,7 @@ async def fetch_holdings(
             payload = _holdings_payload(broker, "connected", rows, as_of, stale=False, include_all_holdings=include_all_holdings)
             if store:
                 _store_day(user_id, broker.id, rows, payload, keys, as_of)
+            logos.schedule_fill(payload.get("holdings") or [])
             return payload
         if status == "needs_login":
             set_status(user_id, broker.id, status)

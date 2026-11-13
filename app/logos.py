@@ -10,12 +10,15 @@ logos off.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import re
+import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Awaitable, Callable, Final, Literal
 
 import httpx
 
@@ -29,6 +32,13 @@ LOGO_TIMEOUT_SECONDS: Final = 10
 MISSING_RETRY_MS: Final = 30 * 24 * 60 * 60 * 1000
 FAILED_RETRY_MS: Final = 24 * 60 * 60 * 1000
 MAX_REDIRECTS: Final = 3
+LOGO_CONCURRENCY: Final = 4
+FUND_BATCH: Final = 10
+# logo.dev ticker API (https://www.logo.dev/docs/logo-images/ticker): /ticker/SYMBOL?token=KEY, NSE symbols
+# as SYMBOL.NS. Options (https://www.logo.dev/docs/logo-images/introduction): format=png (SVG is not
+# served), size, fallback=404 (else a generated monogram comes back with 200).
+LOGO_DEV_URL: Final = "https://img.logo.dev/ticker/{symbol}"
+LOGO_DEV_OPTIONS: Final = "format=png&size=96&fallback=404"
 
 # Same pattern as brokers.ISIN_RE (brokers imports this module, so it is copied here).
 _ISIN_RE: Final = re.compile(r"^IN[A-Z0-9]{9}[0-9]$")
@@ -129,11 +139,17 @@ def _extension(content: bytes) -> str | None:
 
 async def download(url: str, client: httpx.AsyncClient) -> tuple[bytes, str] | None:
     """(content, extension) for an https image of at most MAX_LOGO_BYTES, else None."""
+    return (await _download(url, client))[0]
+
+
+async def _download(url: str, client: httpx.AsyncClient) -> tuple[tuple[bytes, str] | None, bool]:
+    """``download`` plus whether the host answered 404 (no logo exists, as opposed to a failed fetch)."""
+    not_found = False
     current = url
     try:
         for _ in range(MAX_REDIRECTS + 1):
             if urllib.parse.urlsplit(current).scheme != "https":
-                return None
+                return None, False
             # Built without the client's default headers and cookies (an API token must never
             # reach a logo host, least of all after a redirect).
             request = client.build_request("GET", current, timeout=LOGO_TIMEOUT_SECONDS)
@@ -144,23 +160,23 @@ async def download(url: str, client: httpx.AsyncClient) -> tuple[bytes, str] | N
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
-                        return None
+                        return None, False
                     current = str(response.url.join(location))
                     continue
                 if response.status_code != 200:
-                    return None
+                    return None, response.status_code == 404
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body.extend(chunk)
                     if len(body) > MAX_LOGO_BYTES:
-                        return None
+                        return None, False
             finally:
                 await response.aclose()
             extension = _extension(bytes(body))
-            return (bytes(body), extension) if extension else None
+            return ((bytes(body), extension) if extension else None), False
     except (httpx.HTTPError, httpx.InvalidURL, ValueError):
         logger.info("logo_download_failed")
-    return None
+    return None, not_found
 
 
 def with_logos(holdings: list[dict]) -> list[dict]:
@@ -182,3 +198,119 @@ def with_logos(holdings: list[dict]) -> list[dict]:
         if key and _file_ok(files.get(key)):
             holding["logo"] = "/api/logos/" + urllib.parse.quote(key, safe=":")
     return holdings
+
+
+# ── Automatic fill ─────────────────────────────────────────────────────────────
+
+_key_locks: dict[str, asyncio.Lock] = {}
+_pending: set[asyncio.Task] = set()
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _save(key: str, content: bytes, extension: str, now_ms: int) -> None:
+    name = file_name(key, extension)
+    target = logos_dir() / name
+    temporary = target.with_name(name + ".tmp")
+    temporary.write_bytes(content)
+    temporary.replace(target)
+    record(key, "found", name, now_ms)
+
+
+async def _fetch_and_record(key: str, url: str | None, client: httpx.AsyncClient, now_ms: int, limit: asyncio.Semaphore) -> bool:
+    """Download one key's logo and record the outcome; True when saved. Never raises for a bad logo."""
+    if not url:
+        record(key, "missing", None, now_ms)
+        return False
+    async with limit:
+        got, not_found = await _download(url, client)
+    if got is None:
+        record(key, "missing" if not_found else "failed", None, now_ms)
+        return False
+    _save(key, got[0], got[1], now_ms)
+    return True
+
+
+async def fill_fund_logos(
+    fund_ids: list[str], call: Callable[[str, dict], Awaitable[str]], *, now_ms: int | None = None,
+) -> int:
+    """Fetch the fund-house logo of each due ``mf:`` key through INDmoney's fund details; the count saved."""
+    now = _now_ms() if now_ms is None else now_ms
+    ids = sorted({fund_id for fund_id in fund_ids if logo_key("MF", fund_id) and is_due(f"mf:{fund_id.strip().upper()}", now)})
+    if not ids:
+        return 0
+    limit = asyncio.Semaphore(LOGO_CONCURRENCY)
+    saved = 0
+    async with httpx.AsyncClient() as client:
+        for start in range(0, len(ids), FUND_BATCH):
+            batch = ids[start:start + FUND_BATCH]
+            try:
+                reply = await call("get_mf_funds_details", {"fund_ids": ",".join(batch)})
+                data = (json.loads(reply) if isinstance(reply, str) else reply).get("data") or []
+                urls = {}
+                for item in data:
+                    detail = ((item.get("data") or {}).get("fund_detail") or {}) if isinstance(item, dict) else {}
+                    urls[str(item.get("fund_id")).strip().upper()] = str(detail.get("image_url") or "").strip() or None
+            except Exception as exc:
+                logger.info("logo_fund_details_failed", extra={"error": type(exc).__name__})
+                for fund_id in batch:
+                    record(f"mf:{fund_id}", "failed", None, now)
+                continue
+            results = await asyncio.gather(
+                *(_fetch_and_record(f"mf:{fund_id}", urls.get(fund_id), client, now, limit) for fund_id in batch),
+                return_exceptions=True,
+            )
+            saved += sum(1 for result in results if result is True)
+    return saved
+
+
+async def fill_stock_logos(keys: list[str], *, now_ms: int | None = None) -> int:
+    """Fetch logo.dev logos for due ``in:`` / ``us:`` keys; needs LOGO_DEV_TOKEN. The count saved."""
+    token = os.getenv("LOGO_DEV_TOKEN", "").strip()
+    if not token:
+        return 0
+    now = _now_ms() if now_ms is None else now_ms
+    wanted = sorted({key for key in keys if key.startswith(("in:", "us:"))})
+    limit = asyncio.Semaphore(LOGO_CONCURRENCY)
+
+    async def one(key: str, client: httpx.AsyncClient) -> bool:
+        lock = _key_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if not is_due(key, now):  # another fill finished it while this one waited
+                return False
+            market, symbol = key.split(":", 1)
+            ticker = symbol + ".NS" if market == "in" else symbol
+            url = LOGO_DEV_URL.format(symbol=urllib.parse.quote(ticker, safe=".")) + "?" + urllib.parse.urlencode(
+                {"token": token}) + "&" + LOGO_DEV_OPTIONS
+            return await _fetch_and_record(key, url, client, now, limit)
+
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(*(one(key, client) for key in wanted), return_exceptions=True)
+    return sum(1 for result in results if result is True)
+
+
+async def _fill(holdings: list[dict], fund_call: Callable[[str, dict], Awaitable[str]] | None) -> None:
+    try:
+        keys = {logo_key(h.get("asset_type"), h.get("code") or h.get("investment_code")) for h in holdings}
+        keys.discard(None)
+        if fund_call is not None:
+            await fill_fund_logos([key[3:] for key in keys if key.startswith("mf:")], fund_call)
+        await fill_stock_logos([key for key in keys if not key.startswith("mf:")])
+    except Exception as exc:
+        logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
+
+
+def schedule_fill(holdings: list[dict], *, fund_call: Callable[[str, dict], Awaitable[str]] | None = None) -> asyncio.Task | None:
+    """Fill missing logos in the background (the task is returned for tests); never raises."""
+    if not enabled():
+        return None
+    try:
+        task = asyncio.get_running_loop().create_task(_fill(list(holdings), fund_call))
+    except Exception as exc:
+        logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
+        return None
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+    return task

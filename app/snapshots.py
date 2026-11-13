@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import backup, cas, privacy, users
+from . import backup, cas, logos, privacy, users
 from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
@@ -364,7 +364,23 @@ async def capture_snapshot(user_id: str, *, mcp_url: str, now: datetime | None =
                 group.create_task(fetch_holdings(asset_type))
     if not results:
         raise SnapshotError("INDmoney returned no portfolio data: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
-    return store_snapshot(user_id, now or local_now(), results, errors)
+    stored = store_snapshot(user_id, now or local_now(), results, errors)
+    _schedule_logos(results, mcp_url, token, session, "get_mf_funds_details" in available)
+    return stored
+
+
+def _schedule_logos(results: dict[str, str], mcp_url: str, token: str, session: dict[str, Any], funds: bool) -> None:
+    """Fetch missing holding logos in the background; a logo problem never touches the snapshot."""
+    try:
+        async def fund_call(name: str, arguments: dict[str, Any]) -> str:
+            async with httpx.AsyncClient(timeout=30) as client:
+                return str(await call_mcp_tool(
+                    mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments, client=client,
+                ))
+
+        logos.schedule_fill(all_holdings(results), fund_call=fund_call if funds else None)
+    except Exception as exc:
+        logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
 
 
 def snapshots_allowed(user: dict[str, Any]) -> bool:

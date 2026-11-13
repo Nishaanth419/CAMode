@@ -748,3 +748,15 @@ def test_tool_list_failure_is_a_safe_message(client, signed_in, monkeypatch):
     response = client.get("/api/brokers/zerodha/tools")
     assert response.status_code == 502
     assert "secret" not in response.text and "Zerodha" in response.json()["error"]
+
+
+def test_broker_fetch_schedules_fill(client, signed_in, fake_kite, monkeypatch):
+    from app import logos
+
+    scheduled = []
+    monkeypatch.setattr(logos, "schedule_fill", lambda holdings, **kwargs: scheduled.append((holdings, kwargs)))
+    logged_in(client, fake_kite)
+    body = client.get("/api/brokers/zerodha/holdings?refresh=1").json()
+    assert len(scheduled) == 1 and scheduled[0][1] == {}
+    assert scheduled[0][0] == body["holdings"] and len(body["holdings"]) == 3
+    assert body["available"] and "_rows" not in body
