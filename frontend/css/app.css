@@ -2205,6 +2205,9 @@ body.gate-open #app { visibility: hidden; }
 .holdings-panel { padding: 0; overflow: hidden; }
 .holdings-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
 .filter-chips { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+/* Returns: the benchmark chips sit above the comparison tiles (higher specificity than the phone padding below). */
+.filter-chips.benchmark-chips { padding-bottom: 12px; }
+.benchmark-chips + .kpi-strip { margin-bottom: 12px; }
 .filter-chip {
   flex-shrink: 0;
   min-height: 34px;
