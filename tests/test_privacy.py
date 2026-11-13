@@ -325,7 +325,7 @@ def test_notice_covers_backups_cloudflare_and_credits(monkeypatch):
     assert "monthly credits" in limits_text and "top-up credits" in limits_text
     assert "in progress" in limits_text
     assert "credits used this month" in sections["What whoever runs CA Mode can see"]
-    assert privacy.POLICY_VERSION == "2026-11-13.1"
+    assert privacy.POLICY_VERSION == "2026-11-13.2"
 
 
 def test_capture_finishing_after_switch_to_private_is_not_stored(client, signed_in):
@@ -342,3 +342,31 @@ def test_notice_names_mfapi():
     public = sections["Public fund data"]
     assert "mfapi.in" in public and "sends nothing about you" in public
     assert "only those five funds" in public
+
+
+def test_notice_names_the_tax_slab():
+    sections = {item["title"]: item["body"] for item in privacy.NOTICE}
+    assert any("optional income-tax slab, used only to estimate tax on mutual fund gains" in body
+               for body in sections.values())
+
+
+def test_tax_slab_is_a_sealed_profile_field_in_the_export(client, signed_in):
+    assert client.put("/api/profile", json={"taxSlabPct": 20}).json()["profile"] == {"taxSlabPct": 20}
+    assert client.get("/api/profile").json()["profile"] == {"taxSlabPct": 20}
+    with db.connect_db() as connection:
+        stored = connection.execute("SELECT profile FROM users WHERE id = ?", (signed_in["id"],)).fetchone()[0]
+    assert stored.startswith("sealed:v1:")
+
+    exported = client.post("/api/users/me/export", json={"pin": "2468"}).json()
+    assert exported["profile"]["fields"] == {"taxSlabPct": 20}
+
+
+@pytest.mark.parametrize("value", [7, "20", 35, -5, 20.5, True])
+def test_tax_slab_must_be_a_slab_rate(client, signed_in, value):
+    assert client.put("/api/profile", json={"taxSlabPct": value}).status_code == 422
+
+
+def test_tax_slab_can_be_cleared(client, signed_in):
+    client.put("/api/profile", json={"taxSlabPct": 30, "riskAppetite": "low"})
+    assert client.put("/api/profile", json={"taxSlabPct": None, "riskAppetite": "low"}).json()["profile"] == {
+        "riskAppetite": "low"}
