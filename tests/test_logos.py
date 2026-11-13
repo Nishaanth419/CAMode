@@ -143,6 +143,42 @@ def test_download_sends_no_client_default_headers():
 
     assert asyncio.run(run()) == (PNG, "png")
     assert "authorization" not in seen[0].headers and "cookie" not in seen[0].headers
+    assert seen[0].headers["host"] == "x.test"
+
+
+def test_download_over_a_real_connection(monkeypatch):
+    """A real socket (h11 needs a Host header; MockTransport does not check it)."""
+    import http.server
+    import threading
+
+    seen_hosts = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen_hosts.append(self.headers.get("Host"))
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(PNG)))
+            self.end_headers()
+            self.wfile.write(PNG)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(logos, "_is_https", lambda url: url.startswith(("https://", "http://127.0.0.1:")))
+    try:
+        async def run():
+            async with httpx.AsyncClient() as client:
+                return await logos.download(f"http://127.0.0.1:{server.server_address[1]}/a.png", client)
+
+        assert asyncio.run(run()) == (PNG, "png")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen_hosts == [f"127.0.0.1:{server.server_address[1]}"]
 
 
 def test_download_ignores_client_level_auth_on_every_hop():

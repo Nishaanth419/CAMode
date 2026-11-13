@@ -139,6 +139,13 @@ def _extension(content: bytes) -> str | None:
     return None
 
 
+_REQUEST_HEADERS: Final = {"Accept": "image/png,image/jpeg,image/webp", "User-Agent": "ca-mode-logos"}
+
+
+def _is_https(url: str) -> bool:
+    return urllib.parse.urlsplit(url).scheme == "https"
+
+
 async def download(url: str, client: httpx.AsyncClient) -> tuple[bytes, str] | None:
     """(content, extension) for an https image of at most MAX_LOGO_BYTES, else None."""
     return (await _download(url, client))[0]
@@ -150,13 +157,15 @@ async def _download(url: str, client: httpx.AsyncClient) -> tuple[tuple[bytes, s
     current = url
     try:
         for _ in range(MAX_REDIRECTS + 1):
-            if urllib.parse.urlsplit(current).scheme != "https":
+            if not _is_https(current):
                 return None, False
-            # Built without the client's default headers and cookies (an API token must never
-            # reach a logo host, least of all after a redirect).
-            request = client.build_request("GET", current, timeout=LOGO_TIMEOUT_SECONDS)
-            request.headers.clear()
-            request.headers["Accept"] = "image/png,image/jpeg,image/webp"
+            # A fresh request per hop, never ``client.build_request``: the client's default headers and
+            # cookies (an API token) must never reach a logo host, least of all after a redirect.
+            # ``httpx.Request`` still sets Host from the URL, which a real connection requires.
+            request = httpx.Request(
+                "GET", current, headers=_REQUEST_HEADERS,
+                extensions={"timeout": httpx.Timeout(LOGO_TIMEOUT_SECONDS).as_dict()},
+            )
             response = await client.send(request, stream=True, follow_redirects=False, auth=None)
             try:
                 if response.is_redirect:
