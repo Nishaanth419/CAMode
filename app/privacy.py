@@ -34,7 +34,8 @@ from .db import connect_db
 # 2026-11-12.1: the mutual fund transactions from a detailed CAS (folio numbers replaced by a code) and the
 # daily download of AMFI's public NAV file.
 # 2026-11-13.1: the benchmark NAV history downloaded from mfapi.in.
-POLICY_VERSION: Final = "2026-11-13.1"
+# 2026-11-13.2: holding logos (tickers sent to logo.dev, fund ids to INDmoney, shared logo files).
+POLICY_VERSION: Final = "2026-11-13.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -157,6 +158,18 @@ NOTICE: Final = (
             "liquid funds from mfapi.in and adds each day's NAV from the AMFI file. Those requests name only those "
             "five funds and send nothing about you or your holdings. The NAVs are stored in the same SQLite file, are "
             "not linked to any profile, and are not part of your export."
+        ),
+    },
+    {
+        "title": "Logos",
+        "body": (
+            "To show a logo beside each holding, the server looks up the ticker of each stock at logo.dev "
+            "(logo.dev) and the id of each mutual fund at INDmoney, using your own INDmoney connection. A request "
+            "names only that ticker or fund id: never your name, your amounts or your other holdings. The logo "
+            "images are kept on the server in a folder, with a small record of what was found, and are shared by "
+            "every profile. They are public images, not part of your data, so your export does not include them and "
+            "clearing your history or deleting your profile does not remove them. If no logo.dev key is set on this "
+            "copy, stocks show a letter instead of a logo."
         ),
     },
     {

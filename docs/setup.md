@@ -72,6 +72,8 @@ cp .env.example .env
 | `INVESTIGATION_TOLERANCE_INR` | `1` | Investigations: rupee floor of that tolerance |
 | `INVESTIGATION_STALE_HOURS` | `36` | Investigations: age after which the latest snapshot is flagged as stale |
 | `FUND_STALE_DAYS` | `5` | Fund figures: days after a scheme's NAV date before its returns are marked old |
+| `LOGO_DEV_TOKEN` | – | logo.dev publishable key: lets holdings show company logos for stocks (unset: stocks show a letter; fund logos come from INDmoney and need no key) |
+| `LOGOS_ENABLED` | `true` | Set to `false` to turn holding logos off |
 | `APP_DATA_DIR` | `.data/` | Folder for the SQLite database |
 | `BACKUP_DIR` | `~/ca-mode-backups` | Where daily database backups are written |
 | `BACKUP_KEEP` | `14` | How many backups to keep |

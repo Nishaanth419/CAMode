@@ -151,6 +151,7 @@ erDiagram
 | Table | Primary key | Columns (all plain) | Kept |
 | --- | --- | --- | --- |
 | `question_counts` | `user_id`, `day` | `questions`: answered questions on a local day, for the Free plan's daily cap | today and yesterday |
+| `logos` | `key` | `status` (`found`, `missing`, `failed`), `file`, `checked_at`: which holding logos are on disk under `<APP_DATA_DIR>/logos/`; public images shared by every profile, not linked to a profile, not exported, not cleared with history or profile deletion | until the server's data is removed |
 | `page_views` | `day`, `route` | `views`: how often each app page was opened; no profile, session, IP or browser | 90 days |
 
 `chats_legacy` appears only in databases from before profiles existed: the old chats, adopted by the first profile that signs in from the same browser.
