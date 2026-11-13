@@ -628,7 +628,7 @@ _MF_ROW_KEYS = (
     "name", "isin", "status", "reason", "currentValue", "invested", "unrealisedGain", "realisedGain", "xirr",
     "absoluteReturnPct", "returnReason", "navDate", "navSource",
 )
-_MF_BENCHMARK_KEYS = ("id", "xirr", "absoluteReturnPct", "differenceInr", "status", "reason")
+_MF_BENCHMARK_KEYS = ("id", "label", "navDate", "xirr", "absoluteReturnPct", "differenceInr", "status", "reason")
 
 
 def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> str:

@@ -442,7 +442,10 @@ def test_tool_takes_a_benchmark(client, signed_in, detailed_pdf):
 
     assert default["benchmark"]["id"] == "nifty50" and "options" not in default["benchmark"]
     assert default["schemes"][0]["benchmark"]["status"] == "ok"
-    assert set(default["schemes"][0]["benchmark"]) == {"id", "xirr", "absoluteReturnPct", "differenceInr", "status", "reason"}
+    assert set(default["schemes"][0]["benchmark"]) == {
+        "id", "label", "navDate", "xirr", "absoluteReturnPct", "differenceInr", "status", "reason"}
+    assert default["schemes"][0]["benchmark"]["label"] == "Nifty 50"
+    assert default["schemes"][0]["benchmark"]["navDate"] == "2026-11-10"
     assert small["portfolio"]["benchmark"]["id"] == "smallcap250" and small["benchmark"]["label"] == "Nifty Smallcap 250"
     assert one["scheme"]["benchmark"]["id"] == "nifty50" and one["benchmark"]["id"] == "smallcap250"
     assert wrong == {"error": "Unknown benchmark 'sensex'.", "benchmarks": list(benchmarks.BENCHMARK_IDS)}
@@ -461,3 +464,16 @@ def test_benchmark_payload_stays_small_with_many_schemes(monkeypatch):
     body = json.loads(payload)
     assert len(payload) < snapshots.MF_RETURNS_MAX_CHARS
     assert body["schemes"] and body["schemes"][0]["benchmark"]["status"] == "ok"
+
+
+def test_redeemed_fund_that_beat_the_benchmark_is_not_comparable():
+    # 100 units at 100; the fund redeems for 15000 while the benchmark's 100 units are worth 11000.
+    (item,) = ledger(scheme(close="0", transactions=[
+        ("2024-01-10", "PURCHASE", "10000", "100", "100"), ("2025-03-10", "REDEMPTION", "-15000", "-100", "150"),
+    ]))
+
+    result = mf_returns.returns_from([item], nav(), TODAY, benchmark_navs=NIFTY)
+
+    for bench in (result["schemes"][0]["benchmark"], result["portfolio"]["benchmark"]):
+        assert bench["status"] == "not_comparable" and "10 Mar 2025" in bench["reason"]
+        assert bench["xirr"] is None and bench["value"] is None and bench["differenceInr"] is None

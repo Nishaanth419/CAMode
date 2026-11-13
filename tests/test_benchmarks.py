@@ -154,7 +154,7 @@ def test_seed_fetches_only_missing_or_stale_benchmarks(monkeypatch):
     benchmarks.store_navs("liquid", [(NOW.date() - timedelta(days=8), Decimal("101"))])
     calls.clear()
 
-    assert asyncio.run(benchmarks.seed_if_needed(NOW, fetch=fake_fetch(calls))) == ["liquid"]
+    assert asyncio.run(benchmarks.seed_if_needed(NOW + timedelta(days=1), fetch=fake_fetch(calls))) == ["liquid"]
     assert calls == ["119800"]
 
 
@@ -323,3 +323,46 @@ def test_nav_on_or_before():
     assert mf_math.nav_on_or_before(HISTORY, D(2024, 2, 4)) is None
     assert mf_math.nav_on_or_before(HISTORY, D(2023, 12, 31)) is None
     assert mf_math.nav_on_or_before([], D(2024, 1, 1)) is None
+
+
+def test_a_history_still_old_after_download_is_not_fetched_again_the_same_day(monkeypatch):
+    monkeypatch.setenv("MF_DATA_ENABLED", "true")
+    calls = []
+
+    async def stale(code):  # mfapi itself is 40 days behind.
+        calls.append(code)
+        return mfapi(code=int(code), rows=[{"date": "04-10-2026", "nav": "100"}])
+
+    for minutes in (0, 5, 10, 60 * 23):
+        asyncio.run(benchmarks.seed_if_needed(NOW + timedelta(minutes=minutes), fetch=stale))
+    assert len(calls) == len(benchmarks.BENCHMARKS)
+    asyncio.run(benchmarks.seed_if_needed(NOW + timedelta(days=1), fetch=stale))
+    assert len(calls) == 2 * len(benchmarks.BENCHMARKS)
+
+
+def test_a_history_more_than_four_days_old_is_fetched_again(monkeypatch):
+    # A Friday NAV read on Tuesday (a Monday holiday) is still current; one more day means AMFI downloads failed,
+    # and the full history fills the gap before it is wider than replay's 5-day rule.
+    monkeypatch.setenv("MF_DATA_ENABLED", "true")
+    assert benchmarks.RESEED_AFTER_DAYS == 4
+    for benchmark in benchmarks.BENCHMARKS:
+        benchmarks.store_navs(benchmark.id, [(NOW.date() - timedelta(days=4), Decimal("100"))])
+    benchmarks.store_navs("liquid", [(NOW.date() - timedelta(days=4), Decimal("100"))])
+    with db.connect_db() as connection:
+        connection.execute("DELETE FROM benchmark_navs WHERE benchmark_id = 'liquid'")
+    benchmarks.store_navs("liquid", [(NOW.date() - timedelta(days=5), Decimal("100"))])
+    calls = []
+
+    asyncio.run(benchmarks.seed_if_needed(NOW, fetch=fake_fetch(calls)))
+
+    assert calls == ["119800"]
+
+
+def test_reasons_name_a_fund_label_once():
+    navs = [(D(2024, 1, 1), Decimal("100"))]
+
+    early = mf_math.replay([(D(2023, 12, 1), Decimal("-1000"))], navs, D(2024, 1, 1), Decimal("1"), label="Liquid fund")
+    empty = mf_math.replay([(D(2023, 12, 1), Decimal("-1000"))], [], D(2024, 1, 1), Decimal("1"), label="Liquid fund")
+
+    assert early.reason.startswith("The Liquid fund's NAV history starts on 1 Jan 2024")
+    assert empty.reason == "The Liquid fund has no NAV history."

@@ -283,12 +283,13 @@ def replay(cashflows: Sequence[tuple[date, Decimal]], navs: Sequence[tuple[date,
     if not days:
         return Replay("unavailable", "No cash flows to compare.")
 
+    fund = label if label.lower().endswith("fund") else f"{label} fund"
     if not navs:
-        return Replay("unavailable", f"The {label} fund has no NAV history.")
+        return Replay("unavailable", f"The {fund} has no NAV history.")
 
     def missing(day: date) -> Replay:
         if day < navs[0][0]:
-            return Replay("unavailable", f"The {label} fund's NAV history starts on {_day(navs[0][0])}, after this "
+            return Replay("unavailable", f"The {fund}'s NAV history starts on {_day(navs[0][0])}, after this "
                                          f"fund's first investment on {_day(days[0])}.")
         return Replay("unavailable", f"No benchmark NAV within {MAX_NAV_GAP_DAYS} days before {_day(day)}.")
 

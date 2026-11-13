@@ -7,7 +7,7 @@ direct-growth fund with the longest history on its index.
 
 History lives in the plain ``benchmark_navs`` table. The scheduler (``refresh``) seeds a
 benchmark's full history from mfapi.in (``MFAPI_URL``, ``/mf/<scheme code>``) when it has
-none, or when its latest NAV is over ``RESEED_AFTER_DAYS`` old, and adds each day's NAV
+none, or when its latest NAV is over ``RESEED_AFTER_DAYS`` old (at most once a day), and adds each day's NAV
 from the AMFI file ``amfi`` already stores. The requests name only these five fixed
 funds: nothing about any user or their holdings is sent. Off unless ``MF_DATA_ENABLED``.
 
@@ -63,8 +63,12 @@ INDEX_NOTE: Final = (
 )
 
 DEFAULT_MFAPI_URL: Final = "https://api.mfapi.in"
-RESEED_AFTER_DAYS: Final = 7
+# Over 4 days old (a Friday NAV on a Tuesday after a Monday holiday is still current) means AMFI downloads failed:
+# the full history fills the gap before it is wider than mf_math's 5-day rule.
+RESEED_AFTER_DAYS: Final = 4
 RETRY_SECONDS: Final = amfi.RETRY_SECONDS
+# After a download, the same benchmark is not asked for again within a day, even if mfapi.in's own data is old.
+SEED_AGAIN_SECONDS: Final = 24 * 3600
 TIMEOUT_SECONDS: Final = 30
 
 # Normalised AMFI sub-category (see _sub_category) → benchmark. Exact matches only.
@@ -94,12 +98,12 @@ NO_BENCHMARK_REASONS: Final = (
 INDEX_VARIANT_REASON: Final = "This index fund tracks an index that has no benchmark here."
 UNKNOWN_CATEGORY_REASON: Final = "The fund's AMFI category is not known."
 
-# In memory: when each benchmark's last seeding attempt failed.
-_failed_at: dict[str, datetime] = {}
+# In memory: when each benchmark was last downloaded and whether that failed.
+_attempts: dict[str, tuple[datetime, bool]] = {}
 
 
 def reset_state() -> None:
-    _failed_at.clear()
+    _attempts.clear()
 
 
 def get(benchmark_id: str) -> Benchmark | None:
@@ -215,9 +219,10 @@ async def seed_if_needed(now: datetime, *, fetch: Callable[[str], Awaitable[dict
         return []
     stored: list[str] = []
     for benchmark in BENCHMARKS:
-        failed_at = _failed_at.get(benchmark.id)
-        if failed_at and (now - failed_at).total_seconds() < RETRY_SECONDS:
-            continue
+        if attempt := _attempts.get(benchmark.id):
+            at, failed = attempt
+            if (now - at).total_seconds() < (RETRY_SECONDS if failed else SEED_AGAIN_SECONDS):
+                continue
         if not await asyncio.to_thread(_due, benchmark, now.date()):
             continue
         try:
@@ -227,10 +232,10 @@ async def seed_if_needed(now: datetime, *, fetch: Callable[[str], Awaitable[dict
                 raise ValueError("no NAV rows in the history")
             count = await asyncio.to_thread(store_navs, benchmark.id, rows)
         except Exception as exc:
-            _failed_at[benchmark.id] = now
+            _attempts[benchmark.id] = (now, True)
             logger.warning("benchmark_seed_failed", extra={"benchmark": benchmark.id, "error": type(exc).__name__})
             continue
-        _failed_at.pop(benchmark.id, None)
+        _attempts[benchmark.id] = (now, False)
         stored.append(benchmark.id)
         logger.info("benchmark_seeded", extra={"benchmark": benchmark.id, "rows": count})
     return stored

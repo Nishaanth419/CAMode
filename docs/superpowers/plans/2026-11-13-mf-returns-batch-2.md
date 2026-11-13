@@ -24,7 +24,7 @@
   | `liquid` | Liquid fund | `119800` | `INF200K01UT4` | SBI LIQUID FUND - Direct Plan - Growth | 2013-01-01 |
 
   Each is the direct-growth fund with the longest history on its index in the live file.
-- `DEFAULT_BENCHMARK = "nifty50"`. `MAX_NAV_GAP_DAYS = 5`. `RESEED_AFTER_DAYS = 7`.
+- `DEFAULT_BENCHMARK = "nifty50"`. `MAX_NAV_GAP_DAYS = 5`. `RESEED_AFTER_DAYS = 7` (lowered to 4 after the final review, so a gap is filled before it is wider than 5 days; a benchmark is downloaded at most once a day).
 - `MFAPI_URL` (default `https://api.mfapi.in`), gated by `MF_DATA_ENABLED` like AMFI; user agent `amfi.USER_AGENT` (`CA-Mode/1.0`); requests name only the five fixed scheme codes.
 - Page note, exact copy (`benchmarks.INDEX_NOTE`): "Benchmarks use a direct-growth index fund's NAV: it includes reinvested dividends and is net of a small expense ratio, so it approximates the total-return index."
 - `POLICY_VERSION` becomes `2026-11-13.1`.
