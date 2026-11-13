@@ -11,12 +11,14 @@ logos off.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import time
 import urllib.parse
+import weakref
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Final, Literal
 
@@ -202,7 +204,25 @@ def with_logos(holdings: list[dict]) -> list[dict]:
 
 # ── Automatic fill ─────────────────────────────────────────────────────────────
 
-_key_locks: dict[str, asyncio.Lock] = {}
+# asyncio primitives belong to one event loop (the tests start several): one limiter and one lock per key per loop.
+_loop_state: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[asyncio.Semaphore, dict[str, asyncio.Lock]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _state() -> tuple[asyncio.Semaphore, dict[str, asyncio.Lock]]:
+    loop = asyncio.get_running_loop()
+    current = _loop_state.get(loop)
+    if current is None:
+        current = (asyncio.Semaphore(LOGO_CONCURRENCY), {})
+        _loop_state[loop] = current
+    return current
+
+
+def _key_lock(key: str) -> asyncio.Lock:
+    return _state()[1].setdefault(key, asyncio.Lock())
+
+
 _pending: set[asyncio.Task] = set()
 
 
@@ -219,12 +239,12 @@ def _save(key: str, content: bytes, extension: str, now_ms: int) -> None:
     record(key, "found", name, now_ms)
 
 
-async def _fetch_and_record(key: str, url: str | None, client: httpx.AsyncClient, now_ms: int, limit: asyncio.Semaphore) -> bool:
+async def _fetch_and_record(key: str, url: str | None, client: httpx.AsyncClient, now_ms: int) -> bool:
     """Download one key's logo and record the outcome; True when saved. Never raises for a bad logo."""
     if not url:
         record(key, "missing", None, now_ms)
         return False
-    async with limit:
+    async with _state()[0]:
         got, not_found = await _download(url, client)
     if got is None:
         record(key, "missing" if not_found else "failed", None, now_ms)
@@ -238,10 +258,20 @@ async def fill_fund_logos(
 ) -> int:
     """Fetch the fund-house logo of each due ``mf:`` key through INDmoney's fund details; the count saved."""
     now = _now_ms() if now_ms is None else now_ms
-    ids = sorted({fund_id for fund_id in fund_ids if logo_key("MF", fund_id) and is_due(f"mf:{fund_id.strip().upper()}", now)})
-    if not ids:
+    candidates = sorted({fund_id.strip().upper() for fund_id in fund_ids if logo_key("MF", fund_id)})
+    if not candidates:
         return 0
-    limit = asyncio.Semaphore(LOGO_CONCURRENCY)
+    async with contextlib.AsyncExitStack() as stack:
+        # Locks in sorted order (no two fills can wait on each other); a key another fill finished meanwhile is skipped.
+        for fund_id in candidates:
+            await stack.enter_async_context(_key_lock(f"mf:{fund_id}"))
+        ids = [fund_id for fund_id in candidates if is_due(f"mf:{fund_id}", now)]
+        if not ids:
+            return 0
+        return await _fill_locked_funds(ids, call, now)
+
+
+async def _fill_locked_funds(ids: list[str], call: Callable[[str, dict], Awaitable[str]], now: int) -> int:
     saved = 0
     async with httpx.AsyncClient() as client:
         for start in range(0, len(ids), FUND_BATCH):
@@ -259,7 +289,7 @@ async def fill_fund_logos(
                     record(f"mf:{fund_id}", "failed", None, now)
                 continue
             results = await asyncio.gather(
-                *(_fetch_and_record(f"mf:{fund_id}", urls.get(fund_id), client, now, limit) for fund_id in batch),
+                *(_fetch_and_record(f"mf:{fund_id}", urls.get(fund_id), client, now) for fund_id in batch),
                 return_exceptions=True,
             )
             saved += sum(1 for result in results if result is True)
@@ -273,18 +303,16 @@ async def fill_stock_logos(keys: list[str], *, now_ms: int | None = None) -> int
         return 0
     now = _now_ms() if now_ms is None else now_ms
     wanted = sorted({key for key in keys if key.startswith(("in:", "us:"))})
-    limit = asyncio.Semaphore(LOGO_CONCURRENCY)
 
     async def one(key: str, client: httpx.AsyncClient) -> bool:
-        lock = _key_locks.setdefault(key, asyncio.Lock())
-        async with lock:
+        async with _key_lock(key):
             if not is_due(key, now):  # another fill finished it while this one waited
                 return False
             market, symbol = key.split(":", 1)
             ticker = symbol + ".NS" if market == "in" else symbol
             url = LOGO_DEV_URL.format(symbol=urllib.parse.quote(ticker, safe=".")) + "?" + urllib.parse.urlencode(
                 {"token": token}) + "&" + LOGO_DEV_OPTIONS
-            return await _fetch_and_record(key, url, client, now, limit)
+            return await _fetch_and_record(key, url, client, now)
 
     async with httpx.AsyncClient() as client:
         results = await asyncio.gather(*(one(key, client) for key in wanted), return_exceptions=True)
@@ -295,8 +323,15 @@ async def _fill(holdings: list[dict], fund_call: Callable[[str, dict], Awaitable
     try:
         keys = {logo_key(h.get("asset_type"), h.get("code") or h.get("investment_code")) for h in holdings}
         keys.discard(None)
-        if fund_call is not None:
+    except Exception as exc:
+        logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
+        return
+    if fund_call is not None:
+        try:
             await fill_fund_logos([key[3:] for key in keys if key.startswith("mf:")], fund_call)
+        except Exception as exc:
+            logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
+    try:
         await fill_stock_logos([key for key in keys if not key.startswith("mf:")])
     except Exception as exc:
         logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})

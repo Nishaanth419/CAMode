@@ -375,3 +375,76 @@ def test_capture_hands_the_fund_ids_to_the_fill(monkeypatch):
     assert seen["ids"] == ["118989", "120503"]
     assert "in:INFY" in seen["stocks"]
     assert callable(seen["call"])
+
+
+def test_same_fund_fetched_once(logo_transport):
+    calls = []
+
+    async def call(name, arguments):
+        calls.append(arguments)
+        await asyncio.sleep(0)
+        return indmoney_funds.details({fund_id: None for fund_id in arguments["fund_ids"].split(",")})
+
+    async def both():
+        return await asyncio.gather(logos.fill_fund_logos(["100"], call, now_ms=1000), logos.fill_fund_logos(["100"], call, now_ms=1000))
+
+    assert sorted(asyncio.run(both())) == [0, 1]
+    assert calls == [{"fund_ids": "100"}] and len(logo_transport["requests"]) == 1
+
+
+def test_concurrency_cap_is_shared_across_fills(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    running = {"now": 0, "peak": 0}
+    real_download = logos._download
+
+    async def counting(url, client):
+        running["now"] += 1
+        running["peak"] = max(running["peak"], running["now"])
+        for _ in range(3):
+            await asyncio.sleep(0)
+        try:
+            return await real_download(url, client)
+        finally:
+            running["now"] -= 1
+
+    monkeypatch.setattr(logos, "_download", counting)
+
+    async def call(name, arguments):
+        return indmoney_funds.details({fund_id: None for fund_id in arguments["fund_ids"].split(",")})
+
+    async def run():
+        await asyncio.gather(
+            logos.fill_stock_logos([f"in:A{n}" for n in range(8)], now_ms=1000),
+            logos.fill_stock_logos([f"us:B{n}" for n in range(8)], now_ms=1000),
+            logos.fill_fund_logos([str(n) for n in range(1, 9)], call, now_ms=1000),
+        )
+
+    asyncio.run(run())
+    assert 0 < running["peak"] <= logos.LOGO_CONCURRENCY
+
+
+def test_a_failing_fund_fill_does_not_stop_the_stock_fill(monkeypatch, caplog):
+    monkeypatch.setenv("LOGOS_ENABLED", "true")
+    ran = []
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("x")
+
+    async def stocks(keys, **kwargs):
+        ran.append(keys)
+        return 0
+
+    async def call(name, arguments):
+        return "{}"
+
+    monkeypatch.setattr(logos, "fill_fund_logos", boom)
+    monkeypatch.setattr(logos, "fill_stock_logos", stocks)
+
+    async def run():
+        await logos.schedule_fill(
+            [{"asset_type": "MF", "code": "100"}, {"asset_type": "IND_STOCK", "code": "INFY"}], fund_call=call,
+        )
+
+    asyncio.run(run())
+    assert ran == [["in:INFY"]]
+    assert any(r.message == "logo_fill_failed" and r.error == "RuntimeError" for r in caplog.records)
