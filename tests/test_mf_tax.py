@@ -724,3 +724,120 @@ def test_default_year_follows_the_local_date(client, signed_in, detailed_pdf, at
     assert client.get("/api/tax").json()["fy"] == "2026-27"
     at("2027-04-01")
     assert client.get("/api/tax").json()["fy"] == "2027-28"
+
+
+# ── Agent tool ─────────────────────────────────────────────────────────────────
+
+import asyncio  # noqa: E402
+import json  # noqa: E402
+
+from app import agent, sealing, tasks, users  # noqa: E402
+from tests.fixtures import mf_tax_sample as sample  # noqa: E402
+
+
+def sample_tool(slab: int | None = None, schemes=None):
+    return snapshots.mf_tax_tool(lambda fy: mf_tax.tax_from(schemes or sample.SCHEMES, sample.NAVS, sample.TODAY, fy,
+                                                            slab, fmv={}.get))
+
+
+def test_sample_figures():
+    figures = mf_tax.tax_from(sample.SCHEMES, sample.NAVS, sample.TODAY, None, None, fmv={}.get)
+
+    position = figures["position"]
+    assert position["exemption"]["left"] == 45000.0  # 1,25,000 - 80,000
+    assert (position["tax"]["status"], position["tax"]["slabTaxable"]) == ("none", 10000.0)
+    (harvest,) = figures["planning"]["gainHarvest"]
+    assert (harvest["units"], harvest["stoppedBy"]) == (204.545, "exemption")  # 600 x 45,000 / 1,32,000, rounded down
+    (loss,) = figures["planning"]["lossHarvest"]
+    assert (loss["loss"], loss["couldOffset"]) == (8000.0, 8000.0)
+    (turning,) = figures["planning"]["turningLongTerm"]
+    assert (turning["longTermOn"], turning["gain"], turning["extraTax"]) == ("2027-01-21", 2000.0, 150.0)
+
+
+def test_tax_tool_schema():
+    tool = sample_tool()
+
+    assert tool.name == "get_mf_tax"
+    assert tool.input_schema["properties"]["fy"]["pattern"] == r"^\d{4}-\d{2}$"
+    assert tool.input_schema["properties"]["include_planning"]["type"] == "boolean"
+    assert tool.input_schema["additionalProperties"] is False
+
+
+def test_tax_tool_payload():
+    full = asyncio.run(sample_tool().handler({}))
+    body = json.loads(full)
+    assert len(full) < snapshots.MF_RETURNS_MAX_CHARS
+    assert body["position"]["exemption"]["left"] == 45000.0 and body["planning"]["gainHarvest"]
+    assert "planning" not in json.loads(asyncio.run(sample_tool().handler({"include_planning": False})))
+    past = json.loads(asyncio.run(sample_tool().handler({"fy": "2025-26"})))
+    assert past["fy"] == "2025-26" and "planning" not in past
+    wrong = json.loads(asyncio.run(sample_tool().handler({"fy": "2027-28"})))
+    assert wrong["error"] == "That financial year has not started." and "fys" in wrong
+
+
+def test_tax_tool_payload_stays_small_with_many_schemes():
+    many = [scheme(f"INF9{i:07d}", [txn("2020-01-01", "PURCHASE", "1000", "10"),
+                                     txn("2026-06-01", "REDEMPTION", "-600", "-5"),
+                                     txn("2026-02-01", "PURCHASE", "3000", "10")], "15",
+                   name=f"Fund number {i} with a fairly long scheme name - Direct Growth") for i in range(60)]
+    navs = {s.isin: nav_row(s.isin, EQUITY, "100", "2026-10-27") for s in many}
+    tool = snapshots.mf_tax_tool(lambda fy: mf_tax.tax_from(many, navs, sample.TODAY, fy, None, fmv={}.get))
+
+    payload = asyncio.run(tool.handler({}))
+
+    body = json.loads(payload)
+    assert len(payload) < snapshots.MF_RETURNS_MAX_CHARS
+    assert body["omitted"]["schemes"] == 60
+    assert body["omitted"]["lossHarvest"] == 60 - len(body["planning"]["lossHarvest"]) > 0
+
+
+def test_tax_tool_counts_as_reading_account_data():
+    assert tasks.is_account_tool("get_mf_tax", {"get_mf_tax"})
+
+
+def test_tax_tool_is_offered_only_with_a_ledger(client, signed_in, detailed_pdf, at):
+    def names(user):
+        return [tool.name for tool in snapshots.portfolio_context(user).local_tools]
+
+    user = users.get_user(signed_in["id"])
+    user["keys"] = unlock.keys_for_session(user, client.cookies.get("indmoney_session"))
+    assert "get_mf_tax" not in names(user)
+    upload(client)
+    client.put("/api/profile", json={"taxSlabPct": 20})
+    user = users.get_user(signed_in["id"])
+    user["keys"] = unlock.keys_for_session(user, client.cookies.get("indmoney_session"))
+    tool = next(t for t in snapshots.portfolio_context(user).local_tools if t.name == "get_mf_tax")
+    assert json.loads(asyncio.run(tool.handler({"fy": "2024-25"})))["position"]["tax"]["slabPct"] == 20
+    user["keys"] = sealing.ProfileKeys()
+    assert "get_mf_tax" not in names(user)
+
+
+def test_the_agent_quotes_the_tax_figures(monkeypatch):
+    from scripts import eval_workflows as ev
+    from tests.test_agent_graph import reply, run
+
+    monkeypatch.setattr(ev, "build_context", lambda case: agent.PortfolioContext(
+        local_tools=(sample_tool(),), cached_mcp_tools=ev.TOOLS))
+
+    answer, events, payloads, _, _ = run(monkeypatch, "How much LTCG exemption is left this year?", [
+        reply(calls=[["get_mf_tax", {}]]),
+        reply("You have used ₹80,000 of the ₹1,25,000 long-term exemption for FY 2026-27, so ₹45,000 is left "
+              "(an estimate; equity sold elsewhere also uses it).")])
+
+    assert agent.MF_TAX_RULES in payloads[0]["messages"][0]["content"]
+    assert next(e for e in events if e["kind"] == "validation" and e["check"] == "numbers")["outcome"] == "passed"
+    assert "45,000" in answer
+
+
+@pytest.mark.parametrize(("message", "category"), [
+    ("How much LTCG exemption is left this year?", "account_data"),
+    ("How much LTCG exemption do I have left this year?", "account_data"),
+    ("What are my capital gains this year?", "account_data"),
+    ("Which of my funds could I harvest gains from before March?", "account_data"),
+    ("What is my mutual fund XIRR?", "account_data"),
+    ("What is the LTCG tax rate on equity mutual funds?", "general_finance"),
+    ("How does tax-loss harvesting work?", "general_finance"),
+    ("What is grandfathering for long-term capital gains?", "general_finance"),
+])
+def test_keyword_routing_for_tax_questions(message, category):
+    assert agent._keyword_category(message, []) == category

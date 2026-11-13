@@ -660,8 +660,12 @@ def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> st
     return text
 
 
-def mf_returns_tool(user_id: str, keys: ProfileKeys | None) -> LocalTool:
-    """Read-only returns (FIFO lots, XIRR) on the mutual funds in the user's detailed CAS ledger."""
+def mf_returns_tool(user_id: str, keys: ProfileKeys | None, *,
+                    compute: Callable[[str], dict[str, Any]] | None = None) -> LocalTool:
+    """Read-only returns (FIFO lots, XIRR) on the mutual funds in the user's detailed CAS ledger.
+
+    ``compute(benchmark)`` replaces reading the stored ledger (the workflow eval's fixture).
+    """
     from . import benchmarks
 
     async def get_mf_returns(arguments: dict[str, Any]) -> str:
@@ -670,7 +674,9 @@ def mf_returns_tool(user_id: str, keys: ProfileKeys | None) -> LocalTool:
         benchmark = arguments.get("benchmark") or benchmarks.DEFAULT_BENCHMARK
         if benchmark not in benchmarks.BENCHMARK_IDS:
             return json.dumps({"error": f"Unknown benchmark {benchmark!r}.", "benchmarks": list(benchmarks.BENCHMARK_IDS)})
-        figures = await asyncio.to_thread(mf_returns.returns_for, user_id, keys, local_now().date(), benchmark=benchmark)
+        figures = await asyncio.to_thread(
+            compute or (lambda chosen: mf_returns.returns_for(user_id, keys, local_now().date(), benchmark=chosen)),
+            benchmark)
         scheme = arguments.get("scheme")
         return mf_returns_payload(figures, scheme if isinstance(scheme, str) and scheme.strip() else None)
 
@@ -698,6 +704,81 @@ def mf_returns_tool(user_id: str, keys: ProfileKeys | None) -> LocalTool:
             "additionalProperties": False,
         },
         handler=get_mf_returns,
+    )
+
+
+_TAX_PLANNING_LISTS = ("gainHarvest", "lossHarvest", "turningLongTerm", "elssLocked", "left")
+
+
+def mf_tax_payload(figures: dict[str, Any], include_planning: bool = True) -> str:
+    """The tax figures for the model, under ``MF_RETURNS_MAX_CHARS``: per-fund rows go first, then planning options
+    beyond the first 5 (then 2) of each list; ``omitted`` counts what was left out."""
+    dump = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # noqa: E731
+    if not figures.get("available"):
+        return dump(figures)
+    payload = {key: value for key, value in figures.items() if key != "planning"}
+    planning = figures.get("planning") if include_planning else None
+    if planning is not None:
+        payload["planning"] = planning
+    text = dump(payload)
+    for keep in (None, 5, 2, 0):
+        if len(text) < MF_RETURNS_MAX_CHARS:
+            return text
+        position = {key: value for key, value in figures["position"].items() if key != "schemes"}
+        omitted = {"schemes": len(figures["position"].get("schemes") or [])}
+        payload = {**payload, "position": position}
+        if planning is not None and keep is not None:
+            trimmed = dict(planning)
+            for name in _TAX_PLANNING_LISTS:
+                omitted[name] = max(len(planning[name]) - keep, 0)
+                trimmed[name] = planning[name][:keep]
+            payload["planning"] = trimmed
+        payload["omitted"] = omitted
+        text = dump(payload)
+    return text
+
+
+def mf_tax_tool(compute: Callable[[str | None], dict[str, Any]]) -> LocalTool:
+    """Read-only capital gains, estimated tax and sell-planning figures for the user's mutual funds.
+
+    ``compute(fy)`` gives the figures for a financial year (None: the current one) and raises ``ValueError`` for a
+    year that is malformed, not started or before FY 2023-24.
+    """
+
+    async def get_mf_tax(arguments: dict[str, Any]) -> str:
+        from . import mf_tax
+
+        fy = arguments.get("fy")
+        fy = fy.strip() if isinstance(fy, str) and fy.strip() else None
+        try:
+            figures = await asyncio.to_thread(compute, fy)
+        except ValueError as error:
+            return json.dumps({"error": str(error), "fys": mf_tax.fy_options(local_now().date())})
+        return mf_tax_payload(figures, arguments.get("include_planning") is not False)
+
+    return LocalTool(
+        name="get_mf_tax",
+        description=(
+            "Read the user's mutual fund capital gains for a financial year, computed in code from the transactions "
+            "in their detailed CAMS or KFintech CAS (FIFO lots, 31 Jan 2018 grandfathering, mergers carried over): "
+            "realised gains by tax rule (ruleId, section, rate) and short or long term, losses set off, the equity "
+            "long-term exemption used and left, and an estimated tax (4% cess, no surcharge or rebate; slab-taxed "
+            "gains only when the user's slab is set). For the current year it also gives planning figures: units "
+            "whose long-term gain fits in the exemption left, units with a loss, and lots turning long-term within "
+            "90 days. Funds left out or unclassified are listed with reasons. Pass fy (e.g. 2025-26) for an earlier "
+            "year, from 2023-24."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "fy": {"type": "string", "pattern": r"^\d{4}-\d{2}$",
+                       "description": "Financial year like 2026-27; default the current one."},
+                "include_planning": {"type": "boolean",
+                                     "description": "Include the current year's planning figures (default true)."},
+            },
+            "additionalProperties": False,
+        },
+        handler=get_mf_tax,
     )
 
 
@@ -740,7 +821,12 @@ def portfolio_context(
         from . import mf_ledger
 
         if mf_ledger.has_ledger(user["id"], keys):
+            from . import mf_tax
+
             local_tools.append(mf_returns_tool(user["id"], keys))
+            slab = users.profile_fields(user, keys).get("taxSlabPct")
+            local_tools.append(mf_tax_tool(
+                lambda fy: mf_tax.tax_for(user["id"], keys, local_now().date(), fy, slab)))
     local_tools.extend(extra_tools)
     return PortfolioContext(
         local_tools=tuple(local_tools),
