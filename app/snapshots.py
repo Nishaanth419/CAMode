@@ -448,6 +448,12 @@ async def run_scheduler(
         except Exception:
             logger.exception("amfi_refresh_tick_failed")
         try:
+            from . import benchmarks
+
+            await benchmarks.refresh(clock())
+        except Exception:
+            logger.exception("benchmark_refresh_tick_failed")
+        try:
             from . import housekeeping  # imports snapshots, so only here
 
             await asyncio.to_thread(housekeeping.run_due, clock())
