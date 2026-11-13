@@ -146,14 +146,17 @@ def fifo(transactions: Sequence[Txn], *, carried: dict[date, list[Lot]] | None =
             if stamp and not buy_total:
                 result.problems.append(f"{day.isoformat()}: stamp duty with no purchase that day")
                 cash -= stamp
+            merged_in = sum((abs(t.units) for t in buys if t.type == "SWITCH_IN_MERGER"), _ZERO)
             for t in buys:
                 amount = abs(t.amount)
                 share = stamp * amount / buy_total if buy_total else _ZERO
                 taken_over = (carried or {}).get(day) if t.type == "SWITCH_IN_MERGER" else None
                 if taken_over:
                     old_units = sum((lot.units for lot in taken_over), _ZERO)
-                    lots.extend(Lot(lot.buy_date, abs(t.units) * lot.units / old_units, lot.cost, lot.buy_type, lot.origin)
-                                for lot in taken_over)
+                    # Several merger-in rows that day share the old lots in proportion to their units.
+                    share_of_day = abs(t.units) / merged_in
+                    lots.extend(Lot(lot.buy_date, abs(t.units) * lot.units / old_units, lot.cost * share_of_day,
+                                    lot.buy_type, lot.origin) for lot in taken_over)
                 else:
                     lots.append(Lot(day, abs(t.units), amount + share, t.type))
                 if t.type != "DIVIDEND_REINVEST":

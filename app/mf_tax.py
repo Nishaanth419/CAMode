@@ -443,6 +443,7 @@ def tax_lots(schemes: Sequence[LedgerScheme], navs: dict[str, NavRow], *,
 
 _RULES_BY_ID: Final = {rule.id: rule for rule in MF_TAX_RULES}
 EXCLUDED_NOTE: Final = "Gains from funds left out are not included."
+LEFT_OUT_TAX_NOTE: Final = "Gains from funds left out or not classified are not in this estimate."
 _ZERO: Final = Decimal(0)
 
 
@@ -462,6 +463,10 @@ def _rate_out(rate: Decimal | str | None) -> float | str | None:
 
 def _fixed_rate(row: dict) -> Decimal:
     return _ZERO if row["rate"] == SLAB else row["rate"]
+
+
+def _sold_in(scheme: LedgerScheme, start: date, end: date) -> bool:
+    return any(t.type in SELL_TYPES and t.type != MERGE_OUT and start <= t.date <= end for t in scheme.transactions)
 
 
 def act_for(fy: str) -> str:
@@ -558,18 +563,26 @@ def position(lots: Sequence[SchemeLots], fy: str, slab_pct: int | None) -> dict:
             items.append({"ruleId": row["ruleId"], "term": row["term"], "taxable": _money(taxable),
                           "rate": float(rate), "tax": _money(tax)})
         has_fixed = any(item["tax"] is not None for item in items)
-        status = "estimated" if not slab_taxable else ("partial" if has_fixed else "none")
+        sold_left_out = any(item.status != "ok" and _sold_in(item.scheme, start, end) for item in lots)
+        missing = (["slab"] if slab_taxable else []) + (["funds"] if unclassified_schemes or sold_left_out else [])
+        if not missing:
+            status = "estimated"
+        elif missing == ["slab"] and not has_fixed:
+            status = "none"  # Only slab-taxed gains and no slab: nothing to estimate, never Rs 0.
+        else:
+            status = "partial"
         cess = before_cess * CESS_RATE
-        tax_notes = [ESTIMATE_NOTE] + ([SLAB_NOTE] if slab_taxable else [])
+        tax_notes = [ESTIMATE_NOTE] + ([SLAB_NOTE] if slab_taxable else []) \
+            + ([LEFT_OUT_TAX_NOTE] if "funds" in missing else [])
         tax_block = {
-            "status": status, "items": items, "slabPct": slab_pct, "slabTaxable": _money(slab_taxable),
+            "status": status, "missing": missing, "items": items, "slabPct": slab_pct, "slabTaxable": _money(slab_taxable),
             "beforeCess": _money(before_cess) if status != "none" else None,
             "cess": _money(cess) if status != "none" else None,
             "total": _money(before_cess + cess) if status != "none" else None, "notes": tax_notes,
         }
 
-    excluded = [{"name": item.scheme.name, "status": item.status, "reason": item.reason}
-                for item in lots if item.status != "ok"]
+    excluded = [{"name": item.scheme.name, "status": item.status, "reason": item.reason,
+                 "soldThisYear": _sold_in(item.scheme, start, end)} for item in lots if item.status != "ok"]
     notes = [ESTIMATE_NOTE, SET_OFF_NOTE, FIGURES_NOTE] + ([SLAB_NOTE] if slab_taxable else []) \
         + ([EXCLUDED_NOTE] if excluded else [])
     used = limit - left
@@ -739,6 +752,9 @@ def planning(lots: Sequence[SchemeLots], navs: dict[str, NavRow], today: date, p
                         Decimal(slab_pct) if slab_pct is not None else None)
                     tax_now = view.gain * now_rate / 100 if now_rate is not None else None
                     tax_after = view.gain * later.lt_rate / 100
+                    if tax_now is not None and tax_now <= tax_after:
+                        before += view.lot.units
+                        continue  # Waiting would not lower the tax (a low slab against 12.5%).
                     result["turningLongTerm"].append({
                         **base, "taxClass": item.tax_class, "units": _units(view.lot.units),
                         "unitsBefore": _units(before), "longTermOn": turns.isoformat(), "gain": _money(view.gain),

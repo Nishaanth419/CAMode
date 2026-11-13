@@ -446,7 +446,8 @@ def test_excluded_schemes_are_listed():
     result = mf_tax.position([holding(name="Old Fund", status="incomplete_history", reason="History is missing.")],
                              "2025-26", None)
 
-    assert result["excluded"] == [{"name": "Old Fund", "status": "incomplete_history", "reason": "History is missing."}]
+    assert result["excluded"] == [{"name": "Old Fund", "status": "incomplete_history", "reason": "History is missing.",
+                                   "soldThisYear": False}]
     assert "Gains from funds left out are not included." in result["notes"]
 
 
@@ -853,3 +854,52 @@ def test_tax_questions_are_steered_to_get_mf_tax():
     assert "get_mf_tax" in returns_tool.description
     assert "harvest" in agent.MF_TAX_RULES and "get_mf_tax" in agent.MF_TAX_RULES
     assert "capital gains" in router.ROUTER_PROMPT and router.ROUTER_PROMPT_VERSION == "router.v2"
+
+
+# ── Final review fixes ─────────────────────────────────────────────────────────
+
+def test_left_out_sales_make_the_tax_partial_never_a_bare_zero():
+    mixed = holding(g(None, None, "4000", tax_class="unclassified"), name="FoF", tax_class="unclassified")
+    tax = mf_tax.position([mixed], "2025-26", 30)["tax"]
+    assert (tax["status"], tax["total"], tax["missing"]) == ("partial", 0.0, ["funds"])
+    assert mf_tax.LEFT_OUT_TAX_NOTE in tax["notes"]
+
+    left_out = holding(name="Old Fund", status="incomplete_history", reason="History is missing.")
+    left_out.scheme.transactions = [txn("2025-06-01", "REDEMPTION", "-5000", "-50")]
+    result = mf_tax.position([left_out], "2025-26", 30)
+    assert (result["tax"]["status"], result["tax"]["missing"]) == ("partial", ["funds"])
+    assert result["excluded"][0]["soldThisYear"] is True
+
+    quiet = holding(name="Old Fund", status="incomplete_history", reason="History is missing.")
+    quiet.scheme.transactions = [txn("2023-06-01", "REDEMPTION", "-5000", "-50")]
+    result = mf_tax.position([quiet], "2025-26", 30)
+    assert (result["tax"]["status"], result["tax"]["missing"]) == ("estimated", [])
+    assert result["excluded"][0]["soldThisYear"] is False
+
+
+def test_slab_missing_is_named():
+    lots = [holding(g("equity_from_2024_07_23", "short", "30000")),
+            holding(g("specified_debt", "short", "10000", tax_class="debt"), name="Debt", tax_class="debt")]
+    assert mf_tax.position(lots, "2025-26", None)["tax"]["missing"] == ["slab"]
+
+
+def test_tax_payload_stays_small_with_many_funds_left_out():
+    many = [scheme(f"INF8{i:07d}", [txn("2020-01-01", "PURCHASE", "1000", "10")], "10", status="incomplete_history",
+                   name=f"Some Fund With An Ordinary Long Name {i} - Direct Plan - Growth",
+                   reason="History before 01 Apr 2019 is missing; upload a since-inception CAS.") for i in range(40)]
+    tool = snapshots.mf_tax_tool(lambda fy: mf_tax.tax_from(many, {}, sample.TODAY, fy, None, fmv={}.get))
+
+    payload = asyncio.run(tool.handler({}))
+
+    body = json.loads(payload)
+    assert len(payload) < snapshots.MF_RETURNS_MAX_CHARS
+    assert body["omitted"]["excluded"] == 40 - len(body["position"]["excluded"]) > 0
+
+
+def test_turning_long_term_skips_lots_that_cost_more_after_waiting():
+    gold = scheme("INF2", [txn("2025-03-20", "PURCHASE", "10000", "100")], "100")
+
+    result = plan_for([gold], {"INF2": "Other Scheme - FoF Overseas"}, nav="200", slab=5)
+
+    # 5% now is less than 12.5% after the date, so waiting saves nothing: not listed.
+    assert result["turningLongTerm"] == []

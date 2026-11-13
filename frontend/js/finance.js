@@ -825,7 +825,14 @@
   function taxEstimate(tax) {
     if (!tax) return { short: 'Not estimated', note: '' };
     if (tax.status === 'estimated' && Number.isFinite(tax.total)) return { short: money(tax.total), note: 'Estimate incl. 4% cess' };
-    if (tax.status === 'partial' && Number.isFinite(tax.total)) return { short: `${money(tax.total)} + slab tax`, note: TAX_SLAB_NOTE };
+    if (tax.status === 'partial' && Number.isFinite(tax.total)) {
+      const missing = tax.missing || ['slab'];
+      const slab = missing.includes('slab');
+      const funds = missing.includes('funds');
+      const rest = slab && funds ? 'more' : funds ? 'gains not estimated' : 'slab tax';
+      const note = [slab ? TAX_SLAB_NOTE : '', funds ? 'Some gains are not in this estimate; the funds are listed below.' : ''].filter(Boolean).join(' ');
+      return { short: `${money(tax.total)} + ${rest}`, note };
+    }
     return { short: 'Not estimated', note: TAX_SLAB_NOTE };
   }
 

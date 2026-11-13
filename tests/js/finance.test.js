@@ -649,3 +649,10 @@ test('taxRate shows slab or a percentage', () => {
   assert.equal(finance.taxRate(20), '20%');
   assert.equal(finance.taxRate(null), '—');
 });
+
+test('taxEstimate says when gains are left out of the estimate', () => {
+  assert.deepEqual(finance.taxEstimate({ status: 'partial', total: 0, missing: ['funds'] }),
+    { short: '₹0 + gains not estimated', note: 'Some gains are not in this estimate; the funds are listed below.' });
+  assert.deepEqual(finance.taxEstimate({ status: 'partial', total: 900, missing: ['slab', 'funds'] }),
+    { short: '₹900 + more', note: `${finance.TAX_SLAB_NOTE} Some gains are not in this estimate; the funds are listed below.` });
+});

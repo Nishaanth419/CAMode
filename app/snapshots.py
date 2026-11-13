@@ -725,8 +725,17 @@ def mf_tax_payload(figures: dict[str, Any], include_planning: bool = True) -> st
     for keep in (None, 5, 2, 0):
         if len(text) < MF_RETURNS_MAX_CHARS:
             return text
-        position = {key: value for key, value in figures["position"].items() if key != "schemes"}
-        omitted = {"schemes": len(figures["position"].get("schemes") or [])}
+        source = figures["position"]
+        position = {key: value for key, value in source.items() if key != "schemes"}
+        position["tax"] = {key: value for key, value in source["tax"].items() if key != "notes"}  # As in position.notes.
+        omitted = {"schemes": len(source.get("schemes") or [])}
+        cap = 10 if keep is None else keep
+        if len(source.get("excluded") or []) > cap:
+            position["excluded"] = source["excluded"][:cap]
+            omitted["excluded"] = len(source["excluded"]) - cap
+        if source.get("unclassified") and len(source["unclassified"]["schemes"]) > cap:
+            position["unclassified"] = {**source["unclassified"], "schemes": source["unclassified"]["schemes"][:cap]}
+            omitted["unclassified"] = len(source["unclassified"]["schemes"]) - cap
         payload = {**payload, "position": position}
         if planning is not None and keep is not None:
             trimmed = dict(planning)
