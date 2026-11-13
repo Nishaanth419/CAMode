@@ -834,7 +834,11 @@ def test_indmoney_tools_route_marks_the_allowlist(client, signed_in, monkeypatch
     assert tools == {read: "read", "place_order": "write", "mystery_tool": "not_enabled"}
 
 
-def test_free_plan_refuses_a_third_broker_on_every_connect_route(client, signed_in, oauth):
+def test_free_plan_refuses_a_third_broker_on_every_connect_route(client, signed_in, oauth, monkeypatch):
+    async def fake_registration(redirect_uri):  # INDmoney's own discovery and registration, never the network
+        return {"authorization_endpoint": "https://auth.example/authorize"}, {"client_id": "cid", "client_secret": "cs"}
+
+    monkeypatch.setattr(main, "register_oauth_client", fake_registration)
     seed(signed_in["id"], "indmoney", "zerodha")
     listed = client.get("/api/brokers").json()
     assert listed["limit"] == 2 and listed["connected"] == 2
