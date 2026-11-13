@@ -1684,7 +1684,9 @@ async def broker_holdings_payloads(user: dict[str, Any], *, refresh: bool, only:
     store = snapshots.snapshots_allowed(user)
     found = [item for item in brokers.connections(user["id"]) if only in (None, item["broker"])]
     payloads = await asyncio.gather(*(
-        brokers.fetch_holdings(user["id"], user["keys"], brokers.BROKERS[item["broker"]], live=refresh, store=store)
+        brokers.fetch_holdings(
+            user["id"], user["keys"], brokers.BROKERS[item["broker"]], live=refresh, store=store, with_logos=True,
+        )
         for item in found
     ))
     return list(payloads)
@@ -1719,7 +1721,7 @@ async def combined_holdings(request: Request, refresh: bool = False):
         return blocked
     snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     payloads = await broker_holdings_payloads(user, refresh=refresh)
-    return await asyncio.to_thread(brokers.combined, snapshot, payloads)
+    return await asyncio.to_thread(brokers.combined, snapshot, payloads, logo_user=user["id"])
 
 
 # ── Portfolio snapshots ────────────────────────────────────────────────────────
@@ -1763,11 +1765,17 @@ _LOGO_TYPES: Final = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image
 
 
 @app.get("/api/logos/{key}")
-async def logo_file(key: str, request: Request):
-    """A cached company or fund-house logo. Only serves files already downloaded; never fetches."""
-    if not current_user(request):
+async def logo_file(key: str, request: Request, s: str = ""):
+    """A cached company or fund-house logo. Only serves files already downloaded; never fetches.
+
+    ``s`` must be the signed-in profile's signature for the key (``logos.with_logos``); a missing or
+    wrong one gets the same 404 as an uncached key, so no profile can probe what another one holds.
+    """
+    user = current_user(request)
+    if not user:
         return profile_required()
-    path = logos.cached_path(key) if logos.valid_key(key) else None
+    allowed = logos.valid_key(key) and logos.signature_ok(user["id"], key, s)
+    path = logos.cached_path(key) if allowed else None
     media_type = _LOGO_TYPES.get(path.suffix.lower()) if path else None
     if path is None or media_type is None:
         return JSONResponse({"error": "No logo for that key."}, status_code=404)
@@ -1783,7 +1791,7 @@ async def portfolio_figures(request: Request):
     snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     if not snapshot:
         return {"available": False}
-    figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot)
+    figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot, user["id"])
     return {"available": True, **_snapshot_summary(snapshot), **figures}
 
 

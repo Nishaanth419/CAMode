@@ -507,9 +507,14 @@ def _snapshot_payload(snapshot: dict[str, Any], *, include_all_holdings: bool = 
     return payload
 
 
-def portfolio_figures(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """The snapshot's computed figures plus every holding in full, for the app's portfolio pages."""
-    return {"figures": compute_metrics(snapshot["results"]), "holdings": logos.with_logos(all_holdings(snapshot["results"]))}
+def portfolio_figures(snapshot: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """The snapshot's computed figures plus every holding in full, for the app's portfolio pages.
+
+    Holdings carry ``logo`` links signed for ``user_id``; this is for the pages only (the model's
+    figures come from ``compute_metrics`` and never carry a logo).
+    """
+    figures = compute_metrics(snapshot["results"])
+    return {"figures": figures, "holdings": logos.with_logos(all_holdings(snapshot["results"]), user_id)}
 
 
 def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:

@@ -618,8 +618,8 @@ test('gapOptions shows up to three options on the first basis with the exact fig
 
 test('holdingLogoHtml shows a cached logo or a monogram and escapes names', () => {
   const f = require('../../frontend/js/finance.js');
-  const logo = f.holdingLogoHtml({ name: 'Infosys', logo: '/api/logos/in:M%26M' });
-  assert.match(logo, /<img class="broker-logo holding-logo" src="\/api\/logos\/in:M%26M"/);
+  const logo = f.holdingLogoHtml({ name: 'Infosys', logo: '/api/logos/in:M%26M?s=Ab-_9xYz' });
+  assert.match(logo, /<img class="broker-logo holding-logo" src="\/api\/logos\/in:M%26M\?s=Ab-_9xYz"/);
   assert.match(logo, /alt=""/);
   assert.match(logo, /data-monogram="I"/);
   const none = f.holdingLogoHtml({ name: 'Infosys' });

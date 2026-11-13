@@ -11,7 +11,10 @@ logos off.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -24,7 +27,7 @@ from typing import Any, Awaitable, Callable, Final, Literal
 
 import httpx
 
-from . import db
+from . import db, vault
 from .portfolio_math import canonical_asset_type
 
 logger = logging.getLogger(__name__)
@@ -202,10 +205,33 @@ def valid_key(key: str) -> bool:
     return bool(kind and rest) and logo_key(kind, rest) == key
 
 
-def with_logos(holdings: list[dict]) -> list[dict]:
-    """Add ``logo`` (the app's own URL) to each holding whose logo is cached; same list back.
+_SIGNING_LABEL: Final = b"logo-url-v1"
+_SIGNATURE_BYTES: Final = 16
 
-    A failure here (a locked database, say) logs ``logo_lookup_failed`` and returns the holdings as they were.
+
+def _signature(signing_key: bytes, user_id: str, key: str) -> str:
+    digest = hmac.new(signing_key, f"{user_id}:{key}".encode(), hashlib.sha256).digest()[:_SIGNATURE_BYTES]
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def sign(user_id: str, key: str) -> str:
+    """The ``s`` value of one profile's link to one logo (the cache is shared; links are not)."""
+    return _signature(vault.derived_key(_SIGNING_LABEL), user_id, key)
+
+
+def signature_ok(user_id: str, key: str, signature: str | None) -> bool:
+    """True when ``signature`` is this profile's signature for ``key`` (constant-time compare)."""
+    if not signature or not user_id:
+        return False
+    return hmac.compare_digest(sign(user_id, key).encode(), signature.encode("utf-8", "replace"))
+
+
+def with_logos(holdings: list[dict], user_id: str) -> list[dict]:
+    """Add ``logo`` (the app's own URL, signed for ``user_id``) to each holding whose logo is cached; same list back.
+
+    The signature keeps another profile from asking whether a ticker or fund is cached, which would
+    tell it that someone on this copy holds it. A failure here (a locked database, say) logs
+    ``logo_lookup_failed`` and returns the holdings as they were.
     """
     try:
         keyed = [
@@ -225,11 +251,14 @@ def with_logos(holdings: list[dict]) -> list[dict]:
                 ).fetchall()
                 files.update({row["key"]: row["file"] for row in rows})
         found = [(holding, key) for holding, key in keyed if key and _file_ok(files.get(key))]
+        signing_key = vault.derived_key(_SIGNING_LABEL) if found else b""
     except Exception as exc:
         logger.warning("logo_lookup_failed", extra={"error": type(exc).__name__})
         return holdings
     for holding, key in found:
-        holding["logo"] = "/api/logos/" + urllib.parse.quote(key, safe=":")
+        holding["logo"] = (
+            "/api/logos/" + urllib.parse.quote(key, safe=":") + "?s=" + _signature(signing_key, user_id, key)
+        )
     return holdings
 
 

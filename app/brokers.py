@@ -925,14 +925,19 @@ def rows_results(rows: list[dict[str, Any]]) -> dict[str, str]:
     return {portfolio_math.HOLDINGS_PREFIX + asset_type: json.dumps({"holdings": found}) for asset_type, found in by_type.items()}
 
 
-def rows_view(rows: list[dict[str, Any]], *, include_all_holdings: bool = False) -> dict[str, Any]:
+def rows_view(rows: list[dict[str, Any]], *, include_all_holdings: bool = False, logo_user: str | None = None) -> dict[str, Any]:
+    """Figures and every holding for rows; holdings carry ``logo`` links (signed for ``logo_user``) only when given.
+
+    Agent tools leave ``logo_user`` out, so nothing they return carries a logo link.
+    """
     results = rows_results(rows)
     figures = portfolio_math.compute_metrics(results, include_all_holdings=include_all_holdings)
     # There is no networth_snapshot here, so the holdings' own value is the total (holdings only, no other assets).
     held = sum((Decimal(str(row["current_value_inr"] or 0)) for row in figures.get("by_broker") or []), Decimal(0))
     if figures.get("totals") and figures["totals"].get("current_value_inr") is None:
         figures["totals"]["current_value_inr"] = float(held.quantize(Decimal("0.01")))
-    return {"figures": figures, "holdings": logos.with_logos(portfolio_math.all_holdings(results))}
+    holdings = portfolio_math.all_holdings(results)
+    return {"figures": figures, "holdings": logos.with_logos(holdings, logo_user) if logo_user else holdings}
 
 
 def _store_rows(user_id: str, broker_id: str, rows: list[dict[str, Any]], keys: ProfileKeys) -> int:
@@ -994,18 +999,21 @@ async def _fetch_rows(user_id: str, connection: dict[str, Any], broker: Broker) 
 
 def _holdings_payload(
     broker: Broker, status: str, rows: list[dict[str, Any]], as_of: int, *, stale: bool, include_all_holdings: bool = False,
+    logo_user: str | None = None,
 ) -> dict[str, Any]:
     return {
         "available": True, "broker": broker.id, "name": broker.name, "status": status, "stale": stale,
-        "asOf": as_of, **rows_view(rows, include_all_holdings=include_all_holdings), "_rows": rows,
+        "asOf": as_of, **rows_view(rows, include_all_holdings=include_all_holdings, logo_user=logo_user), "_rows": rows,
     }
 
 
 async def fetch_holdings(
     user_id: str, keys: ProfileKeys, broker: Broker, *, live: bool = True, store: bool = True,
-    include_all_holdings: bool = False,
+    include_all_holdings: bool = False, with_logos: bool = False,
 ) -> dict[str, Any]:
     """Holdings now when the session works (stored when ``store``), else the last stored copy marked stale.
+
+    ``with_logos`` (the app's pages only, never agent tools) adds signed ``logo`` links to the holdings.
 
     Never raises for a broker problem: with nothing stored the result is ``{"available": False, "status"}``.
     ``_rows`` carries the normalised rows for the combined view; routes drop keys that start with ``_``.
@@ -1037,7 +1045,10 @@ async def fetch_holdings(
             as_of = _store_rows(user_id, broker.id, rows, keys) if store else users.now_ms()
             if connection["status"] != "connected":
                 set_status(user_id, broker.id, "connected")
-            payload = _holdings_payload(broker, "connected", rows, as_of, stale=False, include_all_holdings=include_all_holdings)
+            payload = _holdings_payload(
+                broker, "connected", rows, as_of, stale=False, include_all_holdings=include_all_holdings,
+                logo_user=user_id if with_logos else None,
+            )
             if store:
                 _store_day(user_id, broker.id, rows, payload, keys, as_of)
             logos.schedule_fill(payload.get("holdings") or [])
@@ -1048,7 +1059,10 @@ async def fetch_holdings(
     if saved is None:
         return {"available": False, "broker": broker.id, "name": broker.name, "status": status,
                 **({"problem": problem} if problem else {})}
-    return _holdings_payload(broker, status, saved[0], saved[1], stale=True, include_all_holdings=include_all_holdings)
+    return _holdings_payload(
+        broker, status, saved[0], saved[1], stale=True, include_all_holdings=include_all_holdings,
+        logo_user=user_id if with_logos else None,
+    )
 
 
 def public(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1112,6 +1126,7 @@ def split_indmoney_rows(
 
 def combined(
     snapshot: dict[str, Any] | None, broker_payloads: list[dict[str, Any]], *, include_all_holdings: bool = False,
+    logo_user: str | None = None,
 ) -> dict[str, Any]:
     """INDmoney's latest snapshot and each broker's holdings as sources, plus one deduplicated total.
 
@@ -1144,7 +1159,7 @@ def combined(
         rows, _ = portfolio_math._holding_rows(snapshot["results"])
         rows, deduplicated, only_in_indmoney = split_indmoney_rows(rows, direct)
         indmoney_rows = rows
-        view = rows_view(rows) if rows else {"figures": None, "holdings": []}
+        view = rows_view(rows, logo_user=logo_user) if rows else {"figures": None, "holdings": []}
         sources.append({
             "id": "indmoney", "name": "INDmoney", "logo": logo_path(INDMONEY_ID), "kind": "indmoney", "status": "connected", "asOf": snapshot["capturedAt"],
             "stale": False, "available": True, **view, "movedTo": dict(deduplicated),
@@ -1157,7 +1172,7 @@ def combined(
     if not merged:
         return {"sources": sources, "combined": {"available": False, **extra}}
     return {"sources": sources, "combined": {
-        "available": True, **rows_view(merged, include_all_holdings=include_all_holdings), **extra}}
+        "available": True, **rows_view(merged, include_all_holdings=include_all_holdings, logo_user=logo_user), **extra}}
 
 
 def export_brokers(user_id: str, keys: ProfileKeys) -> list[dict[str, Any]]:

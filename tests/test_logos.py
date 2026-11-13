@@ -102,9 +102,21 @@ def test_with_logos_only_cached():
         {"asset_type": "STOCK", "code": "TCS"},
         {"asset_type": "IND_STOCK", "code": "INE009A01021"},
     ]
-    assert logos.with_logos(rows) is rows
-    assert rows[0]["logo"] == "/api/logos/in:INFY"
+    assert logos.with_logos(rows, "u1") is rows
+    assert rows[0]["logo"] == "/api/logos/in:INFY?s=" + logos.sign("u1", "in:INFY")
     assert "logo" not in rows[1] and "logo" not in rows[2]
+
+
+def test_logo_signature_is_per_profile_and_per_key():
+    signature = logos.sign("u1", "in:INFY")
+    assert len(signature) == 22 and "=" not in signature  # 16 bytes, base64url without padding
+    assert signature != logos.sign("u2", "in:INFY")
+    assert signature != logos.sign("u1", "in:TCS")
+    assert logos.signature_ok("u1", "in:INFY", signature)
+    for user_id, key, given in [("u2", "in:INFY", signature), ("u1", "in:TCS", signature), ("u1", "in:INFY", ""),
+                                ("u1", "in:INFY", None), ("u1", "in:INFY", signature[:-1]), ("u1", "in:INFY", "é" * 22),
+                                ("", "in:INFY", signature)]:
+        assert not logos.signature_ok(user_id, key, given)
 
 
 @pytest.mark.parametrize("code", ["²", "١٢٣", "１２３", "1" * 13])
@@ -499,15 +511,21 @@ def test_logo_route(client):
     assert client.get("/api/logos/in:INFY").json()["profileRequired"] is True
 
 
+def _logo_url(user_id, key):
+    import urllib.parse
+
+    return "/api/logos/" + urllib.parse.quote(key, safe=":") + "?s=" + logos.sign(user_id, key)
+
+
 def test_logo_route_serves_cached_file_only(client, signed_in):
     _cache_infy()
-    response = client.get("/api/logos/in:INFY")
+    response = client.get(_logo_url(signed_in["id"], "in:INFY"))
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.headers["cache-control"] == "private, max-age=604800"
     assert response.content == PNG
     for key in ["in:TCS", "in:..%2Fx", "x", "mf:abc", "in:infy", "in:INE009A01021"]:
-        missing = client.get(f"/api/logos/{key}")
+        missing = client.get(f"/api/logos/{key}?s={logos.sign(signed_in['id'], key)}")
         assert missing.status_code == 404
         assert missing.headers["content-type"].startswith("application/json")
 
@@ -515,7 +533,27 @@ def test_logo_route_serves_cached_file_only(client, signed_in):
 def test_logo_route_handles_ampersand_keys(client, signed_in):
     (logos.logos_dir() / "in-M_and_M.png").write_bytes(PNG)
     logos.record("in:M&M", "found", "in-M_and_M.png", 0)
-    assert client.get("/api/logos/in:M%26M").status_code == 200
+    assert client.get(_logo_url(signed_in["id"], "in:M&M")).status_code == 200
+
+
+def test_logo_route_needs_this_profiles_signature(client, signed_in):
+    from tests.conftest import sign_up
+
+    _cache_infy()
+    url_a = _logo_url(signed_in["id"], "in:INFY")
+    assert client.get(url_a).status_code == 200
+    unknown = client.get(_logo_url(signed_in["id"], "in:TCS"))
+    for bad in ["/api/logos/in:INFY", "/api/logos/in:INFY?s=", "/api/logos/in:INFY?s=garbled%%",
+                "/api/logos/in:INFY?s=" + logos.sign(signed_in["id"], "in:TCS")]:
+        response = client.get(bad)
+        assert response.status_code == 404
+        assert response.json() == unknown.json()  # a bad signature reads exactly like an uncached key
+    client.post("/api/session/logout")
+    other = sign_up(client, "Ravi", "1357")
+    assert other["id"] != signed_in["id"]
+    assert client.get(url_a).status_code == 404
+    assert client.get(url_a).json() == unknown.json()
+    assert client.get(_logo_url(other["id"], "in:INFY")).status_code == 200
 
 
 def test_portfolio_and_broker_holdings_carry_logo(client, signed_in):
@@ -533,15 +571,17 @@ def test_portfolio_and_broker_holdings_carry_logo(client, signed_in):
         client.get("/api/holdings/combined").json()["sources"][0]["holdings"],
         client.get("/api/holdings/combined").json()["combined"]["holdings"],
     ):
-        assert [h["logo"] for h in holdings if "logo" in h] == ["/api/logos/in:INFY"]
-        assert next(h for h in holdings if h["code"] == "INFY")["logo"] == "/api/logos/in:INFY"
+        url = _logo_url(signed_in["id"], "in:INFY")
+        assert [h["logo"] for h in holdings if "logo" in h] == [url]
+        assert next(h for h in holdings if h["code"] == "INFY")["logo"] == url
+        assert client.get(url).status_code == 200
 
 
 def test_deleted_file_drops_logo(client, signed_in):
     _cache_infy()
     (logos.logos_dir() / "in-INFY.png").unlink()
-    assert "logo" not in logos.with_logos([{"asset_type": "IND_STOCK", "code": "INFY"}])[0]
-    assert client.get("/api/logos/in:INFY").status_code == 404
+    assert "logo" not in logos.with_logos([{"asset_type": "IND_STOCK", "code": "INFY"}], "u1")[0]
+    assert client.get(_logo_url(signed_in["id"], "in:INFY")).status_code == 404
     assert logos.is_due("in:INFY", 1)
 
 
@@ -552,7 +592,7 @@ def test_with_logos_returns_holdings_unchanged_on_database_error(monkeypatch, ca
     monkeypatch.setattr(logos.db, "connect_db", boom)
     rows = [{"asset_type": "IND_STOCK", "code": "INFY"}]
     with caplog.at_level("WARNING"):
-        assert logos.with_logos(rows) is rows
+        assert logos.with_logos(rows, "u1") is rows
     assert "logo" not in rows[0]
     assert any(r.message == "logo_lookup_failed" and r.error == "RuntimeError" for r in caplog.records)
 
@@ -561,8 +601,8 @@ def test_with_logos_chunks_large_lists(monkeypatch):
     _cache_infy()
     monkeypatch.setattr(logos, "_KEY_CHUNK", 3)
     rows = [{"asset_type": "MF", "code": str(100 + n)} for n in range(10)] + [{"asset_type": "IND_STOCK", "code": "INFY"}]
-    logos.with_logos(rows)
-    assert rows[-1]["logo"] == "/api/logos/in:INFY"
+    logos.with_logos(rows, "u1")
+    assert rows[-1]["logo"].startswith("/api/logos/in:INFY?s=")
     big = [{"asset_type": "MF", "code": str(n)} for n in range(5000)] + [{"asset_type": "IND_STOCK", "code": "INFY"}]
     monkeypatch.setattr(logos, "_KEY_CHUNK", logos._KEY_CHUNK_DEFAULT)
-    assert logos.with_logos(big)[-1]["logo"] == "/api/logos/in:INFY"
+    assert logos.with_logos(big, "u1")[-1]["logo"].startswith("/api/logos/in:INFY?s=")
