@@ -474,7 +474,8 @@ MF_RETURNS_RULES: Final = (
 # Added when get_mf_tax is offered (Portfolio Analyzer with a detailed CAS ledger).
 MF_TAX_RULES: Final = (
     "get_mf_tax gives the user's mutual fund capital gains and an estimated tax for a financial year, computed in "
-    "code from their detailed CAS. Quote its figures as given and never recompute them; always call the tax an "
+    "code from their detailed CAS. For capital gains, tax, the exemption or which funds could harvest gains or "
+    "losses, call get_mf_tax and answer from it, never from get_mf_returns' unrealised gains. Quote its figures as given and never recompute them; always call the tax an "
     "estimate and name the rule ids or sections it gives; say which funds are left out or unclassified and why; "
     "when the slab is not set, say slab-taxed gains depend on the slab. Planning figures are options for "
     "information: never tell the user to sell, buy or redeem, and mention the exit load and the 25 March note when "

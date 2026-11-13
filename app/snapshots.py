@@ -691,7 +691,8 @@ def mf_returns_tool(user_id: str, keys: ProfileKeys | None, *,
             "says how much of the value is included. Each fund is compared with the index fund for its category "
             "(benchmark: XIRR on the same cash flows and differenceInr, the fund's value minus what the benchmark "
             "would be worth); the portfolio with the benchmark you pass (default nifty50). Pass scheme (part of a "
-            "fund name or its ISIN) for one fund."
+            "fund name or its ISIN) for one fund. For capital gains tax, the LTCG exemption or harvesting gains or "
+            "losses, use get_mf_tax instead."
         ),
         input_schema={
             "type": "object",
@@ -765,8 +766,10 @@ def mf_tax_tool(compute: Callable[[str | None], dict[str, Any]]) -> LocalTool:
             "long-term exemption used and left, and an estimated tax (4% cess, no surcharge or rebate; slab-taxed "
             "gains only when the user's slab is set). For the current year it also gives planning figures: units "
             "whose long-term gain fits in the exemption left, units with a loss, and lots turning long-term within "
-            "90 days. Funds left out or unclassified are listed with reasons. Pass fy (e.g. 2025-26) for an earlier "
-            "year, from 2023-24."
+            "90 days. Funds left out or unclassified are listed with reasons. Use it for any question about capital "
+            "gains, tax on mutual funds, the LTCG exemption, or which funds could be redeemed to harvest gains or "
+            "losses (unrealised gains in get_mf_returns are not the same: they ignore FIFO order, short-term lots "
+            "and the exemption). Pass fy (e.g. 2025-26) for an earlier year, from 2023-24."
         ),
         input_schema={
             "type": "object",

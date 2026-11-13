@@ -842,3 +842,14 @@ def test_the_agent_quotes_the_tax_figures(monkeypatch):
 ])
 def test_keyword_routing_for_tax_questions(message, category):
     assert agent._keyword_category(message, []) == category
+
+
+def test_tax_questions_are_steered_to_get_mf_tax():
+    from app import router
+
+    tax_tool = sample_tool()
+    returns_tool = snapshots.mf_returns_tool("u", None, compute=lambda benchmark: {"available": False})
+    assert "harvest" in tax_tool.description and "exemption" in tax_tool.description
+    assert "get_mf_tax" in returns_tool.description
+    assert "harvest" in agent.MF_TAX_RULES and "get_mf_tax" in agent.MF_TAX_RULES
+    assert "capital gains" in router.ROUTER_PROMPT and router.ROUTER_PROMPT_VERSION == "router.v2"
