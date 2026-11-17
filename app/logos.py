@@ -1,7 +1,9 @@
 """Company and fund-house logos for holdings: keys, the shared cache table and a safe download.
 
-A logo key comes from the asset type and the code only (an MF scheme code, an NSE symbol, a US
-ticker), never from a holding's name. The ``logos`` table and the ``logos/`` folder under the
+A logo key comes from the asset type and the code only (an MF scheme code, an NSE symbol or
+INDmoney's own ``INDS…`` stock key, a US ticker), never from a holding's name. INDmoney's stock rows
+carry its ``ind_key`` rather than the NSE symbol, so those are turned into a symbol through
+``get_indian_stocks_details`` (``entity_basic.symbol`` / ``exchange``) before logo.dev is asked. The ``logos`` table and the ``logos/`` folder under the
 data directory are shared by every profile and hold no profile data: a key, the outcome of the
 last fetch and a file name. Downloads are https only, capped at ``MAX_LOGO_BYTES`` and accepted
 only when the bytes are a PNG, JPEG or WebP image (never SVG). ``LOGOS_ENABLED=false`` turns
@@ -39,6 +41,7 @@ FAILED_RETRY_MS: Final = 24 * 60 * 60 * 1000
 MAX_REDIRECTS: Final = 3
 LOGO_CONCURRENCY: Final = 4
 FUND_BATCH: Final = 10
+STOCK_BATCH: Final = 10  # get_indian_stocks_details takes at most 10 ind_keys per call
 # logo.dev ticker API (https://www.logo.dev/docs/logo-images/ticker): /ticker/SYMBOL?token=KEY, NSE symbols
 # as SYMBOL.NS. Options (https://www.logo.dev/docs/logo-images/introduction): format=png (SVG is not
 # served), size, fallback=404 (else a generated monogram comes back with 200).
@@ -50,6 +53,9 @@ _ISIN_RE: Final = re.compile(r"^IN[A-Z0-9]{9}[0-9]$")
 _MF_CODE_RE: Final = re.compile(r"^[0-9]{1,12}$")
 _SYMBOL_RE: Final = re.compile(r"^[A-Z0-9&.-]{1,20}$")
 _ALNUM_RE: Final = re.compile(r"[A-Z0-9]")
+# INDmoney's own key for an Indian stock (``INDS00021``), what its IND_STOCK rows give as investment_code.
+_IND_KEY_RE: Final = re.compile(r"^INDS[0-9]{1,10}$")
+_UNRESOLVED: Final = "\0failed"
 
 Status = Literal["found", "missing", "failed"]
 
@@ -356,20 +362,87 @@ async def _fill_locked_funds(ids: list[str], call: Callable[[str, dict], Awaitab
     return saved
 
 
-async def fill_stock_logos(keys: list[str], *, now_ms: int | None = None) -> int:
-    """Fetch logo.dev logos for due ``in:`` / ``us:`` keys; needs LOGO_DEV_TOKEN. The count saved."""
+def _ticker_rows(data: Any) -> list[dict]:
+    """Every ``entity_basic`` dict in a ``get_indian_stocks_details`` reply, however it is nested."""
+    found: list[dict] = []
+    stack = [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            basic = item.get("entity_basic")
+            if isinstance(basic, dict):
+                found.append(basic)
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return found
+
+
+async def _resolve_ind_keys(ind_keys: list[str], call: Callable[[str, dict], Awaitable[str]]) -> dict[str, str | None]:
+    """INDmoney ``ind_key`` -> logo.dev ticker (``SYMBOL.NS``, ``SYMBOL.BO`` for BSE), None when it has no symbol.
+
+    A batch whose call fails maps its keys to ``_UNRESOLVED`` (recorded as ``failed``, so retried after a day).
+    """
+    tickers: dict[str, str | None] = {}
+    for start in range(0, len(ind_keys), STOCK_BATCH):
+        batch = ind_keys[start:start + STOCK_BATCH]
+        try:
+            reply = await call("get_indian_stocks_details", {"ind_keys": batch})
+            rows = _ticker_rows(json.loads(reply) if isinstance(reply, str) else reply)
+        except Exception as exc:
+            logger.info("logo_stock_details_failed", extra={"error": type(exc).__name__})
+            tickers.update({key: _UNRESOLVED for key in batch})
+            continue
+        for key in batch:
+            tickers[key] = None
+        for row in rows:
+            key = str(row.get("ind_key") or "").strip().upper()
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if key not in tickers or not symbol.isascii() or not _SYMBOL_RE.match(symbol) or not _ALNUM_RE.search(symbol):
+                continue
+            exchange = str(row.get("exchange") or "").strip().upper()
+            tickers[key] = symbol + (".BO" if exchange == "BSE" else ".NS")
+    return tickers
+
+
+async def fill_stock_logos(
+    keys: list[str], *, now_ms: int | None = None, ind_call: Callable[[str, dict], Awaitable[str]] | None = None,
+) -> int:
+    """Fetch logo.dev logos for due ``in:`` / ``us:`` keys; needs LOGO_DEV_TOKEN. The count saved.
+
+    ``in:INDS…`` keys (INDmoney's own stock key) need ``ind_call`` to find the symbol first; without it they are
+    left alone (nothing recorded), so a later INDmoney snapshot can still fill them.
+    """
     token = os.getenv("LOGO_DEV_TOKEN", "").strip()
     if not token:
         return 0
     now = _now_ms() if now_ms is None else now_ms
     wanted = sorted({key for key in keys if key.startswith(("in:", "us:"))})
+    ind_keys = [key[3:] for key in wanted if key.startswith("in:") and _IND_KEY_RE.match(key[3:])]
+    if ind_call is None:
+        wanted = [key for key in wanted if not (key.startswith("in:") and key[3:] in ind_keys)]
+        tickers: dict[str, str | None] = {}
+    else:
+        due = [ind_key for ind_key in ind_keys if is_due(f"in:{ind_key}", now)]
+        tickers = await _resolve_ind_keys(due, ind_call) if due else {}
 
     async def one(key: str, client: httpx.AsyncClient) -> bool:
         async with _key_lock(key):
             if not is_due(key, now):  # another fill finished it while this one waited
                 return False
             market, symbol = key.split(":", 1)
-            ticker = symbol + ".NS" if market == "in" else symbol
+            if market == "in" and _IND_KEY_RE.match(symbol):
+                if symbol not in tickers:
+                    return False
+                ticker = tickers[symbol]
+                if ticker == _UNRESOLVED:
+                    record(key, "failed", None, now)
+                    return False
+                if ticker is None:
+                    record(key, "missing", None, now)
+                    return False
+            else:
+                ticker = symbol + ".NS" if market == "in" else symbol
             url = LOGO_DEV_URL.format(symbol=urllib.parse.quote(ticker, safe=".")) + "?" + urllib.parse.urlencode(
                 {"token": token}) + "&" + LOGO_DEV_OPTIONS
             return await _fetch_and_record(key, url, client, now)
@@ -379,7 +452,11 @@ async def fill_stock_logos(keys: list[str], *, now_ms: int | None = None) -> int
     return sum(1 for result in results if result is True)
 
 
-async def _fill(holdings: list[dict], fund_call: Callable[[str, dict], Awaitable[str]] | None) -> None:
+async def _fill(
+    holdings: list[dict],
+    fund_call: Callable[[str, dict], Awaitable[str]] | None,
+    stock_call: Callable[[str, dict], Awaitable[str]] | None = None,
+) -> None:
     try:
         keys = {logo_key(h.get("asset_type"), h.get("code") or h.get("investment_code")) for h in holdings}
         keys.discard(None)
@@ -392,17 +469,26 @@ async def _fill(holdings: list[dict], fund_call: Callable[[str, dict], Awaitable
         except Exception as exc:
             logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
     try:
-        await fill_stock_logos([key for key in keys if not key.startswith("mf:")])
+        await fill_stock_logos([key for key in keys if not key.startswith("mf:")], ind_call=stock_call)
     except Exception as exc:
         logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
 
 
-def schedule_fill(holdings: list[dict], *, fund_call: Callable[[str, dict], Awaitable[str]] | None = None) -> asyncio.Task | None:
-    """Fill missing logos in the background (the task is returned for tests); never raises."""
+def schedule_fill(
+    holdings: list[dict],
+    *,
+    fund_call: Callable[[str, dict], Awaitable[str]] | None = None,
+    stock_call: Callable[[str, dict], Awaitable[str]] | None = None,
+) -> asyncio.Task | None:
+    """Fill missing logos in the background (the task is returned for tests); never raises.
+
+    ``fund_call`` / ``stock_call`` call an INDmoney tool on the profile's connection: fund details for ``mf:``
+    keys, stock details to turn ``in:INDS…`` keys into NSE symbols.
+    """
     if not enabled():
         return None
     try:
-        task = asyncio.get_running_loop().create_task(_fill(list(holdings), fund_call))
+        task = asyncio.get_running_loop().create_task(_fill(list(holdings), fund_call, stock_call))
     except Exception as exc:
         logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
         return None
