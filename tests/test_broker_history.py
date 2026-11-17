@@ -15,9 +15,12 @@ from app.db import connect_db
 from app.sealing import ProfileKeys
 from tests.fixtures import indmoney_sample as sample
 from tests.fixtures import kite_sample as kite
+from tests.login_tool_brokers import LOGIN_TOOL_ZERODHA, login_tool_brokers  # noqa: F401  (fixture)
 from tests.test_brokers import connect, fake_kite, logged_in  # noqa: F401  (fixtures)
 
-ZERODHA = brokers.BROKERS["zerodha"]
+pytestmark = pytest.mark.usefixtures("login_tool_brokers")
+
+ZERODHA = LOGIN_TOOL_ZERODHA
 ACME = "INE000A01011"
 
 

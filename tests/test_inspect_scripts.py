@@ -10,7 +10,10 @@ from app import brokers, mcp_client, users
 from scripts import inspect_broker_shapes as broker_script
 from scripts import inspect_indmoney_shapes as indmoney_script
 from tests.fixtures import kite_sample as kite
+from tests.login_tool_brokers import login_tool_brokers  # noqa: F401  (fixture)
 from tests.test_brokers import FakeKite
+
+pytestmark = pytest.mark.usefixtures("login_tool_brokers")
 
 SECRETS = [
     "ACMEBANK", "SAMPLEIT", "INE000A01011", "INE000B01012", "Sample Flexi Cap", "INF000X01AB1", "1234/56",

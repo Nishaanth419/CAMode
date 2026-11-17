@@ -120,9 +120,8 @@ Connect any broker you use from **Your profile, Brokers**: INDmoney, Zerodha, FY
 | Broker | How you sign in |
 | --- | --- |
 | INDmoney | Its OAuth page (the same connection as before; daily net-worth snapshots, fund figures and live prices come from it) |
-| Zerodha, FYERS | The broker's MCP server returns a login link; you open it and log in, and CA Mode waits for the status to read connected |
 | Kotak Neo | Enter your 5-character client code (UCC); you get a link and a QR code to scan in the Neo app, then select "I've scanned the QR" |
-| Upstox, Dhan, Groww | The broker's own OAuth 2.1 sign-in page (CA Mode registers itself with the broker, uses PKCE and keeps the tokens encrypted) |
+| Zerodha, FYERS, Upstox, Dhan, Groww | The broker's own OAuth 2.1 sign-in page (CA Mode registers itself with the broker, uses PKCE and keeps the tokens encrypted) |
 
 - **Free plan: up to 2 brokers.** Individual and Team connect any number. A profile that already has more than 2 (for example one an admin moved to Free) keeps them working and cannot add another until it is under the limit; the profile dialog shows "Brokers: 1 of 2" and disables **Connect** at the limit with a link to the plans.
 - **Tool panel.** Select a broker's name to see the tools its MCP server exposes. Each is marked **Read-only** (CA Mode may call it), **Not enabled** (not reviewed, never called) or **Blocked** (it changes the account: orders, watchlists, alerts). Order-changing tools are never called, whatever the model asks for.

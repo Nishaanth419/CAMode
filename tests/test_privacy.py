@@ -325,7 +325,7 @@ def test_notice_covers_backups_cloudflare_and_credits(monkeypatch):
     assert "monthly credits" in limits_text and "top-up credits" in limits_text
     assert "in progress" in limits_text
     assert "credits used this month" in sections["What whoever runs CA Mode can see"]
-    assert privacy.POLICY_VERSION == "2026-11-17.1"
+    assert privacy.POLICY_VERSION == "2026-11-17.2"
 
 
 def test_capture_finishing_after_switch_to_private_is_not_stored(client, signed_in):
@@ -352,7 +352,7 @@ def test_notice_mentions_logos():
     assert "shared" in logos and "export" in logos and "letter" in logos
     assert "up to 10" in logos and "network address" in logos and "signed" in logos
     assert "(logo.dev)" not in logos and "never your name, your amounts or your other holdings" not in logos
-    assert privacy.POLICY_VERSION == "2026-11-17.1"
+    assert privacy.POLICY_VERSION == "2026-11-17.2"
 
 
 def test_notice_names_the_tax_slab():

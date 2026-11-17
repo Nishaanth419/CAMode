@@ -36,7 +36,8 @@ from .db import connect_db
 # 2026-11-13.1: the benchmark NAV history downloaded from mfapi.in.
 # 2026-11-13.2: the optional income-tax slab profile field (mutual fund tax estimates).
 # 2026-11-17.1: holding logos (tickers sent to logo.dev, fund ids to INDmoney, shared logo files).
-POLICY_VERSION: Final = "2026-11-17.1"
+# 2026-11-17.2: Zerodha and FYERS sign in with OAuth, so their tokens are kept like Upstox's, not a session id.
+POLICY_VERSION: Final = "2026-11-17.2"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -212,9 +213,8 @@ NOTICE: Final = (
         "body": (
             "You can connect a broker that runs its own hosted MCP server: Zerodha, FYERS, Kotak Neo, Upstox, Dhan "
             "or Groww. You log in on the broker's own site (or scan its QR code in its app), so CA Mode never sees "
-            "your broker password. For Zerodha and FYERS it keeps only the encrypted session id the broker gives "
-            "it, which the broker ends within a day. For Kotak Neo it keeps the encrypted login session the broker "
-            "issues (the client code you type is not kept). For Upstox, Dhan and Groww it keeps the OAuth access "
+            "your broker password. For Kotak Neo it keeps the encrypted login session the broker issues (the client "
+            "code you type is not kept). For Zerodha, FYERS, Upstox, Dhan and Groww it keeps the OAuth access "
             "token and refresh token the broker issues and the sign-in registration CA Mode made with it, encrypted "
             "with your server's key; tokens are never exported, never shown and never sent to the AI model. If you "
             "save history, the latest holdings fetched from a broker are also kept, sealed under your PIN key, so "
