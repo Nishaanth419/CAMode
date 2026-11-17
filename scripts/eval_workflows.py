@@ -208,6 +208,14 @@ def build_context(case: dict[str, Any]) -> agent.PortfolioContext:
 
         local.append(agent.LocalTool("get_networth_history", "Read the user's daily net-worth history from saved snapshots.",
                                      {"type": "object", "properties": {"days": {"type": "integer"}}}, get_networth_history))
+    if case.get("mf") == "sample":  # The mutual fund ledger in tests/fixtures/mf_tax_sample.py, read by the real code.
+        from app import mf_returns, mf_tax, snapshots
+        from tests.fixtures import mf_tax_sample as mf
+
+        today = datetime.fromisoformat(case.get("market", {}).get("now", market.NOW.isoformat())).date()
+        local.append(snapshots.mf_returns_tool("eval", None, compute=lambda benchmark: mf_returns.returns_from(
+            mf.SCHEMES, mf.NAVS, today, benchmark=benchmark)))
+        local.append(snapshots.mf_tax_tool(lambda fy: mf_tax.tax_from(mf.SCHEMES, mf.NAVS, today, fy, None, fmv={}.get)))
     return agent.PortfolioContext(local_tools=tuple(local), cached_mcp_tools=TOOLS)
 
 
@@ -245,11 +253,11 @@ def patched(fake: FakeIndmoney, case: dict[str, Any]) -> Iterator[list[tuple[str
 # ── Running and grading ────────────────────────────────────────────────────────
 
 def _tool_outputs(raw: list[tuple[str, dict[str, Any]]]) -> dict[str, list[Any]]:
-    """Each analysis tool's parsed results in call order (``option_strategy.0.maxLossPoints``)."""
+    """Each analysis or mutual fund tool's parsed results in call order (``option_strategy.0.maxLossPoints``)."""
     outputs: dict[str, list[Any]] = {}
     for kind, data in raw:
         if kind == "tool_result" and data.get("name") in ("calculate", "option_strategy", "price_levels", "inspect_result", "date_facts",
-                                                                         "make_chart"):
+                                                                         "make_chart", "get_mf_returns", "get_mf_tax"):
             try:
                 outputs.setdefault(data["name"], []).append(json.loads(data.get("result") or "null"))
             except ValueError:

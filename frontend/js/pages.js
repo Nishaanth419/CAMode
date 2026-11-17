@@ -10,7 +10,7 @@ const ROUTE_META = {
   chat: ['Ask AI', 'Ask finance questions or ask about the portfolio at your connected brokers.'],
   portfolio: ['Portfolio overview', 'Net worth, allocation and returns from your saved INDmoney snapshots.'],
   holdings: ['Holdings', 'Every holding from INDmoney and each connected broker, with search, CSV download and CAS statements.'],
-  returns: ['Returns & tax', 'True returns (XIRR) on your mutual funds from a detailed CAS.'],
+  returns: ['Returns & tax', 'True returns (XIRR) and capital gains tax on your mutual funds from a detailed CAS.'],
   planning: ['Calculators', 'SIP, lumpsum, goal, EMI and income tax calculators that run in your browser.'],
   markets: ['Markets', 'How your holdings moved, stock price charts and mutual fund comparisons from INDmoney.'],
   goals: ['Goals', 'Your savings goals, their plans and the investments assigned to them.'],
@@ -316,6 +316,7 @@ document.addEventListener('ca:session-ended', () => {
   Object.assign(holdingsView, { type: 'ALL', query: '', sort: 'value' });
   reportPoints = [];
   returnsBenchmark = 'nifty50';
+  taxFy = null;
   resetActivity();
   for (const id of ['home-stats', 'home-chats', 'home-allocation', 'home-performance', 'home-holdings', 'home-insights', 'home-goals', 'portfolio-body', 'holdings-body', 'returns-body', 'markets-body', 'goals-body', 'saved-context-body', 'reports-body', 'activity-body', 'all-chats']) {
     setHtml(document.getElementById(id), '');
@@ -1010,7 +1011,13 @@ function returnsSchemeRow(item) {
   </tr>`;
 }
 
+function returnsTabs(active) {
+  return `<div class="seg seg-small" role="tablist" aria-label="Returns and tax">${[['returns', 'Returns'], ['tax', 'Tax']].map(([id, label]) =>
+    `<button type="button" role="tab" data-returns-tab="${id}" aria-selected="${id === active}" aria-pressed="${id === active}">${label}</button>`).join('')}</div>`;
+}
+
 async function renderReturns() {
+  if (parseHash().sub === 'tax') return renderTax();
   const isCurrent = startRender('returns');
   const body = document.getElementById('returns-body');
   const asOf = document.getElementById('returns-asof');
@@ -1040,9 +1047,7 @@ async function renderReturns() {
   const excluded = (coverage.excluded || []).map((item) =>
     `<li><strong>${escHtml(item.name)}</strong>: ${escHtml(item.reason || returnStatus(item.status).label)}</li>`).join('');
   setHtml(body, `
-    <div class="seg seg-small" role="tablist" aria-label="Returns and tax">
-      <button type="button" role="tab" aria-selected="true" aria-pressed="true">Returns</button>
-    </div>
+    ${returnsTabs('returns')}
     <div class="kpi-strip kpi-strip-5">
       ${kpiCard('Mutual fund return', headline.short, [headline.label, headline.note || coverageText].filter(Boolean).join(' · '))}
       ${kpiCard('Current value', money(p.includedValue), `${money(p.totalValue)} across ${unknown ? 'funds with a known value' : 'all funds'}`)}
@@ -1057,6 +1062,161 @@ async function renderReturns() {
     </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
     <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
+
+/* ── Tax (Returns & tax, second tab) ───────────────────────────────── */
+// Capital gains and an estimated tax from GET /api/tax; every figure is computed on the server.
+let taxFy = null; // The financial year shown; null is the current one.
+
+function taxNotes(notes) {
+  return notes?.length ? `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>` : '';
+}
+
+function navSourceNote(item) {
+  return `${navNote(item)}${item.navStale ? ' (old)' : ''}`;
+}
+
+function exemptionPanel(exemption) {
+  const share = exemptionShare(exemption);
+  if (share.usedPct === null) return '';
+  return reportCard('Equity long-term exemption', `
+    <p class="stat-sub">${escHtml(share.text)}</p>
+    <span class="progress-bar" role="meter" aria-label="Exemption used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${share.usedPct}"><span style="width:${share.usedPct}%"></span></span>
+    <p class="page-muted">${escHtml(exemption.note || '')}</p>`);
+}
+
+function taxRowsTable(rows) {
+  if (!rows.length) return '<p class="page-muted">No mutual fund units were redeemed in this financial year.</p>';
+  return `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
+    <th>Class</th><th>Term</th><th>Rule</th><th>Section</th><th>Rate</th><th>Gains</th><th>Losses</th><th>Net</th>
+  </tr></thead><tbody>${rows.map((row) => `<tr>
+    <td>${escHtml(taxClassLabel(row.taxClass))}</td>
+    <td data-label="Term">${escHtml(termLabel(row.term))}</td>
+    <td data-label="Rule"><code>${escHtml(row.ruleId)}</code></td>
+    <td data-label="Section">${escHtml(row.section || '—')}</td>
+    <td data-label="Rate">${escHtml(taxRate(row.rate))}</td>
+    <td data-label="Gains">${money(row.gains)}</td>
+    <td data-label="Losses">${money(row.losses)}</td>
+    <td data-label="Net">${money(row.net)}</td>
+  </tr>`).join('')}</tbody></table></div>`;
+}
+
+function setOffBlock(position) {
+  const lines = (position.setOff || []).map((step) =>
+    `<li>${escHtml(termLabel(step.loss))} loss of ${money(step.amount)} set off against ${escHtml(termLabel(step.term).toLowerCase())} gains under <code>${escHtml(step.against)}</code></li>`);
+  const carry = position.carryForward;
+  if (carry) {
+    lines.push(`<li>Losses left: ${money(carry.short)} short-term, ${money(carry.long)} long-term. ${escHtml(carry.note)}</li>`);
+  }
+  return lines.length ? reportCard('Losses', `<ul class="note-list">${lines.join('')}</ul>`) : '';
+}
+
+function leftOutBlock(position) {
+  const items = [
+    ...((position.unclassified?.schemes) || []).map((item) => `<li><strong>${escHtml(item.name)}</strong>: ${escHtml(item.reason)}</li>`),
+    ...(position.excluded || []).map((item) => `<li><strong>${escHtml(item.name)}</strong>: ${escHtml(item.reason || returnStatus(item.status).label)}</li>`),
+  ];
+  if (!items.length) return '';
+  const gain = position.unclassified ? `<p class="page-muted">Gains with no tax estimate: ${money(position.unclassified.gain)}.</p>` : '';
+  return reportCard('Not in the estimate', `${gain}<ul class="note-list">${items.join('')}</ul>`);
+}
+
+function planningCard(title, items, row, empty) {
+  const body = items.length ? `<ul class="note-list planning-list">${items.map((item) => `<li>${row(item)}</li>`).join('')}</ul>`
+    : `<p class="page-muted">${escHtml(empty)}</p>`;
+  return reportCard(title, body);
+}
+
+function planningBlock(planning) {
+  if (!planning) return '';
+  const fund = (item) => `<strong>${escHtml(item.name)}</strong>`;
+  const nav = (item) => `<small class="stat-sub">${escHtml(navSourceNote(item))}</small>`;
+  const cards = [
+    planningCard('Gains within the exemption', planning.gainHarvest, (item) =>
+      `${fund(item)}: ${item.units} units, about ${money(item.value)}, long-term gain ${money(item.gain)}, tax ${money(item.tax)}${nav(item)}`,
+    `No long-term equity gain fits in the ${money(planning.exemptionLeft)} left.`),
+    planningCard('Units with a loss', planning.lossHarvest, (item) =>
+      `${fund(item)}: ${item.units} units, about ${money(item.value)}, loss ${money(item.loss)}; could offset ${money(item.couldOffset)} of this year's gains${nav(item)}`,
+    'No fund would realise a loss in FIFO order.'),
+    planningCard('Turning long-term in 90 days', planning.turningLongTerm, (item) =>
+      `${fund(item)}: ${item.units} units (after ${item.unitsBefore} older units) turn long-term on ${escHtml(formatDate(item.longTermOn))}; gain ${money(item.gain)}. `
+      + (Number.isFinite(item.extraTax) ? `Redeeming now: ${money(item.taxNow)} tax, after that date ${money(item.taxAfter)} (${money(item.extraTax)} more now).` : `Tax after that date ${money(item.taxAfter)}.`)
+      + `${item.extraTaxNote ? ` ${escHtml(item.extraTaxNote)}` : ''}${nav(item)}`,
+    'No lot with a gain turns long-term in the next 90 days.'),
+  ];
+  if (planning.elssLocked.length) {
+    cards.push(planningCard('ELSS units still locked', planning.elssLocked, (item) =>
+      `${fund(item)}: ${item.units} units, free from ${escHtml(formatDate(item.unlocksOn))}`, ''));
+  }
+  if (planning.left.length) {
+    cards.push(planningCard('Funds without planning figures', planning.left, (item) => `${fund(item)}: ${escHtml(item.reason)}`, ''));
+  }
+  return `<h2 class="card-title">Before 31 March</h2>${cards.join('')}${reportCard('About these options', taxNotes(planning.notes))}`;
+}
+
+async function renderTax() {
+  const isCurrent = startRender('returns');
+  const body = document.getElementById('returns-body');
+  const asOf = document.getElementById('returns-asof');
+  asOf.textContent = 'Capital gains on your mutual funds from the transactions in a detailed CAS.';
+  setHtml(body, loadingBlock());
+  let data;
+  try {
+    data = await fetchJson(`/api/tax${taxFy ? `?fy=${encodeURIComponent(taxFy)}` : ''}`);
+  } catch (error) {
+    if (isCurrent()) setHtml(body, `${returnsTabs('tax')}${errorBlock(error)}`);
+    return;
+  }
+  if (!isCurrent()) return;
+  if (!data.available) {
+    setHtml(body, `${returnsTabs('tax')}${notice('No detailed CAS yet', data.hint || 'Upload a detailed CAS from CAMS or KFintech.',
+      '<a class="rail-button inline-button" href="#/holdings">Upload a CAS</a>')}`);
+    return;
+  }
+  const position = data.position;
+  const period = data.statementPeriod || {};
+  asOf.textContent = `${fyLabel(data.fy)} (${formatDate(position.from)} to ${formatDate(position.to)}), ${position.act}. From your CAS covering ${formatDate(period.from)} to ${formatDate(period.to)}; latest NAV ${formatDate(data.navDate)}.`;
+  const chips = (data.fys || []).map((fy) =>
+    `<button type="button" class="filter-chip" data-tax-fy="${escHtml(fy)}" aria-pressed="${fy === data.fy}">${escHtml(fyLabel(fy))}</button>`).join('');
+  const estimate = taxEstimate(position.tax);
+  const totals = position.totals || {};
+  const slabLine = position.tax.slabPct === null || position.tax.slabPct === undefined
+    ? `<p class="page-muted">No tax slab is set, so slab-taxed gains are shown without tax. <button type="button" class="gate-secondary inline-button" data-open-profile>Add your tax slab</button></p>`
+    : `<p class="page-muted">Slab-taxed gains use your ${position.tax.slabPct}% slab from your profile.</p>`;
+  setHtml(body, `
+    ${returnsTabs('tax')}
+    <div class="filter-chips" role="group" aria-label="Financial year">${chips}</div>
+    <div class="kpi-strip">
+      ${kpiCard('Realised short-term', money(totals.shortTerm), 'Net of losses, before set-off', toneOf(totals.shortTerm))}
+      ${kpiCard('Realised long-term', money(totals.longTerm), 'Net of losses, before set-off', toneOf(totals.longTerm))}
+      ${kpiCard('Exemption left', money(position.exemption.left), `Of ${money(position.exemption.limit)} for equity long-term gains`)}
+      ${kpiCard('Estimated tax', estimate.short, estimate.note)}
+    </div>
+    ${slabLine}
+    ${exemptionPanel(position.exemption)}
+    ${reportCard('Gains by rule', taxRowsTable(position.rows))}
+    ${setOffBlock(position)}
+    ${leftOutBlock(position)}
+    ${planningBlock(data.planning)}
+    ${reportCard('About these figures', taxNotes(position.notes))}`);
+}
+
+// A new tax slab changes the estimate.
+document.addEventListener('ca:profile', () => {
+  if (parseHash().route === 'returns' && parseHash().sub === 'tax') renderTax();
+});
+
+document.getElementById('returns-body').addEventListener('click', (event) => {
+  const tab = event.target.closest('[data-returns-tab]');
+  if (tab) {
+    location.hash = tab.dataset.returnsTab === 'tax' ? '#/returns/tax' : '#/returns';
+    return;
+  }
+  const year = event.target.closest('[data-tax-fy]');
+  if (year) {
+    taxFy = year.dataset.taxFy;
+    renderTax();
+  }
+});
 
 document.getElementById('returns-body').addEventListener('click', (event) => {
   const chip = event.target.closest('[data-returns-benchmark]');

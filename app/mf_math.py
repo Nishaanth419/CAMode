@@ -23,7 +23,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, localcontext
 from typing import Final
@@ -51,11 +51,21 @@ class Txn:
     nav: Decimal | None
 
 
+@dataclass(frozen=True)
+class Origin:
+    """Where a merged lot came from: the old scheme's ISIN and its units per unit of the receiving scheme."""
+
+    isin: str | None
+    ratio: Decimal
+
+
 @dataclass
 class Lot:
     buy_date: date
     units: Decimal
     cost: Decimal
+    buy_type: str = ""
+    origin: Origin | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,9 @@ class Disposal:
     cost: Decimal
     sale_value: Decimal
     stt: Decimal
+    sell_type: str = ""
+    buy_type: str = ""
+    origin: Origin | None = None
 
 
 @dataclass
@@ -83,14 +96,14 @@ class XirrResult:
 
 
 def _sell(lots: list[Lot], result: FifoResult, day: date, units: Decimal, proceeds: Decimal,
-          stt: Decimal, stt_units: Decimal) -> Decimal:
+          stt: Decimal, stt_units: Decimal, sell_type: str = "") -> Decimal:
     """Consume ``units`` from the oldest lots; return the STT allocated."""
     pending, value_left, taken = units, proceeds, []
     while pending > 0 and lots:
         lot = lots[0]
         take = min(lot.units, pending)
         cost = lot.cost if take == lot.units else lot.cost * take / lot.units
-        taken.append((lot.buy_date, take, cost))
+        taken.append((lot, take, cost))
         lot.units -= take
         lot.cost -= cost
         pending -= take
@@ -100,17 +113,20 @@ def _sell(lots: list[Lot], result: FifoResult, day: date, units: Decimal, procee
         result.problems.append(f"{day.isoformat()}: sold {units} units but only {units - pending} were held")
     allocated_stt = _ZERO
     held = units - max(pending, _ZERO)
-    for index, (buy_date, take, cost) in enumerate(taken):
+    for index, (lot, take, cost) in enumerate(taken):
         last = index == len(taken) - 1
         sale_value = value_left if last else proceeds * take / held
         value_left -= sale_value
         share = stt * take / stt_units if stt_units else _ZERO
         allocated_stt += share
-        result.disposals.append(Disposal(buy_date, day, take, cost, sale_value, share))
+        result.disposals.append(Disposal(lot.buy_date, day, take, cost, sale_value, share, sell_type,
+                                         lot.buy_type, lot.origin))
     return allocated_stt
 
 
-def fifo(transactions: Sequence[Txn]) -> FifoResult:
+def fifo(transactions: Sequence[Txn], *, carried: dict[date, list[Lot]] | None = None) -> FifoResult:
+    """``carried``: lots a ``SWITCH_IN_MERGER`` on that date takes over (a merger is not a transfer: the old units'
+    buy dates and costs continue). The transaction's units are shared among them in proportion to their units."""
     result = FifoResult()
     lots: list[Lot] = []
     by_date: dict[date, list[Txn]] = defaultdict(list)
@@ -130,10 +146,19 @@ def fifo(transactions: Sequence[Txn]) -> FifoResult:
             if stamp and not buy_total:
                 result.problems.append(f"{day.isoformat()}: stamp duty with no purchase that day")
                 cash -= stamp
+            merged_in = sum((abs(t.units) for t in buys if t.type == "SWITCH_IN_MERGER"), _ZERO)
             for t in buys:
                 amount = abs(t.amount)
                 share = stamp * amount / buy_total if buy_total else _ZERO
-                lots.append(Lot(day, abs(t.units), amount + share))
+                taken_over = (carried or {}).get(day) if t.type == "SWITCH_IN_MERGER" else None
+                if taken_over:
+                    old_units = sum((lot.units for lot in taken_over), _ZERO)
+                    # Several merger-in rows that day share the old lots in proportion to their units.
+                    share_of_day = abs(t.units) / merged_in
+                    lots.extend(Lot(lot.buy_date, abs(t.units) * lot.units / old_units, lot.cost * share_of_day,
+                                    lot.buy_type, lot.origin) for lot in taken_over)
+                else:
+                    lots.append(Lot(day, abs(t.units), amount + share, t.type))
                 if t.type != "DIVIDEND_REINVEST":
                     cash -= amount + share
             for t in rows:
@@ -153,13 +178,12 @@ def fifo(transactions: Sequence[Txn]) -> FifoResult:
             sell_units = sum((abs(t.units) for t in sells), _ZERO)
             allocated = _ZERO
             for t in sells:
-                allocated += _sell(lots, result, day, abs(t.units), abs(t.amount), stt, sell_units)
+                allocated += _sell(lots, result, day, abs(t.units), abs(t.amount), stt, sell_units, t.type)
                 cash += abs(t.amount)
             if allocated and result.disposals and result.disposals[-1].sell_date == day:
                 # The day's last disposal takes the STT left over by division, so shares add up exactly.
                 final = result.disposals[-1]
-                result.disposals[-1] = Disposal(final.buy_date, final.sell_date, final.units, final.cost,
-                                                final.sale_value, final.stt + (stt - allocated))
+                result.disposals[-1] = replace(final, stt=final.stt + (stt - allocated))
             cash -= stt if sells else _ZERO
             if stt and not sells:
                 result.problems.append(f"{day.isoformat()}: STT with no sale that day")

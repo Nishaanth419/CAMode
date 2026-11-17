@@ -24,7 +24,7 @@ logger = logging.getLogger("ca_mode.router")
 Category = Literal["off_topic", "code_request", "general_finance", "account_data"]
 CATEGORIES: Final = get_args(Category)
 
-ROUTER_PROMPT_VERSION: Final = "router.v1"
+ROUTER_PROMPT_VERSION: Final = "router.v2"
 ROUTER_TIMEOUT_SECONDS: Final = 10
 # A model host that is asleep or offline (Ollama on another computer reached over Tailscale) never
 # refuses the connection, so without a short connect limit a request would wait the full timeout.
@@ -48,7 +48,7 @@ MAX_MESSAGE_CHARS: Final = 2000
 ROUTER_PROMPT: Final = """You label messages sent to CA Mode, a personal-finance assistant for users in India that can also read the user's INDmoney account. Call classify_request exactly once with one category for the current message.
 
 Categories:
-- account_data: answering needs the user's own accounts or live market data. Examples: their portfolio, holdings (in any wording, e.g. "my holding", "what do I own", "grouped by broker"), net worth, positions, SIPs, watchlist, transactions, P&L, returns or XIRR on their investments, concentration; or current or live prices, charts, OHLC candles, option chains, Greeks, market news, analyst targets, and finding or comparing specific funds by current data.
+- account_data: answering needs the user's own accounts or live market data. Examples: their portfolio, holdings (in any wording, e.g. "my holding", "what do I own", "grouped by broker"), net worth, positions, SIPs, watchlist, transactions, P&L, returns or XIRR on their investments, concentration, their realised capital gains, the tax on them, the LTCG exemption they have used or have left, or which of their funds could be redeemed to harvest gains or losses; or current or live prices, charts, OHLC candles, option chains, Greeks, market news, analyst targets, and finding or comparing specific funds by current data.
 - general_finance: finance, investing, banking, tax, insurance, budgeting or market concepts that can be answered without the user's accounts or live data. Greetings and thanks also belong here.
 - code_request: asks to write, explain, fix or debug programming code, scripts, formulas for software, or programs, even about finance. Finance identifiers such as an IFSC, ISIN or scheme code are not code.
 - off_topic: anything unrelated to money, finance, investing or markets.

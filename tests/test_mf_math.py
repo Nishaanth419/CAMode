@@ -199,3 +199,33 @@ def test_absolute_return():
 
     assert mf_math.absolute_return_pct(flows) == D("7")
     assert mf_math.absolute_return_pct([(date(2025, 1, 1), D("500"))]) is None
+
+
+def test_fifo_tags_lots_and_disposals():
+    result = mf_math.fifo(EXAMPLE)
+
+    assert [d.buy_type for d in result.disposals] == ["PURCHASE", "PURCHASE_SIP"]
+    assert {d.sell_type for d in result.disposals} == {"REDEMPTION"}
+    assert result.open_lots[0].buy_type == "PURCHASE_SIP"
+    assert result.open_lots[0].origin is None
+
+
+def test_fifo_adds_carried_lots_for_a_merger():
+    carried = [mf_math.Lot(date(2016, 5, 1), D("60"), D("600"), "PURCHASE"),
+               mf_math.Lot(date(2017, 5, 1), D("40"), D("500"), "PURCHASE")]
+    result = mf_math.fifo([txn("2018-05-18", "SWITCH_IN_MERGER", "1500", "50")], carried={date(2018, 5, 18): carried})
+
+    # 50 units shared 60:40 between the two carried lots; costs and buy dates as given.
+    assert [(lot.buy_date, lot.units, lot.cost) for lot in result.open_lots] == [
+        (date(2016, 5, 1), D("30"), D("600")), (date(2017, 5, 1), D("20"), D("500"))]
+
+
+def test_two_merger_in_rows_share_the_carried_cost():
+    carried = [mf_math.Lot(date(2016, 5, 1), D("60"), D("600"), "PURCHASE"),
+               mf_math.Lot(date(2017, 5, 1), D("40"), D("500"), "PURCHASE")]
+    result = mf_math.fifo([txn("2018-05-18", "SWITCH_IN_MERGER", "900", "30"),
+                           txn("2018-05-18", "SWITCH_IN_MERGER", "600", "20")], carried={date(2018, 5, 18): carried})
+
+    # The old cost (1,100) and units are shared 30:20 between the two rows, never counted twice.
+    assert sum(lot.cost for lot in result.open_lots) == D("1100")
+    assert sum(lot.units for lot in result.open_lots) == D("50")
