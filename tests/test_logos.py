@@ -19,6 +19,7 @@ DAY = 24 * 60 * 60 * 1000
         ("IND_STOCK", "M&M", "in:M&M"),
         ("US_STOCK", "brk.b", "us:BRK.B"),
         ("IND_STOCK", "INE009A01021", None),
+        ("STOCK", "INDS00021", "in:INDS00021"),
         ("MF", "INF179K01UT0", None),
         ("IND_STOCK", "../x", None),
         ("IND_STOCK", "..", None),
@@ -315,6 +316,82 @@ def test_fill_stock_logos_needs_token(logo_transport, monkeypatch):
         assert not request.headers.get("authorization")
 
 
+def _stock_details(rows):
+    """A get_indian_stocks_details reply in the live layout (recorded 2026-11-17): keyed by ind_key."""
+    import json
+
+    return json.dumps({key: {"entity_basic": {"ind_key": key, "name": "x", "symbol": symbol, "exchange": exchange}}
+                       for key, symbol, exchange in rows})
+
+
+def test_indmoney_stock_keys_are_resolved_to_symbols(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    calls = []
+
+    async def call(name, arguments):
+        calls.append((name, arguments))
+        return _stock_details([("INDS00021", "HINDZINC", "NSE"), ("INDS00002", "SMALLCO", "BSE"),
+                               ("INDS00003", "", "NSE"), ("INDS99999", "SNEAKY", "NSE")])
+
+    asked = []
+
+    def handler(request):
+        asked.append(request.url.path.rsplit("/", 1)[1])
+        return httpx.Response(200, content=PNG)
+
+    logo_transport["handler"] = handler
+    saved = asyncio.run(logos.fill_stock_logos(
+        ["in:INDS00021", "in:INDS00002", "in:INDS00003", "in:INDS00004", "in:INFY"], now_ms=1000, ind_call=call,
+    ))
+
+    assert calls == [("get_indian_stocks_details", {"ind_keys": ["INDS00002", "INDS00003", "INDS00004", "INDS00021"]})]
+    assert sorted(asked) == ["HINDZINC.NS", "INFY.NS", "SMALLCO.BO"]
+    assert saved == 3
+    assert logos.status_of("in:INDS00021")["status"] == "found"
+    assert logos.status_of("in:INDS00003")["status"] == "missing"  # no symbol
+    assert logos.status_of("in:INDS00004")["status"] == "missing"  # not in the reply
+    assert logos.status_of("in:INDS99999") is None  # a key nobody asked for is ignored
+
+
+def test_indmoney_stock_keys_wait_for_an_indmoney_call(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    logo_transport["handler"] = lambda request: httpx.Response(200, content=PNG)
+
+    assert asyncio.run(logos.fill_stock_logos(["in:INDS00021", "us:AAPL"], now_ms=1000)) == 1
+    assert logos.status_of("in:INDS00021") is None  # left for the next INDmoney snapshot
+    assert [r.url.path for r in logo_transport["requests"]] == ["/ticker/AAPL"]
+
+
+def test_failed_symbol_lookup_is_retried_after_a_day(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    logo_transport["handler"] = lambda request: httpx.Response(200, content=PNG)
+
+    async def broken(name, arguments):
+        raise RuntimeError("INDmoney down")
+
+    async def working(name, arguments):
+        return _stock_details([("INDS00021", "HINDZINC", "NSE")])
+
+    assert asyncio.run(logos.fill_stock_logos(["in:INDS00021"], now_ms=1000, ind_call=broken)) == 0
+    assert logos.status_of("in:INDS00021")["status"] == "failed"
+    assert logo_transport["requests"] == []
+    assert asyncio.run(logos.fill_stock_logos(["in:INDS00021"], now_ms=1000 + DAY + 1, ind_call=working)) == 1
+
+
+def test_symbol_lookup_skips_keys_already_cached(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    (logos.logos_dir() / "in-INDS00021.png").write_bytes(PNG)
+    logos.record("in:INDS00021", "found", "in-INDS00021.png", 1000)
+    calls = []
+
+    async def call(name, arguments):
+        calls.append(arguments)
+        return "{}"
+
+    assert asyncio.run(logos.fill_stock_logos(["in:INDS00021"], now_ms=2000, ind_call=call)) == 0
+    assert calls == []
+
+
 def test_same_key_fetched_once(logo_transport, monkeypatch):
     monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
 
@@ -408,12 +485,15 @@ def test_capture_hands_the_fund_ids_to_the_fill(monkeypatch):
 
     async def stocks(keys, **kwargs):
         seen["stocks"] = sorted(keys)
+        seen["ind_call"] = kwargs.get("ind_call")
         return 0
 
     monkeypatch.setattr(logos, "fill_fund_logos", funds)
     monkeypatch.setattr(logos, "fill_stock_logos", stocks)
     user_id = make_user()
-    fake_indmoney(monkeypatch, offered=(*snapshots.SNAPSHOT_TOOL_NAMES, "get_mf_funds_details"))
+    fake_indmoney(
+        monkeypatch, offered=(*snapshots.SNAPSHOT_TOOL_NAMES, "get_mf_funds_details", "get_indian_stocks_details"),
+    )
 
     async def run():
         await snapshots.capture_snapshot(user_id, mcp_url="https://mcp", now=at(13, 9, 2))
@@ -423,6 +503,7 @@ def test_capture_hands_the_fund_ids_to_the_fill(monkeypatch):
     assert seen["ids"] == ["118989", "120503"]
     assert "in:INFY" in seen["stocks"]
     assert callable(seen["call"])
+    assert seen["ind_call"] is seen["call"]
 
 
 def test_same_fund_fetched_once(logo_transport):

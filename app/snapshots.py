@@ -365,20 +365,27 @@ async def capture_snapshot(user_id: str, *, mcp_url: str, now: datetime | None =
     if not results:
         raise SnapshotError("INDmoney returned no portfolio data: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
     stored = store_snapshot(user_id, now or local_now(), results, errors)
-    _schedule_logos(results, mcp_url, token, session, "get_mf_funds_details" in available)
+    _schedule_logos(
+        results, mcp_url, token, session,
+        funds="get_mf_funds_details" in available, stocks="get_indian_stocks_details" in available,
+    )
     return stored
 
 
-def _schedule_logos(results: dict[str, str], mcp_url: str, token: str, session: dict[str, Any], funds: bool) -> None:
+def _schedule_logos(
+    results: dict[str, str], mcp_url: str, token: str, session: dict[str, Any], *, funds: bool, stocks: bool,
+) -> None:
     """Fetch missing holding logos in the background; a logo problem never touches the snapshot."""
     try:
-        async def fund_call(name: str, arguments: dict[str, Any]) -> str:
+        async def indmoney_call(name: str, arguments: dict[str, Any]) -> str:
             async with httpx.AsyncClient(timeout=30) as client:
                 return str(await call_mcp_tool(
                     mcp_url, token, session["protocolVersion"], session["sessionId"], name, arguments, client=client,
                 ))
 
-        logos.schedule_fill(all_holdings(results), fund_call=fund_call if funds else None)
+        logos.schedule_fill(
+            all_holdings(results), fund_call=indmoney_call if funds else None, stock_call=indmoney_call if stocks else None,
+        )
     except Exception as exc:
         logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})
 
