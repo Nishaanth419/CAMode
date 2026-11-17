@@ -56,6 +56,8 @@ def configure() -> None:
         # The stderr handler basicConfig made (or an earlier one); test and library handlers keep their own format.
         if type(handler) is logging.StreamHandler and not isinstance(handler.formatter, KeyValueFormatter):
             handler.setFormatter(KeyValueFormatter())
+    # httpx logs every request URL at INFO, which would put the logo.dev token in the log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     install_access_log_filter()
 
 

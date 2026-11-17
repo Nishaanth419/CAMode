@@ -491,7 +491,7 @@ def holdings_stored(client, fake_kite):
 
 def test_the_notice_and_policy_version_cover_brokers():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-13.2"
+    assert privacy.POLICY_VERSION == "2026-11-17.1"
     section = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")
     assert "Zerodha" in section["body"] and "read-only" in section["body"]
 
@@ -748,3 +748,55 @@ def test_tool_list_failure_is_a_safe_message(client, signed_in, monkeypatch):
     response = client.get("/api/brokers/zerodha/tools")
     assert response.status_code == 502
     assert "secret" not in response.text and "Zerodha" in response.json()["error"]
+
+
+def test_broker_fetch_schedules_fill(client, signed_in, fake_kite, monkeypatch):
+    from app import logos
+
+    scheduled = []
+    monkeypatch.setattr(logos, "schedule_fill", lambda holdings, **kwargs: scheduled.append((holdings, kwargs)))
+    logged_in(client, fake_kite)
+    body = client.get("/api/brokers/zerodha/holdings?refresh=1").json()
+    assert len(scheduled) == 1 and scheduled[0][1] == {}
+    assert scheduled[0][0] == body["holdings"] and len(body["holdings"]) == 3
+    assert body["available"] and "_rows" not in body
+
+
+def test_agent_tool_payloads_never_carry_logo_links(client, signed_in, fake_kite):
+    """Logo links are for the pages; nothing an agent tool returns names one (cached or not)."""
+    from app import logos
+
+    logged_in(client, fake_kite)
+    store_indmoney_snapshot(signed_in["id"])
+    rows = portfolio_math.all_holdings(indmoney_sample.results()) + [{"asset_type": "IND_STOCK", "code": "ACMEBANK"}]
+    for row in rows:
+        key = logos.logo_key(row.get("asset_type"), row.get("code"))
+        if key:
+            name = logos.file_name(key, "png")
+            (logos.logos_dir() / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 50)
+            logos.record(key, "found", name, 0)
+    # The pages do get them, so the checks below are not vacuous.
+    page = client.get("/api/holdings/combined?refresh=1").json()
+    assert any("logo" in holding for holding in page["sources"][0]["holdings"])
+    assert any("logo" in holding for holding in client.get("/api/portfolio").json()["figures"]["top_holdings"])
+
+    def keys_in(value):
+        if isinstance(value, dict):
+            return set(value) | {key for item in value.values() for key in keys_in(item)}
+        if isinstance(value, list):
+            return {key for item in value for key in keys_in(item)}
+        return set()
+
+    from app import unlock
+
+    keys = unlock.keys_for_session(users.get_user(signed_in["id"]), client.cookies.get("indmoney_session"))
+    user = {**agent_user(signed_in["id"]), "keys": keys}
+    broker_tool = tool(brokers.broker_tools(user), "get_broker_holdings")
+    snapshot_tool = tool(snapshots.snapshot_tools(signed_in["id"], keys), "get_portfolio_snapshot")
+    texts = [run(broker_tool.handler({"broker": choice, "include_all_holdings": compact}))
+             for choice in ("all", "zerodha") for compact in (False, True)]
+    texts += [run(snapshot_tool.handler({"include_all_holdings": compact})) for compact in (False, True)]
+    for text in texts:
+        assert "/api/logos/" not in text
+        assert "logo" not in keys_in(json.loads(text)), text[:200]
+    assert any("INFY" in text for text in texts)

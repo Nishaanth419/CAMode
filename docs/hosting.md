@@ -266,3 +266,5 @@ Changes to the files in `deploy/` (Compose files, `update.sh`, systemd units) ar
 4. `sudo /usr/local/bin/ca-mode-update` once (tags `ca-mode:current`), then `docker compose up -d` to apply the new log rotation and grace period to every container. `docker compose config --services` should list `app` and your way in only.
 
 For the release that added the model queue, the chat time budget and `/readyz`, nothing on the server has to change: the defaults apply with the image. Optionally add `MODEL_CONCURRENCY` (the Mac's `OLLAMA_NUM_PARALLEL`), `MODEL_QUEUE_SECONDS` and `CHAT_DEADLINE_SECONDS` to `app.env` (then `docker compose up -d`), and point an uptime monitor at `/readyz`.
+
+For the release that added holding logos, optionally put `LOGO_DEV_TOKEN=<your logo.dev publishable key>` on the server (without it stocks show letters; fund logos need no key), then `docker compose up -d`. The app reads it from `deploy/app.env`, the file Compose passes to the app container (`deploy/.env` only feeds Compose itself, so a key placed there never reaches the app unless `docker-compose.yml` lists it). Every profile is asked to accept the updated privacy notice once.

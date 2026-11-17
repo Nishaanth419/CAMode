@@ -19,6 +19,9 @@ then show as disconnected and must reconnect INDmoney.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import os
 import sqlite3
@@ -75,11 +78,11 @@ def encrypted_values_stored() -> bool:
     return False
 
 
-@cache
-def _fernet() -> Fernet:
+def _key_source() -> tuple[bytes, str]:
+    """The master key's raw text and where it came from (the file is created when allowed)."""
     literal = os.getenv("APP_MASTER_KEY", "").strip()
     if literal:
-        return _parse_key(literal.encode(), "APP_MASTER_KEY")
+        return literal.encode(), "APP_MASTER_KEY"
     path = Path(os.getenv("APP_MASTER_KEY_FILE", "").strip() or DEFAULT_KEY_FILE).expanduser()
     if not path.exists():
         if encrypted_values_stored():
@@ -89,7 +92,22 @@ def _fernet() -> Fernet:
                 "A new key is not created, because it could not read any of them."
             )
         _create_key_file(path)
-    return _parse_key(path.read_bytes(), f"The master key file {path}")
+    return path.read_bytes(), f"The master key file {path}"
+
+
+@cache
+def _fernet() -> Fernet:
+    return _parse_key(*_key_source())
+
+
+def derived_key(label: bytes) -> bytes:
+    """A 32-byte key for another purpose (``label`` names it), derived from the master key with HMAC-SHA256.
+
+    The Fernet key bytes are never used directly, so a derived key reveals nothing about them.
+    """
+    _fernet()  # the master key must be valid
+    raw, _ = _key_source()
+    return hmac.new(base64.urlsafe_b64decode(raw.strip()), label, hashlib.sha256).digest()
 
 
 def check_key() -> None:

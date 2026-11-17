@@ -185,3 +185,18 @@ def test_export_reports_connection_without_tokens(client):
 
     assert response.json()["indmoneyConnected"] is True
     assert "access-token-value" not in response.text
+
+
+def test_derived_key_is_separate_from_the_fernet_key(use_key):
+    import base64
+
+    key = Fernet.generate_key().decode()
+    use_key(key)
+    raw = base64.urlsafe_b64decode(key)
+    first = vault.derived_key(b"logo-url-v1")
+    assert len(first) == 32
+    assert first == vault.derived_key(b"logo-url-v1")
+    assert first != vault.derived_key(b"other-v1")
+    assert first not in (raw, raw[:16], raw[16:]) and raw[:16] not in first and raw[16:] not in first
+    use_key(Fernet.generate_key().decode())
+    assert vault.derived_key(b"logo-url-v1") != first

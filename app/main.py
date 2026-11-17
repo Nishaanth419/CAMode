@@ -19,12 +19,12 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -383,7 +383,8 @@ def is_same_origin(request: Request) -> bool:
 @app.middleware("http")
 async def no_store_api(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/api/"):
+    # A route that sets its own policy (cached logos) keeps it; every other API answer is never cached.
+    if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -1701,7 +1702,9 @@ async def broker_holdings_payloads(user: dict[str, Any], *, refresh: bool, only:
     store = snapshots.snapshots_allowed(user)
     found = [item for item in brokers.connections(user["id"]) if only in (None, item["broker"])]
     payloads = await asyncio.gather(*(
-        brokers.fetch_holdings(user["id"], user["keys"], brokers.BROKERS[item["broker"]], live=refresh, store=store)
+        brokers.fetch_holdings(
+            user["id"], user["keys"], brokers.BROKERS[item["broker"]], live=refresh, store=store, with_logos=True,
+        )
         for item in found
     ))
     return list(payloads)
@@ -1736,7 +1739,7 @@ async def combined_holdings(request: Request, refresh: bool = False):
         return blocked
     snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     payloads = await broker_holdings_payloads(user, refresh=refresh)
-    return await asyncio.to_thread(brokers.combined, snapshot, payloads)
+    return await asyncio.to_thread(brokers.combined, snapshot, payloads, logo_user=user["id"])
 
 
 # ── Portfolio snapshots ────────────────────────────────────────────────────────
@@ -1776,6 +1779,27 @@ async def list_snapshots(request: Request, days: int = Query(default=30, ge=1, l
     }
 
 
+_LOGO_TYPES: Final = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+
+
+@app.get("/api/logos/{key}")
+async def logo_file(key: str, request: Request, s: str = ""):
+    """A cached company or fund-house logo. Only serves files already downloaded; never fetches.
+
+    ``s`` must be the signed-in profile's signature for the key (``logos.with_logos``); a missing or
+    wrong one gets the same 404 as an uncached key, so no profile can probe what another one holds.
+    """
+    user = current_user(request)
+    if not user:
+        return profile_required()
+    allowed = logos.valid_key(key) and logos.signature_ok(user["id"], key, s)
+    path = logos.cached_path(key) if allowed else None
+    media_type = _LOGO_TYPES.get(path.suffix.lower()) if path else None
+    if path is None or media_type is None:
+        return JSONResponse({"error": "No logo for that key."}, status_code=404)
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=604800"})
+
+
 @app.get("/api/portfolio")
 async def portfolio_figures(request: Request):
     """Computed figures and every holding from the latest snapshot, for the overview pages."""
@@ -1785,7 +1809,7 @@ async def portfolio_figures(request: Request):
     snapshot = await asyncio.to_thread(snapshots.latest_snapshot, user["id"], keys=user["keys"])
     if not snapshot:
         return {"available": False}
-    figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot)
+    figures = await asyncio.to_thread(snapshots.portfolio_figures, snapshot, user["id"])
     return {"available": True, **_snapshot_summary(snapshot), **figures}
 
 

@@ -35,7 +35,8 @@ from .db import connect_db
 # daily download of AMFI's public NAV file.
 # 2026-11-13.1: the benchmark NAV history downloaded from mfapi.in.
 # 2026-11-13.2: the optional income-tax slab profile field (mutual fund tax estimates).
-POLICY_VERSION: Final = "2026-11-13.2"
+# 2026-11-17.1: holding logos (tickers sent to logo.dev, fund ids to INDmoney, shared logo files).
+POLICY_VERSION: Final = "2026-11-17.1"
 
 StorageMode = Literal["device", "private"]
 RetentionDays = Literal[30, 90, 180, 365]
@@ -158,6 +159,21 @@ NOTICE: Final = (
             "liquid funds from mfapi.in and adds each day's NAV from the AMFI file. Those requests name only those "
             "five funds and send nothing about you or your holdings. The NAVs are stored in the same SQLite file, are "
             "not linked to any profile, and are not part of your export."
+        ),
+    },
+    {
+        "title": "Logos",
+        "body": (
+            "To show a logo beside each holding, the server asks for it. For mutual funds it asks INDmoney, which "
+            "already has your holdings: the ids of your funds go to INDmoney, up to 10 in one request, using your "
+            "own INDmoney connection. The fund house's image is then downloaded from the address INDmoney gives, "
+            "which may be another site. For stocks it asks logo.dev, one ticker per request, under this server's "
+            "own key. The requests for stocks newly in your holdings go out together just after your snapshot "
+            "or broker holdings are fetched, so that service could tell they belong together, but it sees this server's "
+            "network address, not who you are. The images are kept on the server and shared by every profile; "
+            "each profile's links to them are signed, so another profile cannot use them to see what you hold. "
+            "The images are not part of your export, and clearing your history or deleting your profile does not "
+            "remove them. If this copy has no such key, stocks show a letter instead of a logo."
         ),
     },
     {

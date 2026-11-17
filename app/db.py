@@ -169,6 +169,14 @@ _SCHEMA = """
         views INTEGER NOT NULL,
         PRIMARY KEY (day, route)
     );
+    -- Company and fund-house logos, shared by every profile (logos.py): a key and a fetch
+    -- outcome only, no profile data.
+    CREATE TABLE IF NOT EXISTS logos (
+        key TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        file TEXT,
+        checked_at INTEGER NOT NULL
+    );
     -- Questions asked per profile per local day, only when DAILY_QUESTION_LIMIT is set (limits.py).
     CREATE TABLE IF NOT EXISTS question_counts (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
