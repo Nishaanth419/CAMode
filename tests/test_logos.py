@@ -392,6 +392,22 @@ def test_symbol_lookup_skips_keys_already_cached(logo_transport, monkeypatch):
     assert calls == []
 
 
+def test_holding_key_prefers_a_broker_ticker():
+    assert logos.holding_key({"asset_type": "IND_STOCK", "code": "INE000A01011", "ticker": "ACMEBANK"}) == "in:ACMEBANK"
+    assert logos.holding_key({"asset_type": "STOCK", "investment_code": "INE000A01011", "ticker": "SMALLCO.BO"}) == "in:SMALLCO.BO"
+    assert logos.holding_key({"asset_type": "IND_STOCK", "code": "INE000A01011"}) is None
+    assert logos.holding_key({"asset_type": "IND_STOCK", "code": "INDS00021", "ticker": "INDS00021"}) == "in:INDS00021"
+    assert logos.holding_key({"asset_type": "MF", "code": "120503", "ticker": "X"}) == "mf:120503"
+    assert logos.holding_key({"asset_type": "IND_STOCK", "code": "INFY", "ticker": "../x"}) == "in:INFY"
+
+
+def test_bse_broker_tickers_are_asked_as_bse(logo_transport, monkeypatch):
+    monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
+    logo_transport["handler"] = lambda request: httpx.Response(200, content=PNG)
+    assert asyncio.run(logos.fill_stock_logos(["in:SMALLCO.BO", "in:ACMEBANK"], now_ms=1000)) == 2
+    assert sorted(r.url.path for r in logo_transport["requests"]) == ["/ticker/ACMEBANK.NS", "/ticker/SMALLCO.BO"]
+
+
 def test_same_key_fetched_once(logo_transport, monkeypatch):
     monkeypatch.setenv("LOGO_DEV_TOKEN", "pk_test")
 

@@ -82,6 +82,17 @@ def logo_key(asset_type: str | None, code: str | None) -> str | None:
     return None
 
 
+def holding_key(holding: dict[str, Any]) -> str | None:
+    """A holding's logo key: a broker stock row's ``ticker`` when it has one (its ``code`` is often an ISIN), else
+    ``logo_key()`` of its asset type and code."""
+    ticker = str(holding.get("ticker") or "").strip().upper()
+    if ticker and canonical_asset_type(holding.get("asset_type")) == "IND_STOCK":
+        key = logo_key("IND_STOCK", ticker)
+        if key and not _IND_KEY_RE.match(ticker):
+            return key
+    return logo_key(holding.get("asset_type"), holding.get("code") or holding.get("investment_code"))
+
+
 def logos_dir() -> Path:
     path = db.DATA_DIR / "logos"
     path.mkdir(parents=True, exist_ok=True)
@@ -241,7 +252,7 @@ def with_logos(holdings: list[dict], user_id: str) -> list[dict]:
     """
     try:
         keyed = [
-            (holding, logo_key(holding.get("asset_type"), holding.get("code") or holding.get("investment_code")))
+            (holding, holding_key(holding))
             for holding in holdings
         ]
         keys = sorted({key for _, key in keyed if key})
@@ -442,7 +453,8 @@ async def fill_stock_logos(
                     record(key, "missing", None, now)
                     return False
             else:
-                ticker = symbol + ".NS" if market == "in" else symbol
+                # A broker's BSE-only stock is keyed with its suffix (in:SMALLCO.BO); everything else is NSE.
+                ticker = (symbol if symbol.endswith(".BO") else symbol + ".NS") if market == "in" else symbol
             url = LOGO_DEV_URL.format(symbol=urllib.parse.quote(ticker, safe=".")) + "?" + urllib.parse.urlencode(
                 {"token": token}) + "&" + LOGO_DEV_OPTIONS
             return await _fetch_and_record(key, url, client, now)
@@ -458,7 +470,7 @@ async def _fill(
     stock_call: Callable[[str, dict], Awaitable[str]] | None = None,
 ) -> None:
     try:
-        keys = {logo_key(h.get("asset_type"), h.get("code") or h.get("investment_code")) for h in holdings}
+        keys = {holding_key(h) for h in holdings}
         keys.discard(None)
     except Exception as exc:
         logger.warning("logo_fill_failed", extra={"error": type(exc).__name__})

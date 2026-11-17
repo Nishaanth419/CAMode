@@ -88,6 +88,38 @@ def _number(value: Any) -> Decimal | None:
     return result if result.is_finite() else None
 
 
+_TICKER_RE: Final = re.compile(r"^[A-Z0-9&-]{1,20}$")
+_TICKER_KEYS: Final = ("tradingsymbol", "trading_symbol", "symbol")
+_SERIES_SUFFIXES: Final = ("-EQ", "-BE", "-BZ")
+
+
+def stock_ticker(item: dict[str, Any]) -> str | None:
+    """A stock row's exchange symbol for its logo: ``SYMBOL`` (NSE), ``SYMBOL.BO`` (BSE), None when unclear.
+
+    Takes the broker's own trading symbol, drops an ``NSE:`` / ``BSE:`` prefix and an ``-EQ``-style series
+    suffix (FYERS writes ``NSE:SBIN-EQ``); an ISIN, a non-ASCII or an odd-looking value gives None.
+    """
+    raw = _first(item, _TICKER_KEYS)
+    text = str(raw or "").strip().upper()
+    exchange = str(item.get("exchange") or "").strip().upper()
+    if ":" in text:
+        exchange, _, text = text.partition(":")
+    for suffix in _SERIES_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    if not text.isascii() or not _TICKER_RE.match(text) or not re.search(r"[A-Z0-9]", text) or ISIN_RE.match(text):
+        return None
+    return text + ".BO" if exchange == "BSE" else text
+
+
+def _with_ticker(row: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    if row.get("asset_type") == "IND_STOCK":
+        ticker = stock_ticker(item)
+        if ticker:
+            row["ticker"] = ticker
+    return row
+
+
 def normalise_kite(tool: str, items: list[Any]) -> list[dict[str, Any]]:
     """Kite ``get_holdings`` / ``get_mf_holdings`` items as ``networth_holdings`` rows (the CAS layout).
 
@@ -108,11 +140,11 @@ def normalise_kite(tool: str, items: list[Any]) -> list[dict[str, Any]]:
         if units <= 0:
             continue
         average, last = _number(item.get("average_price")), _number(item.get("last_price"))
-        rows.append(cas._row(
+        rows.append(_with_ticker(cas._row(
             name, code, asset_type, "Zerodha", units, last,
             None if last is None else units * last,  # type: ignore[arg-type] - cas._row keeps None as missing
             None if average is None else units * average,
-        ))
+        ), item))
     return rows
 
 
@@ -185,11 +217,11 @@ def normalise_generic(broker_name: str) -> Callable[[str, list[Any]], list[dict[
             value = _first_number(item, _VALUE_KEYS)
             if value is None and last is not None:
                 value = units * last
-            rows.append(cas._row(
+            rows.append(_with_ticker(cas._row(
                 None if name is None else str(name), None if code is None else str(code), asset_type, broker_name,
                 units, last, value,  # type: ignore[arg-type] - cas._row keeps None as missing
                 None if average is None else units * average,
-            ))
+            ), item))
         if items and not readable:
             raise BrokerDataError(f"{broker_name}'s holdings layout is not recognised yet.")
         return rows
