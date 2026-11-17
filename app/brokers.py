@@ -220,10 +220,10 @@ def _url(broker_id: str, default: str) -> str:
 
 
 def _zerodha() -> Broker:
-    url = _url("zerodha", "https://mcp.kite.trade/mcp")
-    hosts = tuple(dict.fromkeys(filter(None, [urlsplit(url).hostname, "kite.zerodha.com"])))
+    # Kite's hosted server answers 401 with an OAuth challenge (checked 2026-11-17); the login tool needs a token.
     return Broker(
-        id="zerodha", name="Zerodha", mcp_url=url, login_hosts=hosts,
+        id="zerodha", name="Zerodha", mcp_url=_url("zerodha", "https://mcp.kite.trade/mcp"), login_hosts=(),
+        auth="oauth", status_tool="",
         read_tools=(
             "get_profile", "get_margins", "get_holdings", "get_positions", "get_mf_holdings", "get_trades",
             "get_orders", "get_order_history", "get_order_trades", "get_gtts", "get_quotes", "get_ltp",
@@ -237,10 +237,10 @@ def _zerodha() -> Broker:
 
 
 def _fyers() -> Broker:
-    url = _url("fyers", "https://mcp.fyers.in/mcp")
+    # FYERS also moved to OAuth sign-in (401 with an OAuth challenge, checked 2026-11-17).
     return Broker(
-        id="fyers", name="FYERS", mcp_url=url, login_hosts=tuple(filter(None, [urlsplit(url).hostname])),
-        login_suffixes=("fyers.in",), status_tool="get_funds",
+        id="fyers", name="FYERS", mcp_url=_url("fyers", "https://mcp.fyers.in/mcp"), login_hosts=(),
+        auth="oauth", status_tool="",
         read_tools=(
             "get_charges_history", "get_chart_data", "get_expired_fno_contracts", "get_expired_fno_data",
             "get_expired_fno_expiry_dates", "get_funds", "get_gtt_orders", "get_holdings", "get_indus_history",
@@ -839,13 +839,14 @@ _tools_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}  # 
 def tool_access(broker: Broker, name: str, tool: dict[str, Any] | None = None) -> str:
     """``read`` when CA Mode may call it, ``write`` for an order-changing tool, else ``not_enabled`` (never called).
 
-    A curated broker's allowlist decides; an OAuth broker's is its live list (``dynamic_read``), so ``tool``
-    (the entry from ``tools/list``) is needed to call anything read.
+    A curated allowlist decides when the broker has one (Zerodha and FYERS sign in with OAuth but keep theirs);
+    otherwise an OAuth broker's is its live list (``dynamic_read``), so ``tool`` (the entry from ``tools/list``)
+    is needed to call anything read.
     """
-    if broker.auth == "oauth":
-        if tool is not None and dynamic_read(tool):
+    if broker.read_tools:
+        if name in broker.read_tools:
             return "read"
-    elif name in broker.read_tools:
+    elif broker.auth == "oauth" and tool is not None and dynamic_read(tool):
         return "read"
     if name in WRITE_TOOLS or is_write_name(name):
         return "write"
@@ -971,8 +972,8 @@ def _store_day(user_id: str, broker_id: str, rows: list[dict[str, Any]], payload
 
 
 def holdings_targets(broker: Broker, opened: _Opened) -> dict[str, str]:
-    """Holdings tool -> asset type: the broker's own, or for an OAuth broker the read tools named for holdings."""
-    if broker.auth != "oauth":
+    """Holdings tool -> asset type: the broker's recorded ones, else the live read tools named for holdings."""
+    if broker.holdings_tools:
         return broker.holdings_tools
     found: dict[str, str] = {}
     for tool in opened.tools or []:
@@ -1281,15 +1282,15 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
         extra = arguments.get("arguments")
         extra = extra if isinstance(extra, dict) else {}
         refused = json.dumps({"error": f"{str(tool)[:60]} is not an allowed read-only {broker.name} tool."
-                                       + ("" if broker.auth == "oauth" else f" Allowed: {', '.join(broker.read_tools)}")})
-        if not isinstance(tool, str) or (broker.auth != "oauth" and tool not in broker.read_tools):
+                                       + (f" Allowed: {', '.join(broker.read_tools)}" if broker.read_tools else "")})
+        if not isinstance(tool, str) or (broker.read_tools and tool not in broker.read_tools):
             return refused
         connection = get_connection(user_id, broker.id)
         if not has_credentials(connection, broker):
             return tool_results.error_payload("unavailable", f"{broker.name} is not connected.", broker.reconnect_hint)
         try:
             opened = await _open(user_id, broker, connection)  # type: ignore[arg-type]
-            if broker.auth == "oauth":
+            if broker.auth == "oauth" and not broker.read_tools:
                 entry = next((item for item in opened.tools or [] if isinstance(item, dict) and item.get("name") == tool), None)
                 if entry is None or not dynamic_read(entry):
                     return refused

@@ -1479,7 +1479,7 @@ async def disconnect_indmoney(request: Request):
     return {"connected": False}
 
 
-# ── Broker OAuth (Upstox, Dhan, Groww) ─────────────────────────────────────────
+# ── Broker OAuth (Zerodha, FYERS, Upstox, Dhan, Groww) ─────────────────────────────────────────
 
 BROKER_OAUTH_KEY = "brokerOauth"
 

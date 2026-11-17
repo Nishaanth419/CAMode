@@ -8,8 +8,11 @@ import pytest
 from app import brokers, portfolio_math, users
 from app.db import connect_db
 from tests.fixtures import kite_sample as kite
+from tests.login_tool_brokers import LOGIN_TOOL_ZERODHA, login_tool_brokers  # noqa: F401  (fixture)
 
-ZERODHA = brokers.BROKERS["zerodha"]
+# These tests drive the login-tool flow and the Kite layout through Zerodha as it worked before OAuth.
+pytestmark = pytest.mark.usefixtures("login_tool_brokers")
+ZERODHA = LOGIN_TOOL_ZERODHA
 
 
 def test_registry_is_complete_and_never_allows_writes():
@@ -491,7 +494,7 @@ def holdings_stored(client, fake_kite):
 
 def test_the_notice_and_policy_version_cover_brokers():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-17.1"
+    assert privacy.POLICY_VERSION == "2026-11-17.2"
     section = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")
     assert "Zerodha" in section["body"] and "read-only" in section["body"]
 

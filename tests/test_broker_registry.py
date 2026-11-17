@@ -12,6 +12,7 @@ import pytest
 from app import broker_oauth, brokers, main, mcp_client, tool_results, users
 from app.db import connect_db
 from app.sealing import ProfileKeys
+from tests.login_tool_brokers import LOGIN_TOOL_FYERS, login_tool_brokers  # noqa: F401  (fixture)
 
 SIX = {"zerodha", "fyers", "kotak", "upstox", "dhan", "groww"}
 
@@ -32,7 +33,7 @@ def tool(tools, name):
 
 def test_registry_is_exactly_the_brokers_with_official_hosted_servers():
     assert set(brokers.BROKERS) == SIX
-    assert {broker.auth for broker in brokers.BROKERS.values()} == {"mcp_login_tool", "mcp_login_qr", "oauth"}
+    assert {broker.auth for broker in brokers.BROKERS.values()} == {"mcp_login_qr", "oauth"}
     for broker in brokers.BROKERS.values():
         assert broker.mcp_url.startswith("https://") and broker.indmoney_labels
         assert not (brokers.WRITE_TOOLS & set(broker.read_tools))
@@ -183,7 +184,7 @@ def test_kotak_calls_carry_our_session_never_the_models(signed_in, mcp):
 
 # ── FYERS login link ───────────────────────────────────────────────────────────
 
-FYERS = brokers.BROKERS["fyers"]
+FYERS = LOGIN_TOOL_FYERS  # the login-link checks, as FYERS worked before OAuth
 
 
 @pytest.mark.parametrize("text", [
@@ -403,9 +404,9 @@ def test_oauth_callback_with_a_failed_exchange_stores_nothing(client, signed_in,
 
 def test_oauth_connect_gates(client, oauth):
     assert client.get("/auth/brokers/upstox/connect", follow_redirects=False).headers["location"].endswith("/")
-    assert client.get("/auth/brokers/zerodha/connect", follow_redirects=False).status_code == 404
+    assert client.get("/auth/brokers/kotak/connect", follow_redirects=False).status_code == 404
     assert client.get("/auth/brokers/nope/connect", follow_redirects=False).status_code == 404
-    assert client.get("/auth/brokers/zerodha/callback", follow_redirects=False).status_code == 404
+    assert client.get("/auth/brokers/kotak/callback", follow_redirects=False).status_code == 404
     from tests.conftest import sign_up
     sign_up(client, storage_mode=None)  # no consent yet
     response = client.get("/auth/brokers/upstox/connect", follow_redirects=False)
@@ -539,6 +540,44 @@ def test_oauth_without_a_holdings_tool_says_so(client, signed_in, oauth, mcp):
     assert body["available"] is False and "no holdings tool" in body["problem"]
 
 
+# ── Zerodha and FYERS: OAuth sign-in, curated tool lists ───────────────────────
+
+@pytest.mark.parametrize("broker_id", ["zerodha", "fyers"])
+def test_zerodha_and_fyers_sign_in_through_the_oauth_flow(client, signed_in, oauth, broker_id):
+    body = client.post(f"/api/brokers/{broker_id}/connect").json()
+    assert body["authorizeUrl"] == f"/auth/brokers/{broker_id}/connect" and "loginUrl" not in body
+    start = client.get(f"/auth/brokers/{broker_id}/connect", follow_redirects=False)
+    assert start.headers["location"].startswith("https://auth.example/authorize")
+    state = parse_qs(urlsplit(start.headers["location"]).query)["state"][0]
+    done = client.get(f"/auth/brokers/{broker_id}/callback?code=c1&state={state}", follow_redirects=False)
+    assert done.headers["location"].endswith(f"/#/holdings/{broker_id}")
+    assert oauth["exchange"][0][3] == brokers.BROKERS[broker_id].mcp_url  # the token is for this broker's server
+    assert brokers.get_connection(signed_in["id"], broker_id)["oauth"]["accessToken"] == "access-secret"
+
+
+def test_zerodha_reads_its_recorded_holdings_tools_with_the_kite_layout(client, signed_in, mcp):
+    from tests.fixtures import kite_sample as kite
+    store_oauth(signed_in["id"], "zerodha")
+    mcp.responses["get_holdings"] = kite.text(kite.HOLDINGS)
+    mcp.responses["get_mf_holdings"] = kite.text(kite.MF_HOLDINGS)
+    body = client.get("/api/brokers/zerodha/holdings?refresh=1").json()
+    assert body["available"] and {item["asset_type"] for item in body["holdings"]} == {"IND_STOCK", "MF"}
+    assert sorted(call[0] for call in mcp.calls) == ["get_holdings", "get_mf_holdings"]
+    assert all(call[1] == "access-secret" for call in mcp.calls)
+    assert mcp.sessions == [(brokers.BROKERS["zerodha"].mcp_url, "access-secret")]
+
+
+def test_a_curated_oauth_broker_calls_only_its_allowlist(client, signed_in, mcp):
+    store_oauth(signed_in["id"], "zerodha")
+    access = {item["name"]: item["access"] for item in client.get("/api/brokers/zerodha/tools").json()["tools"]}
+    # portfolio_summary is hinted read-only by the server but is not on Zerodha's list, so it is never called.
+    assert access["portfolio_summary"] == "not_enabled" and access["get_holdings"] == "read"
+    handler = handler_for(signed_in["id"], "call_broker_tool")
+    assert tool_results.reported_error(run(handler({"broker": "zerodha", "tool": "portfolio_summary"})))
+    run(handler({"broker": "zerodha", "tool": "get_positions"}))
+    assert [call[0] for call in mcp.calls] == ["get_positions"] and mcp.calls[0][1] == "access-secret"
+
+
 # ── Tool list route ────────────────────────────────────────────────────────────
 
 def test_oauth_tool_list_needs_the_connection(client, signed_in, mcp):
@@ -569,6 +608,7 @@ def test_oauth_tool_cache_is_per_profile_and_cleared_on_disconnect(client, signe
     assert client.get("/api/brokers/upstox/tools").json()["needsConnection"] is True
 
 
+@pytest.mark.usefixtures("login_tool_brokers")
 def test_login_tool_brokers_list_tools_without_a_connection(client, signed_in, mcp):
     body = client.get("/api/brokers/fyers/tools").json()
     assert body["broker"] == "fyers" and {item["name"] for item in body["tools"]} == {item["name"] for item in LIVE_TOOLS}
@@ -579,10 +619,11 @@ def test_every_registry_broker_is_listed_with_its_auth(client, signed_in):
     listed = client.get("/api/brokers").json()["brokers"]
     assert listed[0]["broker"] == "indmoney"  # INDmoney is listed first, as one broker among the rest
     assert {item["broker"]: item["auth"] for item in listed} == {
-        "indmoney": "indmoney_oauth", "zerodha": "mcp_login_tool", "fyers": "mcp_login_tool", "kotak": "mcp_login_qr",
+        "indmoney": "indmoney_oauth", "zerodha": "oauth", "fyers": "oauth", "kotak": "mcp_login_qr",
         "upstox": "oauth", "dhan": "oauth", "groww": "oauth"}
 
 
+@pytest.mark.usefixtures("login_tool_brokers")
 def test_fyers_connects_through_the_login_tool_flow(client, signed_in, mcp):
     mcp.responses["login"] = "Login here: https://api-t1.fyers.in/api/v3/generate-authcode?client_id=x"
     body = client.post("/api/brokers/fyers/connect").json()
@@ -644,6 +685,7 @@ def test_unreadable_holdings_text_is_refused(text):
         brokers.parse_items(text)
 
 
+@pytest.mark.usefixtures("login_tool_brokers")
 def test_an_unrecognised_layout_is_said_plainly_not_shown_as_zero(client, signed_in, mcp):
     brokers.save_connection(signed_in["id"], "fyers", session_id="s1", protocol="2025-03-26", status="connected")
     mcp.responses["get_holdings"] = json.dumps([{"scrip": "A", "shares": 5}])
@@ -657,6 +699,7 @@ def test_an_unrecognised_layout_is_said_plainly_not_shown_as_zero(client, signed
 
 # ── Combined view and agent wiring with a new broker ───────────────────────────
 
+@pytest.mark.usefixtures("login_tool_brokers")
 def test_a_new_brokers_rows_replace_indmoneys_rows_for_that_broker(client, signed_in, mcp):
     from datetime import datetime, timezone
     from app import snapshots
@@ -694,7 +737,7 @@ def test_export_never_holds_oauth_tokens(client, signed_in, mcp):
 
 def test_the_notice_explains_stored_tokens_and_the_version_is_bumped():
     from app import privacy
-    assert privacy.POLICY_VERSION == "2026-11-17.1"
+    assert privacy.POLICY_VERSION == "2026-11-17.2"
     body = next(item for item in privacy.NOTICE if item["title"] == "Broker connections")["body"]
     for word in ("refresh token", "encrypted", "never exported", "read-only", "Upstox", "Kotak"):
         assert word in body
