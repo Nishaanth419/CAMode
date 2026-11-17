@@ -132,6 +132,8 @@ def _holding_metrics(row: dict[str, Any], portfolio_value: Decimal) -> dict[str,
         "share_of_portfolio_pct": _pct(value, portfolio_value),
         "one_day_change_inr": _money(_dec(row.get("one_day_change"))),
     }
+    if row.get("ticker"):  # a broker's exchange symbol for a stock (brokers.stock_ticker), used for its logo
+        item["ticker"] = row["ticker"]
     if row.get("current_value_usd") is not None:
         item["current_value_usd"] = _money(_dec(row.get("current_value_usd")))
         item["invested_usd"] = _money(_dec(row.get("invested_value_usd")))

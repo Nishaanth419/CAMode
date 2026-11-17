@@ -803,3 +803,39 @@ def test_agent_tool_payloads_never_carry_logo_links(client, signed_in, fake_kite
         assert "/api/logos/" not in text
         assert "logo" not in keys_in(json.loads(text)), text[:200]
     assert any("INFY" in text for text in texts)
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        ({"tradingsymbol": "acmebank", "exchange": "NSE"}, "ACMEBANK"),
+        ({"tradingsymbol": "SMALLCO", "exchange": "BSE"}, "SMALLCO.BO"),
+        ({"symbol": "NSE:SBIN-EQ"}, "SBIN"),
+        ({"symbol": "BSE:SBIN-EQ"}, "SBIN.BO"),
+        ({"tradingsymbol": "M&M"}, "M&M"),
+        ({"tradingsymbol": "INE000A01011"}, None),
+        ({"tradingsymbol": "../x"}, None),
+        ({"tradingsymbol": "ＡＢＣ"}, None),
+        ({"name": "Acme Bank Ltd"}, None),
+        ({}, None),
+    ],
+)
+def test_stock_ticker(item, expected):
+    assert brokers.stock_ticker(item) == expected
+
+
+def test_broker_stock_rows_carry_their_ticker_and_funds_do_not():
+    stocks = brokers.normalise_kite("get_holdings", kite.HOLDINGS)
+    funds = brokers.normalise_kite("get_mf_holdings", kite.MF_HOLDINGS)
+    assert [row.get("ticker") for row in stocks] == ["ACMEBANK", "SAMPLEIT"]
+    assert all("ticker" not in row for row in funds)
+    generic = brokers.normalise_generic("FYERS")("holdings", [{"symbol": "NSE:SBIN-EQ", "isin": "INE062A01020", "quantity": 3}])
+    assert generic[0]["ticker"] == "SBIN" and generic[0]["investment_code"] == "INE062A01020"
+
+
+def test_broker_holdings_get_logos_by_ticker(monkeypatch):
+    from app import logos
+
+    rows = brokers.normalise_kite("get_holdings", kite.HOLDINGS)
+    holdings = brokers.rows_view(rows)["holdings"]
+    assert sorted(logos.holding_key(h) for h in holdings) == ["in:ACMEBANK", "in:SAMPLEIT"]
