@@ -127,7 +127,7 @@ async def inspect_broker(user_id: str, broker: brokers.Broker) -> bool:
     try:
         opened = await brokers._open(user_id, broker, connection)  # type: ignore[arg-type]
         targets = brokers.holdings_targets(broker, opened)
-        calls = ([(broker.status_tool, {})] if broker.status_tool else []) + [(tool, {}) for tool in targets]
+        calls = ([(broker.status_tool, {})] if broker.status_tool else []) + [(tool, dict(broker.holdings_arguments.get(tool, {}))) for tool in targets]
         for tool, arguments in calls:
             print(f"\n=== {tool}")
             result = await brokers._invoke(opened, broker, connection, tool, arguments)  # type: ignore[arg-type]

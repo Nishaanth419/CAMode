@@ -2,8 +2,9 @@
 
 Brokers are data (``BROKERS``). A connection is the broker's MCP session id, stored encrypted per
 profile; the broker keeps the login itself, so CA Mode never sees a password or an access token.
-Only tools named in a broker's ``read_tools`` are ever called (an allowlist: Kite's tools carry no
-read-only hints, so anything not named is refused).
+Only tools named in a broker's ``read_tools`` are ever called, and tools in ``read_modes`` only with one
+of their listed ``mode`` arguments (Kite groups reads and writes under one tool, such as ``orders`` with
+``mode=list`` or ``mode=place``); anything not named is refused.
 """
 
 from __future__ import annotations
@@ -121,7 +122,8 @@ def _with_ticker(row: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalise_kite(tool: str, items: list[Any]) -> list[dict[str, Any]]:
-    """Kite ``get_holdings`` / ``get_mf_holdings`` items as ``networth_holdings`` rows (the CAS layout).
+    """Kite holdings items (``portfolio`` / ``mutual_funds`` with ``mode=holdings``, formerly ``get_holdings`` /
+    ``get_mf_holdings``) as ``networth_holdings`` rows (the CAS layout).
 
     A missing or non-numeric price leaves the value unknown (None), never zero.
     """
@@ -129,10 +131,10 @@ def normalise_kite(tool: str, items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        if tool == "get_holdings":
+        if tool in ("portfolio", "get_holdings"):
             units = (_number(item.get("quantity")) or Decimal(0)) + (_number(item.get("t1_quantity")) or Decimal(0))
             name, code, asset_type = item.get("tradingsymbol"), item.get("isin") or item.get("tradingsymbol"), "IND_STOCK"
-        elif tool == "get_mf_holdings":
+        elif tool in ("mutual_funds", "get_mf_holdings"):
             units = _number(item.get("quantity")) or Decimal(0)
             name, code, asset_type = item.get("fund") or item.get("tradingsymbol"), item.get("tradingsymbol"), "MF"
         else:
@@ -245,6 +247,9 @@ class Broker:
     reconnect_hint: str = field(default="")
     login_suffixes: tuple[str, ...] = ()  # domains whose subdomains may host the login page (dot boundary)
     session_arg: str = ""  # a tool argument that carries the broker's own login session (Kotak: sessionid)
+    # Tools that read or write by their ``mode`` argument: callable only with one of these modes.
+    read_modes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    holdings_arguments: dict[str, dict[str, Any]] = field(default_factory=dict)  # per holdings tool
 
 
 def _url(broker_id: str, default: str) -> str:
@@ -252,16 +257,23 @@ def _url(broker_id: str, default: str) -> str:
 
 
 def _zerodha() -> Broker:
-    # Kite's hosted server answers 401 with an OAuth challenge (checked 2026-11-17); the login tool needs a token.
+    # Kite's hosted server answers 401 with an OAuth challenge (checked 2026-11-17) and groups its tools by
+    # ``mode`` (recorded live 2026-11-17: alerts, gtt, help, market, mutual_funds, orders, portfolio, session).
     return Broker(
         id="zerodha", name="Zerodha", mcp_url=_url("zerodha", "https://mcp.kite.trade/mcp"), login_hosts=(),
         auth="oauth", status_tool="",
-        read_tools=(
-            "get_profile", "get_margins", "get_holdings", "get_positions", "get_mf_holdings", "get_trades",
-            "get_orders", "get_order_history", "get_order_trades", "get_gtts", "get_quotes", "get_ltp",
-            "get_ohlc", "get_historical_data", "search_instruments",
-        ),
-        holdings_tools={"get_holdings": "IND_STOCK", "get_mf_holdings": "MF"},
+        read_tools=("help",),
+        read_modes={
+            "portfolio": ("profile", "margins", "holdings", "positions"),
+            "mutual_funds": ("holdings",),
+            "market": ("quote", "ltp", "ohlc", "historical", "search", "option_chain"),
+            "orders": ("list", "history", "trades", "all_trades"),
+            "gtt": ("list",),
+            "alerts": ("get",),
+            "session": ("status",),
+        },
+        holdings_tools={"portfolio": "IND_STOCK", "mutual_funds": "MF"},
+        holdings_arguments={"portfolio": {"mode": "holdings", "type": "full", "limit": 500}, "mutual_funds": {"mode": "holdings"}},
         indmoney_labels=("zerodha",),
         normalise=normalise_kite,
         reconnect_hint="Tell the user to reconnect Zerodha in Profile > Brokers.",
@@ -323,6 +335,10 @@ assert all(
     not is_write_name(tool) and not (_name_words(tool) & _AUTH_WORDS)
     for broker in BROKERS.values() for tool in broker.read_tools
 ), "a write-looking tool is allowlisted"
+assert all(
+    tool not in WRITE_TOOLS and modes and not ({mode.lower() for mode in modes} & (_WRITE_WORDS | _AUTH_WORDS))
+    for broker in BROKERS.values() for tool, modes in broker.read_modes.items()
+), "a write mode is allowlisted"
 
 
 def get_broker(broker_id: str) -> Broker | None:
@@ -868,15 +884,26 @@ MAX_TOOL_DESCRIPTION: Final = 400
 _tools_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}  # (profile or "", broker) -> tools
 
 
+def is_curated(broker: Broker) -> bool:
+    """Whether the broker's calls are decided by its own lists rather than its live ``tools/list``."""
+    return bool(broker.read_tools or broker.read_modes)
+
+
+def allowed_calls(broker: Broker) -> str:
+    """The curated read calls in words, for a refusal the model can act on."""
+    return ", ".join([*broker.read_tools, *(f"{tool} (mode: {'|'.join(modes)})" for tool, modes in broker.read_modes.items())])
+
+
 def tool_access(broker: Broker, name: str, tool: dict[str, Any] | None = None) -> str:
     """``read`` when CA Mode may call it, ``write`` for an order-changing tool, else ``not_enabled`` (never called).
 
-    A curated allowlist decides when the broker has one (Zerodha and FYERS sign in with OAuth but keep theirs);
-    otherwise an OAuth broker's is its live list (``dynamic_read``), so ``tool`` (the entry from ``tools/list``)
-    is needed to call anything read.
+    A curated allowlist decides when the broker has one (Zerodha and FYERS sign in with OAuth but keep theirs;
+    a ``read_modes`` tool is ``read`` although only its listed modes are ever called); otherwise an OAuth
+    broker's is its live list (``dynamic_read``), so ``tool`` (the entry from ``tools/list``) is needed to call
+    anything read.
     """
-    if broker.read_tools:
-        if name in broker.read_tools:
+    if is_curated(broker):
+        if name in broker.read_tools or name in broker.read_modes:
             return "read"
     elif broker.auth == "oauth" and tool is not None and dynamic_read(tool):
         return "read"
@@ -894,7 +921,10 @@ def describe_tools(broker: Broker, tools: list[Any]) -> list[dict[str, Any]]:
         text = " ".join(str(tool.get("description") or "").split())
         if len(text) > MAX_TOOL_DESCRIPTION:
             text = text[: MAX_TOOL_DESCRIPTION - 1].rstrip() + "…"
-        described.append({"name": tool["name"], "description": text, "access": tool_access(broker, tool["name"], tool)})
+        item = {"name": tool["name"], "description": text, "access": tool_access(broker, tool["name"], tool)}
+        if tool["name"] in broker.read_modes:
+            item["readModes"] = list(broker.read_modes[tool["name"]])
+        described.append(item)
     order = {"read": 0, "not_enabled": 1, "write": 2}
     return sorted(described, key=lambda item: (order[item["access"]], item["name"]))
 
@@ -1017,16 +1047,51 @@ def holdings_targets(broker: Broker, opened: _Opened) -> dict[str, str]:
     return found
 
 
+MAX_HOLDINGS_PAGES: Final = 20
+
+
+def next_page(text: str) -> int | None:
+    """The next ``from`` when a ``{"data", "pagination"}`` answer says more rows follow, else None."""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    pagination = parsed.get("pagination") if isinstance(parsed, dict) else None
+    if not isinstance(pagination, dict) or pagination.get("has_more") is not True:
+        return None
+    start, returned = pagination.get("from"), pagination.get("returned")
+    if not isinstance(start, int) or not isinstance(returned, int) or isinstance(start, bool) or returned <= 0:
+        return None
+    return start + returned
+
+
+async def _holdings_items(
+    opened: _Opened, broker: Broker, connection: dict[str, Any], tool: str, client: httpx.AsyncClient,
+) -> list[Any]:
+    """Every item of one holdings tool: its recorded arguments, following pages for a broker that has them.
+
+    More pages than ``MAX_HOLDINGS_PAGES`` raise ``BrokerDataError``: part of the holdings is never shown as all.
+    """
+    arguments = dict(broker.holdings_arguments.get(tool, {}))
+    items: list[Any] = []
+    for _ in range(MAX_HOLDINGS_PAGES):
+        text = str(await _invoke(opened, broker, connection, tool, arguments, client))
+        items.extend(parse_items(text))
+        start = next_page(text) if tool in broker.holdings_arguments else None
+        if start is None:
+            return items
+        arguments["from"] = start
+    raise BrokerDataError(f"{broker.name} returned more holdings than CA Mode can read at once.")
+
+
 async def _fetch_rows(user_id: str, connection: dict[str, Any], broker: Broker) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=90) as client:
         opened = await _open(user_id, broker, connection)
         targets = holdings_targets(broker, opened)
-        texts = await asyncio.gather(*(
-            _invoke(opened, broker, connection, tool, {}, client) for tool in targets
-        ))
+        found = await asyncio.gather(*(_holdings_items(opened, broker, connection, tool, client) for tool in targets))
     rows: list[dict[str, Any]] = []
-    for tool, text in zip(targets, texts):
-        rows.extend(broker.normalise(tool, parse_items(str(text))))
+    for tool, items in zip(targets, found):
+        rows.extend(broker.normalise(tool, items))
     return rows
 
 
@@ -1264,7 +1329,13 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
         return []
     names = ", ".join(BROKERS[broker_id].name for broker_id in connected)
     any_oauth = any(BROKERS[broker_id].auth == "oauth" for broker_id in connected)
-    read_tools = sorted({tool for broker_id in connected for tool in BROKERS[broker_id].read_tools})
+    read_tools = sorted({
+        tool for broker_id in connected for tool in (*BROKERS[broker_id].read_tools, *BROKERS[broker_id].read_modes)
+    })
+    mode_notes = " ".join(
+        f"{BROKERS[broker_id].name} tools take a mode argument; allowed: {allowed_calls(BROKERS[broker_id])}."
+        for broker_id in connected if BROKERS[broker_id].read_modes
+    )
 
     async def get_broker_holdings(arguments: dict[str, Any]) -> str:
         choice = arguments.get("broker") or "all"
@@ -1313,16 +1384,24 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
             return json.dumps({"error": f"broker must be one of {', '.join(connected)}"})
         extra = arguments.get("arguments")
         extra = extra if isinstance(extra, dict) else {}
+        curated = is_curated(broker)
         refused = json.dumps({"error": f"{str(tool)[:60]} is not an allowed read-only {broker.name} tool."
-                                       + (f" Allowed: {', '.join(broker.read_tools)}" if broker.read_tools else "")})
-        if not isinstance(tool, str) or (broker.read_tools and tool not in broker.read_tools):
+                                       + (f" Allowed: {allowed_calls(broker)}" if curated else "")})
+        if not isinstance(tool, str):
+            return refused
+        if tool in broker.read_modes:
+            modes = broker.read_modes[tool]
+            if extra.get("mode") not in modes:
+                return json.dumps({"error": f"{broker.name} {tool} is read-only in CA Mode: set arguments.mode to one of "
+                                            f"{', '.join(modes)}."})
+        elif curated and tool not in broker.read_tools:
             return refused
         connection = get_connection(user_id, broker.id)
         if not has_credentials(connection, broker):
             return tool_results.error_payload("unavailable", f"{broker.name} is not connected.", broker.reconnect_hint)
         try:
             opened = await _open(user_id, broker, connection)  # type: ignore[arg-type]
-            if broker.auth == "oauth" and not broker.read_tools:
+            if broker.auth == "oauth" and not curated:
                 entry = next((item for item in opened.tools or [] if isinstance(item, dict) and item.get("name") == tool), None)
                 if entry is None or not dynamic_read(entry):
                     return refused
@@ -1357,6 +1436,7 @@ def broker_tools(user: dict[str, Any]) -> list[LocalTool]:
                 f"Call one read-only tool on a connected broker's own server ({names}): profile, margins, positions, "
                 "orders, trades, quotes, historical prices and more. Cannot place or change orders. Results are "
                 "that broker's own data; never add them to INDmoney's figures."
+                + (f" {mode_notes}" if mode_notes else "")
             ),
             input_schema={
                 "type": "object",

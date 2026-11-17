@@ -39,7 +39,10 @@ def test_registry_is_exactly_the_brokers_with_official_hosted_servers():
         assert not (brokers.WRITE_TOOLS & set(broker.read_tools))
         assert not any(brokers.is_write_name(name) for name in broker.read_tools)
         assert not any({"login", "logout", "validate"} & brokers._name_words(name) for name in broker.read_tools)
-        assert set(broker.holdings_tools) <= set(broker.read_tools)
+        assert set(broker.holdings_tools) <= set(broker.read_tools) | set(broker.read_modes)
+        for tool, arguments in broker.holdings_arguments.items():
+            assert tool in broker.holdings_tools
+            assert tool not in broker.read_modes or arguments["mode"] in broker.read_modes[tool]
     assert brokers.BROKERS["kotak"].session_arg == "sessionid"
 
 
@@ -555,26 +558,93 @@ def test_zerodha_and_fyers_sign_in_through_the_oauth_flow(client, signed_in, oau
     assert brokers.get_connection(signed_in["id"], broker_id)["oauth"]["accessToken"] == "access-secret"
 
 
-def test_zerodha_reads_its_recorded_holdings_tools_with_the_kite_layout(client, signed_in, mcp):
+KITE_TOOLS = [
+    {"name": name, "description": f"{name} tool."}
+    for name in ("alerts", "gtt", "help", "market", "mutual_funds", "orders", "portfolio", "session")
+]
+
+
+def test_zerodha_reads_holdings_through_kite_mode_tools(client, signed_in, mcp):
     from tests.fixtures import kite_sample as kite
+    mcp.tools = KITE_TOOLS
     store_oauth(signed_in["id"], "zerodha")
-    mcp.responses["get_holdings"] = kite.text(kite.HOLDINGS)
-    mcp.responses["get_mf_holdings"] = kite.text(kite.MF_HOLDINGS)
+    mcp.responses["portfolio"] = kite.paged(kite.HOLDINGS, limit=500)
+    mcp.responses["mutual_funds"] = kite.text(kite.MF_HOLDINGS)
     body = client.get("/api/brokers/zerodha/holdings?refresh=1").json()
     assert body["available"] and {item["asset_type"] for item in body["holdings"]} == {"IND_STOCK", "MF"}
-    assert sorted(call[0] for call in mcp.calls) == ["get_holdings", "get_mf_holdings"]
+    assert sorted((call[0], call[3]) for call in mcp.calls) == [
+        ("mutual_funds", {"mode": "holdings"}), ("portfolio", {"mode": "holdings", "type": "full", "limit": 500}),
+    ]
     assert all(call[1] == "access-secret" for call in mcp.calls)
     assert mcp.sessions == [(brokers.BROKERS["zerodha"].mcp_url, "access-secret")]
 
 
-def test_a_curated_oauth_broker_calls_only_its_allowlist(client, signed_in, mcp):
+def test_zerodha_holdings_follow_kite_pages(client, signed_in, mcp, monkeypatch):
+    from tests.fixtures import kite_sample as kite
+    mcp.tools = KITE_TOOLS
     store_oauth(signed_in["id"], "zerodha")
-    access = {item["name"]: item["access"] for item in client.get("/api/brokers/zerodha/tools").json()["tools"]}
-    # portfolio_summary is hinted read-only by the server but is not on Zerodha's list, so it is never called.
+    pages = iter([kite.paged(kite.HOLDINGS, start=0, limit=1), kite.paged(kite.HOLDINGS, start=1, limit=2)])
+
+    async def call(url, token, protocol, session_id, name, arguments, *, client=None):
+        mcp.calls.append((name, token, session_id, dict(arguments)))
+        return next(pages) if name == "portfolio" else "[]"
+
+    monkeypatch.setattr(brokers.mcp_client, "call_mcp_tool", call)
+    body = client.get("/api/brokers/zerodha/holdings?refresh=1").json()
+    assert {item["name"] for item in body["holdings"]} == {"ACMEBANK", "SAMPLEIT"}  # SOLDOUT holds nothing
+    assert [call[3].get("from") for call in mcp.calls if call[0] == "portfolio"] == [None, 1]
+
+
+def test_zerodha_holdings_never_show_part_of_endless_pages(client, signed_in, mcp, monkeypatch):
+    from tests.fixtures import kite_sample as kite
+    mcp.tools = KITE_TOOLS
+    store_oauth(signed_in["id"], "zerodha")
+
+    async def call(url, token, protocol, session_id, name, arguments, *, client=None):
+        mcp.calls.append((name, token, session_id, dict(arguments)))
+        start = arguments.get("from", 0)
+        return json.dumps({"data": kite.HOLDINGS[:1], "pagination": {"from": start, "has_more": True, "returned": 1}})
+
+    monkeypatch.setattr(brokers.mcp_client, "call_mcp_tool", call)
+    body = client.get("/api/brokers/zerodha/holdings?refresh=1").json()
+    assert body["available"] is False and "more holdings" in body["problem"]
+    assert sum(call[0] == "portfolio" for call in mcp.calls) == brokers.MAX_HOLDINGS_PAGES
+
+
+@pytest.mark.parametrize("text", ["[]", "not json", json.dumps({"data": [], "pagination": {"has_more": False}}),
+                                  json.dumps({"pagination": {"has_more": True, "from": 0, "returned": 0}}),
+                                  json.dumps({"pagination": {"has_more": True, "from": True, "returned": 1}})])
+def test_next_page_stops_unless_more_rows_really_follow(text):
+    assert brokers.next_page(text) is None
+
+
+def test_zerodha_mode_tools_are_called_only_with_read_modes(client, signed_in, mcp):
+    mcp.tools = KITE_TOOLS
+    store_oauth(signed_in["id"], "zerodha")
+    access = {item["name"]: item for item in client.get("/api/brokers/zerodha/tools").json()["tools"]}
+    assert access["orders"]["access"] == "read" and access["orders"]["readModes"] == ["list", "history", "trades", "all_trades"]
+    assert access["help"]["access"] == "read" and "readModes" not in access["help"]
+    handler = handler_for(signed_in["id"], "call_broker_tool")
+    for name, arguments in [("orders", {"mode": "place"}), ("orders", {"mode": "cancel"}), ("orders", {}),
+                            ("gtt", {"mode": "delete"}), ("alerts", {"mode": "create"}), ("session", {"mode": "logout"}),
+                            ("portfolio", {"mode": "convert"}), ("get_holdings", {}), ("open_kite_view", {})]:
+        assert tool_results.reported_error(run(handler({"broker": "zerodha", "tool": name, "arguments": arguments}))), name
+    assert mcp.calls == []
+    run(handler({"broker": "zerodha", "tool": "orders", "arguments": {"mode": "list"}}))
+    run(handler({"broker": "zerodha", "tool": "help"}))
+    assert [(call[0], call[3]) for call in mcp.calls] == [("orders", {"mode": "list"}), ("help", {})]
+    description = tool(brokers.broker_tools(agent_user(signed_in["id"])), "call_broker_tool").description
+    assert "orders (mode: list|history|trades|all_trades)" in description
+
+
+def test_a_curated_oauth_broker_calls_only_its_allowlist(client, signed_in, mcp):
+    store_oauth(signed_in["id"], "fyers")
+    access = {item["name"]: item["access"] for item in client.get("/api/brokers/fyers/tools").json()["tools"]}
+    # portfolio_summary is hinted read-only by the server but is not on FYERS's list, so it is never called.
     assert access["portfolio_summary"] == "not_enabled" and access["get_holdings"] == "read"
     handler = handler_for(signed_in["id"], "call_broker_tool")
-    assert tool_results.reported_error(run(handler({"broker": "zerodha", "tool": "portfolio_summary"})))
-    run(handler({"broker": "zerodha", "tool": "get_positions"}))
+    assert tool_results.reported_error(run(handler({"broker": "fyers", "tool": "portfolio_summary"})))
+    run(handler({"broker": "fyers", "tool": "get_positions"}))
     assert [call[0] for call in mcp.calls] == ["get_positions"] and mcp.calls[0][1] == "access-secret"
 
 
