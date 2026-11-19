@@ -553,3 +553,35 @@ async def test_a_failed_task_ends_the_stream_with_the_failure_event():
                                                           {"status": 502, "trace": [], "error": "Try again."})]
 
     assert parse_events(b"".join(chunks))[-1] == ("error", {"status": 502, "trace": [], "error": "Try again."})
+
+
+async def _shutdown_with(monkeypatch, task):
+    monkeypatch.setattr(main.db, "claim_single_process", lambda: None)
+    monkeypatch.setenv("SNAPSHOT_SCHEDULER_ENABLED", "false")
+    main._stream_tasks.add(task)
+    async with main.lifespan(main.app):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_a_streamed_answer_still_running(monkeypatch):
+    finished = []
+
+    async def slow():
+        await asyncio.sleep(0.2)
+        finished.append(True)
+
+    await _shutdown_with(monkeypatch, asyncio.create_task(slow()))
+    assert finished == [True]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_wait_is_bounded_and_logged(monkeypatch, caplog):
+    monkeypatch.setattr(main, "STREAM_SHUTDOWN_WAIT_SECONDS", 0.05)
+    task = asyncio.create_task(asyncio.sleep(30))
+    started = time.monotonic()
+    with caplog.at_level("WARNING", logger="ca_mode"):
+        await _shutdown_with(monkeypatch, task)
+    assert time.monotonic() - started < 2
+    assert any("chat_stream_tasks_unfinished_at_shutdown" in r.getMessage() for r in caplog.records)
+    task.cancel()

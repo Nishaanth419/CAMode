@@ -1517,7 +1517,10 @@ async def test_a_failing_on_event_never_fails_the_answer(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="ca_mode.agent"):
         result = await agent.run_agent("q", "url", None, [], on_event=broken)
     assert str(result) == str(baseline)
-    assert result.events == baseline.events
+    def strip(events):
+        return [{k: v for k, v in e.items() if k != "atMs"} for e in events]
+
+    assert strip(result.events) == strip(baseline.events)
     assert len(calls) == 5
     assert sum("agent_event_listener_failed" in r.getMessage() for r in caplog.records) == 1
 

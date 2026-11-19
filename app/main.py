@@ -97,6 +97,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Streamed answers outlive a disconnected browser; give them time to finish and save before the loop closes.
+        if _stream_tasks:
+            _, pending = await asyncio.wait(set(_stream_tasks), timeout=STREAM_SHUTDOWN_WAIT_SECONDS)
+            if pending:
+                logger.warning("chat_stream_tasks_unfinished_at_shutdown", extra={"count": len(pending)})
         stop.set()
         if task:
             try:
@@ -2024,6 +2029,10 @@ CHAT_IN_FLIGHT_RETRY_SECONDS: Final = 5
 CHAT_BACKSTOP_GRACE_SECONDS: Final = 20
 # Streamed answers still running (strong references: the event loop keeps only weak ones to tasks).
 _stream_tasks: set[asyncio.Task[Response]] = set()
+# Shutdown waits this long for them. Docker's stop_grace_period is 100 s and the scheduler stop below can take 10 s, so
+# 80 s keeps the common case (no connection holding uvicorn's own 90 s graceful wait) inside the grace period; past it
+# the container is killed anyway, so a longer wait would only be cut off.
+STREAM_SHUTDOWN_WAIT_SECONDS: Final = 80
 
 
 def wants_stream(request: Request) -> bool:
@@ -2034,7 +2043,7 @@ def wants_stream(request: Request) -> bool:
 def _stream_task_done(task: asyncio.Task[Response]) -> None:
     _stream_tasks.discard(task)
     if not task.cancelled() and (exc := task.exception()) is not None:
-        logger.error("chat_stream_task_failed", extra={"error": type(exc).__name__})
+        logger.error("chat_stream_task_failed", extra={"error": type(exc).__name__}, exc_info=exc)
 
 
 async def _stream_chat(body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str) -> Response:
