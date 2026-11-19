@@ -117,8 +117,47 @@
     }
   }
 
+  // Parse a server-sent event stream pushed in arbitrary chunks. Calls onEvent(name, data) per complete event with
+  // JSON data; comments and non-JSON events are skipped. end() is true when an unfinished event was dropped.
+  function createSseParser(onEvent) {
+    let buffer = '';
+    function dispatch(block) {
+      let name = 'message';
+      const data = [];
+      for (const line of block.split('\n')) {
+        if (!line || line.startsWith(':')) continue;
+        const at = line.indexOf(':');
+        const field = at < 0 ? line : line.slice(0, at);
+        let value = at < 0 ? '' : line.slice(at + 1);
+        if (value.startsWith(' ')) value = value.slice(1);
+        if (field === 'event') name = value;
+        else if (field === 'data') data.push(value);
+      }
+      if (!data.length) return;
+      let parsed;
+      try { parsed = JSON.parse(data.join('\n')); } catch { return; }
+      onEvent(name, parsed);
+    }
+    return {
+      push(text) {
+        buffer += String(text).replace(/\r\n?/g, '\n');
+        let at;
+        while ((at = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, at);
+          buffer = buffer.slice(at + 2);
+          dispatch(block);
+        }
+      },
+      end() {
+        const partial = buffer.trim() !== '';
+        buffer = '';
+        return partial;
+      },
+    };
+  }
+
   const api = {
-    NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    createSseParser, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

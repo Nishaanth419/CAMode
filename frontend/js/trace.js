@@ -109,6 +109,7 @@
     investigate_portfolio_change: ['Investigate the portfolio change', 'Compare two saved snapshots and check the data'],
     get_cas_holdings: ['Read CAS statement holdings', 'Holdings from your latest uploaded statement'],
     get_mf_returns: ['Read mutual fund returns', 'Returns worked out from your detailed CAS'],
+    get_mf_tax: ['Read mutual fund tax', 'Capital gains worked out from your detailed CAS'],
     calculate_goal_plan: ['Calculate the goal', 'Goal figures worked out in code from the numbers in this chat; nothing is saved'],
     get_goal_plans: ['Read your saved goals', 'Plans calculated in code from the goals you saved'],
     plan_goal_what_if: ['Try a what-if on a goal', 'A different contribution, date or return, calculated in code; nothing is saved'],
@@ -143,6 +144,39 @@
     length: ['Check the answer length', 'Whether the model stopped at its length limit'],
     charts: ['Check the charts', 'Charts are drawn only from numbers a tool returned'],
   };
+
+  // Live progress while an answer is being made (app/chat_stream.py events). Fixed wording only: never a raw tool
+  // name or server text. The caller adds the trailing ellipsis.
+  const CHECKING = {
+    numbers: 'Checking the figures',
+    task_contract: 'Checking the answer is complete',
+    code_output: 'Checking for code',
+    length: 'Checking the answer length',
+    charts: 'Checking the charts',
+  };
+  const WORKING = 'Working on it';
+
+  function progressLabel(event, brokerNames = {}) {
+    const e = event || {};
+    switch (e.kind) {
+      case 'start': case 'route': return 'Understanding your question';
+      case 'waiting': return "Waiting for the assistant \u2014 someone else's question is being answered";
+      case 'context': return 'Reading your saved details';
+      case 'model_call': return 'Thinking';
+      case 'plan': return 'Planning the steps';
+      case 'retry': return 'Taking another look';
+      case 'validation': return Object.hasOwn(CHECKING, e.name) ? CHECKING[e.name] : WORKING;
+      case 'tool_call': case 'tool_result': {
+        const source = typeof e.source === 'string' ? e.source : '';
+        if (source === 'indmoney') return 'Asking INDmoney';
+        if (source.startsWith('broker:')) return `Asking ${brokerNames[source.slice(7)] || 'your broker'}`;
+        if (source === 'broker') return 'Asking your broker';
+        if (Object.hasOwn(LOCAL_TOOLS, e.name)) return LOCAL_TOOLS[e.name][0];
+        return WORKING;
+      }
+      default: return WORKING;
+    }
+  }
 
   const TASK_LABELS = {
     refusal: 'Declined request', general_finance: 'General finance', goal_calculation: 'Goal calculation',
@@ -851,7 +885,7 @@
   const api = {
     STATUSES, ACTIVITY_FILTERS, statusInfo, settledStatus, statusPill, formatDuration, formatIsoDate,
     redactText, chatStepView, orderedSteps, investigationStepView, renderTimeline, renderChatTrace,
-    answerSources, traceHighlights, snapshotLabel,
+    answerSources, traceHighlights, snapshotLabel, progressLabel,
     renderInvestigationTimeline, renderInvestigationCard,
     filterInvestigations, filterCounts, isActive, newerRun, reconcileInvestigations, createSequencer, pollDelay,
     investigationTitle, canRetry, activityItem, renderActivityList, activitySkeleton,

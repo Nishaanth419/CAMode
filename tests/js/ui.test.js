@@ -123,3 +123,36 @@ test('a failed dialog action shows a plain message and frees its button', async 
   await ui.withPending(button, status, async () => { JSON.parse('<html>'); });
   assert.equal(status.textContent, ui.GENERIC_ERROR);
 });
+
+test('SSE parser joins chunks split mid-event', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push('event: progress\nda');
+  assert.equal(seen.length, 0);
+  parser.push('ta: {"seq":0,"kind":"start"}\n\n');
+  assert.deepEqual(seen, [['progress', { seq: 0, kind: 'start' }]]);
+  assert.equal(parser.end(), false);
+});
+
+test('SSE parser handles CRLF, keepalive comments and bad JSON', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push(': keepalive\n\nevent: x\ndata: {\n\n');
+  assert.equal(seen.length, 0);
+  parser.push('event: a\r\ndata: {"n":1}\r\n\r\n');
+  assert.deepEqual(seen, [['a', { n: 1 }]]);
+});
+
+test('SSE parser joins multi-line data', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push('event: answer\ndata: {"text":\ndata: "hi"}\n\n');
+  assert.deepEqual(seen, [['answer', { text: 'hi' }]]);
+});
+
+test('SSE parser end() reports a trailing partial event', () => {
+  const parser = ui.createSseParser(() => {});
+  parser.push('event: answer\ndata: {"te');
+  assert.equal(parser.end(), true);
+  assert.equal(parser.end(), false);
+});

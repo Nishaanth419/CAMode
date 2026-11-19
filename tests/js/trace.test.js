@@ -521,3 +521,26 @@ test('the collapsed trace row shows up to three labels from the steps and stays 
   assert.match(html, /href="#\/activity\/answer-r1"/);
   assert.doesNotMatch(trace.renderChatTrace([{ kind: 'model' }]), /chat-trace-tags/);
 });
+
+test('progress labels never show a raw tool name', () => {
+  const label = trace.progressLabel;
+  assert.equal(label({ kind: 'tool_call', name: 'get_holdings_v2', source: 'saved' }), 'Working on it');
+  assert.equal(label({ kind: 'tool_call', source: 'broker:zerodha' }, { zerodha: 'Zerodha' }), 'Asking Zerodha');
+  assert.equal(label({ kind: 'tool_result', source: 'broker:unknown' }), 'Asking your broker');
+  assert.equal(label({ kind: 'tool_call', source: 'broker' }), 'Asking your broker');
+  assert.equal(label({ kind: 'tool_call', name: 'get_portfolio_snapshot', source: 'saved' }), 'Read your saved snapshot');
+  assert.equal(label({ kind: 'tool_call', name: 'get_mf_tax', source: 'saved' }), 'Read mutual fund tax');
+  assert.equal(label({ kind: 'tool_call', source: 'indmoney' }), 'Asking INDmoney');
+  assert.equal(label({ kind: 'tool_call', name: 'constructor' }), 'Working on it');
+  assert.equal(label({ kind: 'validation', name: 'numbers' }), 'Checking the figures');
+  assert.equal(label({ kind: 'validation', name: 'bogus' }), 'Working on it');
+  assert.equal(label({ kind: 'start' }), 'Understanding your question');
+  assert.equal(label({ kind: 'route', name: 'account_data' }), 'Understanding your question');
+  assert.equal(label({ kind: 'context' }), 'Reading your saved details');
+  assert.equal(label({ kind: 'model_call' }), 'Thinking');
+  assert.equal(label({ kind: 'plan', name: 'draft' }), 'Planning the steps');
+  assert.equal(label({ kind: 'retry', name: 'empty_reply' }), 'Taking another look');
+  assert.match(label({ kind: 'waiting' }), /^Waiting for the assistant/);
+  assert.equal(label({ kind: 'mystery' }), 'Working on it');
+  assert.equal(label(null), 'Working on it');
+});
