@@ -1450,6 +1450,9 @@ function renderBrokerBanners() {
   document.querySelectorAll('[data-broker-banners]').forEach((element) => { element.innerHTML = html; });
 }
 
+// The broker list from the latest attention check (every broker, not only those needing attention).
+let listedBrokers = [];
+
 async function refreshBrokerAttention({ check = false } = {}) {
   let list = await fetchBrokerList();
   if (!list) {
@@ -1469,6 +1472,7 @@ async function refreshBrokerAttention({ check = false } = {}) {
     }
   }
   brokerAttention = brokersNeedingAttention(list);
+  listedBrokers = list;
   renderBrokerBanners();
   document.dispatchEvent(new CustomEvent('ca:brokers'));
 }
@@ -1825,6 +1829,7 @@ function addTypingIndicator() {
       <p class="message-meta">${escHtml(answerMeta())}</p>
       <div class="message-body">
         <div class="typing-indicator" role="status" aria-label="Answering"><span aria-hidden="true">$</span><span aria-hidden="true">$</span><span aria-hidden="true">$</span></div>
+        <p class="typing-progress" aria-live="polite"></p>
       </div>
     </div>`;
   messages.appendChild(div);
@@ -1832,12 +1837,111 @@ function addTypingIndicator() {
   return div;
 }
 
+// The latest progress line under the typing indicator, repeated in the status pill.
+function setTypingProgress(text) {
+  const line = document.querySelector('#typing-indicator .typing-progress');
+  if (line) line.textContent = text;
+  setStatus('loading', text);
+}
+
 function removeTypingIndicator() {
   const el = document.getElementById('typing-indicator');
   if (el) el.remove();
 }
 
-/* ── Streaming response handler ──────────────────────────────────────── */
+// Broker display names by id for progress lines ("Asking Zerodha…"), from the broker lists already loaded (the
+// attention check on sign-in and the profile dialog); empty when neither has loaded.
+function brokerNamesById() {
+  return Object.fromEntries([...listedBrokers, ...lastBrokers]
+    .filter((broker) => broker && broker.broker && broker.name)
+    .map((broker) => [broker.broker, broker.name]));
+}
+
+// Show a finished answer: the plain response (body and X-* headers) and the stream's `answer` event both end here.
+async function renderChatAnswer({ text, trace, runId, questionsRemaining, creditsRemaining }) {
+  if (questionsRemaining !== null && questionsRemaining !== undefined) updateQuestionsLeft(Number(questionsRemaining));
+  if (creditsRemaining !== null && creditsRemaining !== undefined) updateCreditsLeft(Number(creditsRemaining));
+  removeTypingIndicator();
+  const msgDiv = addMessage('assistant', '', Array.isArray(trace) ? trace : [], runId ?? null, { answer: true });
+  const bodyDiv = msgDiv.querySelector('.message-body');
+  const rawText = String(text ?? '');
+  bodyDiv.innerHTML = rawText.trim() === ''
+    ? '<em>The model returned no text. Check the local server logs for details.</em>'
+    : renderMarkdown(rawText.trim());
+  renderPlotlyCharts(bodyDiv);
+  scrollToBottom();
+
+  await refreshChats();
+  try {
+    const savedResponse = await fetch('/api/chats/' + encodeURIComponent(activeChatId));
+    if (savedResponse.ok) {
+      const savedChat = await savedResponse.json();
+      const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
+      if (savedAssistant?.trace?.length) {
+        const currentTrace = msgDiv.querySelector('.chat-trace');
+        if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace, { runId: savedAssistant.runId });
+        msgDiv.querySelector('.message-meta').textContent = answerMeta(savedAssistant.trace);
+        if (msgDiv === messages.querySelector('.message.assistant:last-child')) setLatestAnswer(savedAssistant.trace);
+      }
+    }
+  } catch { /* The compact trace from the response is still visible. */ }
+}
+
+// A chat request CA Mode answered with a failure (a non-OK response, or the stream's `error` event). Renders a
+// message and returns true for limits, a busy model and ended sessions; throws for everything else.
+async function handleChatFailure(status, err, trace, createdChatId) {
+  if (err.profileRequired || err.unlockRequired || err.consentRequired) {
+    removeTypingIndicator();
+    await loadChats();
+    return true;
+  }
+  if (status === 429 && (err.dailyLimitReached || err.rateLimited)) {
+    // A limit, not a failure: say so plainly ("You've reached today's limit… resets at midnight IST").
+    removeTypingIndicator();
+    const plansLink = err.pricingUrl
+      ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">See paid plans</a>`
+      : '';
+    addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}${plansLink}</p>`);
+    if (err.dailyLimitReached) updateQuestionsLeft(0);
+    setStatus('online', err.dailyLimitReached ? 'Daily limit reached' : 'Too many requests');
+    if (createdChatId) await discardEmptyChat(createdChatId);
+    return true;
+  }
+  if ((status === 503 && err.modelBusy) || (status === 429 && err.chatInFlight) || (status === 504 && err.chatDeadline)) {
+    // The shared model is busy, this profile's previous answer is still running, or the answer ran out of
+    // time: nothing is wrong with the question, so say so plainly and when to try again.
+    removeTypingIndicator();
+    const wait = Number(err.retryAfterSeconds);
+    const fallback = err.chatDeadline ? 'That took too long to answer. Try again, or ask a shorter question.'
+      : 'The assistant is busy right now. Try again in a moment.';
+    const retry = !err.chatDeadline && wait > 0 && !/\d+ seconds/.test(err.error || '') ? ` Try again in about ${wait} seconds.` : '';
+    addMessage('assistant', `<p>${escHtml(err.error || fallback)}${escHtml(retry)}</p>`);
+    setStatus('online', err.modelBusy ? 'Assistant busy' : err.chatInFlight ? 'Still answering' : 'Took too long');
+    if (createdChatId) await discardEmptyChat(createdChatId);
+    return true;
+  }
+  if (status === 402 && err.creditsExhausted) {
+    // Credits used up: say when they renew and where to top up, like the daily limit.
+    removeTypingIndicator();
+    const plansLink = err.pricingUrl
+      ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">How to top up</a>`
+      : '';
+    addMessage('assistant', `<p>${escHtml(err.error || "You've used this month's credits.")}${plansLink}</p>`);
+    updateCreditsLeft(0);
+    setStatus('online', 'Credits used up');
+    if (createdChatId) await discardEmptyChat(createdChatId);
+    return true;
+  }
+  if (err.loginUrl) {
+    const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
+    throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
+  }
+  throw Object.assign(new Error(plainError(status, err)), { trace, runId: err.runId });
+}
+
+/* ── Chat request ────────────────────────────────────────────────────── */
+// Asks for a server-sent-event stream: progress lines while the answer is made, then one `answer` or `error`.
+// A server or proxy that answers without a stream takes the plain path (body text plus X-* headers).
 async function sendMessage(text) {
   if (!text.trim() || isStreaming) return;
   if (!providerReady || providerPicker.disabled) {
@@ -1851,7 +1955,7 @@ async function sendMessage(text) {
   userInput.value = '';
   autoResize();
 
-  const typingDiv = addTypingIndicator();
+  addTypingIndicator();
   let createdChatId = null;
 
   try {
@@ -1862,123 +1966,69 @@ async function sendMessage(text) {
     try {
       res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ message: text, chatId, agentType: selectedAgent, aiProvider: selectedProvider }),
       });
     } catch { /* The connection dropped: the server may still save the answer. */ }
 
-    if (!res || !res.ok) {
-      const err = res ? await res.json().catch(() => ({})) : {};
-      if (lostChatResponse(res ? res.status : 0, err)) {
-        // A proxy timed out or the connection dropped, but the server keeps answering and saves the answer
-        // with the chat: look for it there before calling this a failure.
-        setStatus('loading', 'Checking for the answer…');
-        const saved = await waitForSavedAnswer(chatId, text, sinceUpdatedAt);
-        if (saved) {
-          removeTypingIndicator();
-          addMessage('assistant', renderMarkdown(saved.content), saved.trace || [], saved.runId, { answer: true });
-          createdChatId = null;
-          await refreshChats().catch(() => {});
-          return;
-        }
-        throw new Error(res ? 'The connection timed out before the answer arrived. If it was saved, it appears when you reopen this chat.'
-          : NETWORK_ERROR);
-      }
-      const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
-      if (err.profileRequired || err.unlockRequired || err.consentRequired) {
-        removeTypingIndicator();
-        await loadChats();
-        return;
-      }
-      if (res.status === 429 && (err.dailyLimitReached || err.rateLimited)) {
-        // A limit, not a failure: say so plainly ("You've reached today's limit… resets at midnight IST").
-        removeTypingIndicator();
-        const plansLink = err.pricingUrl
-          ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">See paid plans</a>`
-          : '';
-        addMessage('assistant', `<p>${escHtml(err.error || 'Too many questions for now. Try again later.')}${plansLink}</p>`);
-        if (err.dailyLimitReached) updateQuestionsLeft(0);
-        setStatus('online', err.dailyLimitReached ? 'Daily limit reached' : 'Too many requests');
-        if (createdChatId) await discardEmptyChat(createdChatId);
-        return;
-      }
-      if ((res.status === 503 && err.modelBusy) || (res.status === 429 && err.chatInFlight) || (res.status === 504 && err.chatDeadline)) {
-        // The shared model is busy, this profile's previous answer is still running, or the answer ran out of
-        // time: nothing is wrong with the question, so say so plainly and when to try again.
-        removeTypingIndicator();
-        const wait = Number(err.retryAfterSeconds);
-        const fallback = err.chatDeadline ? 'That took too long to answer. Try again, or ask a shorter question.'
-          : 'The assistant is busy right now. Try again in a moment.';
-        const retry = !err.chatDeadline && wait > 0 && !/\d+ seconds/.test(err.error || '') ? ` Try again in about ${wait} seconds.` : '';
-        addMessage('assistant', `<p>${escHtml(err.error || fallback)}${escHtml(retry)}</p>`);
-        setStatus('online', err.modelBusy ? 'Assistant busy' : err.chatInFlight ? 'Still answering' : 'Took too long');
-        if (createdChatId) await discardEmptyChat(createdChatId);
-        return;
-      }
-      if (res.status === 402 && err.creditsExhausted) {
-        // Credits used up: say when they renew and where to top up, like the daily limit.
-        removeTypingIndicator();
-        const plansLink = err.pricingUrl
-          ? ` <a href="${escHtml(err.pricingUrl)}" target="_blank" rel="noopener">How to top up</a>`
-          : '';
-        addMessage('assistant', `<p>${escHtml(err.error || "You've used this month's credits.")}${plansLink}</p>`);
-        updateCreditsLeft(0);
-        setStatus('online', 'Credits used up');
-        if (createdChatId) await discardEmptyChat(createdChatId);
-        return;
-      }
-      if (err.loginUrl) {
-        const connectLink = `<br><a href="${escHtml(err.loginUrl)}">Connect INDmoney</a>`;
-        throw Object.assign(new Error(err.error || 'Connect your INDmoney account.'), { connectLink, trace });
-      }
-      throw Object.assign(new Error(plainError(res.status, err)), { trace, runId: err.runId });
+    let err = {};
+    let final = null; // the stream's `answer` or `error` event
+    let lost = !res;
+    if (res && res.ok && (res.headers.get('Content-Type') || '').startsWith('text/event-stream')) {
+      const brokerNames = brokerNamesById();
+      try {
+        await readEventStream(res.body, (name, data) => {
+          if (name === 'progress') setTypingProgress(progressLabel(data, brokerNames) + '…');
+          else if ((name === 'answer' || name === 'error') && !final) final = { name, data };
+        });
+      } catch { /* Cut off mid-stream: look for the saved answer below. */ }
+      // A stream that ended (cleanly, inside an event or with a read error) before its answer or error.
+      lost = !final;
+    } else if (res && !res.ok) {
+      err = await res.json().catch(() => ({}));
+      lost = lostChatResponse(res.status, err);
     }
 
-    const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
-    const questionsLeft = res.headers.get('X-Questions-Remaining');
-    if (questionsLeft !== null) updateQuestionsLeft(Number(questionsLeft));
-    const creditsLeft = res.headers.get('X-Credits-Remaining');
-    if (creditsLeft !== null) updateCreditsLeft(Number(creditsLeft));
-    removeTypingIndicator();
-    const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'), { answer: true });
-    const bodyDiv = msgDiv.querySelector('.message-body');
-    bodyDiv.innerHTML = '';
-
-    // Stream and parse the response
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let rawText = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      rawText += chunk;
-      // Render the accumulated text as it comes in
-      destroyPlotlyCharts(bodyDiv);
-      bodyDiv.innerHTML = renderMarkdown(rawText.trim());
-      scrollToBottom();
-    }
-
-    if (rawText.trim() === '') {
-      bodyDiv.innerHTML = '<em>The model returned no text. Check the local server logs for details.</em>';
-    }
-    renderPlotlyCharts(bodyDiv);
-
-    await refreshChats();
-    try {
-      const savedResponse = await fetch('/api/chats/' + encodeURIComponent(activeChatId));
-      if (savedResponse.ok) {
-        const savedChat = await savedResponse.json();
-        const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
-        if (savedAssistant?.trace?.length) {
-          const currentTrace = msgDiv.querySelector('.chat-trace');
-          if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace, { runId: savedAssistant.runId });
-          msgDiv.querySelector('.message-meta').textContent = answerMeta(savedAssistant.trace);
-          if (msgDiv === messages.querySelector('.message.assistant:last-child')) setLatestAnswer(savedAssistant.trace);
-        }
+    if (lost) {
+      // A proxy timed out or the connection dropped, but the server keeps answering and saves the answer
+      // with the chat: look for it there before calling this a failure.
+      setStatus('loading', 'Checking for the answer…');
+      const saved = await waitForSavedAnswer(chatId, text, sinceUpdatedAt);
+      if (saved) {
+        removeTypingIndicator();
+        addMessage('assistant', renderMarkdown(saved.content), saved.trace || [], saved.runId, { answer: true });
+        createdChatId = null;
+        await refreshChats().catch(() => {});
+        return;
       }
-    } catch { /* The compact trace from the response header is still visible. */ }
+      throw new Error(res ? 'The connection timed out before the answer arrived. If it was saved, it appears when you reopen this chat.'
+        : NETWORK_ERROR);
+    }
+
+    if (final && final.name === 'error') {
+      const data = final.data || {};
+      await handleChatFailure(Number(data.status), data, Array.isArray(data.trace) ? data.trace : [], createdChatId);
+      return;
+    }
+    if (final) {
+      const data = final.data || {};
+      await renderChatAnswer({
+        text: data.text, trace: data.trace, runId: data.runId,
+        questionsRemaining: data.questionsRemaining, creditsRemaining: data.creditsRemaining,
+      });
+      return;
+    }
+    if (!res.ok) {
+      await handleChatFailure(res.status, err, parseTraceHeader(res.headers.get('X-Agent-Trace')), createdChatId);
+      return;
+    }
+    await renderChatAnswer({
+      text: await res.text(),
+      trace: parseTraceHeader(res.headers.get('X-Agent-Trace')),
+      runId: res.headers.get('X-Agent-Run'),
+      questionsRemaining: res.headers.get('X-Questions-Remaining'),
+      creditsRemaining: res.headers.get('X-Credits-Remaining'),
+    });
   } catch (err) {
     removeTypingIndicator();
     addMessage('assistant',
@@ -1994,9 +2044,9 @@ async function sendMessage(text) {
 }
 
 // After a lost chat response, re-read the chat until its saved answer shows up or the server's own answer
-// deadline (CHAT_DEADLINE_SECONDS, 240 by default) has surely passed.
+// deadline (CHAT_DEADLINE_SECONDS, 240 by default, plus the backstop grace) has surely passed.
 const LOST_ANSWER_POLL_MS = 10000;
-const LOST_ANSWER_WAIT_MS = 150000;
+const LOST_ANSWER_WAIT_MS = 270000;
 
 async function waitForSavedAnswer(chatId, question, sinceUpdatedAt) {
   const giveUpAt = Date.now() + LOST_ANSWER_WAIT_MS;

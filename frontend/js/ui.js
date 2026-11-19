@@ -161,8 +161,23 @@
     };
   }
 
+  // Read a fetch response body (a ReadableStream of bytes) as server-sent events, calling onEvent(name, data) for
+  // each. Resolves true when the stream ended inside an unfinished event; rejects when a read fails.
+  async function readEventStream(body, onEvent) {
+    const parser = createSseParser(onEvent);
+    const decoder = new TextDecoder();
+    const reader = body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+    parser.push(decoder.decode());
+    return parser.end();
+  }
+
   const api = {
-    createSseParser, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

@@ -167,3 +167,38 @@ test('SSE parser handles CRLF split across chunks and cut comments', () => {
   parser.push(': keepal');
   assert.equal(parser.end(), false);
 });
+
+function streamOf(chunks, { failAfter = null } = {}) {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (failAfter !== null && index === failAfter) { controller.error(new TypeError('network')); return; }
+      if (index >= chunks.length) { controller.close(); return; }
+      const chunk = chunks[index++];
+      controller.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+    },
+  });
+}
+
+test('readEventStream decodes chunks, including a character split across them', async () => {
+  const seen = [];
+  const bytes = new TextEncoder().encode('event: answer\ndata: {"text":"₹ 5"}\n\n');
+  const cut = bytes.indexOf(0xe2) + 1; // inside the three bytes of ₹
+  const partial = await ui.readEventStream(streamOf([': keepalive\n\nevent: progress\ndata: {"seq":0,"kind":"start"}\n\n', bytes.slice(0, cut), bytes.slice(cut)]),
+    (name, data) => seen.push([name, data]));
+  assert.equal(partial, false);
+  assert.deepEqual(seen, [['progress', { seq: 0, kind: 'start' }], ['answer', { text: '₹ 5' }]]);
+});
+
+test('readEventStream reports a stream cut inside an event', async () => {
+  const seen = [];
+  const partial = await ui.readEventStream(streamOf(['event: progress\ndata: {"seq":0}\n\nevent: answer\ndata: {"te']),
+    (name) => seen.push(name));
+  assert.equal(partial, true);
+  assert.deepEqual(seen, ['progress']);
+});
+
+test('readEventStream rejects when the read fails', async () => {
+  await assert.rejects(ui.readEventStream(streamOf(['event: progress\ndata: {}\n\n'], { failAfter: 1 }), () => {}));
+});
