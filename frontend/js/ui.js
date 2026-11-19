@@ -117,8 +117,67 @@
     }
   }
 
+  // Parse a server-sent event stream pushed in arbitrary chunks. Calls onEvent(name, data) per complete event with
+  // JSON data; comments and non-JSON events are skipped. end() is true when an unfinished event was dropped.
+  function createSseParser(onEvent) {
+    let buffer = '';
+    let heldCr = false; // a trailing CR may be the first half of CRLF, so it waits for the next chunk
+    function dispatch(block) {
+      let name = 'message';
+      const data = [];
+      for (const line of block.split('\n')) {
+        if (!line || line.startsWith(':')) continue;
+        const at = line.indexOf(':');
+        const field = at < 0 ? line : line.slice(0, at);
+        let value = at < 0 ? '' : line.slice(at + 1);
+        if (value.startsWith(' ')) value = value.slice(1);
+        if (field === 'event') name = value;
+        else if (field === 'data') data.push(value);
+      }
+      if (!data.length) return;
+      let parsed;
+      try { parsed = JSON.parse(data.join('\n')); } catch { return; }
+      onEvent(name, parsed);
+    }
+    return {
+      push(text) {
+        let chunk = (heldCr ? '\r' : '') + String(text);
+        heldCr = chunk.endsWith('\r');
+        if (heldCr) chunk = chunk.slice(0, -1);
+        buffer += chunk.replace(/\r\n?/g, '\n');
+        let at;
+        while ((at = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, at);
+          buffer = buffer.slice(at + 2);
+          dispatch(block);
+        }
+      },
+      end() {
+        const partial = buffer.split('\n').some((line) => line.trim() !== '' && !line.startsWith(':'));
+        buffer = '';
+        heldCr = false;
+        return partial;
+      },
+    };
+  }
+
+  // Read a fetch response body (a ReadableStream of bytes) as server-sent events, calling onEvent(name, data) for
+  // each. Resolves true when the stream ended inside an unfinished event; rejects when a read fails.
+  async function readEventStream(body, onEvent) {
+    const parser = createSseParser(onEvent);
+    const decoder = new TextDecoder();
+    const reader = body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+    parser.push(decoder.decode());
+    return parser.end();
+  }
+
   const api = {
-    NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;

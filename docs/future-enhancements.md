@@ -9,7 +9,7 @@ flowchart LR
     subgraph Now["Next"]
         A1["Record the general agent's live eval"]
         A2["Retire the previous loop and planner"]
-        A3["Stream answers and the trace"]
+        A3["Stream the answer text"]
     end
     subgraph Soon["Soon"]
         B1["Fewer arithmetic and lakh errors"]
@@ -34,7 +34,7 @@ flowchart LR
 | **Record the general agent's live results** | `scripts.eval_workflows --provider ollama --runs 3` and its `--baseline` have no published scores yet, so there is no evidence that the graph beats the previous loop | [evals.md](evals.md#the-general-agent) |
 | **Retire the previous loop and the `submit_plan` planner** | Once the graph scores at least as well, `AGENT_GRAPH_ENABLED=false`, `planner.py` and the duplicate retry rules in `stream_agent()` are two code paths to keep in step | `app/agent.py`, `app/planner.py`, `scripts/eval_tasks.py`, `tests/conftest.py` |
 | **Use the graph for Finance Agent and general questions** | Today they stay on the previous loop; one loop with different tool sets would be simpler | `app/agent.py` `stream_agent()` |
-| **Stream answers and the trace** | Answers arrive only when finished (p50 9–21 s on the local model). `stream_agent()` already yields events; sending them over server-sent events would make the trace live | `app/main.py` `/api/chat`, `frontend/js/app.js`, `trace.js` |
+| **Stream the answer text** | Progress already streams (`app/chat_stream.py`), but the answer arrives whole: it must pass code, chart and number checks first. Sending it word by word needs those checks reworked to run on partial text | `app/agent.py` `_guarded_answer`, `app/chat_stream.py`, `frontend/js/app.js` |
 | **Fewer arithmetic and lakh errors** | The investigation eval passes arithmetic 21/30: lakh amounts written 100 times too large, model-made sums. Pushing every derived figure through `calculate` (as the graph's `unverified_figures` check already asks) and formatting rupees in code would close most of it | prompts in `app/agent.py`, `number_check.py` |
 | **Better clarifying questions** | A goal with no amount or date gets a clarifying question 0/3 times in the task eval | `GOAL_TOOL_RULES`, `goal_portfolio.calculate_goal()` `followUps` |
 | **Record the `user_watchlist` stock row layout** | It was not recorded (the watchlists were empty), so watchlist scans run on an assumed layout | `scripts/inspect_indmoney_shapes.py`, `tests/fixtures/indmoney_market.py` |

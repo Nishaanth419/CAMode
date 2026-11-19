@@ -123,3 +123,82 @@ test('a failed dialog action shows a plain message and frees its button', async 
   await ui.withPending(button, status, async () => { JSON.parse('<html>'); });
   assert.equal(status.textContent, ui.GENERIC_ERROR);
 });
+
+test('SSE parser joins chunks split mid-event', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push('event: progress\nda');
+  assert.equal(seen.length, 0);
+  parser.push('ta: {"seq":0,"kind":"start"}\n\n');
+  assert.deepEqual(seen, [['progress', { seq: 0, kind: 'start' }]]);
+  assert.equal(parser.end(), false);
+});
+
+test('SSE parser handles CRLF, keepalive comments and bad JSON', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push(': keepalive\n\nevent: x\ndata: {\n\n');
+  assert.equal(seen.length, 0);
+  parser.push('event: a\r\ndata: {"n":1}\r\n\r\n');
+  assert.deepEqual(seen, [['a', { n: 1 }]]);
+});
+
+test('SSE parser joins multi-line data', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push('event: answer\ndata: {"text":\ndata: "hi"}\n\n');
+  assert.deepEqual(seen, [['answer', { text: 'hi' }]]);
+});
+
+test('SSE parser end() reports a trailing partial event', () => {
+  const parser = ui.createSseParser(() => {});
+  parser.push('event: answer\ndata: {"te');
+  assert.equal(parser.end(), true);
+  assert.equal(parser.end(), false);
+});
+
+test('SSE parser handles CRLF split across chunks and cut comments', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push('event: a\r');
+  parser.push('\ndata: {"n":1}\r\n\r');
+  parser.push('\n');
+  assert.deepEqual(seen, [['a', { n: 1 }]]);
+  parser.push(': keepal');
+  assert.equal(parser.end(), false);
+});
+
+function streamOf(chunks, { failAfter = null } = {}) {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (failAfter !== null && index === failAfter) { controller.error(new TypeError('network')); return; }
+      if (index >= chunks.length) { controller.close(); return; }
+      const chunk = chunks[index++];
+      controller.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+    },
+  });
+}
+
+test('readEventStream decodes chunks, including a character split across them', async () => {
+  const seen = [];
+  const bytes = new TextEncoder().encode('event: answer\ndata: {"text":"₹ 5"}\n\n');
+  const cut = bytes.indexOf(0xe2) + 1; // inside the three bytes of ₹
+  const partial = await ui.readEventStream(streamOf([': keepalive\n\nevent: progress\ndata: {"seq":0,"kind":"start"}\n\n', bytes.slice(0, cut), bytes.slice(cut)]),
+    (name, data) => seen.push([name, data]));
+  assert.equal(partial, false);
+  assert.deepEqual(seen, [['progress', { seq: 0, kind: 'start' }], ['answer', { text: '₹ 5' }]]);
+});
+
+test('readEventStream reports a stream cut inside an event', async () => {
+  const seen = [];
+  const partial = await ui.readEventStream(streamOf(['event: progress\ndata: {"seq":0}\n\nevent: answer\ndata: {"te']),
+    (name) => seen.push(name));
+  assert.equal(partial, true);
+  assert.deepEqual(seen, ['progress']);
+});
+
+test('readEventStream rejects when the read fails', async () => {
+  await assert.rejects(ui.readEventStream(streamOf(['event: progress\ndata: {}\n\n'], { failAfter: 1 }), () => {}));
+});

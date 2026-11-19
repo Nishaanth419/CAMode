@@ -44,7 +44,7 @@ cp .env.example .env
 | `OLLAMA_ROUTER_TIMEOUT_SECONDS` | `30` | How long the local request classifier may take (then the keyword rules decide) |
 | `MODEL_CONCURRENCY` | `OLLAMA_NUM_PARALLEL`, else `1` | Ollama calls in flight at once; the rest queue (`app/model_gate.py`) |
 | `MODEL_QUEUE_SECONDS` | `20` | How long a new question waits for a free model slot before the chat says the assistant is busy (`503`) |
-| `CHAT_DEADLINE_SECONDS` | `240` | The whole answer's time budget; keep it below the proxy's timeout (`504` when spent) |
+| `CHAT_DEADLINE_SECONDS` | `240` | The whole answer's time budget; streamed answers keep the connection alive, so only a non-streamed request needs it below the proxy's timeout (`504` when spent) |
 | `OPENAI_API_KEY` | – | Enables OpenAI |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model |
 | `GROQ_API_KEY` | – | Enables Groq |
