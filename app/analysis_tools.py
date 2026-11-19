@@ -35,6 +35,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, Division
 from typing import Any, Final
 
 from . import options_math, price_action
+from .portfolio_math import name_matches
 
 COMPACT_OVER_CHARS: Final = 2500
 MAX_ROWS: Final = 40
@@ -218,7 +219,7 @@ def _matches(row: Any, condition: dict[str, Any]) -> bool:
         return False
     target = condition.get("value")
     if op == "contains":
-        return str(target).lower() in str(value).lower()
+        return str(target).lower() in str(value).lower() or name_matches(str(target), str(value))
     if op in ("eq", "ne"):
         a, b = _number(value), _number(target)
         same = a == b if a is not None and b is not None else str(value).lower() == str(target).lower()

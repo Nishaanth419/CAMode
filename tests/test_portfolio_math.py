@@ -137,3 +137,18 @@ def test_every_holding_carries_indmoneys_asset_class():
     holdings = all_holdings(indmoney_sample.results())
 
     assert holdings and {item["asset_class"] for item in holdings} == {"Equity"}
+
+
+@pytest.mark.parametrize("query", [
+    "Motilal Oswal Midcap Direct Growth",
+    "motilal oswal mid cap fund direct plan growth",
+    "Motilal Oswal Midcap Fund - Direct Plan - Growth",
+    "midcap motilal",
+])
+def test_name_matches_ignores_filler_words_spacing_and_order(query):
+    assert portfolio_math.name_matches(query, "Motilal Oswal Midcap Fund - Direct Plan - Growth Option")
+
+
+@pytest.mark.parametrize("query", ["Motilal Oswal Smallcap Direct Growth", "fund", "", "  - "])
+def test_name_matches_needs_every_meaningful_word(query):
+    assert not portfolio_math.name_matches(query, "Motilal Oswal Midcap Fund - Direct Plan - Growth Option")

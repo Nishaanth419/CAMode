@@ -29,7 +29,7 @@ from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
 from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
-from .portfolio_math import HOLDINGS_PREFIX, all_holdings, asset_types_held, compute_metrics
+from .portfolio_math import HOLDINGS_PREFIX, all_holdings, asset_types_held, compute_metrics, name_matches
 
 logger = logging.getLogger("ca_mode.snapshots")
 
@@ -670,7 +670,8 @@ def mf_returns_payload(figures: dict[str, Any], scheme: str | None = None) -> st
     if scheme:
         wanted = scheme.strip().lower()
         found = [item for item in figures["schemes"]
-                 if wanted == (item["isin"] or "").lower() or wanted in item["name"].lower()]
+                 if wanted == (item["isin"] or "").lower() or wanted in item["name"].lower()
+                 or name_matches(wanted, item["name"])]
         if not found:
             return dump({"error": f"No mutual fund in the ledger matches {scheme!r}.",
                          "schemes": [item["name"] for item in figures["schemes"]][:40]})
