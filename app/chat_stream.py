@@ -42,6 +42,7 @@ class ProgressMapper:
         self._seq = 0
         self._allowed: set[str] = set()
         self._last_call: dict[str, Any] = {}
+        self._calls: dict[str, dict[str, Any]] = {}
 
     def _next(self, kind: str, **fields: Any) -> dict[str, Any]:
         item = {"seq": self._seq, "kind": kind, **{k: v for k, v in fields.items() if v is not None}}
@@ -87,10 +88,18 @@ class ProgressMapper:
             name = str(data.get("name", ""))
             source = self._source(name, data)
             self._last_call = {"name": name, "source": source}
+            # Results can arrive in another order than calls, so remember each by its step (planned runs) or name.
+            key = data.get("step") if isinstance(data.get("step"), str) else name
+            self._calls[key] = self._last_call
             return self._next("tool_call", name=name if name in self._allowed else None, source=source)
         if event == "tool_result":
-            name = data.get("name") if isinstance(data.get("name"), str) else self._last_call.get("name", "")
-            source = self._last_call.get("source") or self._source(name or "", {})
+            key = data.get("step") if isinstance(data.get("step"), str) else data.get("name")
+            call = self._calls.get(key) if isinstance(key, str) else None
+            if call is None and not isinstance(key, str):
+                call = self._last_call
+            call = call or {}
+            name = call.get("name") or (data.get("name") if isinstance(data.get("name"), str) else "")
+            source = call.get("source") or self._source(name, {})
             failed = any(data.get(key) for key in ("error", "error_kind", "errorKind"))
             return self._next("tool_result", name=name if name in self._allowed else None, source=source,
                               status="failed" if failed else "ok")

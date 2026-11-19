@@ -104,3 +104,26 @@ def test_response_event_for_an_answer():
 def test_response_event_for_a_failure():
     response = JSONResponse({"error": "busy", "modelBusy": True, "retryAfterSeconds": 5}, status_code=503)
     assert response_event(response) == ("error", {"status": 503, "trace": [], "error": "busy", "modelBusy": True, "retryAfterSeconds": 5})
+
+
+def _two_calls(m, key):
+    m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {}, "source": "local", **({"step": "s1"} if key else {})})
+    m.map("tool_call", {"name": "get_networth", "arguments": {}, "source": "indmoney", **({"step": "s2"} if key else {})})
+
+
+def test_planned_results_in_reverse_order_keep_their_own_name_and_source():
+    m = _mapper("get_portfolio_snapshot", "get_networth")
+    _two_calls(m, True)
+    second = m.map("tool_result", {"step": "s2"})
+    first = m.map("tool_result", {"step": "s1"})
+    assert (second["name"], second["source"]) == ("get_networth", "indmoney")
+    assert (first["name"], first["source"]) == ("get_portfolio_snapshot", "saved")
+
+
+def test_graph_results_in_reverse_order_keep_their_own_source():
+    m = _mapper("get_portfolio_snapshot", "get_networth")
+    _two_calls(m, False)
+    second = m.map("tool_result", {"name": "get_networth"})
+    first = m.map("tool_result", {"name": "get_portfolio_snapshot"})
+    assert (second["name"], second["source"]) == ("get_networth", "indmoney")
+    assert (first["name"], first["source"]) == ("get_portfolio_snapshot", "saved")
