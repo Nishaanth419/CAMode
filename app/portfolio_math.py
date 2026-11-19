@@ -16,6 +16,7 @@ Known traps in INDmoney's data, handled here:
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Final
@@ -276,3 +277,20 @@ def compute_metrics(results: dict[str, str], *, include_all_holdings: bool = Fal
             for item in holdings
         ]
     return metrics
+
+
+# Words a fund name may carry or leave out ("Fund - Direct Plan - Growth Option" vs "Direct Growth").
+_FILLER_WORDS: Final = frozenset({"fund", "plan", "option", "scheme", "the", "of"})
+
+
+def _name_words(text: str) -> list[str]:
+    return [word for word in re.findall(r"[a-z0-9]+", str(text).lower()) if word not in _FILLER_WORDS]
+
+
+def name_matches(query: str, name: str) -> bool:
+    """True when every meaningful word of ``query`` is in ``name``, ignoring case, punctuation, filler words and
+    order, or when they run together the same way ("mid cap" and "Midcap"). A query of filler words alone matches nothing."""
+    wanted, words = _name_words(query), _name_words(name)
+    if not wanted:
+        return False
+    return "".join(wanted) in "".join(words) or set(wanted) <= set(words)

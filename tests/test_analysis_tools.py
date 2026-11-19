@@ -125,3 +125,13 @@ def test_conditions_can_be_written_as_text():
     assert result["matched"] > 0 and all(row["strike_price"] < 21700 for row in result["returned"])
     with pytest.raises(ValueError, match="cannot read"):
         at.inspect(store, {"result_id": rid, "path": "option_chain_data", "where": ["strike_price"]})
+
+
+def test_inspect_contains_finds_a_fund_by_its_words():
+    store = at.ResultStore()
+    rid = store.add("get_portfolio_snapshot", {}, json.dumps({"figures": {"holdings": [
+        {"name": "Motilal Oswal Midcap Fund - Direct Plan - Growth", "value": 1200},
+        {"name": "Parag Parikh Flexi Cap Fund Direct Growth", "value": 900}]}}))
+    out = at.inspect(store, {"result_id": rid, "path": "figures.holdings",
+                             "where": [{"field": "name", "op": "contains", "value": "Motilal Oswal Midcap Direct Growth"}]})
+    assert out["matched"] == 1 and out["returned"][0]["value"] == 1200
