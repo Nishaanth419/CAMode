@@ -68,7 +68,7 @@ def test_free_text_names_are_dropped():
 
 def test_tool_result_status_and_planned_step_name():
     m = _mapper("get_portfolio_snapshot")
-    m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {}, "source": "local"})
+    m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {}, "source": "local", "step": "s1"})
     assert m.map("tool_result", {"error_kind": "failed"})["status"] == "failed"
     assert m.map("tool_result", {"errorKind": "auth"})["status"] == "failed"
     planned = m.map("tool_result", {"step": "s1", "result": "x"})
