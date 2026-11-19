@@ -1465,3 +1465,65 @@ async def test_a_refusal_records_its_contract_without_a_model_call(monkeypatch):
     assert _kinds(answer.events) == ["route", "contract", "answer", "validation", "termination"]
     assert answer.verdict == {**answer.verdict, "task": "refusal", "status": "met"}
     assert answer.events[-1]["reason"] == "refused"
+
+
+def _fake_stream(events):
+    async def fake(*args, **kwargs):
+        for item in events:
+            yield item
+    return fake
+
+
+_ANSWER_EVENTS = [
+    ("route", {"category": "general_finance", "source": "keywords"}),
+    ("tool_call", {"id": "1", "name": "get_portfolio_snapshot", "arguments": {}}),
+    ("tool_result", {"id": "1", "name": "get_portfolio_snapshot", "result_preview": "{}"}),
+    ("content", {"text": "answer text"}),
+    ("done", {}),
+]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_every_event_to_on_event(monkeypatch):
+    monkeypatch.setattr(agent, "stream_agent", _fake_stream(_ANSWER_EVENTS))
+    seen = []
+    result = await agent.run_agent("q", "url", None, [], on_event=lambda kind, data: seen.append(kind))
+    assert seen[:5] == ["route", "tool_call", "tool_result", "content", "done"]
+    assert str(result) == "answer text"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_reports_the_task_contract_check(monkeypatch):
+    contract = agent.tasks.contract_for("general_finance", "finance", set())
+    monkeypatch.setattr(agent, "stream_agent", _fake_stream(
+        [("contract", {"contract": contract}), ("content", {"text": "answer text"}), ("done", {})]))
+    seen = []
+    await agent.run_agent("q", "url", None, [], on_event=lambda kind, data: seen.append((kind, data)))
+    checks = [data for kind, data in seen if kind == "validation"]
+    assert [item["check"] for item in checks] == ["task_contract"]
+    assert checks[0]["outcome"] in {"passed", "failed"}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_on_event_never_fails_the_answer(monkeypatch, caplog):
+    monkeypatch.setattr(agent, "stream_agent", _fake_stream(_ANSWER_EVENTS))
+    baseline = await agent.run_agent("q", "url", None, [])
+    calls = []
+
+    def broken(kind, data):
+        calls.append(kind)
+        raise RuntimeError("listener down")
+
+    with caplog.at_level("WARNING", logger="ca_mode.agent"):
+        result = await agent.run_agent("q", "url", None, [], on_event=broken)
+    assert str(result) == str(baseline)
+    assert result.events == baseline.events
+    assert len(calls) == 5
+    assert sum("agent_event_listener_failed" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_without_on_event_is_unchanged(monkeypatch):
+    monkeypatch.setattr(agent, "stream_agent", _fake_stream(_ANSWER_EVENTS))
+    result = await agent.run_agent("q", "url", None, [])
+    assert str(result) == "answer text"
