@@ -544,3 +544,8 @@ test('progress labels never show a raw tool name', () => {
   assert.equal(label({ kind: 'mystery' }), 'Working on it');
   assert.equal(label(null), 'Working on it');
 });
+
+test('progress label ignores inherited broker names', () => {
+  assert.equal(trace.progressLabel({ kind: 'tool_call', source: 'broker:constructor' }, {}), 'Asking your broker');
+  assert.equal(trace.progressLabel({ kind: 'tool_call', source: 'broker:x' }, { x: 5 }), 'Asking your broker');
+});

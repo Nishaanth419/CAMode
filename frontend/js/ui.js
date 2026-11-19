@@ -121,6 +121,7 @@
   // JSON data; comments and non-JSON events are skipped. end() is true when an unfinished event was dropped.
   function createSseParser(onEvent) {
     let buffer = '';
+    let heldCr = false; // a trailing CR may be the first half of CRLF, so it waits for the next chunk
     function dispatch(block) {
       let name = 'message';
       const data = [];
@@ -140,7 +141,10 @@
     }
     return {
       push(text) {
-        buffer += String(text).replace(/\r\n?/g, '\n');
+        let chunk = (heldCr ? '\r' : '') + String(text);
+        heldCr = chunk.endsWith('\r');
+        if (heldCr) chunk = chunk.slice(0, -1);
+        buffer += chunk.replace(/\r\n?/g, '\n');
         let at;
         while ((at = buffer.indexOf('\n\n')) >= 0) {
           const block = buffer.slice(0, at);
@@ -149,8 +153,9 @@
         }
       },
       end() {
-        const partial = buffer.trim() !== '';
+        const partial = buffer.split('\n').some((line) => line.trim() !== '' && !line.startsWith(':'));
         buffer = '';
+        heldCr = false;
         return partial;
       },
     };

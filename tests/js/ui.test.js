@@ -156,3 +156,14 @@ test('SSE parser end() reports a trailing partial event', () => {
   assert.equal(parser.end(), true);
   assert.equal(parser.end(), false);
 });
+
+test('SSE parser handles CRLF split across chunks and cut comments', () => {
+  const seen = [];
+  const parser = ui.createSseParser((name, data) => seen.push([name, data]));
+  parser.push('event: a\r');
+  parser.push('\ndata: {"n":1}\r\n\r');
+  parser.push('\n');
+  assert.deepEqual(seen, [['a', { n: 1 }]]);
+  parser.push(': keepal');
+  assert.equal(parser.end(), false);
+});

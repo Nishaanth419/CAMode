@@ -169,7 +169,11 @@
       case 'tool_call': case 'tool_result': {
         const source = typeof e.source === 'string' ? e.source : '';
         if (source === 'indmoney') return 'Asking INDmoney';
-        if (source.startsWith('broker:')) return `Asking ${brokerNames[source.slice(7)] || 'your broker'}`;
+        if (source.startsWith('broker:')) {
+          const id = source.slice(7);
+          const name = brokerNames && Object.hasOwn(brokerNames, id) ? brokerNames[id] : '';
+          return `Asking ${typeof name === 'string' && name ? name : 'your broker'}`;
+        }
         if (source === 'broker') return 'Asking your broker';
         if (Object.hasOwn(LOCAL_TOOLS, e.name)) return LOCAL_TOOLS[e.name][0];
         return WORKING;
