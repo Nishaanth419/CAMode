@@ -1106,12 +1106,12 @@ kbd {
 .logs-block pre { color: var(--amber); }
 
 /* ── Typing indicator ───────────────────────────────────────────── */
-.typing-indicator { display: flex; align-items: center; gap: 5px; padding: 6px 0; }
+.typing-indicator { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
 .typing-indicator span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent-3);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent-3);
   animation: typing-bounce 1.3s ease infinite;
 }
 .typing-indicator span:nth-child(2) { animation-delay: .18s; }

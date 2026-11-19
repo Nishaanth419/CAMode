@@ -1824,7 +1824,7 @@ function addTypingIndicator() {
     <div class="message-main">
       <p class="message-meta">${escHtml(answerMeta())}</p>
       <div class="message-body">
-        <div class="typing-indicator" role="status" aria-label="Answering"><span></span><span></span><span></span></div>
+        <div class="typing-indicator" role="status" aria-label="Answering"><span aria-hidden="true">$</span><span aria-hidden="true">$</span><span aria-hidden="true">$</span></div>
       </div>
     </div>`;
   messages.appendChild(div);
