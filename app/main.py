@@ -20,12 +20,12 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, chat_stream, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, SavedContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -2007,6 +2007,8 @@ async def chat(body: ChatRequest, request: Request):
             status_code=429, headers={"Retry-After": str(CHAT_IN_FLIGHT_RETRY_SECONDS)},
         )
     _chats_in_flight.add(user["id"])
+    if wants_stream(request):
+        return await _stream_chat(body, request, user, message, provider)
     try:
         # The whole answer (classifier, model calls, tools, a token-refresh retry) shares one time budget.
         with model_gate.chat_budget():
@@ -2020,6 +2022,60 @@ _chats_in_flight: set[str] = set()
 CHAT_IN_FLIGHT_RETRY_SECONDS: Final = 5
 # Past the model budget, tool calls (INDmoney's own timeouts) may still be finishing; then the request ends.
 CHAT_BACKSTOP_GRACE_SECONDS: Final = 20
+# Streamed answers still running (strong references: the event loop keeps only weak ones to tasks).
+_stream_tasks: set[asyncio.Task[Response]] = set()
+
+
+def wants_stream(request: Request) -> bool:
+    """The browser asked for progress as server-sent events; older clients get today's plain answer."""
+    return "text/event-stream" in request.headers.get("accept", "")
+
+
+def _stream_task_done(task: asyncio.Task[Response]) -> None:
+    _stream_tasks.discard(task)
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.error("chat_stream_task_failed", extra={"error": type(exc).__name__})
+
+
+async def _stream_chat(body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str) -> Response:
+    """The streaming ``POST /api/chat``: refusals keep their status codes; the answer runs in its own task.
+
+    Called with the profile already in ``_chats_in_flight``; it is released here before the task starts, else by
+    the task's own ``finally``, so a browser that goes away never loses the answer or the guard.
+    """
+    try:
+        with model_gate.chat_budget():
+            prepared = await _prepare_chat(body, request, user, message, provider)
+    except BaseException:
+        _chats_in_flight.discard(user["id"])
+        raise
+    if isinstance(prepared, Response):
+        _chats_in_flight.discard(user["id"])
+        return prepared
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    mapper = chat_stream.ProgressMapper()
+    first = mapper.start()
+
+    def on_event(event: str, data: dict) -> None:
+        if (item := mapper.map(event, data)) is not None:
+            queue.put_nowait(item)
+
+    async def answer() -> Response:
+        try:
+            # Inside the task, so the run sees this budget and listener (context variables are copied at creation).
+            with model_gate.chat_budget(), model_gate.wait_listener(lambda: queue.put_nowait(mapper.waiting())):
+                return await _run_chat(prepared, on_event)
+        finally:
+            _chats_in_flight.discard(user["id"])
+
+    task = asyncio.create_task(answer())
+    _stream_tasks.add(task)
+    task.add_done_callback(_stream_task_done)
+    failure = {"status": 502, "trace": [], "error": chat_failure_message(None, "")}
+    return StreamingResponse(
+        chat_stream.events(task, queue, first, failure), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 async def _run_agent_within_budget(*args: Any, **kwargs: Any) -> Any:

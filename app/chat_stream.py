@@ -1,8 +1,10 @@
 """Progress events for a streamed chat answer: map agent events to safe dicts and frame server-sent events."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any, Final
 
 from fastapi import Response
@@ -142,3 +144,33 @@ def response_event(response: Response) -> tuple[str, dict[str, Any]]:
     except ValueError:
         details = {}
     return "error", {"status": response.status_code, "trace": trace, **(details if isinstance(details, dict) else {})}
+
+
+async def events(
+    task: asyncio.Task[Response], queue: asyncio.Queue[dict[str, Any]], first: dict[str, Any], failure: dict[str, Any],
+) -> AsyncIterator[bytes]:
+    """The stream for one answer: ``first``, queued progress, keepalives, then one ``answer`` or ``error`` event.
+
+    Closing or cancelling this generator (the browser went away) never cancels ``task``: it finishes and saves.
+    """
+    yield sse("progress", first)
+    while True:
+        while not queue.empty():
+            yield sse("progress", queue.get_nowait())
+        if task.done():
+            break
+        getter = asyncio.ensure_future(queue.get())
+        try:
+            # asyncio.wait never cancels what it waits on, so a cancelled stream leaves the task running.
+            done, _ = await asyncio.wait({getter, task}, timeout=KEEPALIVE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not getter.done():
+                getter.cancel()
+        if getter.done() and not getter.cancelled():
+            yield sse("progress", getter.result())
+        elif not done:
+            yield KEEPALIVE
+    if task.cancelled() or task.exception() is not None:
+        yield sse("error", failure)
+    else:
+        yield sse(*response_event(task.result()))
