@@ -9,8 +9,9 @@ import hmac
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import date
 from typing import Any, Final, Literal
@@ -25,7 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
-from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
+from .agent import AgentRunError, PortfolioContext, SavedContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
 from .db import connect_db, initialize_db
@@ -2036,7 +2037,37 @@ async def _run_agent_within_budget(*args: Any, **kwargs: Any) -> Any:
         ) from None
 
 
+@dataclass
+class PreparedChat:
+    """What ``_prepare_chat`` hands to ``_run_chat``: the checked request and a daily question slot it now owns."""
+    body: ChatRequest
+    request: Request
+    user: dict[str, Any]
+    message: str
+    provider: str
+    data: dict[str, Any]
+    history: list[dict[str, Any]]
+    saved_context: SavedContext | None
+    context: PortfolioContext | None
+    token: str | None
+    reservation: limits.Reservation | None
+    monthly_credits: int | None
+
+
 async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str):
+    prepared = await _prepare_chat(body, request, user, message, provider)
+    if isinstance(prepared, Response):
+        return prepared
+    return await _run_chat(prepared)
+
+
+async def _prepare_chat(
+    body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str,
+) -> Response | PreparedChat:
+    """Everything before the model runs: the chat, context, tools, token, daily slot and credit check.
+
+    Returns a refusal response, or a ``PreparedChat`` whose reservation ``_run_chat`` must confirm or release.
+    """
     data = chats.read_chat(user, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
@@ -2082,13 +2113,28 @@ async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any]
         except credits.CreditsExhausted as exc:
             limits.release_question(user["id"], reservation)
             return credits_exhausted(exc)
+    return PreparedChat(
+        body=body, request=request, user=user, message=message, provider=provider, data=data, history=history,
+        saved_context=saved_context, context=context, token=token, reservation=reservation, monthly_credits=monthly_credits,
+    )
+
+
+async def _run_chat(prepared: PreparedChat, on_event: Callable[[str, dict], None] | None = None) -> Response:
+    """Run the agent for a prepared chat and build the response; owns the daily slot (confirm or release).
+
+    ``on_event`` is passed to every agent run only when set, so callers without progress reporting are unchanged.
+    """
+    body, user, message, provider = prepared.body, prepared.user, prepared.message, prepared.provider
+    data, history, saved_context, context = prepared.data, prepared.history, prepared.saved_context, prepared.context
+    reservation, monthly_credits = prepared.reservation, prepared.monthly_credits
+    progress = {"on_event": on_event} if on_event is not None else {}
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
     answered = False
     try:
         try:
             answer = await _run_agent_within_budget(
-                message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
-                plan_parts=task_parts(message),
+                message, MCP_RESOURCE, prepared.token, history, body.agentType, provider, context=context,
+                saved_context=saved_context, plan_parts=task_parts(message), **progress,
             )
         except Exception as exc:
             if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
@@ -2101,7 +2147,7 @@ async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any]
                 try:
                     answer = await _run_agent_within_budget(
                         message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
-                        context=context, saved_context=saved_context, plan_parts=task_parts(message),
+                        context=context, saved_context=saved_context, plan_parts=task_parts(message), **progress,
                     )
                 except Exception as retry_exc:
                     if is_indmoney_auth_error(retry_exc):
