@@ -10,7 +10,7 @@ model or proxy timeout. Instead:
   slot, later calls of the same answer wait as long as its budget allows, so an answer is not abandoned
   halfway. Cloud providers are not queued here.
 - **A budget per chat.** ``chat_budget()`` (``main.chat``) gives the whole answer ``CHAT_DEADLINE_SECONDS``
-  (240), below the proxy's timeout; every model call is cut off when it runs out (``DeadlineReached``).
+  (240; streamed answers keep the connection alive, so only a silent non-streamed request needs it below the proxy's timeout); every model call is cut off when it runs out (``DeadlineReached``).
   ``call_deadline()`` narrows it further for a stretch of the answer (the general agent's own deadline).
 - **The last good call.** ``status()`` reports when a model call last succeeded, for the admin page.
 
