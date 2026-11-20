@@ -132,7 +132,7 @@ test('every sprite icon referenced by the app exists in icons.svg', () => {
   const sources = [readHtml(), readJs('pages.js'), readJs('app.js')];
   const used = new Set();
   for (const source of sources) {
-    for (const m of source.matchAll(/\/icons\.svg#(ph-[\w-]+)/g)) used.add(m[1]);
+    for (const m of source.matchAll(/\/icons\.svg\?v=\d+#(ph-[\w-]+)/g)) used.add(m[1]);
   }
   assert.ok(used.size > 0);
   for (const id of used) assert.ok(symbols.has(id), `missing symbol ${id}`);
@@ -176,3 +176,71 @@ test('chart code takes every colour and the font from chartTheme(), with no hex 
   assert.match(src, /getComputedStyle\(document\.documentElement\)/);
   assert.doesNotMatch(src, /setAttribute\('content', selected === 'dark' \? '#/);
 });
+
+// The body of the first `@media (prefers-reduced-motion: reduce)` block, found by brace matching.
+function reducedMotionBlock(css) {
+  const start = css.indexOf('@media (prefers-reduced-motion: reduce)');
+  assert.ok(start >= 0);
+  let depth = 0;
+  for (let i = css.indexOf('{', start); i < css.length; i++) {
+    if (css[i] === '{') depth++;
+    if (css[i] === '}' && --depth === 0) return css.slice(css.indexOf('{', start) + 1, i);
+  }
+  throw new Error('unterminated reduced-motion block');
+}
+function keyframes(css) {
+  const found = new Map();
+  for (const m of css.matchAll(/@keyframes\s+([\w-]+)\s*\{/g)) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    for (; i < css.length && depth > 0; i++) depth += css[i] === '{' ? 1 : css[i] === '}' ? -1 : 0;
+    found.set(m[1], css.slice(m.index, i));
+  }
+  return found;
+}
+
+test('reduced motion keeps keyframes to opacity and drops the press', () => {
+  const css = readCss();
+  const block = reducedMotionBlock(css);
+  const inside = keyframes(block);
+  const outside = keyframes(css.replace(block, ''));
+  for (const [name, body] of inside) assert.doesNotMatch(body, /transform/, name);
+  for (const [name, body] of outside) {
+    if (/transform/.test(body)) assert.ok(inside.has(name), `${name} moves and is not redefined for reduced motion`);
+  }
+  assert.match(block, /button:active:not\(:disabled\), \.button:active \{ transform: none; \}/);
+});
+
+function channel(v) { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }
+function rgb(hex) { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+function luminance([r, g, b]) { return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b); }
+function ratio(a, b) { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); }
+function over(fg, alpha, bg) { return fg.map((v, i) => Math.round(v * alpha + bg[i] * (1 - alpha))); }
+
+const CONTRAST_ROWS = [];
+for (const [theme, selector] of [['light', ':root'], ['dark', ':root[data-theme="dark"]']]) {
+  test(`text tokens reach 4.5:1 in the ${theme} theme`, () => {
+    const t = tokenBlock(readCss(), selector);
+    const hex = (name) => { const v = t.get(name); assert.match(v, /^#[0-9A-Fa-f]{6}$/, name); return rgb(v); };
+    const surfaces = { surface: hex('--surface'), 'surface-2': hex('--surface-2') };
+    const texts = ['--text', '--text-soft', '--text-muted', '--accent-text', '--gain-text', '--loss-text', '--warning-text', '--violet-text', '--blue-text'];
+    const check = (label, fg, bg) => {
+      const r = ratio(fg, bg);
+      CONTRAST_ROWS.push(`${theme} ${label} ${r.toFixed(2)}`);
+      assert.ok(r >= 4.5, `${theme} ${label} is ${r.toFixed(2)}`);
+    };
+    for (const name of texts) {
+      for (const [sname, bg] of Object.entries(surfaces)) check(`${name} on ${sname}`, hex(name), bg);
+    }
+    const tints = { '--accent-text': ['--accent', 0.1], '--gain-text': ['--gain', 0.12], '--loss-text': ['--loss', 0.12],
+      '--warning-text': ['--warning', 0.12], '--violet-text': ['--violet', 0.12], '--blue-text': ['--blue', 0.12] };
+    for (const [name, [base, alpha]] of Object.entries(tints)) {
+      const baseHex = t.get(base);
+      assert.match(baseHex, /^#[0-9A-Fa-f]{6}$/, base);
+      check(`${name} on its tint`, hex(name), over(rgb(baseHex), alpha, surfaces.surface));
+    }
+    check('accent-ink on accent', hex('--accent-ink'), hex('--accent'));
+    check('accent-ink on accent-3 (hover)', hex('--accent-ink'), hex('--accent-3'));
+  });
+}
+test.after(() => { if (process.env.SHOW_CONTRAST) console.log(CONTRAST_ROWS.join('\n')); });

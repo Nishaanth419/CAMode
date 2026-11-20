@@ -185,7 +185,7 @@ function applyTheme(theme) {
   const nextLabel = selected === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
   themeToggle.setAttribute('aria-label', nextLabel);
   themeToggle.title = nextLabel;
-  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg#ph-sun' : '/icons.svg#ph-moon');
+  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=1#ph-sun' : '/icons.svg?v=1#ph-moon');
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
   localStorage.setItem('ca-mode-theme', selected);
 }

@@ -178,7 +178,7 @@
 
   // Copy of every in-app confirmation (app.js confirmAction() shows it). Text only: it goes in with textContent.
   const CONFIRMS = Object.freeze({
-    deleteStatement: Object.freeze({ title: 'Delete this statement?', body: 'Its holdings and mutual fund history are removed.', confirmLabel: 'Delete statement', danger: true }),
+    deleteStatement: Object.freeze({ title: 'Delete this statement?', body: 'Its holdings are removed from CA Mode.', confirmLabel: 'Delete statement', danger: true }),
     privateMode: Object.freeze({ title: 'Switch to private mode?', body: 'Private mode deletes the chats and portfolio snapshots saved for this profile.', confirmLabel: 'Switch to private mode', danger: true }),
     newRecoveryCode: Object.freeze({ title: 'Create a new recovery code?', body: 'Your current recovery code will stop working.', confirmLabel: 'Create new code', danger: false }),
     clearHistory: Object.freeze({ title: 'Delete chats and snapshots?', body: 'Your profile and broker connections are kept.', confirmLabel: 'Delete history', danger: true }),
