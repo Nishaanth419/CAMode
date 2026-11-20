@@ -1414,7 +1414,8 @@ body:not(.route-chat) #right-rail { display: none; }
 
 /* Page changes: the body cross-fades and rises 8px; the sidebar and top bar never move. */
 #page-view, #chat-scroll { view-transition-name: page-body; }
-::view-transition-group(page-body) { animation-duration: var(--dur-fade); }
+/* Only opacity and transform animate: the group's default width/height morph is off. */
+::view-transition-group(page-body) { animation: none; }
 ::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
 ::view-transition-old(page-body) { animation: page-out var(--dur-fade) var(--ease) both; }
 ::view-transition-new(page-body) { animation: page-in var(--dur-fade) var(--ease) both; }
@@ -1432,7 +1433,7 @@ body:not(.route-chat) #right-rail { display: none; }
   /* Opacity only: no movement for anyone who asked for less of it. */
   @keyframes rise-in { from { opacity: 0; } to { opacity: 1; } }
   @keyframes page-in { from { opacity: 0; } to { opacity: 1; } }
-  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation-duration: 200ms !important; }
+  ::view-transition-old(*), ::view-transition-new(*) { animation-duration: 200ms !important; }
   @keyframes typing-bounce { 0%, 80%, 100% { opacity: .4; } 40% { opacity: 1; } }
   @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
   button:active:not(:disabled), .button:active { transform: none; }

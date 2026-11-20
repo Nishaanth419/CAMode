@@ -264,6 +264,10 @@ function navigate(route, sub = '') {
 }
 
 let routeRendered = false;
+let routeToken = 0;
+// Resolves once the latest route's page is showing and its post-swap work has run (already resolved when the
+// change was not animated). Callers that navigate() and then need the new page visible (focus) wait on it.
+let routeSwapped = Promise.resolve();
 function renderRoute() {
   const { route, sub } = parseHash();
   const isChat = route === 'chat';
@@ -272,8 +276,8 @@ function renderRoute() {
   routeRendered = true;
   currentRoute = route;
   currentSub = sub;
-  // Showing and hiding the two bodies is the only part a view transition animates. With a transition it runs a
-  // frame later, so what must follow it (scroll positions) lives inside it, and nothing outside depends on it.
+  const token = ++routeToken;
+  // Showing and hiding the two bodies is what a view transition animates; with one it runs a frame later.
   const swap = () => {
     chatHead.hidden = !isChat;
     chatScroll.hidden = !isChat;
@@ -281,11 +285,19 @@ function renderRoute() {
     pageView.hidden = isChat;
     document.body.classList.toggle('route-chat', isChat);
     pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
-    if (isChat) scrollToBottom();
-    else if (changed) pageView.scrollTop = 0;
   };
-  if (animate) withViewTransition(document, swap).catch((error) => console.warn('Page change failed:', error));
-  else swap();
+  // Everything that needs the new page visible (scrolling, sizing charts, the rail) runs after the swap, and only
+  // for the latest route: a later navigation supersedes it.
+  const after = () => {
+    if (token !== routeToken) return;
+    document.dispatchEvent(new CustomEvent('ca:route', { detail: { route } }));
+    if (isChat) {
+      scrollToBottom();
+      return;
+    }
+    if (changed) pageView.scrollTop = 0;
+    renderPage(route).catch((error) => console.warn('Page failed to render:', error));
+  };
   updateRouteMeta(route, sub);
   countPageView(route);
   document.querySelectorAll('#sidebar [data-route], #tabbar [data-route]').forEach((link) => {
@@ -295,9 +307,13 @@ function renderRoute() {
   // Pages without their own tab live behind More.
   document.getElementById('menu-toggle').classList.toggle('is-active', !document.querySelector(`#tabbar [data-route="${route}"]`));
   setSidebarOpen(false);
-  document.dispatchEvent(new CustomEvent('ca:route', { detail: { route } }));
-  if (isChat) return;
-  renderPage(route).catch((error) => console.warn('Page failed to render:', error));
+  if (animate) {
+    routeSwapped = withViewTransition(document, swap).then(after, (error) => console.warn('Page change failed:', error));
+  } else {
+    swap();
+    after();
+    routeSwapped = Promise.resolve();
+  }
 }
 
 async function renderPage(route) {

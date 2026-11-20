@@ -1678,7 +1678,8 @@ async function startNewChat() {
   activeChatId = null;
   resetConversationView();
   renderChats();
-  userInput.focus();
+  // The composer is hidden until a page change to Ask AI has been applied.
+  (typeof routeSwapped === 'undefined' ? Promise.resolve() : routeSwapped).then(() => userInput.focus());
 }
 
 async function createChat() {

@@ -315,3 +315,18 @@ test('page changes use a view transition when the browser has one', async () => 
   assert.deepEqual(plain, ['swap']);
   await assert.rejects(ui.withViewTransition({}, () => { throw new Error('boom'); }), /boom/);
 });
+
+test('a failing update rejects with a transition, and a throwing startViewTransition falls back to a direct update', async () => {
+  const failing = { startViewTransition(cb) { const done = Promise.resolve().then(cb); return { updateCallbackDone: done, finished: done.catch(() => {}) }; } };
+  await assert.rejects(ui.withViewTransition(failing, () => { throw new Error('boom'); }), /boom/);
+  const ran = [];
+  await ui.withViewTransition({ startViewTransition() { throw new Error('in progress'); } }, () => ran.push('swap'));
+  assert.deepEqual(ran, ['swap']);
+});
+
+test('an update still runs once when the browser never gets to the transition', async () => {
+  let runs = 0;
+  const stuck = { startViewTransition() { return { ready: Promise.resolve(), finished: Promise.resolve(), updateCallbackDone: new Promise(() => {}) }; } };
+  await ui.withViewTransition(stuck, () => { runs += 1; });
+  assert.equal(runs, 1);
+});

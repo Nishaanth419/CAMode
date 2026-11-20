@@ -284,6 +284,7 @@
     return Array.from({ length: count }, (_, i) => Math.min(i * step, max));
   }
 
+  const VIEW_TRANSITION_PATIENCE_MS = 400;
   // Runs a DOM update inside a view transition when the browser has one. The update always runs, and an error
   // from it rejects; a transition that is skipped or aborted never does.
   async function withViewTransition(doc, update) {
@@ -291,15 +292,29 @@
       await update();
       return;
     }
+    // The browser runs the update at its next rendering opportunity; if it never comes (a page that is not
+    // being painted), a timer runs it instead. It only ever runs once, and its error rejects `ran`.
+    let started = null;
+    let run;
+    const ran = new Promise((resolve, reject) => {
+      run = () => { started = started || Promise.resolve().then(update).then(resolve, reject); return started; };
+    });
     let transition;
     try {
-      transition = doc.startViewTransition(update);
+      transition = doc.startViewTransition(run);
     } catch {
-      await update();
+      run();
+      await ran;
       return;
     }
+    transition.ready?.catch(() => {});
     transition.finished?.catch(() => {});
-    await transition.updateCallbackDone;
+    const timer = setTimeout(run, VIEW_TRANSITION_PATIENCE_MS);
+    try {
+      await ran;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   const api = {
