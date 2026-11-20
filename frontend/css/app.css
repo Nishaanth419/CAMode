@@ -222,7 +222,7 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   transition: grid-template-columns var(--dur-move) var(--ease);
 }
 /* Cmd/Ctrl+B or the toggle closes the sidebar to its icons (shell.js); only its column animates. */
-body.sidebar-closed { --sidebar-w: 64px; }
+html.sidebar-closed { --sidebar-w: 64px; }
 /* No slide on load: shell.js adds .shell-ready two frames after it applies the starting state. */
 body:not(.shell-ready) #app { transition: none; }
 
@@ -420,19 +420,19 @@ body:not(.shell-ready) #app { transition: none; }
 #sidebar-scrim { display: none; }
 
 /* Closed: icons only, each name a tooltip on hover and keyboard focus. The phone drawer undoes all of this. */
-body.sidebar-closed #sidebar { overflow: visible; }
-body.sidebar-closed #sidebar .brand,
-body.sidebar-closed #sidebar .sidebar-section-head,
-body.sidebar-closed #sidebar #chat-list,
-body.sidebar-closed #sidebar .search-kbd { display: none; }
-body.sidebar-closed #sidebar .sidebar-head { justify-content: center; }
-body.sidebar-closed #sidebar .nav-label { width: 0; opacity: 0; }
-body.sidebar-closed #sidebar .account-copy { width: 0; flex: 0 0 0; opacity: 0; overflow: hidden; }
-body.sidebar-closed #sidebar .nav-item,
-body.sidebar-closed #sidebar .command-open,
-body.sidebar-closed #sidebar .account-trigger { gap: 0; }
-body.sidebar-closed #sidebar .nav-item:hover .nav-label,
-body.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
+html.sidebar-closed #sidebar { overflow: visible; }
+html.sidebar-closed #sidebar .brand,
+html.sidebar-closed #sidebar .sidebar-section-head,
+html.sidebar-closed #sidebar #chat-list,
+html.sidebar-closed #sidebar .search-kbd { display: none; }
+html.sidebar-closed #sidebar .sidebar-head { justify-content: center; }
+html.sidebar-closed #sidebar .nav-label { width: 0; opacity: 0; }
+html.sidebar-closed #sidebar .account-copy { width: 0; flex: 0 0 0; opacity: 0; overflow: hidden; }
+html.sidebar-closed #sidebar .nav-item,
+html.sidebar-closed #sidebar .command-open,
+html.sidebar-closed #sidebar .account-trigger { gap: 0; }
+html.sidebar-closed #sidebar .nav-item:hover .nav-label,
+html.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
   position: absolute;
   top: 50%;
   left: calc(100% + 12px);
@@ -1231,19 +1231,19 @@ body:not(.route-chat) #right-rail { display: none; }
   #sidebar-scrim[hidden] { display: none !important; }
   .chat-delete { opacity: 1; }
   /* The drawer is always the open sidebar, whatever the desktop choice; it has no toggle of its own. */
-  body.sidebar-closed { --sidebar-w: 248px; }
-  body.sidebar-closed #sidebar { overflow-x: hidden; overflow-y: auto; }
-  body.sidebar-closed #sidebar .brand,
-  body.sidebar-closed #sidebar .sidebar-section-head { display: flex; }
-  body.sidebar-closed #sidebar #chat-list { display: block; }
-  body.sidebar-closed #sidebar .sidebar-head { justify-content: space-between; }
-  body.sidebar-closed #sidebar .nav-label { width: auto; opacity: 1; }
-  body.sidebar-closed #sidebar .account-copy { width: auto; flex: 1; opacity: 1; }
-  body.sidebar-closed #sidebar .nav-item,
-  body.sidebar-closed #sidebar .command-open { gap: 12px; }
-  body.sidebar-closed #sidebar .account-trigger { gap: 10px; }
-  body.sidebar-closed #sidebar .nav-item:hover .nav-label,
-  body.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
+  html.sidebar-closed { --sidebar-w: 248px; }
+  html.sidebar-closed #sidebar { overflow-x: hidden; overflow-y: auto; }
+  html.sidebar-closed #sidebar .brand,
+  html.sidebar-closed #sidebar .sidebar-section-head { display: flex; }
+  html.sidebar-closed #sidebar #chat-list { display: block; }
+  html.sidebar-closed #sidebar .sidebar-head { justify-content: space-between; }
+  html.sidebar-closed #sidebar .nav-label { width: auto; opacity: 1; }
+  html.sidebar-closed #sidebar .account-copy { width: auto; flex: 1; opacity: 1; }
+  html.sidebar-closed #sidebar .nav-item,
+  html.sidebar-closed #sidebar .command-open { gap: 12px; }
+  html.sidebar-closed #sidebar .account-trigger { gap: 10px; }
+  html.sidebar-closed #sidebar .nav-item:hover .nav-label,
+  html.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
     position: static;
     padding: 0;
     border-radius: 0;

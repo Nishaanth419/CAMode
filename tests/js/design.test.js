@@ -248,7 +248,7 @@ test.after(() => { if (process.env.SHOW_CONTRAST) console.log(CONTRAST_ROWS.join
 test('the sidebar opens at 248px and closes to 64px, animating only its column', () => {
   const css = readCss();
   assert.match(css, /--sidebar-w:\s*248px/);
-  assert.match(css, /body\.sidebar-closed\s*\{[^}]*--sidebar-w:\s*64px/);
+  assert.match(css, /html\.sidebar-closed\s*\{[^}]*--sidebar-w:\s*64px/);
   assert.match(css, /#app\s*\{[^}]*transition:\s*grid-template-columns var\(--dur-move\) var\(--ease\)/);
   assert.match(css, /body:not\(\.shell-ready\) #app\s*\{\s*transition:\s*none;?\s*\}/);
   assert.match(readJs('shell.js'), /classList\.add\('shell-ready'\)/);
@@ -272,5 +272,16 @@ test('the sidebar keeps its hooks and drops the group labels and the top bar sea
 test('closed-sidebar rules are desktop only; the phone drawer always shows the open sidebar', () => {
   const css = readCss();
   const phone = css.slice(css.indexOf('@media (max-width: 900px)'));
-  assert.match(phone.slice(0, phone.indexOf('\n}\n')), /body\.sidebar-closed #sidebar/);
+  assert.match(phone.slice(0, phone.indexOf('\n}\n')), /html\.sidebar-closed #sidebar/);
+});
+test('boot.js runs in <head> before paint and the closed state lives on the root element', () => {
+  const html = readHtml();
+  const head = html.slice(0, html.indexOf('</head>'));
+  const tag = /<script src="\/js\/boot\.js\?v=\d+"([^>]*)><\/script>/.exec(head);
+  assert.ok(tag, 'boot.js is not in <head>');
+  assert.doesNotMatch(tag[1], /defer|async|type="module"/);
+  assert.ok(head.indexOf('/css/app.css') < head.indexOf('/js/boot.js'));
+  assert.doesNotMatch(readCss(), /body\.sidebar-closed/);
+  assert.match(readJs('shell.js'), /document\.documentElement\.classList\.toggle\('sidebar-closed'/);
+  assert.match(fs.readFileSync(path.join(FRONTEND, 'sw.js'), 'utf8'), /APP_SHELL = \[[^\]]*'\/js\/boot\.js'/);
 });

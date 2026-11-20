@@ -247,3 +247,20 @@ test('Cmd/Ctrl+K opens the command menu and Cmd/Ctrl+B toggles the sidebar', () 
   assert.equal(ui.shortcutLabel('MacIntel'), '⌘K');
   assert.equal(ui.shortcutLabel('Win32'), 'Ctrl K');
 });
+
+test('boot.js applies the same starting state as initialSidebarState before the first paint', () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'js', 'boot.js'), 'utf8');
+  const cases = [[null, 1440], ['open', 1440], ['closed', 1440], ['sideways', 1440], [null, 1281], [null, 1280], ['open', 1100], ['closed', 800], ['throws', 1440]];
+  for (const [stored, width] of cases) {
+    const classes = new Set();
+    const localStorage = { getItem: () => { if (stored === 'throws') throw new Error('denied'); return stored; } };
+    const window = { innerWidth: width, get localStorage() { return localStorage; } };
+    const document = { documentElement: { classList: { add: (name) => classes.add(name) } } };
+    vm.runInNewContext(source, { window, document });
+    const expected = ui.initialSidebarState({ stored: stored === 'throws' ? null : ui.readSidebarState(localStorage), width });
+    assert.equal(classes.has('sidebar-closed'), expected === 'closed', `${stored} at ${width}px`);
+  }
+});

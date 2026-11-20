@@ -15,7 +15,7 @@ function sidebarStorage() {
 }
 
 function setSidebarCollapsed(collapsed, { save = true } = {}) {
-  document.body.classList.toggle('sidebar-closed', collapsed);
+  document.documentElement.classList.toggle('sidebar-closed', collapsed);
   const label = collapsed ? 'Open sidebar' : 'Close sidebar';
   sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
   sidebarToggle.setAttribute('aria-label', label);
@@ -34,7 +34,7 @@ setSidebarCollapsed(
 );
 // Turn the column animation on only after the starting state has painted, so a load never slides the sidebar shut.
 requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add('shell-ready')));
-sidebarToggle.addEventListener('click', () => setSidebarCollapsed(!document.body.classList.contains('sidebar-closed')));
+sidebarToggle.addEventListener('click', () => setSidebarCollapsed(!document.documentElement.classList.contains('sidebar-closed')));
 commandOpen.addEventListener('click', openCommand);
 commandOpenPhone.addEventListener('click', openCommand);
 document.getElementById('search-kbd').textContent = shortcutLabel(navigator.platform || navigator.userAgent);
@@ -48,5 +48,5 @@ document.addEventListener('keydown', (event) => {
   if (!shortcut) return;
   event.preventDefault();
   if (shortcut === 'command') openCommand();
-  else setSidebarCollapsed(!document.body.classList.contains('sidebar-closed'));
+  else setSidebarCollapsed(!document.documentElement.classList.contains('sidebar-closed'));
 });
