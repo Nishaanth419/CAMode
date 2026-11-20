@@ -503,6 +503,16 @@ test('renderHome claims the entrance once and never animates a figure in script'
   assert.match(js, /history-area-in/);
 });
 
+test('Home KPI placeholders stay hidden while loading, so nothing flashes before the entrance', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '#home-stats.is-loading'), /visibility:\s*hidden/);
+  const js = readJs('pages.js');
+  const start = js.indexOf('async function renderHome()');
+  const body = js.slice(start, js.indexOf('\nfunction homeKpis', start));
+  assert.match(body, /classList\.add\('is-loading'\)/);
+  assert.match(body, /classList\.remove\('is-loading'\)/);
+});
+
 test('Holdings: sliding tab underline, table on the surface, sticky header', () => {
   const css = readCss();
   assert.match(ruleBody(css, '.source-tabs'), /position:\s*relative/);

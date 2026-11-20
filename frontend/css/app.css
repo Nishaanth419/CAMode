@@ -1351,6 +1351,7 @@ body:not(.route-chat) #right-rail { display: none; }
 @keyframes line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes area-in { from { opacity: 0; } to { opacity: 1; } }
 [data-entrance="play"] #home-networth-value { animation: entrance-in var(--dur-move) var(--ease) both; }
+#home-stats.is-loading { visibility: hidden; }
 [data-entrance="play"] #home-stats { animation: entrance-in var(--dur-fade) var(--ease) 650ms both; }
 [data-entrance="play"] .history-line-draw { stroke-dasharray: 1; animation: line-draw 900ms var(--ease) 150ms both; }
 [data-entrance="play"] .history-area-in { animation: area-in 700ms var(--ease) both; }

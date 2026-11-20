@@ -455,6 +455,7 @@ async function renderHome() {
     return;
   }
   stats.hidden = false;
+  stats.classList.add('is-loading');
   stats.innerHTML = ['Invested', 'Returns', "Today's change", 'Liabilities'].map((label) => kpiCard(label, '…')).join('');
   setHtml(chart, loadingBlock());
   parts.forEach((part) => { part.innerHTML = loadingBlock(); });
@@ -495,6 +496,7 @@ async function renderHome() {
     : '<p class="page-muted home-chart-empty">The trend appears after a second daily snapshot.</p>');
   if (play && points.length > 1) drawHistoryLine(chart);
   stats.innerHTML = homeKpis(figures, portfolio.holdings || []);
+  stats.classList.remove('is-loading');
   parts[0].innerHTML = allocationCard(figures.by_asset_type || []);
   parts[1].innerHTML = topHoldingsList(figures.top_holdings || []);
   parts[2].innerHTML = insightList(portfolio);
