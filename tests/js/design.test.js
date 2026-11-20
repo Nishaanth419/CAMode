@@ -320,3 +320,10 @@ test('the phone tab bar marks the current tab with an accent bar and the drawer 
   const reduce = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
   assert.match(reduce, /#sidebar[^{]*\{[^}]*transform:\s*none/);
 });
+
+test('the page body cross-fades and rises 8px; the sidebar never moves', () => {
+  const css = readCss();
+  assert.match(css, /#page-view,\s*#chat-scroll\s*\{[^}]*view-transition-name:\s*page-body/);
+  assert.match(css, /::view-transition-new\(page-body\)\s*\{[^}]*animation:[^;]*var\(--dur-fade\) var\(--ease\)/);
+  assert.match(css, /::view-transition-old\(root\),\s*::view-transition-new\(root\)\s*\{[^}]*animation:\s*none/);
+});

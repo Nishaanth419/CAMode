@@ -263,18 +263,29 @@ function navigate(route, sub = '') {
   renderRoute();
 }
 
+let routeRendered = false;
 function renderRoute() {
   const { route, sub } = parseHash();
   const isChat = route === 'chat';
   const changed = route !== currentRoute;
+  const animate = changed && routeRendered;
+  routeRendered = true;
   currentRoute = route;
   currentSub = sub;
-  chatHead.hidden = !isChat;
-  chatScroll.hidden = !isChat;
-  inputArea.hidden = !isChat;
-  pageView.hidden = isChat;
-  document.body.classList.toggle('route-chat', isChat);
-  pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
+  // Showing and hiding the two bodies is the only part a view transition animates. With a transition it runs a
+  // frame later, so what must follow it (scroll positions) lives inside it, and nothing outside depends on it.
+  const swap = () => {
+    chatHead.hidden = !isChat;
+    chatScroll.hidden = !isChat;
+    inputArea.hidden = !isChat;
+    pageView.hidden = isChat;
+    document.body.classList.toggle('route-chat', isChat);
+    pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
+    if (isChat) scrollToBottom();
+    else if (changed) pageView.scrollTop = 0;
+  };
+  if (animate) withViewTransition(document, swap).catch((error) => console.warn('Page change failed:', error));
+  else swap();
   updateRouteMeta(route, sub);
   countPageView(route);
   document.querySelectorAll('#sidebar [data-route], #tabbar [data-route]').forEach((link) => {
@@ -285,11 +296,7 @@ function renderRoute() {
   document.getElementById('menu-toggle').classList.toggle('is-active', !document.querySelector(`#tabbar [data-route="${route}"]`));
   setSidebarOpen(false);
   document.dispatchEvent(new CustomEvent('ca:route', { detail: { route } }));
-  if (isChat) {
-    scrollToBottom();
-    return;
-  }
-  if (changed) pageView.scrollTop = 0;
+  if (isChat) return;
   renderPage(route).catch((error) => console.warn('Page failed to render:', error));
 }
 

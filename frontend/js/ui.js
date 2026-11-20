@@ -284,8 +284,26 @@
     return Array.from({ length: count }, (_, i) => Math.min(i * step, max));
   }
 
+  // Runs a DOM update inside a view transition when the browser has one. The update always runs, and an error
+  // from it rejects; a transition that is skipped or aborted never does.
+  async function withViewTransition(doc, update) {
+    if (typeof doc?.startViewTransition !== 'function') {
+      await update();
+      return;
+    }
+    let transition;
+    try {
+      transition = doc.startViewTransition(update);
+    } catch {
+      await update();
+      return;
+    }
+    transition.finished?.catch(() => {});
+    await transition.updateCallbackDone;
+  }
+
   const api = {
-    CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
     commandResults, moveActive, commandWaitsForAnswer, staggerDelays,

@@ -304,3 +304,14 @@ test('drawer items arrive 60ms apart, the last within 360ms', () => {
   assert.equal(ui.staggerDelays(20).at(-1), 360);
   assert.deepEqual(ui.staggerDelays(0), []);
 });
+
+test('page changes use a view transition when the browser has one', async () => {
+  const calls = [];
+  const doc = { startViewTransition(cb) { calls.push('vt'); const done = Promise.resolve().then(cb); return { updateCallbackDone: done, finished: done }; } };
+  await ui.withViewTransition(doc, () => calls.push('swap'));
+  assert.deepEqual(calls, ['vt', 'swap']);
+  const plain = [];
+  await ui.withViewTransition({}, () => plain.push('swap'));
+  assert.deepEqual(plain, ['swap']);
+  await assert.rejects(ui.withViewTransition({}, () => { throw new Error('boom'); }), /boom/);
+});
