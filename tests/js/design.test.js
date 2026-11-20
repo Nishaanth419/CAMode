@@ -327,3 +327,11 @@ test('the page body cross-fades and rises 8px; the sidebar never moves', () => {
   assert.match(css, /::view-transition-new\(page-body\)\s*\{[^}]*animation:[^;]*var\(--dur-fade\) var\(--ease\)/);
   assert.match(css, /::view-transition-old\(root\),\s*::view-transition-new\(root\)\s*\{[^}]*animation:\s*none/);
 });
+
+test('the sign-in gate is one column on the canvas, not a card', () => {
+  const css = readCss();
+  const card = /\.gate-card\s*\{([^}]*)\}/.exec(css)[1];
+  assert.doesNotMatch(card, /border:\s*1px|box-shadow|background:\s*var\(--surface\)/);
+  assert.match(card, /width:\s*min\(400px, 100%\)/);
+  assert.match(/\.profile-gate\s*\{([^}]*)\}/.exec(css)[1], /background:\s*var\(--canvas\)/);
+});

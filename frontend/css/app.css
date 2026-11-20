@@ -1588,17 +1588,12 @@ body.gate-open #app { visibility: hidden; }
   background: var(--canvas);
 }
 .gate-card {
-  width: min(440px, 100%);
-  padding: 32px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-md);
+  width: min(400px, 100%);
+  padding: 0;
   text-align: center;
 }
-/* Borders, not shadows, in dark mode. */
-:root[data-theme="dark"] .gate-card { box-shadow: none; }
-.gate-logo { display: inline-grid; width: 44px; height: 44px; margin-bottom: 16px; border-radius: 12px; }
+.gate-logo { display: inline-grid; width: 44px; height: 44px; margin-bottom: 8px; border-radius: 12px; }
+.gate-brand { margin: 0 0 20px; color: var(--text); font-size: 16px; font-weight: 600; line-height: 24px; }
 .gate-logo svg { width: 26px; height: 26px; }
 .gate-title { color: var(--text); font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 32px; }
 .gate-sub { margin: 8px 0 24px; color: var(--text-soft); font-size: 14px; line-height: 20px; }
@@ -1847,7 +1842,6 @@ body.gate-open #app { visibility: hidden; }
 .data-actions .field { flex: 1 1 100%; }
 
 @media (max-width: 560px) {
-  .gate-card { padding: 26px 18px; }
   .data-actions { flex-direction: column; align-items: stretch; }
   .data-actions .field { flex-basis: auto; }
   .field-grid { grid-template-columns: 1fr; }
@@ -2903,7 +2897,6 @@ body.gate-open #app { visibility: hidden; }
   .download-actions .gate-secondary { flex: 1 1 100%; }
   .not-found { padding: 28px 18px; }
   .not-found-code { font-size: 36px; }
-  .gate-card { padding: 24px 18px; }
   /* The quieter header action keeps its own width so the primary one fits on one line. */
   .page-head .page-actions > #activity-refresh, .page-head .page-actions > #print-report { flex: 0 0 auto; }
 }
