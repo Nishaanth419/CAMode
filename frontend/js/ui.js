@@ -196,9 +196,53 @@
     return { title: fill(entry.title), body: fill(entry.body), confirmLabel: entry.confirmLabel, cancelLabel: 'Cancel', danger: entry.danger };
   }
 
+  // The desktop sidebar's open or closed choice, kept per browser. Storage can be missing or throw (private
+  // windows, blocked site data): reads then give null and writes report false, and the app works without it.
+  const SIDEBAR_KEY = 'ca-mode-sidebar';
+  const SIDEBAR_STATES = ['open', 'closed'];
+
+  function readSidebarState(storage) {
+    try {
+      const value = storage ? storage.getItem(SIDEBAR_KEY) : null;
+      return SIDEBAR_STATES.includes(value) ? value : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveSidebarState(storage, state) {
+    try {
+      storage.setItem(SIDEBAR_KEY, state);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Up to 1280px the sidebar starts closed whatever was saved; wider, it follows the saved choice (open by default).
+  function initialSidebarState({ stored, width }) {
+    if (width <= 1280) return 'closed';
+    return stored === 'closed' ? 'closed' : 'open';
+  }
+
+  // Cmd (Ctrl elsewhere) + K opens the command menu and + B toggles the sidebar, never over a sign-in screen or dialog.
+  function shortcutFor(event, { gateOpen, dialogOpen }) {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return null;
+    if (gateOpen || dialogOpen) return null;
+    const key = String(event.key || '').toLowerCase();
+    if (key === 'k') return 'command';
+    if (key === 'b') return 'sidebar';
+    return null;
+  }
+
+  function shortcutLabel(platform) {
+    return /Mac|iPhone|iPad/.test(platform || '') ? '⌘K' : 'Ctrl K';
+  }
+
   const api = {
     CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
+    SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

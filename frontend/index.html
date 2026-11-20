@@ -28,96 +28,105 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=63" />
+  <link rel="stylesheet" href="/css/app.css?v=64" />
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
-  <script src="/js/demo.js?v=4" defer></script>
-  <script src="/js/finance.js?v=17" defer></script>
-  <script src="/js/trace.js?v=16" defer></script>
-  <script src="/js/ui.js?v=4" defer></script>
-  <script src="/js/app.js?v=55" defer></script>
-  <script src="/js/pages.js?v=39" defer></script>
-  <script src="/js/rail.js?v=10" defer></script>
+  <script src="/js/demo.js?v=5" defer></script>
+  <script src="/js/finance.js?v=18" defer></script>
+  <script src="/js/trace.js?v=17" defer></script>
+  <script src="/js/ui.js?v=5" defer></script>
+  <script src="/js/app.js?v=56" defer></script>
+  <script src="/js/pages.js?v=40" defer></script>
+  <script src="/js/shell.js?v=1" defer></script>
+  <script src="/js/rail.js?v=11" defer></script>
 </head>
 <body>
   <div id="app">
     <!-- ── Left sidebar ─────────────────────────────────────────────── -->
     <aside id="sidebar" aria-label="Navigation and chat history">
-      <a class="brand" href="/" aria-label="CA Mode home">
-        <span class="logo-mark" aria-hidden="true">
-          <svg viewBox="0 0 28 28" fill="none">
-            <path d="M14 23V13" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-            <path d="M14 14c0-4 2.6-6.8 7-7-.1 4.4-3 7-7 7Z" fill="currentColor"/>
-            <path d="M14 16c0-3.4-2.3-5.8-6-6 .1 3.7 2.6 6 6 6Z" fill="currentColor" opacity=".75"/>
-          </svg>
-        </span>
-        <span class="brand-copy">
-          <span class="logo-text">CA Mode</span>
-        </span>
-      </a>
+      <div class="sidebar-head">
+        <a class="brand" href="/" aria-label="CA Mode home">
+          <span class="logo-mark" aria-hidden="true">
+            <svg viewBox="0 0 28 28" fill="none">
+              <path d="M14 23V13" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+              <path d="M14 14c0-4 2.6-6.8 7-7-.1 4.4-3 7-7 7Z" fill="currentColor"/>
+              <path d="M14 16c0-3.4-2.3-5.8-6-6 .1 3.7 2.6 6 6 6Z" fill="currentColor" opacity=".75"/>
+            </svg>
+          </span>
+          <span class="brand-copy">
+            <span class="logo-text">CA Mode</span>
+          </span>
+        </a>
+        <button id="sidebar-toggle" class="icon-button sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar" aria-label="Close sidebar" title="Close sidebar">
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-sidebar-simple"></use></svg>
+        </button>
+      </div>
+
+      <button id="command-open" class="command-open" type="button" aria-label="Search or ask" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">
+        <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
+        <span class="nav-label">Search or ask</span>
+        <kbd id="search-kbd" class="search-kbd nav-label">Ctrl K</kbd>
+      </button>
 
       <nav class="main-nav" aria-label="Main">
-        <div class="nav-group" role="group" aria-labelledby="nav-overview">
-          <p class="nav-group-label" id="nav-overview">Overview</p>
+        <div class="nav-group">
           <a class="nav-item" href="#/" data-route="home">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-house"></use></svg>
-            <span>Home</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-house"></use></svg>
+            <span class="nav-label">Home</span>
           </a>
           <a class="nav-item" href="#/portfolio" data-route="portfolio">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-chart-pie-slice"></use></svg>
-            <span>Portfolio</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chart-pie-slice"></use></svg>
+            <span class="nav-label">Portfolio</span>
           </a>
           <a class="nav-item" href="#/holdings" data-route="holdings">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-stack"></use></svg>
-            <span>Holdings</span>
-          </a>
-          <a class="nav-item" href="#/returns" data-route="returns">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-chart-line-up"></use></svg>
-            <span>Returns &amp; tax</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-stack"></use></svg>
+            <span class="nav-label">Holdings</span>
           </a>
         </div>
-        <div class="nav-group" role="group" aria-labelledby="nav-assistant">
-          <p class="nav-group-label" id="nav-assistant">Assistant</p>
+        <div class="nav-group">
           <a class="nav-item" href="#/chat" data-route="chat">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-chat-circle"></use></svg>
-            <span>Ask AI</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chat-circle"></use></svg>
+            <span class="nav-label">Ask AI</span>
           </a>
           <a class="nav-item" href="#/activity" data-route="activity">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-pulse"></use></svg>
-            <span>Activity</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-pulse"></use></svg>
+            <span class="nav-label">Activity</span>
+          </a>
+          <a class="nav-item" href="#/chats" data-route="chats">
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chats"></use></svg>
+            <span class="nav-label">All chats</span>
           </a>
         </div>
-        <div class="nav-group" role="group" aria-labelledby="nav-plan">
-          <p class="nav-group-label" id="nav-plan">Plan</p>
+        <div class="nav-group">
           <a class="nav-item" href="#/goals" data-route="goals">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-target"></use></svg>
-            <span>Goals</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-target"></use></svg>
+            <span class="nav-label">Goals</span>
+          </a>
+          <a class="nav-item" href="#/returns" data-route="returns">
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chart-line-up"></use></svg>
+            <span class="nav-label">Returns &amp; tax</span>
           </a>
           <a class="nav-item" href="#/planning" data-route="planning">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-calculator"></use></svg>
-            <span>Calculators</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-calculator"></use></svg>
+            <span class="nav-label">Calculators</span>
           </a>
         </div>
-        <div class="nav-group" role="group" aria-labelledby="nav-explore">
-          <p class="nav-group-label" id="nav-explore">Explore</p>
+        <div class="nav-group">
           <a class="nav-item" href="#/markets" data-route="markets">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-trend-up"></use></svg>
-            <span>Markets</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-trend-up"></use></svg>
+            <span class="nav-label">Markets</span>
           </a>
           <a class="nav-item" href="#/reports" data-route="reports">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-file-text"></use></svg>
-            <span>Reports</span>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-file-text"></use></svg>
+            <span class="nav-label">Reports</span>
           </a>
         </div>
       </nav>
 
       <div class="sidebar-section-head">
-        <span>Recent chats</span>
-        <span class="section-actions">
-          <a class="see-all" href="#/chats" data-route="chats">See all</a>
-          <button id="new-chat-button" class="new-chat-button" type="button" aria-label="New chat" title="New chat">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-plus"></use></svg>
-          </button>
-        </span>
+        <span class="nav-label">Recent chats</span>
+        <button id="new-chat-button" class="new-chat-button" type="button" aria-label="New chat" title="New chat">
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-plus"></use></svg>
+        </button>
       </div>
       <div id="chat-list"></div>
 
@@ -127,9 +136,6 @@
           <span class="account-copy">
             <strong id="account-name">Guest</strong>
             <small id="account-plan">Not connected</small>
-          </span>
-          <span class="account-gear" aria-hidden="true">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-gear"></use></svg>
           </span>
         </button>
       </div>
@@ -149,18 +155,8 @@
           </span>
           <span>CA Mode</span>
         </a>
-        <label class="search-box" title="Search your conversations">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-magnifying-glass"></use></svg>
-          <input id="chat-search" type="search" placeholder="Search your conversations" aria-label="Search your conversations" aria-keyshortcuts="Meta+K Control+K" autocomplete="off" />
-          <kbd class="search-kbd" id="search-kbd" aria-hidden="true">Ctrl K</kbd>
-        </label>
-        <div class="topbar-spacer"></div>
-        <div id="status-badge" aria-live="polite">
-          <span id="status-dot" class="status-dot"></span>
-          <span id="status-text">Connecting…</span>
-        </div>
-        <button id="theme-toggle" class="icon-button" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
-          <svg class="icon" aria-hidden="true" id="theme-toggle-icon"><use href="/icons.svg?v=1#ph-moon"></use></svg>
+        <button id="command-open-phone" class="icon-button" type="button" aria-label="Search or ask" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
         </button>
         <button id="topbar-account" class="topbar-account" type="button" aria-label="Profile and settings" aria-haspopup="dialog">
           <span class="account-avatar" aria-hidden="true"></span>
@@ -169,7 +165,7 @@
 
       <header id="chat-head" class="chat-head">
         <button id="chat-back" class="icon-button chat-back" type="button" aria-label="Back">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-caret-left"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-caret-left"></use></svg>
         </button>
         <div class="chat-head-text">
           <h1 id="chat-title" class="chat-head-title">New chat</h1>
@@ -177,11 +173,11 @@
         </div>
         <div class="chat-head-actions">
           <button id="chat-delete" class="gate-secondary chat-head-button" type="button" aria-label="Delete chat" hidden>
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-trash"></use></svg>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-trash"></use></svg>
             <span>Delete chat</span>
           </button>
           <button id="chat-new" class="chat-head-button is-primary" type="button" aria-label="New chat" hidden>
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-plus"></use></svg>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-plus"></use></svg>
             <span>New chat</span>
           </button>
         </div>
@@ -221,22 +217,22 @@
 
           <div class="feature-cards" aria-label="Suggested questions">
             <button class="feature-card tone-green" type="button" data-agent="portfolio" data-prompt="Summarize my portfolio allocation by asset class.">
-              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-file-text"></use></svg></span>
+              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-file-text"></use></svg></span>
               <span class="feature-copy"><strong>Portfolio Analysis</strong><small>Review how your investments are allocated</small></span>
               <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
             <button class="feature-card tone-blue" type="button" data-agent="portfolio" data-prompt="Show my top holdings by current value and explain the largest concentration.">
-              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-chart-bar"></use></svg></span>
+              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chart-bar"></use></svg></span>
               <span class="feature-copy"><strong>Top Holdings</strong><small>Find your largest positions and exposure</small></span>
               <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
             <button class="feature-card tone-amber" type="button" data-agent="finance" data-prompt="How should I plan a long-term financial goal like buying a home? Walk me through the steps.">
-              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-target"></use></svg></span>
+              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-target"></use></svg></span>
               <span class="feature-copy"><strong>Goal Planning</strong><small>Plan for future goals step by step</small></span>
               <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
             <button class="feature-card tone-violet" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
-              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-percent"></use></svg></span>
+              <span class="feature-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-percent"></use></svg></span>
               <span class="feature-copy"><strong>Tax Optimization</strong><small>Learn about tax-saving opportunities</small></span>
               <span class="feature-arrow" aria-hidden="true">→</span>
             </button>
@@ -263,7 +259,7 @@
           </label>
           <span id="input-hint" class="composer-hint" title="Shift + Enter for a new line">Enter to send<span class="sr-only">, Shift + Enter for a new line</span></span>
           <button id="send-btn" type="button" title="Send message (Enter)" aria-label="Send message">
-            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-arrow-up"></use></svg>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-arrow-up"></use></svg>
           </button>
         </div>
       </div>
@@ -308,22 +304,22 @@
                 <div class="home-composer-foot">
                   <span id="home-ask-agent" class="home-composer-agent"></span>
                   <button type="submit" aria-label="Ask">
-                    <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-arrow-right"></use></svg>
+                    <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-arrow-right"></use></svg>
                   </button>
                 </div>
               </form>
               <ul class="prompt-rows" aria-label="Suggested questions">
                 <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Analyze my portfolio: allocation, concentration and how it has performed.">
-                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-chart-pie-slice"></use></svg></span>
+                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chart-pie-slice"></use></svg></span>
                   <span class="prompt-row-text">Analyze my portfolio</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
                 <li><button class="prompt-row js-goal-agent" type="button" data-agent="finance" data-prompt="Am I on track for my saved goals? Go through each one and say what would close any gap.">
-                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-target"></use></svg></span>
+                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-target"></use></svg></span>
                   <span class="prompt-row-text">Am I on track for my goals?</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
                 <li><button class="prompt-row js-goal-agent" type="button" data-agent="finance" data-prompt="Which kinds of funds suit my saved goals, given their horizon and my risk?">
-                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-trend-up"></use></svg></span>
+                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-trend-up"></use></svg></span>
                   <span class="prompt-row-text">Suggest funds for a goal</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
                 <li><button class="prompt-row" type="button" data-agent="finance" data-prompt="What are the common tax-saving options for salaried individuals in India?">
-                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-file-text"></use></svg></span>
+                  <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-file-text"></use></svg></span>
                   <span class="prompt-row-text">Tax saving ideas</span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
               </ul>
             </section>
@@ -467,16 +463,16 @@
             <div class="card-head"><h2 id="markets-live-title" class="card-title">Live questions</h2></div>
             <ul class="prompt-rows prompt-grid" aria-label="Live questions">
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices and today's change.">
-                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-eye"></use></svg></span>
+                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-eye"></use></svg></span>
                 <span class="prompt-row-text">Watchlist prices<small>Latest prices for stocks you track</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Which of my holdings moved the most today? Show the top gainers and losers.">
-                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-trend-up"></use></svg></span>
+                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-trend-up"></use></svg></span>
                 <span class="prompt-row-text">Today's movers<small>Live gainers and losers you hold</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="List my active SIPs across stocks and mutual funds with their monthly amounts and next dates.">
-                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-calendar-blank"></use></svg></span>
+                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-calendar-blank"></use></svg></span>
                 <span class="prompt-row-text">SIP calendar<small>Your active SIPs and amounts</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="How are my US stocks doing? Show their value in USD and INR.">
-                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-globe"></use></svg></span>
+                <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-globe"></use></svg></span>
                 <span class="prompt-row-text">US stocks<small>Your US holdings in USD and INR</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
             </ul>
           </section>
@@ -533,6 +529,10 @@
               <p class="page-sub" id="chats-summary"></p>
             </div>
             <div class="page-actions">
+              <label class="search-box" title="Search your conversations">
+                <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
+                <input id="chat-search" type="search" placeholder="Search your conversations" aria-label="Search your conversations" autocomplete="off" />
+              </label>
               <button class="rail-button page-cta" type="button" data-go="chat" data-new-chat>New chat</button>
             </div>
           </header>
@@ -569,11 +569,11 @@
 
     <!-- ── Bottom tab bar (below 900px; More opens the sidebar as a drawer) ── -->
     <nav id="tabbar" aria-label="Quick navigation">
-      <a class="tab" href="#/" data-route="home"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-house"></use></svg></span>Home</a>
-      <a class="tab" href="#/holdings" data-route="holdings"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-stack"></use></svg></span>Holdings</a>
-      <a class="tab tab-ask" href="#/chat" data-route="chat"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-chat-circle"></use></svg></span>Ask</a>
-      <a class="tab" href="#/goals" data-route="goals"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-target"></use></svg></span>Goals</a>
-      <button id="menu-toggle" class="tab" type="button" aria-controls="sidebar" aria-expanded="false"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-list"></use></svg></span>More</button>
+      <a class="tab" href="#/" data-route="home"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-house"></use></svg></span>Home</a>
+      <a class="tab" href="#/holdings" data-route="holdings"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-stack"></use></svg></span>Holdings</a>
+      <a class="tab tab-ask" href="#/chat" data-route="chat"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-chat-circle"></use></svg></span>Ask</a>
+      <a class="tab" href="#/goals" data-route="goals"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-target"></use></svg></span>Goals</a>
+      <button id="menu-toggle" class="tab" type="button" aria-controls="sidebar" aria-expanded="false"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-list"></use></svg></span>More</button>
     </nav>
   </div>
 
@@ -693,9 +693,22 @@
       <header class="dialog-head">
         <h2 id="profile-dialog-title">Your profile</h2>
         <button class="icon-button" type="button" value="cancel" data-close-dialog aria-label="Close">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-x"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-x"></use></svg>
         </button>
       </header>
+      <section class="dialog-section appearance-section" aria-labelledby="appearance-title">
+        <h3 id="appearance-title" class="dialog-section-title">Appearance and status</h3>
+        <div class="connection-row">
+          <div id="status-badge" aria-live="polite">
+            <span id="status-dot" class="status-dot"></span>
+            <span id="status-text">Connecting…</span>
+          </div>
+          <button id="theme-toggle" class="gate-secondary theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
+            <svg class="icon" aria-hidden="true" id="theme-toggle-icon"><use href="/icons.svg?v=2#ph-moon"></use></svg>
+            <span id="theme-toggle-label">Switch to dark mode</span>
+          </button>
+        </div>
+      </section>
       <section id="brokers-section" class="brokers-section" aria-labelledby="brokers-title" hidden>
         <h3 id="brokers-title" class="dialog-section-title">Brokers</h3>
         <p class="dialog-sub">Connect any broker you use. Read-only. You log in on the broker's own site; CA Mode never sees your password.</p>
@@ -784,7 +797,7 @@
       <header class="dialog-head">
         <h2 id="goal-dialog-title">New goal</h2>
         <button class="icon-button" type="button" data-close-goal aria-label="Close">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-x"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-x"></use></svg>
         </button>
       </header>
       <p class="dialog-sub">Only what you enter here is saved. Projections use the return you assume and are illustrations, not promised returns. You can save a goal as a draft with just a name and finish it later.</p>
@@ -850,7 +863,7 @@
       <header class="dialog-head">
         <h2 id="allocation-title">Assign holding</h2>
         <button class="icon-button" type="button" data-close-allocation aria-label="Close">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-x"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-x"></use></svg>
         </button>
       </header>
       <p id="allocation-sub" class="dialog-sub"></p>

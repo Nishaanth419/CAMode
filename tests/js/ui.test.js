@@ -215,3 +215,35 @@ test('every confirmation names its action and keeps today\'s meaning', () => {
   for (const key of Object.keys(ui.CONFIRMS)) assert.ok(!/[!]/.test(JSON.stringify(ui.CONFIRMS[key])), key);
   assert.throws(() => ui.confirmCopy('nope'));
 });
+
+test('the sidebar remembers its state and survives blocked storage', () => {
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  assert.equal(ui.readSidebarState(storage), null);
+  assert.equal(ui.saveSidebarState(storage, 'closed'), true);
+  assert.equal(ui.readSidebarState(storage), 'closed');
+  store.set(ui.SIDEBAR_KEY, 'sideways');
+  assert.equal(ui.readSidebarState(storage), null);
+  const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  assert.equal(ui.readSidebarState(blocked), null);
+  assert.equal(ui.saveSidebarState(blocked, 'open'), false);
+});
+test('the sidebar starts open on wide screens and closed up to 1280px', () => {
+  assert.equal(ui.initialSidebarState({ stored: null, width: 1440 }), 'open');
+  assert.equal(ui.initialSidebarState({ stored: 'closed', width: 1440 }), 'closed');
+  assert.equal(ui.initialSidebarState({ stored: 'open', width: 1100 }), 'closed');
+  assert.equal(ui.initialSidebarState({ stored: null, width: 1280 }), 'closed');
+});
+test('Cmd/Ctrl+K opens the command menu and Cmd/Ctrl+B toggles the sidebar', () => {
+  const key = (k, mods = {}) => ({ key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods });
+  const free = { gateOpen: false, dialogOpen: false };
+  assert.equal(ui.shortcutFor(key('k', { metaKey: true }), free), 'command');
+  assert.equal(ui.shortcutFor(key('K', { ctrlKey: true }), free), 'command');
+  assert.equal(ui.shortcutFor(key('b', { ctrlKey: true }), free), 'sidebar');
+  assert.equal(ui.shortcutFor(key('k', { metaKey: true, shiftKey: true }), free), null);
+  assert.equal(ui.shortcutFor(key('k'), free), null);
+  assert.equal(ui.shortcutFor(key('k', { metaKey: true }), { gateOpen: true, dialogOpen: false }), null);
+  assert.equal(ui.shortcutFor(key('b', { metaKey: true }), { gateOpen: false, dialogOpen: true }), null);
+  assert.equal(ui.shortcutLabel('MacIntel'), '⌘K');
+  assert.equal(ui.shortcutLabel('Win32'), 'Ctrl K');
+});

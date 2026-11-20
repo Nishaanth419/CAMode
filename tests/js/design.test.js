@@ -120,7 +120,7 @@ test('reduced motion stops movement and loops', () => {
 test('keyboard focus is always visible', () => assert.match(readCss(), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/));
 
 test('no browser dialogs in the app scripts', () => {
-  for (const name of ['app.js', 'pages.js', 'demo.js']) {
+  for (const name of ['app.js', 'pages.js', 'demo.js', 'shell.js']) {
     assert.doesNotMatch(readJs(name), /window\.confirm\(|(^|[^\w.])confirm\(|\balert\(/m, name);
   }
 });
@@ -129,7 +129,7 @@ test('every sprite icon referenced by the app exists in icons.svg', () => {
   const sprite = fs.readFileSync(path.join(FRONTEND, 'icons.svg'), 'utf8');
   const symbols = new Set([...sprite.matchAll(/<symbol id="(ph-[\w-]+)" viewBox="0 0 256 256"/g)].map((m) => m[1]));
   assert.ok(symbols.size > 0);
-  const sources = [readHtml(), readJs('pages.js'), readJs('app.js')];
+  const sources = [readHtml(), readJs('pages.js'), readJs('app.js'), readJs('shell.js')];
   const used = new Set();
   for (const source of sources) {
     for (const m of source.matchAll(/\/icons\.svg\?v=\d+#(ph-[\w-]+)/g)) used.add(m[1]);
@@ -244,3 +244,31 @@ for (const [theme, selector] of [['light', ':root'], ['dark', ':root[data-theme=
   });
 }
 test.after(() => { if (process.env.SHOW_CONTRAST) console.log(CONTRAST_ROWS.join('\n')); });
+
+test('the sidebar opens at 248px and closes to 64px, animating only its column', () => {
+  const css = readCss();
+  assert.match(css, /--sidebar-w:\s*248px/);
+  assert.match(css, /body\.sidebar-closed\s*\{[^}]*--sidebar-w:\s*64px/);
+  assert.match(css, /#app\s*\{[^}]*transition:\s*grid-template-columns var\(--dur-move\) var\(--ease\)/);
+});
+test('the sidebar keeps its hooks and drops the group labels and the top bar search', () => {
+  const html = readHtml();
+  for (const id of ['sidebar', 'sidebar-toggle', 'command-open', 'chat-list', 'new-chat-button', 'account-trigger', 'sidebar-scrim', 'topbar', 'topbar-account', 'chat-search', 'status-badge', 'theme-toggle', 'menu-toggle']) {
+    assert.match(html, new RegExp(`id="${id}"`), id);
+  }
+  assert.doesNotMatch(html, /nav-group-label/);
+  assert.match(html, /id="sidebar-toggle"[^>]*aria-expanded="true"[^>]*aria-label="Close sidebar"/);
+  const sidebar = html.slice(html.indexOf('<aside id="sidebar"'), html.indexOf('</aside>'));
+  const order = [...sidebar.matchAll(/data-route="([\w-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, ['home', 'portfolio', 'holdings', 'chat', 'activity', 'chats', 'goals', 'returns', 'planning', 'markets', 'reports']);
+  const profile = html.slice(html.indexOf('<dialog id="profile-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="profile-dialog"')));
+  assert.match(profile, /id="status-badge"/);
+  assert.match(profile, /id="theme-toggle"/);
+  const allChats = html.slice(html.indexOf('data-page="chats"'), html.indexOf('data-page="not-found"'));
+  assert.match(allChats, /id="chat-search"/);
+});
+test('closed-sidebar rules are desktop only; the phone drawer always shows the open sidebar', () => {
+  const css = readCss();
+  const phone = css.slice(css.indexOf('@media (max-width: 900px)'));
+  assert.match(phone.slice(0, phone.indexOf('\n}\n')), /body\.sidebar-closed #sidebar/);
+});

@@ -771,7 +771,7 @@ function holdingsFilters(rows) {
       </div>
       <div class="holdings-find">
         <label class="holdings-search">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-magnifying-glass"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
           <span class="sr-only">Search holdings by name, code or broker</span>
           <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
         </label>

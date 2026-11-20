@@ -192,8 +192,6 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 .icon { width: 20px; height: 20px; flex-shrink: 0; }
 
 /* Shared stroke-icon treatment (inline svg that is not a sprite icon) */
-.nav-item svg,
-.account-gear svg,
 .icon-button svg,
 .search-box svg,
 .feature-icon svg,
@@ -221,18 +219,23 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   height: 100%;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  transition: grid-template-columns var(--dur-move) var(--ease);
 }
+/* Cmd/Ctrl+B or the toggle closes the sidebar to its icons (shell.js); only its column animates. */
+body.sidebar-closed { --sidebar-w: 64px; }
 
 /* ── Sidebar ─────────────────────────────────────────────────────── */
 #sidebar {
   display: flex;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px 14px 14px;
-  border-right: 1px solid var(--side-border);
-  background: var(--side-bg);
+  gap: 12px;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
   color: var(--side-text);
+  overflow-x: hidden;
   overflow-y: auto;
 }
 #sidebar::-webkit-scrollbar-thumb { background: var(--surface-3); }
@@ -240,11 +243,16 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 /* Only the recent chats shrink and scroll, so the profile button stays in view;
    the sidebar itself scrolls only when even the menu does not fit. */
 #sidebar > * { flex-shrink: 0; }
+/* Labels clip and fade while the column narrows, so nothing spills past it. */
+.nav-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: clip; transition: opacity var(--dur-fade) var(--ease); }
+
+.sidebar-head { display: flex; height: 44px; align-items: center; justify-content: space-between; gap: 8px; }
 .brand {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 10px;
-  padding: 4px 6px;
+  padding: 0 4px;
   color: inherit;
   text-decoration: none;
 }
@@ -260,7 +268,27 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 }
 .logo-mark svg { width: 22px; height: 22px; }
 .brand-copy { display: flex; flex-direction: column; line-height: 1.25; }
-.logo-text { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.logo-text { font-size: 16px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; }
+.sidebar-toggle { border-color: transparent; color: var(--side-soft); }
+.sidebar-toggle .icon { width: 20px; height: 20px; }
+
+.command-open {
+  display: flex;
+  width: 100%;
+  height: 40px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: left;
+  transition: border-color var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease);
+}
+.command-open:hover { border-color: var(--border-hover); color: var(--text); }
+.command-open > .nav-label:not(kbd) { flex: 1; }
 
 .new-chat-button {
   display: inline-grid;
@@ -276,48 +304,40 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 }
 .new-chat-button:hover { background: var(--accent); color: var(--accent-ink); }
 .new-chat-button svg { width: 16px; height: 16px; stroke-width: 2.4; }
-.section-actions { display: inline-flex; align-items: center; gap: 10px; }
 
-.main-nav { display: grid; gap: 12px; }
+.main-nav { display: grid; gap: 16px; }
 .nav-group { display: grid; gap: 2px; }
-.nav-group-label {
-  padding: 0 10px 4px;
-  color: var(--side-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
 .nav-item {
+  position: relative;
   display: flex;
-  min-height: var(--control-h);
+  height: 36px;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   padding: 0 10px;
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   color: var(--side-soft);
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
   transition: background var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease);
 }
-.nav-item svg { width: 18px; height: 18px; flex-shrink: 0; color: currentColor; transition: color var(--dur-fade) var(--ease); }
+.nav-item .icon { width: 20px; height: 20px; color: currentColor; transition: color var(--dur-fade) var(--ease); }
 .nav-item:hover { background: var(--side-hover); color: var(--side-text); }
-.nav-item[aria-current="page"] { background: var(--side-active); color: var(--side-active-text); font-weight: 600; }
-.nav-item[aria-current="page"] svg { color: var(--side-active-icon); }
+.nav-item[aria-current="page"] { background: var(--surface-2); color: var(--text); }
+.nav-item[aria-current="page"] .icon { color: var(--accent); }
 
 .sidebar-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 4px 0 10px;
-  border-top: 1px solid var(--side-border);
-  color: var(--side-muted);
+  border-top: 1px solid var(--line);
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
-.see-all { color: var(--side-soft); font-size: 12px; font-weight: 500; text-decoration: none; }
-.see-all:hover, .see-all[aria-current="page"] { color: var(--side-active-text); }
 #chat-list { flex: 0 1 auto; min-height: 56px; margin: -6px -6px 0; padding: 0 6px; overflow-y: auto; }
 #chat-list::-webkit-scrollbar-thumb { background: var(--surface-3); }
 #chat-list::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
@@ -374,11 +394,9 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 .sidebar-account {
   display: flex;
   align-items: center;
-  gap: 10px;
   margin-top: auto;
-  padding: 6px;
-  border: 1px solid var(--side-border);
-  border-radius: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
 }
 .account-avatar {
   display: grid;
@@ -392,14 +410,42 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   font-size: 14px;
   font-weight: 600;
 }
+.sidebar-account .account-avatar { border-radius: 8px; }
 .account-avatar.is-connected { background: var(--mint); color: var(--accent-ink); }
-.account-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.3; }
-.account-copy strong { font-size: 14px; font-weight: 600; }
-.account-copy small { overflow: hidden; color: var(--side-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.account-gear { display: grid; width: 32px; height: 32px; flex-shrink: 0; place-items: center; border-radius: 8px; color: var(--side-soft); transition: color var(--dur-fade) var(--ease), background var(--dur-fade) var(--ease); }
-.account-gear svg { width: 18px; height: 18px; }
-.account-trigger:hover .account-gear { background: var(--side-hover); color: var(--side-text); }
+.account-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.3; transition: opacity var(--dur-fade) var(--ease); }
+.account-copy strong { overflow: hidden; font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.account-copy small { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 #sidebar-scrim { display: none; }
+
+/* Closed: icons only, each name a tooltip on hover and keyboard focus. The phone drawer undoes all of this. */
+body.sidebar-closed #sidebar { overflow: visible; }
+body.sidebar-closed #sidebar .brand,
+body.sidebar-closed #sidebar .sidebar-section-head,
+body.sidebar-closed #sidebar #chat-list,
+body.sidebar-closed #sidebar .search-kbd { display: none; }
+body.sidebar-closed #sidebar .sidebar-head { justify-content: center; }
+body.sidebar-closed #sidebar .nav-label { width: 0; opacity: 0; }
+body.sidebar-closed #sidebar .account-copy { width: 0; flex: 0 0 0; opacity: 0; overflow: hidden; }
+body.sidebar-closed #sidebar .nav-item,
+body.sidebar-closed #sidebar .command-open,
+body.sidebar-closed #sidebar .account-trigger { gap: 0; }
+body.sidebar-closed #sidebar .nav-item:hover .nav-label,
+body.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 12px);
+  z-index: 40;
+  width: auto;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 12px;
+  opacity: 1;
+  overflow: visible;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
 
 /* ── Main column ─────────────────────────────────────────────────── */
 #chat-area {
@@ -411,24 +457,22 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   overflow: hidden;
 }
 
+/* The phone header: shown only below 900px, where the sidebar becomes a drawer. */
 #topbar {
   position: relative;
-  display: flex;
-  min-height: 73px;
+  display: none;
   align-items: center;
-  gap: 12px;
-  padding: 16px 32px;
+  gap: 8px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
 }
-/* The brand moves into the top bar when the sidebar becomes a drawer. */
-.topbar-brand { display: none; align-items: center; gap: 10px; color: var(--text); font-size: 16px; font-weight: 700; text-decoration: none; }
-.topbar-account { display: none; }
+.topbar-brand { display: inline-flex; align-items: center; gap: 10px; margin-right: auto; color: var(--text); font-size: 16px; font-weight: 600; text-decoration: none; }
+/* The conversation search on All chats. */
 .search-box {
   display: flex;
   height: var(--control-h);
-  flex: 1 1 280px;
-  max-width: 520px;
+  flex: 1 1 240px;
+  max-width: 360px;
   min-width: 0;
   align-items: center;
   gap: 10px;
@@ -465,8 +509,7 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   font-size: 12px;
   line-height: 16px;
 }
-.search-box:focus-within .search-kbd { display: none; }
-.topbar-spacer { flex: 1 1 0; }
+.theme-toggle { gap: 8px; }
 
 #status-badge {
   display: inline-flex;
@@ -1185,17 +1228,38 @@ body:not(.route-chat) #right-rail { display: none; }
   }
   #sidebar-scrim[hidden] { display: none !important; }
   .chat-delete { opacity: 1; }
-  #topbar { min-height: 0; gap: 8px; padding: max(10px, env(safe-area-inset-top)) 16px 10px; }
-  .topbar-brand { display: inline-flex; }
+  /* The drawer is always the open sidebar, whatever the desktop choice; it has no toggle of its own. */
+  body.sidebar-closed { --sidebar-w: 248px; }
+  body.sidebar-closed #sidebar { overflow-x: hidden; overflow-y: auto; }
+  body.sidebar-closed #sidebar .brand,
+  body.sidebar-closed #sidebar .sidebar-section-head { display: flex; }
+  body.sidebar-closed #sidebar #chat-list { display: block; }
+  body.sidebar-closed #sidebar .sidebar-head { justify-content: space-between; }
+  body.sidebar-closed #sidebar .nav-label { width: auto; opacity: 1; }
+  body.sidebar-closed #sidebar .account-copy { width: auto; flex: 1; opacity: 1; }
+  body.sidebar-closed #sidebar .nav-item,
+  body.sidebar-closed #sidebar .command-open { gap: 12px; }
+  body.sidebar-closed #sidebar .account-trigger { gap: 10px; }
+  body.sidebar-closed #sidebar .nav-item:hover .nav-label,
+  body.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
+    position: static;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 14px;
+    transform: none;
+  }
+  .sidebar-toggle { display: none; }
+  .search-kbd { display: none; }
+  #topbar { display: flex; min-height: 56px; padding: max(6px, env(safe-area-inset-top)) 16px 6px; }
   .topbar-brand .logo-mark { width: 30px; height: 30px; border-radius: 8px; }
   .topbar-brand .logo-mark svg { width: 20px; height: 20px; }
-  .topbar-spacer { display: none; }
-  .search-box { flex: 1 1 auto; max-width: none; }
-  .search-kbd { display: none; }
+  #command-open-phone { width: 44px; height: 44px; border-color: transparent; }
   .topbar-account {
     display: grid;
-    width: var(--control-h);
-    height: var(--control-h);
+    width: 44px;
+    height: 44px;
     flex-shrink: 0;
     place-items: center;
     padding: 0;
@@ -1304,21 +1368,7 @@ body:not(.route-chat) #right-rail { display: none; }
 }
 
 @media (max-width: 560px) {
-  /* Only the dot shows; the text stays for screen readers. */
-  #status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  #status-badge { width: 24px; height: var(--control-h); flex-shrink: 0; justify-content: center; padding: 0; border: 0; background: transparent; }
-  /* The search field folds to an icon and opens across the top bar when focused. */
-  .search-box { flex: 0 0 var(--control-h); width: var(--control-h); justify-content: center; padding: 0; margin-left: auto; }
-  .search-box input { width: 0; flex: 0 0 0; }
-  .search-box:focus-within {
-    position: absolute;
-    inset: auto 16px auto 16px;
-    z-index: 2;
-    width: auto;
-    justify-content: flex-start;
-    padding: 0 12px;
-  }
-  .search-box:focus-within input { flex: 1 1 auto; }
+  .page-actions .search-box { flex: 1 1 100%; max-width: none; }
   .feature-cards { grid-template-columns: 1fr; gap: 10px; }
   .feature-card { padding: 12px; }
   .hero-sub { font-size: 12px; }
@@ -1342,6 +1392,7 @@ body:not(.route-chat) #right-rail { display: none; }
   @keyframes typing-bounce { 0%, 80%, 100% { opacity: .4; } 40% { opacity: 1; } }
   @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
   button:active:not(:disabled), .button:active { transform: none; }
+  #app { transition: none !important; }
 }
 
 /* In-app confirmation (app.js confirmAction) */
@@ -1542,7 +1593,7 @@ body.gate-open #app { visibility: hidden; }
 .dialog-head h2 { color: var(--text); font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
 /* Each part of the profile dialog is a section with a 15/600 heading, divided by rules. */
 .dialog-section { display: grid; gap: 10px; }
-.dialog-section + .dialog-section, .brokers-section + .dialog-section { padding-top: 16px; border-top: 1px solid var(--border); }
+.dialog-section + .dialog-section, .brokers-section + .dialog-section, .dialog-section + .brokers-section { padding-top: 16px; border-top: 1px solid var(--border); }
 .dialog-section-title { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
 .dialog-sub { color: var(--text-soft); font-size: 12px; line-height: 16px; }
 .field-hint { color: var(--text-muted); font-size: 12px; font-weight: 400; }
