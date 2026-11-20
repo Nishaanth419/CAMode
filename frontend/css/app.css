@@ -2,9 +2,9 @@
 :root {
   color-scheme: light;
   --canvas: #FFFFFF;
-  --surface: #FFFFFF;
-  --surface-2: #F6F6F5;
-  --surface-3: #EFEFED;
+  --surface: #F6F6F5;
+  --surface-2: #EFEFED;
+  --surface-3: #E4E4E1;
   --border: #E4E4E1;
   --line: #E4E4E1;
   --border-hover: rgba(138, 111, 53, 0.4);
@@ -30,7 +30,7 @@
   --series-6: #8C8C8C;
   --series-7: #B5B5B5;
   --series-8: #DADADA;
-  --seg-active: #EFEFED;
+  --seg-active: #E4E4E1;
   --green: var(--gain);
   --green-soft: rgba(46, 125, 87, 0.12);
   --amber: var(--warning);

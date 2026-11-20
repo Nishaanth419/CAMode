@@ -51,4 +51,18 @@ test('light and dark define the same tokens', () => {
   );
 });
 
+test('light tokens follow the spec and --line equals --border', () => {
+  const css = readCss();
+  const light = tokenBlock(css, ':root');
+  assert.equal(light.get('--canvas'), '#FFFFFF');
+  assert.equal(light.get('--surface'), '#F6F6F5');
+  assert.equal(light.get('--surface-2'), '#EFEFED');
+  assert.equal(light.get('--border'), '#E4E4E1');
+  assert.equal(light.get('--accent'), '#8A6F35');
+  assert.equal(light.get('--text-muted'), '#6B6B6B');
+  for (const block of [light, tokenBlock(css, ':root[data-theme="dark"]')]) {
+    assert.equal(block.get('--line'), block.get('--border'));
+  }
+});
+
 module.exports = { readCss, readHtml, readJs, tokenBlock };
