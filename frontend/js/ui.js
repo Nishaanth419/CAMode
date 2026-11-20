@@ -304,6 +304,14 @@
     return true;
   }
 
+  // Where the active tab sits inside its bar, from offsets (never viewport rects, so a scrolled bar is right).
+  function tabIndicator(active, bar) {
+    if (!active) return { x: 0, w: 0 };
+    const x = Number(active.offsetLeft) - Number(bar?.offsetLeft || 0);
+    const w = Number(active.offsetWidth);
+    return { x: Number.isFinite(x) ? Math.max(0, x) : 0, w: Number.isFinite(w) ? Math.max(0, w) : 0 };
+  }
+
   const VIEW_TRANSITION_PATIENCE_MS = 400;
   // Runs a DOM update inside a view transition when the browser has one. The update always runs, and an error
   // from it rejects; a transition that is skipped or aborted never does.
@@ -341,7 +349,7 @@
     withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
-    commandResults, moveActive, commandWaitsForAnswer, staggerDelays, ENTRANCE_KEY, claimEntrance,
+    commandResults, moveActive, commandWaitsForAnswer, staggerDelays, ENTRANCE_KEY, claimEntrance, tabIndicator,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

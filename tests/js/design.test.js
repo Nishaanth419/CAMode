@@ -502,3 +502,41 @@ test('renderHome claims the entrance once and never animates a figure in script'
   assert.match(js, /history-line-draw/);
   assert.match(js, /history-area-in/);
 });
+
+test('Holdings: sliding tab underline, table on the surface, sticky header', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.source-tabs'), /position:\s*relative/);
+  const after = ruleBody(css.replace(reducedMotionBlock(css), ''), '.source-tabs::after');
+  assert.match(after, /height:\s*2px/);
+  assert.match(after, /background:\s*var\(--accent\)/);
+  assert.match(after, /width:\s*100px/);
+  assert.match(after, /transform:\s*translateX\(var\(--tab-x,\s*0(px)?\)\)\s*scaleX\(/);
+  assert.match(after, /transition:\s*transform var\(--dur-move\) var\(--ease\)/);
+  assert.doesNotMatch(ruleBody(css, '.source-tab[aria-pressed="true"]'), /border-bottom-color/);
+  const panel = ruleBody(css, '.holdings-panel');
+  assert.match(panel, /background:\s*var\(--surface\)/);
+  assert.doesNotMatch(panel, /border\s*:/);
+  assert.doesNotMatch(panel, /overflow:\s*hidden/);
+  assert.match(panel, /overflow:\s*clip/);
+  const th = ruleBody(css, '.holdings-table thead th');
+  assert.match(th, /position:\s*sticky/);
+  assert.match(th, /top:\s*-28px/); // #page-view pads its scrollport by 28px on desktop
+  assert.match(th, /background:\s*var\(--surface(-2)?\)/);
+  assert.match(ruleBody(css, '.holdings-table tbody tr:hover'), /var\(--surface-2\)/);
+  // Scrolling sideways is only for pages under 900px (a container query); above it sticky needs no scroll ancestor.
+  assert.doesNotMatch(css, /^\.holdings-scroll\s*\{/m);
+  assert.match(css, /@container \(max-width: 900px\) \{\s*\.holdings-scroll \{ overflow-x: auto; \}/);
+  assert.match(reducedMotionBlock(css), /\.source-tabs::after\s*\{[^}]*transition:\s*none/);
+  assert.match(css, /\.holdings-table tbody tr\s*\{[^}]*grid-template-areas/);
+  assert.doesNotMatch(readJs('pages.js'), /→/);
+});
+
+test('placeTabIndicator carries the old underline across the rebuild and reruns on resize and logo load', () => {
+  const js = readJs('pages.js');
+  assert.match(js, /function placeTabIndicator\(/);
+  assert.match(js, /tabIndicator\(/);
+  assert.match(js, /--tab-x/);
+  assert.match(js, /--tab-w/);
+  assert.match(js, /addEventListener\('resize'/);
+  assert.match(js, /addEventListener\('load'/);
+});

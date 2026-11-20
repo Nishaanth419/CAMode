@@ -874,7 +874,7 @@ function brokerSplit(rows) {
   if (shown.length < 2) return '';
   const series = (index) => `series-${(index % SERIES_COUNT) + 1}`;
   const label = shown.map((row) => `${row.broker} ${percent(row.share_of_listed_holdings_pct)}`).join(', ');
-  return `<section class="panel home-card" aria-labelledby="by-broker-title">
+  return `<section class="broker-split" aria-labelledby="by-broker-title">
     <div class="card-head"><h2 id="by-broker-title" class="card-title">By broker</h2></div>
     <div class="stack-bar" role="img" aria-label="${escHtml(label)}">${shown.map((row, index) =>
       `<span class="${series(index)}" style="width:${(Number(row.share_of_listed_holdings_pct) || 0).toFixed(2)}%"></span>`).join('')}</div>
@@ -934,6 +934,56 @@ async function renderHoldings() {
     ${brokerSplit(source.figures?.by_broker)}`);
   renderHoldingsTable();
   showActiveSourceTab(body);
+  placeTabIndicator(body, { from: lastTabIndicator });
+}
+
+// The underline under the active source tab. renderHoldings rebuilds the body on every tab click, so the previous
+// underline's place is kept here: the new bar starts there and slides (css transition) to the new tab.
+let lastTabIndicator = null;
+let tabIndicatorListening = false;
+// Leaving Holdings forgets the underline, so coming back starts in place instead of sliding from an old spot.
+document.addEventListener('ca:route', (event) => { if (event.detail?.route !== 'holdings') lastTabIndicator = null; });
+
+function measureTabIndicator(body) {
+  const bar = body.querySelector('.source-tabs');
+  const active = bar?.querySelector('.source-tab[aria-pressed="true"]');
+  if (!bar || !active) return null;
+  // The bar is the tabs' offset parent (position: relative), so its own offset is zero in this frame.
+  return { bar, ...tabIndicator(active, { offsetLeft: 0, offsetWidth: bar.offsetWidth }) };
+}
+
+function setTabIndicator(bar, { x, w }) {
+  bar.style.setProperty('--tab-x', `${x}px`);
+  bar.style.setProperty('--tab-w', String(w / 100));
+}
+
+function placeTabIndicator(body, { from } = {}) {
+  const target = measureTabIndicator(body);
+  if (!target) return;
+  const fresh = from && from.w > 0;
+  if (fresh) {
+    // The bar may already have been styled without the variables (a forced layout earlier in the render), which
+    // would leave a transition from nothing running. Put the old place in with transitions off, commit it, then
+    // switch them back on so the change below slides from there.
+    target.bar.classList.add('is-placing');
+    setTabIndicator(target.bar, from);
+    getComputedStyle(target.bar, '::after').transform; // commit the start
+    target.bar.classList.remove('is-placing');
+    getComputedStyle(target.bar, '::after').transform;
+  }
+  setTabIndicator(target.bar, target);
+  lastTabIndicator = { x: target.x, w: target.w };
+  if (tabIndicatorListening) return;
+  tabIndicatorListening = true;
+  const settle = () => {
+    const current = measureTabIndicator(body);
+    if (!current) return;
+    setTabIndicator(current.bar, current);
+    lastTabIndicator = { x: current.x, w: current.w };
+  };
+  window.addEventListener('resize', settle);
+  // Tab logos change a tab's width when they arrive (load does not bubble, so listen while capturing).
+  body.addEventListener('load', settle, true);
 }
 
 // On a phone the tabs scroll sideways; keep the selected one in sight.
