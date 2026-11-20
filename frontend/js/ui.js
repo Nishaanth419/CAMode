@@ -226,10 +226,12 @@
   }
 
   // Cmd (Ctrl elsewhere) + K opens the command menu and + B toggles the sidebar, never over a sign-in screen or dialog.
-  function shortcutFor(event, { gateOpen, dialogOpen }) {
+  // While the command menu itself is open, + K closes it again (and + B does nothing).
+  function shortcutFor(event, { gateOpen, dialogOpen, commandOpen = false }) {
     if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return null;
-    if (gateOpen || dialogOpen) return null;
     const key = String(event.key || '').toLowerCase();
+    if (commandOpen) return key === 'k' ? 'close-command' : null;
+    if (gateOpen || dialogOpen) return null;
     if (key === 'k') return 'command';
     if (key === 'b') return 'sidebar';
     return null;

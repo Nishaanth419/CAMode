@@ -283,6 +283,26 @@ test('closed-sidebar rules are desktop only; the phone drawer always shows the o
   const phone = css.slice(css.indexOf('@media (max-width: 900px)'));
   assert.match(phone.slice(0, phone.indexOf('\n}\n')), /html\.sidebar-closed #sidebar/);
 });
+test('the closed sidebar keeps scrolling and names its items with native titles, not CSS tooltips', () => {
+  const css = readCss();
+  const closedRules = [...css.matchAll(/html\.sidebar-closed #sidebar[^{]*\{([^}]*)\}/g)];
+  for (const [, body] of closedRules) assert.doesNotMatch(body, /overflow(-y)?:\s*visible/);
+  assert.doesNotMatch(css, /html\.sidebar-closed #sidebar \.nav-item:hover \.nav-label/);
+  assert.match(css, /#sidebar\s*\{[^}]*overflow-y:\s*auto/);
+  const shell = readJs('shell.js');
+  assert.match(shell, /classList\.toggle\('sidebar-closed', collapsed\);\n\s*setSidebarTitles\(collapsed\);/);
+  assert.match(shell, /querySelectorAll\('#sidebar \.nav-item, #command-open, #account-trigger'\)/);
+  assert.match(shell, /if \(item\.hasAttribute\('title'\)\) return;/);
+  assert.match(shell, /item\.removeAttribute\('title'\)/);
+});
+test('the phone drawer fades its items out together when it closes', () => {
+  const css = readCss();
+  const phone = css.slice(css.indexOf('@media (max-width: 900px)'));
+  const base = /#sidebar \.brand, #sidebar #command-open, #sidebar \.nav-item[^{]*\{([^}]*)\}/.exec(phone)[1];
+  assert.match(base, /opacity:\s*0/);
+  assert.match(base, /transition:\s*opacity var\(--dur-fade\) var\(--ease\)/);
+  assert.doesNotMatch(base, /transition-delay/);
+});
 test('boot.js runs in <head> before paint and the closed state lives on the root element', () => {
   const html = readHtml();
   const head = html.slice(0, html.indexOf('</head>'));

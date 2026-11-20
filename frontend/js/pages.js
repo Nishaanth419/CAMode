@@ -278,7 +278,9 @@ function renderRoute() {
   currentSub = sub;
   const token = ++routeToken;
   // Showing and hiding the two bodies is what a view transition animates; with one it runs a frame later.
+  // A superseded swap (a timer fallback arriving late) must not show its older page; the latest one always runs.
   const swap = () => {
+    if (token !== routeToken) return;
     chatHead.hidden = !isChat;
     chatScroll.hidden = !isChat;
     inputArea.hidden = !isChat;

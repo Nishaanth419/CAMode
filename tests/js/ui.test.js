@@ -244,6 +244,12 @@ test('Cmd/Ctrl+K opens the command menu and Cmd/Ctrl+B toggles the sidebar', () 
   assert.equal(ui.shortcutFor(key('k'), free), null);
   assert.equal(ui.shortcutFor(key('k', { metaKey: true }), { gateOpen: true, dialogOpen: false }), null);
   assert.equal(ui.shortcutFor(key('b', { metaKey: true }), { gateOpen: false, dialogOpen: true }), null);
+  // With the command menu open (itself a dialog), Cmd/Ctrl+K closes it and Cmd/Ctrl+B does nothing.
+  const menu = { gateOpen: false, dialogOpen: true, commandOpen: true };
+  assert.equal(ui.shortcutFor(key('k', { metaKey: true }), menu), 'close-command');
+  assert.equal(ui.shortcutFor(key('K', { ctrlKey: true }), menu), 'close-command');
+  assert.equal(ui.shortcutFor(key('b', { metaKey: true }), menu), null);
+  assert.equal(ui.shortcutFor(key('k'), menu), null);
   assert.equal(ui.shortcutLabel('MacIntel'), '⌘K');
   assert.equal(ui.shortcutLabel('Win32'), 'Ctrl K');
 });

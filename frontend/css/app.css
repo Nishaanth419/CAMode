@@ -181,6 +181,8 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 [hidden] { display: none !important; }
 ::selection { background: var(--accent-glow); color: var(--text); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A page heading focused by script after a command-menu page change marks where reading starts, not a control. */
+.page h1[tabindex="-1"]:focus { outline: none; }
 html { scroll-behavior: smooth; }
 button, .button { transition: background var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease), border-color var(--dur-fade) var(--ease), transform var(--dur-move) var(--ease); }
 button:active:not(:disabled), .button:active { transform: scale(.98); }
@@ -421,8 +423,8 @@ body:not(.shell-ready) #app { transition: none; }
 .account-copy small { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 #sidebar-scrim { display: none; }
 
-/* Closed: icons only, each name a tooltip on hover and keyboard focus. The phone drawer undoes all of this. */
-html.sidebar-closed #sidebar { overflow: visible; }
+/* Closed: icons only; shell.js gives each item its name as a native title. The sidebar keeps scrolling, so the
+   profile button stays reachable on short windows. The phone drawer undoes all of this. */
 html.sidebar-closed #sidebar .brand,
 html.sidebar-closed #sidebar .sidebar-section-head,
 html.sidebar-closed #sidebar #chat-list,
@@ -433,23 +435,6 @@ html.sidebar-closed #sidebar .account-copy { width: 0; flex: 0 0 0; opacity: 0; 
 html.sidebar-closed #sidebar .nav-item,
 html.sidebar-closed #sidebar .command-open,
 html.sidebar-closed #sidebar .account-trigger { gap: 0; }
-html.sidebar-closed #sidebar .nav-item:hover .nav-label,
-html.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
-  position: absolute;
-  top: 50%;
-  left: calc(100% + 12px);
-  z-index: 40;
-  width: auto;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-3);
-  color: var(--text);
-  font-size: 12px;
-  opacity: 1;
-  overflow: visible;
-  pointer-events: none;
-  transform: translateY(-50%);
-}
 
 /* ── Main column ─────────────────────────────────────────────────── */
 #chat-area {
@@ -1224,9 +1209,11 @@ body:not(.route-chat) #right-rail { display: none; }
   }
   body.sidebar-open #sidebar { transform: translateX(0); visibility: visible; transition: transform var(--dur-move) var(--ease); }
   /* The drawer's items arrive one after another (--stagger is set per item by setSidebarOpen). */
+  /* Closing, they fade out together (no stagger) while the panel slides away, so it never leaves empty. */
   #sidebar .brand, #sidebar #command-open, #sidebar .nav-item, #sidebar .sidebar-section-head, #sidebar #chat-list .chat-row, #sidebar .sidebar-account {
     opacity: 0;
     transform: translateX(-8px);
+    transition: opacity var(--dur-fade) var(--ease);
   }
   body.sidebar-open #sidebar .brand,
   body.sidebar-open #sidebar #command-open,
@@ -1250,7 +1237,6 @@ body:not(.route-chat) #right-rail { display: none; }
   .chat-delete { opacity: 1; }
   /* The drawer is always the open sidebar, whatever the desktop choice; it has no toggle of its own. */
   html.sidebar-closed { --sidebar-w: 248px; }
-  html.sidebar-closed #sidebar { overflow-x: hidden; overflow-y: auto; }
   html.sidebar-closed #sidebar .brand,
   html.sidebar-closed #sidebar .sidebar-section-head { display: flex; }
   html.sidebar-closed #sidebar #chat-list { display: block; }
@@ -1260,16 +1246,6 @@ body:not(.route-chat) #right-rail { display: none; }
   html.sidebar-closed #sidebar .nav-item,
   html.sidebar-closed #sidebar .command-open { gap: 12px; }
   html.sidebar-closed #sidebar .account-trigger { gap: 10px; }
-  html.sidebar-closed #sidebar .nav-item:hover .nav-label,
-  html.sidebar-closed #sidebar .nav-item:focus-visible .nav-label {
-    position: static;
-    padding: 0;
-    border-radius: 0;
-    background: transparent;
-    color: inherit;
-    font-size: 14px;
-    transform: none;
-  }
   .sidebar-toggle { display: none; }
   .search-kbd { display: none; }
   #topbar { display: flex; min-height: 56px; padding: max(6px, env(safe-area-inset-top)) 16px 6px; }

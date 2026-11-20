@@ -14,8 +14,24 @@ function sidebarStorage() {
   }
 }
 
+// Closed, the labels are hidden, so each item names itself in a native tooltip. A title the markup already has
+// (the profile button's) is left alone; only the titles added here are removed again when the sidebar opens.
+function setSidebarTitles(collapsed) {
+  document.querySelectorAll('#sidebar .nav-item, #command-open, #account-trigger').forEach((item) => {
+    if (collapsed) {
+      if (item.hasAttribute('title')) return;
+      item.title = item.querySelector('.nav-label')?.textContent.trim() || item.getAttribute('aria-label') || '';
+      item.dataset.sidebarTitle = '';
+    } else if ('sidebarTitle' in item.dataset) {
+      item.removeAttribute('title');
+      delete item.dataset.sidebarTitle;
+    }
+  });
+}
+
 function setSidebarCollapsed(collapsed, { save = true } = {}) {
   document.documentElement.classList.toggle('sidebar-closed', collapsed);
+  setSidebarTitles(collapsed);
   const label = collapsed ? 'Open sidebar' : 'Close sidebar';
   sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
   sidebarToggle.setAttribute('aria-label', label);
@@ -162,16 +178,43 @@ function reportCommandError(error) {
   else toast(errorText(error));
 }
 
+// Whether moving to `route` hides the element that opened the menu (it sits on the page or chat being left).
+function openerHiddenBy(opener, route) {
+  if (!opener || typeof opener.closest !== 'function' || route === currentRoute) return false;
+  return Boolean(opener.closest('#page-view, #chat-head, #chat-scroll, #input-area'));
+}
+
+// After a page change, focus starts at the new page's heading, or in the composer on Ask AI.
+function focusRouteStart(route) {
+  if (route !== currentRoute) return;
+  if (route === 'chat') {
+    userInput.focus();
+    return;
+  }
+  const heading = pageView.querySelector('.page:not([hidden]) h1');
+  if (!heading) return;
+  if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+  heading.focus();
+}
+
 async function runCommand(item) {
+  const blocked = isStreaming && commandWaitsForAnswer(item);
+  // Focus going back to an opener the page change is about to hide would fall to <body>.
+  const route = item.kind === 'page' ? item.value : item.kind === 'chat' ? 'chat' : null;
+  const refocus = !blocked && route !== null && openerHiddenBy(commandOpener, route);
+  if (refocus) commandOpener = null;
   closeCommandMenu();
-  if (isStreaming && commandWaitsForAnswer(item)) {
+  if (blocked) {
     toast('An answer is still coming. Try again when it finishes.');
     return;
   }
   try {
-    if (item.kind === 'page') navigate(item.value);
-    else if (item.kind === 'chat') {
+    if (item.kind === 'page') {
+      navigate(item.value);
+      if (refocus) routeSwapped.then(() => focusRouteStart(route));
+    } else if (item.kind === 'chat') {
       navigate('chat');
+      if (refocus) routeSwapped.then(() => focusRouteStart(route));
       await selectChat(item.value);
     } else if (item.kind === 'ask') await runPrompt(item.value, item.agent);
     else if (item.value === 'new-chat') {
@@ -234,13 +277,16 @@ commandOpenPhone.addEventListener('click', (event) => openCommandMenu(event.curr
 document.getElementById('search-kbd').textContent = shortcutLabel(navigator.platform || navigator.userAgent);
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') setSidebarOpen(false);
+  // Escape over an open dialog (a slide-over opened from the drawer) closes only that dialog.
+  if (event.key === 'Escape' && !document.querySelector('dialog[open]')) setSidebarOpen(false);
   const shortcut = shortcutFor(event, {
     gateOpen: document.body.classList.contains('gate-open'),
     dialogOpen: Boolean(document.querySelector('dialog[open]')),
+    commandOpen: commandDialog.open,
   });
   if (!shortcut) return;
   event.preventDefault();
   if (shortcut === 'command') openCommandMenu();
+  else if (shortcut === 'close-command') closeCommandMenu();
   else setSidebarCollapsed(!document.documentElement.classList.contains('sidebar-closed'));
 });
