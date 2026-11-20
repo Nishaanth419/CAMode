@@ -65,4 +65,23 @@ test('light tokens follow the spec and --line equals --border', () => {
   }
 });
 
+test('every font size is on the scale', () => {
+  const allowed = new Set([12, 14, 16, 18, 20, 24, 30, 36, 48, 60]);
+  for (const file of ['app.css', 'public.css', 'admin.css']) {
+    const css = readCss(file);
+    for (const [, n] of css.matchAll(/font-size:\s*([\d.]+)px/g)) assert.ok(allowed.has(Number(n)), `${file}: ${n}px`);
+    for (const [, n] of css.matchAll(/[\s;{]font:\s*(?:[a-z-]+\s+)*([\d.]+)px/g)) assert.ok(allowed.has(Number(n)), `${file} font shorthand: ${n}px`);
+    assert.doesNotMatch(css, /font-size:\s*[\d.]+rem/, `${file}: rem font size`);
+  }
+});
+
+test('no uppercase, italic or weights above bold', () => {
+  for (const file of ['app.css', 'public.css', 'admin.css']) {
+    const css = readCss(file);
+    assert.doesNotMatch(css, /text-transform:\s*uppercase/, file);
+    assert.doesNotMatch(css, /font-style:\s*italic/, file);
+    assert.doesNotMatch(css, /font-weight:\s*(800|900)/, file);
+  }
+});
+
 module.exports = { readCss, readHtml, readJs, tokenBlock };
