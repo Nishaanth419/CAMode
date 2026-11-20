@@ -305,3 +305,10 @@ test('profile, goal and allocation dialogs are right-side slide-overs', () => {
   const reduce = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
   assert.match(reduce, /\.profile-dialog[^{]*\{[^}]*transform:\s*none/);
 });
+
+test('slide-over head and actions keep clear of the notch and home indicator', () => {
+  const css = readCss();
+  assert.match(css, /\.profile-dialog \.dialog-head\s*\{[^}]*padding:\s*max\(20px, env\(safe-area-inset-top\)\)/);
+  assert.match(css, /\.profile-dialog \.dialog-actions\s*\{[^}]*max\(20px, env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.profile-dialog \.dialog-head\s*\{[^}]*env\(safe-area-inset-right\)/);
+});
