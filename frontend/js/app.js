@@ -120,7 +120,7 @@ let signInError = (() => {
     const message = broker === 'limit'
       ? 'The Free plan connects up to 2 brokers. Disconnect one, or see the plans at /pricing.'
       : `Could not connect ${broker.slice(0, 20)}. Open your profile and try Connect again.`;
-    setTimeout(() => (typeof toast === 'function' ? toast(message) : alert(message)), 1500);
+    setTimeout(() => (typeof toast === 'function' ? toast(message) : undefined), 1500);
   });
 })();
 // Cloudflare Turnstile on sign-up: the site key from /api/session (null when off), the widget and its script.
@@ -185,10 +185,8 @@ function applyTheme(theme) {
   const nextLabel = selected === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
   themeToggle.setAttribute('aria-label', nextLabel);
   themeToggle.title = nextLabel;
-  themeToggleIcon.innerHTML = selected === 'dark'
-    ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>'
-    : '<path d="M20.2 15.7A8.5 8.5 0 0 1 8.3 3.8 8.6 8.6 0 1 0 20.2 15.7Z"/>';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', selected === 'dark' ? '#070a08' : '#f4f7f5');
+  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=1#ph-sun' : '/icons.svg?v=1#ph-moon');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
   localStorage.setItem('ca-mode-theme', selected);
 }
 
@@ -202,8 +200,7 @@ themeToggle.addEventListener('click', () => {
     const view = graph.closest('.data-chart')?.dataset.chartView;
     if (!spec || !window.Plotly || view === 'table') return;
     // History charts take their line and shading colours from the theme too.
-    if (spec.history || spec.page) window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
-    else window.Plotly.relayout(graph, plotlyLayout(spec, view));
+    window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
   });
 });
 
@@ -416,7 +413,7 @@ function renderCasStatements(statements) {
     remove.textContent = 'Delete';
     remove.setAttribute('aria-label', `Delete the ${statement.source} statement to ${statement.periodTo}`);
     remove.addEventListener('click', async () => {
-      if (!window.confirm('Delete this saved statement?')) return;
+      if (!(await confirmAction('deleteStatement'))) return;
       const response = await fetch('/api/cas/' + encodeURIComponent(statement.id), { method: 'DELETE' });
       if (response.ok) await loadCasStatus();
     });
@@ -1025,11 +1022,12 @@ function renderDataZone(privacy) {
 profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => input.addEventListener('change', () => syncRetentionField(profileForm, 'settings-storage')));
 
 document.getElementById('save-data-settings').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
   const choice = readStorageChoice(profileForm, 'settings-storage');
   if (choice.storageMode === 'private' && storageMode !== 'private'
-    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile. Continue?')) return;
+    && !(await confirmAction('privateMode'))) return;
   dataStatus.textContent = '';
-  await withPending(event.currentTarget, dataStatus, async () => {
+  await withPending(button, dataStatus, async () => {
     renderDataZone(await savePrivacyChoice(choice));
     dataStatus.textContent = 'Data settings saved.';
     await loadChats();
@@ -1061,14 +1059,15 @@ document.getElementById('export-data').addEventListener('click', async (event) =
 });
 
 document.getElementById('new-recovery-code').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
   const pin = document.getElementById('export-pin').value;
   if (!pin) {
     dataStatus.textContent = 'Enter your PIN to create a new recovery code.';
     return;
   }
-  if (!window.confirm('Create a new recovery code? Your current recovery code will stop working.')) return;
+  if (!(await confirmAction('newRecoveryCode'))) return;
   dataStatus.textContent = '';
-  await withPending(event.currentTarget, dataStatus, async () => {
+  await withPending(button, dataStatus, async () => {
     const response = await fetch('/api/users/me/recovery-code', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
     });
@@ -1112,9 +1111,10 @@ document.getElementById('backup-now').addEventListener('click', async (event) =>
 });
 
 document.getElementById('clear-history').addEventListener('click', async (event) => {
-  if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and broker connections are kept.')) return;
+  const button = event.currentTarget;
+  if (!(await confirmAction('clearHistory'))) return;
   dataStatus.textContent = '';
-  await withPending(event.currentTarget, dataStatus, async () => {
+  await withPending(button, dataStatus, async () => {
     const response = await fetch('/api/users/me/history', { method: 'DELETE' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -1164,9 +1164,50 @@ async function openBrokers() {
   brokersSection.scrollIntoView?.({ block: 'start' });
 }
 
+// Asks in #confirm-dialog (never a browser dialog). Resolves true only on the confirm button; Esc, Cancel and a click outside resolve false.
+let confirmPending = null;
+function confirmAction(key, values = {}) {
+  const dialog = document.getElementById('confirm-dialog');
+  const copy = confirmCopy(key, values);
+  if (confirmPending) confirmPending(false);
+  dialog.querySelector('[data-confirm-title]').textContent = copy.title;
+  dialog.querySelector('[data-confirm-body]').textContent = copy.body;
+  const cancel = dialog.querySelector('[data-confirm-cancel]');
+  const accept = dialog.querySelector('[data-confirm-accept]');
+  cancel.textContent = copy.cancelLabel;
+  accept.textContent = copy.confirmLabel;
+  accept.className = copy.danger ? 'danger-button' : 'rail-button';
+  const opener = document.activeElement;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (answer) => {
+      if (settled) return;
+      settled = true;
+      confirmPending = null;
+      dialog.removeEventListener('close', onClose);
+      dialog.removeEventListener('cancel', onCancel);
+      dialog.removeEventListener('click', onBackdrop);
+      if (dialog.open) dialog.close();
+      if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
+      resolve(answer);
+    };
+    // A close queued by an earlier request's dialog.close() arrives after a re-open: only a real close (dialog no longer open) counts.
+    const onClose = () => { if (!dialog.open) finish(dialog.returnValue === 'confirm'); };
+    const onCancel = () => finish(false);
+    const onBackdrop = (event) => { if (event.target === dialog) finish(false); };
+    confirmPending = finish;
+    dialog.returnValue = '';
+    dialog.addEventListener('close', onClose);
+    dialog.addEventListener('cancel', onCancel);
+    dialog.addEventListener('click', onBackdrop);
+    dialog.showModal();
+    (copy.danger ? cancel : accept).focus();
+  });
+}
+
 // INDmoney keeps its own sign-in and disconnect routes; the list treats it like any other broker.
 async function disconnectIndmoney() {
-  if (!window.confirm('Disconnect INDmoney? Saved portfolio snapshots for this profile will be deleted; your chats are kept.')) return false;
+  if (!(await confirmAction('disconnectIndmoney'))) return false;
   const response = await fetch('/auth/indmoney/disconnect', { method: 'POST' });
   if (!response.ok) throw new Error(plainError(response.status, await response.json().catch(() => ({}))));
   await loadChats();
@@ -1694,7 +1735,7 @@ async function selectChat(chatId) {
 
 async function deleteChat(chatId) {
   if (isStreaming) return;
-  if (!window.confirm('Delete this chat?')) return;
+  if (!(await confirmAction('deleteChat'))) return;
   const response = await fetch('/api/chats/' + encodeURIComponent(chatId), { method: 'DELETE' });
   if (!response.ok) throw new Error('Could not delete this chat.');
   chats = chats.filter((chat) => chat.id !== chatId);
@@ -2298,25 +2339,40 @@ function renderChartTable(spec) {
   return `<div class="chart-data-scroll"><table class="chart-data-table"><thead><tr><th>Category</th><th>Value</th><th>Share</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+// Every chart colour and the font come from the CSS tokens, read on each draw so a theme change redraws correctly.
+function chartTheme() {
+  const style = getComputedStyle(document.documentElement);
+  const read = (name) => style.getPropertyValue(name).trim();
+  return {
+    font: read('--sans'), text: read('--text'), muted: read('--text-soft'), line: read('--line'), surface: read('--surface'),
+    accent: read('--accent'), gain: read('--gain'), loss: read('--loss'),
+    series: [1, 2, 3, 4, 5, 6, 7, 8].map(n => read(`--series-${n}`)),
+  };
+}
+
+// '#RRGGBB' and an alpha to the rgba() string Plotly needs for a translucent fill.
+function withAlpha(hex, alpha) {
+  const value = /^#([0-9a-f]{6})$/i.exec(hex || '')?.[1];
+  if (!value) return hex;
+  const channel = (i) => parseInt(value.slice(i, i + 2), 16);
+  return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${alpha})`;
+}
+
 function plotlyLayout(spec, view) {
-  const style = getComputedStyle(document.body);
-  const text = style.getPropertyValue('--text').trim() || '#e5e7eb';
-  const muted = style.getPropertyValue('--text-soft').trim() || '#9ca3af';
-  const border = style.getPropertyValue('--border').trim() || '#374151';
-  const surface = style.getPropertyValue('--surface').trim() || '#111827';
+  const theme = chartTheme();
+  const { text, muted, surface } = theme;
+  const border = theme.line;
   const unit = spec.unit ? ` (${spec.unit})` : '';
   const layout = {
     title: { text: cleanChartText(spec.title || 'Portfolio data'), x: 0.02, xanchor: 'left', font: { size: 15 } },
     autosize: true, height: 360, margin: { l: 64, r: 24, t: 56, b: 58 },
     paper_bgcolor: surface, plot_bgcolor: surface,
-    font: { family: 'Inter, sans-serif', color: text, size: 12 },
-    colorway: document.documentElement.dataset.theme === 'dark'
-      ? ['#8fdc4e', '#f2d64b', '#5ec8f2', '#c9a7ff', '#ff9f6b', '#5fe0b5', '#f27aa6', '#9aa59d']
-      : ['#27835e', '#5d88b5', '#d09b4f', '#a56d9a', '#d16f62', '#4b9bb1', '#8aa657', '#8973af'],
+    font: { family: theme.font, color: text, size: 12 },
+    colorway: theme.series,
     legend: { orientation: 'h', y: -0.22, font: { color: muted } },
     xaxis: { gridcolor: border, zerolinecolor: border, automargin: true },
     yaxis: { gridcolor: border, zerolinecolor: border, automargin: true, title: { text: unit.trim() } },
-    hoverlabel: { bgcolor: surface, bordercolor: border, font: { color: text } },
+    hoverlabel: { bgcolor: surface, bordercolor: border, font: { family: theme.font, color: text } },
   };
   if (spec.history) return historyLayout(spec, layout, muted);
   if (spec.page) {
@@ -2393,9 +2449,7 @@ function historyLayout(spec, layout, muted) {
 }
 
 function historyTraces(spec) {
-  const style = getComputedStyle(document.body);
-  const accent = style.getPropertyValue('--accent').trim() || '#8fdc4e';
-  const glow = style.getPropertyValue('--accent-glow').trim() || 'rgba(143, 220, 78, .25)';
+  const { accent } = chartTheme();
   const ticks = historyTicks(spec);
   return spec.series.map((item, index) => ({
     type: 'scatter', mode: item.points.length > 40 ? 'lines' : 'lines+markers', name: item.name,
@@ -2404,8 +2458,7 @@ function historyTraces(spec) {
     hovertemplate: spec.series.length > 1 ? '%{fullData.name}: %{customdata}<extra></extra>' : '%{customdata}<extra></extra>',
     line: { width: 2.5, ...(index === 0 ? { color: accent } : {}) }, marker: { size: 6 },
     ...(spec.area && index === 0 && ticks.length ? {
-      fill: 'tozeroy', fillcolor: glow,
-      fillgradient: { type: 'vertical', start: ticks[ticks.length - 1], stop: ticks[0], colorscale: [[0, glow], [1, 'rgba(0, 0, 0, 0)']] },
+      fill: 'tozeroy', fillcolor: withAlpha(accent, 0.08),
     } : {}),
   }));
 }
@@ -2419,6 +2472,7 @@ function plotlyConfig(spec) {
 
 function plotlyTraces(spec, view) {
   if (spec.history) return historyTraces(spec);
+  const theme = chartTheme();
   if (spec.type === 'candlestick') return [{
     type: 'candlestick',
     x: spec.candles.map(item => item.label),
@@ -2426,8 +2480,8 @@ function plotlyTraces(spec, view) {
     high: spec.candles.map(item => item.high),
     low: spec.candles.map(item => item.low),
     close: spec.candles.map(item => item.close),
-    increasing: { line: { color: '#27835e' } },
-    decreasing: { line: { color: '#d16f62' } },
+    increasing: { line: { color: theme.gain } },
+    decreasing: { line: { color: theme.loss } },
     hoverlabel: { namelength: -1 },
   }];
   if (spec.type === 'line') return spec.series.map(item => ({
