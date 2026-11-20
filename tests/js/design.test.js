@@ -603,3 +603,32 @@ test('Ask AI: the composer floats, the input area has no divider, the dots are 6
   assert.match(head, /font-size:\s*24px/);
   assert.match(ruleBody(css, '.chat-head-sub'), /font-size:\s*14px/);
 });
+
+test('the Ask AI rail has no card borders or dividers', () => {
+  const css = readCss();
+  const html = readHtml();
+  const js = readJs('rail.js');
+  assert.doesNotMatch(css, /\.rail-section \+ \.rail-section\s*\{[^}]*border/);
+  assert.match(ruleBody(css, '#right-rail'), /border-left:\s*0/);
+  assert.match(ruleBody(css, '#right-rail'), /background:\s*transparent/);
+  assert.doesNotMatch(css, /#right-rail\s*\{[^}]*border-left-color/);
+  assert.match(ruleBody(css, '#right-rail'), /gap:\s*40px/);
+  const card = ruleBody(css, '.rail-card');
+  assert.match(card, /background:\s*var\(--surface\)/);
+  assert.match(card, /border-radius:\s*12px/);
+  assert.doesNotMatch(card, /border:|box-shadow/);
+  const head = ruleBody(css, '.rail-head h2');
+  assert.match(head, /font-size:\s*14px/);
+  assert.match(head, /line-height:\s*20px/);
+  assert.match(head, /font-weight:\s*600/);
+  assert.match(ruleBody(css, '.rail-kicker'), /font-size:\s*14px[^}]*font-weight:\s*600|font-weight:\s*600[^}]*font-size:\s*14px/);
+  assert.match(ruleBody(css, '.rail-chat:hover'), /background:\s*var\(--surface-2\)/);
+  assert.match(ruleBody(css, '#right-rail .rail-figure'), /font-size:\s*24px[^}]*line-height:\s*32px[^}]*font-weight:\s*600/);
+  assert.match(ruleBody(css, '.source-dot'), /background:\s*var\(--tone/);
+  assert.match(ruleBody(css, '.source-row.is-good'), /--tone:\s*var\(--accent\)/);
+  assert.doesNotMatch(js, /→/);
+  const rail = html.slice(html.indexOf('<aside id="right-rail"'));
+  assert.doesNotMatch(rail.slice(0, rail.indexOf('</aside>')), /→/);
+  assert.match(rail, /class="rail-section rail-card"[^>]*aria-labelledby="rail-portfolio-title"/);
+  assert.match(js, /rail-chat-day/);
+});
