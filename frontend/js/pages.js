@@ -2004,7 +2004,7 @@ function goalsChanged() {
 }
 
 async function deleteGoal(goal) {
-  if (!goal || !window.confirm(`Delete the goal "${goal.name}"? Decisions linked to it are kept.`)) return false;
+  if (!goal || !(await confirmAction('deleteGoal', { name: goal.name }))) return false;
   await fetchJson(`/api/goals/${encodeURIComponent(goal.id)}`, { method: 'DELETE' });
   goalsChanged();
   toast('Goal deleted.');
@@ -2262,12 +2262,12 @@ document.addEventListener('click', async (event) => {
   if (!removeDecision && !clearAll) return;
   try {
     if (removeDecision) {
-      if (!window.confirm('Delete this decision?')) return;
+      if (!(await confirmAction('deleteDecision'))) return;
       await fetchJson(`/api/decisions/${encodeURIComponent(removeDecision.dataset.deleteDecision)}`, { method: 'DELETE' });
       toast('Decision deleted.');
       renderSavedContext(await getGoals());
     } else {
-      if (!window.confirm('Remove every saved goal, recorded decision and profile detail? Chats, snapshots and statements are kept. This cannot be undone.')) return;
+      if (!(await confirmAction('clearContext'))) return;
       await fetchJson('/api/context', { method: 'DELETE' });
       toast('Saved goals, decisions and profile details removed.');
       goalsChanged();

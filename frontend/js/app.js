@@ -120,7 +120,7 @@ let signInError = (() => {
     const message = broker === 'limit'
       ? 'The Free plan connects up to 2 brokers. Disconnect one, or see the plans at /pricing.'
       : `Could not connect ${broker.slice(0, 20)}. Open your profile and try Connect again.`;
-    setTimeout(() => (typeof toast === 'function' ? toast(message) : alert(message)), 1500);
+    setTimeout(() => (typeof toast === 'function' ? toast(message) : undefined), 1500);
   });
 })();
 // Cloudflare Turnstile on sign-up: the site key from /api/session (null when off), the widget and its script.
@@ -416,7 +416,7 @@ function renderCasStatements(statements) {
     remove.textContent = 'Delete';
     remove.setAttribute('aria-label', `Delete the ${statement.source} statement to ${statement.periodTo}`);
     remove.addEventListener('click', async () => {
-      if (!window.confirm('Delete this saved statement?')) return;
+      if (!(await confirmAction('deleteStatement'))) return;
       const response = await fetch('/api/cas/' + encodeURIComponent(statement.id), { method: 'DELETE' });
       if (response.ok) await loadCasStatus();
     });
@@ -1027,7 +1027,7 @@ profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => 
 document.getElementById('save-data-settings').addEventListener('click', async (event) => {
   const choice = readStorageChoice(profileForm, 'settings-storage');
   if (choice.storageMode === 'private' && storageMode !== 'private'
-    && !window.confirm('Private mode deletes the chats and portfolio snapshots saved for this profile. Continue?')) return;
+    && !(await confirmAction('privateMode'))) return;
   dataStatus.textContent = '';
   await withPending(event.currentTarget, dataStatus, async () => {
     renderDataZone(await savePrivacyChoice(choice));
@@ -1066,7 +1066,7 @@ document.getElementById('new-recovery-code').addEventListener('click', async (ev
     dataStatus.textContent = 'Enter your PIN to create a new recovery code.';
     return;
   }
-  if (!window.confirm('Create a new recovery code? Your current recovery code will stop working.')) return;
+  if (!(await confirmAction('newRecoveryCode'))) return;
   dataStatus.textContent = '';
   await withPending(event.currentTarget, dataStatus, async () => {
     const response = await fetch('/api/users/me/recovery-code', {
@@ -1112,7 +1112,7 @@ document.getElementById('backup-now').addEventListener('click', async (event) =>
 });
 
 document.getElementById('clear-history').addEventListener('click', async (event) => {
-  if (!window.confirm('Delete all chats and portfolio snapshots for this profile? Your profile and broker connections are kept.')) return;
+  if (!(await confirmAction('clearHistory'))) return;
   dataStatus.textContent = '';
   await withPending(event.currentTarget, dataStatus, async () => {
     const response = await fetch('/api/users/me/history', { method: 'DELETE' });
@@ -1164,9 +1164,49 @@ async function openBrokers() {
   brokersSection.scrollIntoView?.({ block: 'start' });
 }
 
+// Asks in #confirm-dialog (never a browser dialog). Resolves true only on the confirm button; Esc, Cancel and a click outside resolve false.
+let confirmPending = null;
+function confirmAction(key, values = {}) {
+  const dialog = document.getElementById('confirm-dialog');
+  const copy = confirmCopy(key, values);
+  if (confirmPending) confirmPending(false);
+  dialog.querySelector('[data-confirm-title]').textContent = copy.title;
+  dialog.querySelector('[data-confirm-body]').textContent = copy.body;
+  const cancel = dialog.querySelector('[data-confirm-cancel]');
+  const accept = dialog.querySelector('[data-confirm-accept]');
+  cancel.textContent = copy.cancelLabel;
+  accept.textContent = copy.confirmLabel;
+  accept.className = copy.danger ? 'danger-button' : 'rail-button';
+  const opener = document.activeElement;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (answer) => {
+      if (settled) return;
+      settled = true;
+      confirmPending = null;
+      dialog.removeEventListener('close', onClose);
+      dialog.removeEventListener('cancel', onCancel);
+      dialog.removeEventListener('click', onBackdrop);
+      if (dialog.open) dialog.close();
+      if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
+      resolve(answer);
+    };
+    const onClose = () => finish(dialog.returnValue === 'confirm');
+    const onCancel = () => finish(false);
+    const onBackdrop = (event) => { if (event.target === dialog) finish(false); };
+    confirmPending = finish;
+    dialog.returnValue = '';
+    dialog.addEventListener('close', onClose);
+    dialog.addEventListener('cancel', onCancel);
+    dialog.addEventListener('click', onBackdrop);
+    dialog.showModal();
+    (copy.danger ? cancel : accept).focus();
+  });
+}
+
 // INDmoney keeps its own sign-in and disconnect routes; the list treats it like any other broker.
 async function disconnectIndmoney() {
-  if (!window.confirm('Disconnect INDmoney? Saved portfolio snapshots for this profile will be deleted; your chats are kept.')) return false;
+  if (!(await confirmAction('disconnectIndmoney'))) return false;
   const response = await fetch('/auth/indmoney/disconnect', { method: 'POST' });
   if (!response.ok) throw new Error(plainError(response.status, await response.json().catch(() => ({}))));
   await loadChats();
@@ -1694,7 +1734,7 @@ async function selectChat(chatId) {
 
 async function deleteChat(chatId) {
   if (isStreaming) return;
-  if (!window.confirm('Delete this chat?')) return;
+  if (!(await confirmAction('deleteChat'))) return;
   const response = await fetch('/api/chats/' + encodeURIComponent(chatId), { method: 'DELETE' });
   if (!response.ok) throw new Error('Could not delete this chat.');
   chats = chats.filter((chat) => chat.id !== chatId);

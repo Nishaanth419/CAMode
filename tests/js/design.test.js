@@ -118,3 +118,9 @@ test('reduced motion stops movement and loops', () => {
   assert.match(block, /transition-property:\s*opacity/);
 });
 test('keyboard focus is always visible', () => assert.match(readCss(), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/));
+
+test('no browser dialogs in the app scripts', () => {
+  for (const name of ['app.js', 'pages.js', 'demo.js']) {
+    assert.doesNotMatch(readJs(name), /window\.confirm\(|(^|[^\w.])confirm\(|\balert\(/m, name);
+  }
+});

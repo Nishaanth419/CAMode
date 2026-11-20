@@ -202,3 +202,16 @@ test('readEventStream reports a stream cut inside an event', async () => {
 test('readEventStream rejects when the read fails', async () => {
   await assert.rejects(ui.readEventStream(streamOf(['event: progress\ndata: {}\n\n'], { failAfter: 1 }), () => {}));
 });
+
+test('every confirmation names its action and keeps today\'s meaning', () => {
+  assert.deepEqual(ui.confirmCopy('deleteChat'), { title: 'Delete this chat?', body: 'The chat and its answers are removed from this profile.', confirmLabel: 'Delete chat', cancelLabel: 'Cancel', danger: true });
+  assert.equal(ui.confirmCopy('deleteGoal', { name: 'House' }).title, 'Delete the goal "House"?');
+  assert.equal(ui.confirmCopy('deleteGoal', { name: 'House' }).body, 'Decisions linked to it are kept.');
+  assert.equal(ui.confirmCopy('disconnectIndmoney').confirmLabel, 'Disconnect INDmoney');
+  assert.equal(ui.confirmCopy('privateMode').confirmLabel, 'Switch to private mode');
+  assert.equal(ui.confirmCopy('deleteDecision').confirmLabel, 'Delete decision');
+  assert.equal(ui.confirmCopy('clearContext').confirmLabel, 'Delete saved details');
+  assert.equal(ui.confirmCopy('newRecoveryCode').danger, false);
+  for (const key of Object.keys(ui.CONFIRMS)) assert.ok(!/[!]/.test(JSON.stringify(ui.CONFIRMS[key])), key);
+  assert.throws(() => ui.confirmCopy('nope'));
+});

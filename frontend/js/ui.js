@@ -176,8 +176,28 @@
     return parser.end();
   }
 
+  // Copy of every in-app confirmation (app.js confirmAction() shows it). Text only: it goes in with textContent.
+  const CONFIRMS = Object.freeze({
+    deleteStatement: Object.freeze({ title: 'Delete this statement?', body: 'Its holdings and mutual fund history are removed.', confirmLabel: 'Delete statement', danger: true }),
+    privateMode: Object.freeze({ title: 'Switch to private mode?', body: 'Private mode deletes the chats and portfolio snapshots saved for this profile.', confirmLabel: 'Switch to private mode', danger: true }),
+    newRecoveryCode: Object.freeze({ title: 'Create a new recovery code?', body: 'Your current recovery code will stop working.', confirmLabel: 'Create new code', danger: false }),
+    clearHistory: Object.freeze({ title: 'Delete chats and snapshots?', body: 'Your profile and broker connections are kept.', confirmLabel: 'Delete history', danger: true }),
+    disconnectIndmoney: Object.freeze({ title: 'Disconnect INDmoney?', body: 'Saved portfolio snapshots for this profile are deleted. Your chats are kept.', confirmLabel: 'Disconnect INDmoney', danger: true }),
+    deleteChat: Object.freeze({ title: 'Delete this chat?', body: 'The chat and its answers are removed from this profile.', confirmLabel: 'Delete chat', danger: true }),
+    deleteGoal: Object.freeze({ title: 'Delete the goal "{name}"?', body: 'Decisions linked to it are kept.', confirmLabel: 'Delete goal', danger: true }),
+    deleteDecision: Object.freeze({ title: 'Delete this decision?', body: 'It is removed from what the assistant can use.', confirmLabel: 'Delete decision', danger: true }),
+    clearContext: Object.freeze({ title: 'Delete saved goals, decisions and profile details?', body: 'Chats, snapshots and statements are kept. This cannot be undone.', confirmLabel: 'Delete saved details', danger: true }),
+  });
+
+  function confirmCopy(key, values = {}) {
+    const entry = CONFIRMS[key];
+    if (!entry) throw new Error(`Unknown confirmation: ${key}`);
+    const fill = (text) => text.replace(/\{(\w+)\}/g, (match, name) => (name in values ? String(values[name]) : match));
+    return { title: fill(entry.title), body: fill(entry.body), confirmLabel: entry.confirmLabel, cancelLabel: 'Cancel', danger: entry.danger };
+  }
+
   const api = {
-    createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
