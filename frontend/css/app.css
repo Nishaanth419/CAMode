@@ -2225,7 +2225,7 @@ body.gate-open #app { visibility: hidden; }
 }
 .prompt-row:hover { background: var(--surface-2); color: var(--text); }
 .prompt-row:disabled { cursor: wait; opacity: .5; }
-.prompt-row-icon { display: grid; width: 28px; height: 28px; flex-shrink: 0; place-items: center; border-radius: var(--radius-sm); background: var(--surface); color: var(--accent-text); }
+.prompt-row-icon { display: grid; width: 28px; height: 28px; flex-shrink: 0; place-items: center; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--accent-text); }
 .prompt-row:hover .prompt-row-icon { background: var(--surface-3); }
 .prompt-row-icon svg { width: 14px; height: 14px; }
 .prompt-row-text { flex: 1; min-width: 0; }

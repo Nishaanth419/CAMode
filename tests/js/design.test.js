@@ -513,6 +513,10 @@ test('Home KPI placeholders stay hidden while loading, so nothing flashes before
   assert.match(body, /classList\.remove\('is-loading'\)/);
 });
 
+test('prompt row icon tiles use --surface-2, so they show on the light canvas', () => {
+  assert.match(ruleBody(readCss(), '.prompt-row-icon'), /background:\s*var\(--surface-2\)/);
+});
+
 test('Holdings: sliding tab underline, table on the surface, sticky header', () => {
   const css = readCss();
   assert.match(ruleBody(css, '.source-tabs'), /position:\s*relative/);
