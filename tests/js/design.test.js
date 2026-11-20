@@ -250,6 +250,8 @@ test('the sidebar opens at 248px and closes to 64px, animating only its column',
   assert.match(css, /--sidebar-w:\s*248px/);
   assert.match(css, /body\.sidebar-closed\s*\{[^}]*--sidebar-w:\s*64px/);
   assert.match(css, /#app\s*\{[^}]*transition:\s*grid-template-columns var\(--dur-move\) var\(--ease\)/);
+  assert.match(css, /body:not\(\.shell-ready\) #app\s*\{\s*transition:\s*none;?\s*\}/);
+  assert.match(readJs('shell.js'), /classList\.add\('shell-ready'\)/);
 });
 test('the sidebar keeps its hooks and drops the group labels and the top bar search', () => {
   const html = readHtml();

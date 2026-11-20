@@ -32,6 +32,8 @@ setSidebarCollapsed(
   initialSidebarState({ stored: readSidebarState(sidebarStorage()), width: window.innerWidth }) === 'closed',
   { save: false },
 );
+// Turn the column animation on only after the starting state has painted, so a load never slides the sidebar shut.
+requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add('shell-ready')));
 sidebarToggle.addEventListener('click', () => setSidebarCollapsed(!document.body.classList.contains('sidebar-closed')));
 commandOpen.addEventListener('click', openCommand);
 commandOpenPhone.addEventListener('click', openCommand);

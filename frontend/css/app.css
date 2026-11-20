@@ -223,6 +223,8 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 }
 /* Cmd/Ctrl+B or the toggle closes the sidebar to its icons (shell.js); only its column animates. */
 body.sidebar-closed { --sidebar-w: 64px; }
+/* No slide on load: shell.js adds .shell-ready two frames after it applies the starting state. */
+body:not(.shell-ready) #app { transition: none; }
 
 /* ── Sidebar ─────────────────────────────────────────────────────── */
 #sidebar {
