@@ -298,3 +298,9 @@ test('commands that start, switch or end a conversation wait for the answer in p
   const waits = [...browse, ...ask].filter(ui.commandWaitsForAnswer).map((item) => item.id);
   assert.deepEqual(waits, ['chat-c1', 'chat-c2', 'action-new-chat', 'action-sign-out', 'action-connect-broker', 'ask-portfolio', 'ask-finance']);
 });
+
+test('drawer items arrive 60ms apart, the last within 360ms', () => {
+  assert.deepEqual(ui.staggerDelays(4), [0, 60, 120, 180]);
+  assert.equal(ui.staggerDelays(20).at(-1), 360);
+  assert.deepEqual(ui.staggerDelays(0), []);
+});

@@ -312,3 +312,11 @@ test('slide-over head and actions keep clear of the notch and home indicator', (
   assert.match(css, /\.profile-dialog \.dialog-actions\s*\{[^}]*max\(20px, env\(safe-area-inset-bottom\)\)/);
   assert.match(css, /\.profile-dialog \.dialog-head\s*\{[^}]*env\(safe-area-inset-right\)/);
 });
+
+test('the phone tab bar marks the current tab with an accent bar and the drawer staggers its items', () => {
+  const css = readCss();
+  assert.match(css, /\.tab\[aria-current="page"\][^{]*::before\s*\{[^}]*background:\s*var\(--accent\)/);
+  assert.match(css, /body\.sidebar-open #sidebar [^{]*\{[^}]*transition-delay:\s*var\(--stagger/);
+  const reduce = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduce, /#sidebar[^{]*\{[^}]*transform:\s*none/);
+});

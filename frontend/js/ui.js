@@ -279,11 +279,16 @@
     return (((index + delta) % count) + count) % count;
   }
 
+  // Start delays (ms) for the drawer's items: one step apart, none later than max.
+  function staggerDelays(count, step = 60, max = 360) {
+    return Array.from({ length: count }, (_, i) => Math.min(i * step, max));
+  }
+
   const api = {
     CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
-    commandResults, moveActive, commandWaitsForAnswer,
+    commandResults, moveActive, commandWaitsForAnswer, staggerDelays,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

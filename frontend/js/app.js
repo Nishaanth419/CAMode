@@ -221,6 +221,11 @@ function setSidebarOpen(open) {
   document.body.classList.toggle('sidebar-open', open);
   sidebarScrim.hidden = !open;
   menuToggle.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const items = document.querySelectorAll('#sidebar .brand, #sidebar #command-open, #sidebar .nav-item, #sidebar .sidebar-section-head, #sidebar #chat-list .chat-row, #sidebar .sidebar-account');
+    const delays = staggerDelays(items.length);
+    items.forEach((item, i) => item.style.setProperty('--stagger', `${delays[i]}ms`));
+  }
   if (open && !wasOpen) document.querySelector('#sidebar .nav-item')?.focus();
   else if (!open && wasOpen && document.getElementById('sidebar').contains(document.activeElement)) menuToggle.focus();
 }
