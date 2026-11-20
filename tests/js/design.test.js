@@ -101,3 +101,20 @@ test('no background gradients and no generic shadows', () => {
     assert.doesNotMatch(css, /--shadow-sm:\s*0/, name);
   }
 });
+
+test('transitions use the motion tokens', () => {
+  const css = readCss();
+  for (const [, v] of css.matchAll(/transition:\s*([^;]+);/g)) {
+    assert.doesNotMatch(v, /(?<![-\w])(ease-in-out|ease-in|ease-out|ease|linear)(?![-\w])/, v);
+    for (const [, ms] of v.matchAll(/(\d+)ms/g)) assert.ok(Number(ms) >= 200, v);
+  }
+  for (const [, v] of css.matchAll(/animation:\s*([^;]+);/g)) {
+    assert.doesNotMatch(v, /(?<![-\w])(ease-in-out|ease-in|ease-out|ease|linear)(?![-\w])/, v);
+  }
+});
+test('reduced motion stops movement and loops', () => {
+  const block = readCss().split('@media (prefers-reduced-motion: reduce)')[1] || '';
+  assert.match(block, /animation-iteration-count:\s*1/);
+  assert.match(block, /transition-property:\s*opacity/);
+});
+test('keyboard focus is always visible', () => assert.match(readCss(), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/));
