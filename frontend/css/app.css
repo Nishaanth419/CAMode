@@ -1328,7 +1328,8 @@ body:not(.route-chat) #right-rail { display: none; }
 /* In-app confirmation (app.js confirmAction) */
 .confirm-dialog {
   width: min(420px, calc(100% - 32px));
-  padding: 20px;
+  margin: auto;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1339,7 +1340,9 @@ body:not(.route-chat) #right-rail { display: none; }
   transition: opacity var(--dur-fade) var(--ease), transform var(--dur-fade) var(--ease);
 }
 @starting-style { .confirm-dialog[open] { opacity: 0; transform: scale(.98); } }
-.confirm-dialog::backdrop { background: rgba(0, 0, 0, .4); }
+.confirm-dialog form { padding: 20px; }
+.confirm-dialog::backdrop { background: rgba(8, 20, 15, .45); }
+:root[data-theme="dark"] .confirm-dialog::backdrop { background: rgba(0, 0, 0, .65); }
 .confirm-dialog h2 { margin: 0 0 8px; font-size: 18px; line-height: 24px; }
 .confirm-dialog p { margin: 0 0 16px; color: var(--text-soft); font-size: 14px; line-height: 20px; }
 .confirm-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }

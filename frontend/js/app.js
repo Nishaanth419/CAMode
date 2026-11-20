@@ -1025,11 +1025,12 @@ function renderDataZone(privacy) {
 profileForm.querySelectorAll('input[name="settings-storage"]').forEach(input => input.addEventListener('change', () => syncRetentionField(profileForm, 'settings-storage')));
 
 document.getElementById('save-data-settings').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
   const choice = readStorageChoice(profileForm, 'settings-storage');
   if (choice.storageMode === 'private' && storageMode !== 'private'
     && !(await confirmAction('privateMode'))) return;
   dataStatus.textContent = '';
-  await withPending(event.currentTarget, dataStatus, async () => {
+  await withPending(button, dataStatus, async () => {
     renderDataZone(await savePrivacyChoice(choice));
     dataStatus.textContent = 'Data settings saved.';
     await loadChats();
@@ -1061,6 +1062,7 @@ document.getElementById('export-data').addEventListener('click', async (event) =
 });
 
 document.getElementById('new-recovery-code').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
   const pin = document.getElementById('export-pin').value;
   if (!pin) {
     dataStatus.textContent = 'Enter your PIN to create a new recovery code.';
@@ -1068,7 +1070,7 @@ document.getElementById('new-recovery-code').addEventListener('click', async (ev
   }
   if (!(await confirmAction('newRecoveryCode'))) return;
   dataStatus.textContent = '';
-  await withPending(event.currentTarget, dataStatus, async () => {
+  await withPending(button, dataStatus, async () => {
     const response = await fetch('/api/users/me/recovery-code', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
     });
@@ -1112,9 +1114,10 @@ document.getElementById('backup-now').addEventListener('click', async (event) =>
 });
 
 document.getElementById('clear-history').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
   if (!(await confirmAction('clearHistory'))) return;
   dataStatus.textContent = '';
-  await withPending(event.currentTarget, dataStatus, async () => {
+  await withPending(button, dataStatus, async () => {
     const response = await fetch('/api/users/me/history', { method: 'DELETE' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -1191,7 +1194,8 @@ function confirmAction(key, values = {}) {
       if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
       resolve(answer);
     };
-    const onClose = () => finish(dialog.returnValue === 'confirm');
+    // A close queued by an earlier request's dialog.close() arrives after a re-open: only a real close (dialog no longer open) counts.
+    const onClose = () => { if (!dialog.open) finish(dialog.returnValue === 'confirm'); };
     const onCancel = () => finish(false);
     const onBackdrop = (event) => { if (event.target === dialog) finish(false); };
     confirmPending = finish;
