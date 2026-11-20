@@ -187,7 +187,7 @@ function applyTheme(theme) {
   themeToggle.title = nextLabel;
   const themeLabel = document.getElementById('theme-toggle-label');
   if (themeLabel) themeLabel.textContent = nextLabel;
-  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=2#ph-sun' : '/icons.svg?v=2#ph-moon');
+  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=3#ph-sun' : '/icons.svg?v=3#ph-moon');
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
   localStorage.setItem('ca-mode-theme', selected);
 }
@@ -1791,8 +1791,10 @@ function placeFollowUps(messageDiv) {
   holder.className = 'follow-ups answer-follow-ups';
   holder.setAttribute('role', 'group');
   holder.setAttribute('aria-label', 'Follow-up suggestions');
+  const delays = staggerDelays(FOLLOW_UPS.length);
   holder.innerHTML = FOLLOW_UPS.map(([label, prompt]) =>
     `<button class="chip" type="button" data-prompt="${escHtml(prompt)}"${isStreaming ? ' disabled' : ''}>${escHtml(label)}</button>`).join('');
+  holder.querySelectorAll('.chip').forEach((chip, i) => chip.style.setProperty('--chip-delay', `${delays[i]}ms`));
   messageDiv.querySelector('.message-main').appendChild(holder);
 }
 
@@ -1803,9 +1805,7 @@ function setLatestAnswer(trace) {
   document.dispatchEvent(new CustomEvent('ca:answer', { detail: { trace: latestAnswerTrace } }));
 }
 
-const ASSISTANT_AVATAR = '<span class="message-avatar assistant" aria-hidden="true">₹</span>';
-
-// A question is a bubble on the right; an answer has the mark, a meta line, the body, its trace and, for the
+// A question is a quiet block on the right; an answer is text on the canvas with a meta line, the body, its trace and, for the
 // latest answer, follow-up suggestions. ``answer`` marks a real answer (not a notice such as a limit message).
 function addMessage(role, content, trace = [], runId = null, { answer = false } = {}) {
   showMessages();
@@ -1814,8 +1814,7 @@ function addMessage(role, content, trace = [], runId = null, { answer = false } 
   if (role === 'user') {
     div.innerHTML = `<span class="sr-only">You:</span><div class="message-body">${content}</div>`;
   } else {
-    div.innerHTML = `${ASSISTANT_AVATAR}
-      <div class="message-main">
+    div.innerHTML = `      <div class="message-main">
         <p class="message-meta">${escHtml(answerMeta(trace))}</p>
         <div class="message-body">${content}</div>
         ${renderChatTrace(trace, { runId })}
@@ -1864,8 +1863,7 @@ function addTypingIndicator() {
   const div = document.createElement('div');
   div.className = 'message assistant';
   div.id = 'typing-indicator';
-  div.innerHTML = `${ASSISTANT_AVATAR}
-    <div class="message-main">
+  div.innerHTML = `    <div class="message-main">
       <p class="message-meta">${escHtml(answerMeta())}</p>
       <div class="message-body">
         <div class="typing-indicator" role="status" aria-label="Answering"><span aria-hidden="true">$</span><span aria-hidden="true">$</span><span aria-hidden="true">$</span></div>

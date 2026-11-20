@@ -336,3 +336,27 @@ test('an update still runs once when the browser never gets to the transition', 
   await ui.withViewTransition(stuck, () => { runs += 1; });
   assert.equal(runs, 1);
 });
+
+test('the Home entrance plays once per browser session', () => {
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+  assert.equal(ui.claimEntrance(storage), true);
+  assert.equal(ui.claimEntrance(storage), false);
+  assert.equal(store.get(ui.ENTRANCE_KEY), '1');
+  assert.equal(ui.claimEntrance({ getItem: () => null, setItem: () => {} }), true); // another session
+});
+
+test('a blocked storage still plays the entrance once', () => {
+  const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  const first = ui.claimEntrance(blocked);
+  assert.equal(first, true);
+  assert.equal(ui.claimEntrance(blocked), false);
+  assert.equal(ui.claimEntrance(null), false);
+});
+
+test('the tab underline follows offsets inside the scrolling bar', () => {
+  assert.deepEqual(ui.tabIndicator({ offsetLeft: 180, offsetWidth: 96 }, { offsetLeft: 20, offsetWidth: 600 }), { x: 160, w: 96 });
+  assert.deepEqual(ui.tabIndicator({ offsetLeft: 20, offsetWidth: 80 }, { offsetLeft: 20, offsetWidth: 80 }), { x: 0, w: 80 });
+  assert.deepEqual(ui.tabIndicator(null, { offsetLeft: 0, offsetWidth: 10 }), { x: 0, w: 0 });
+  assert.deepEqual(ui.tabIndicator({ offsetLeft: 5, offsetWidth: -3 }, { offsetLeft: 20, offsetWidth: 80 }), { x: 0, w: 0 });
+});

@@ -403,8 +403,33 @@ function historyChartHtml(points, title, options = {}) {
   return chartHtml({ type: 'line', title, unit: '₹', series: netWorthSeries(points) }, { history: true, ...options });
 }
 
+// Marks the history line and its area after Plotly has drawn them, so the entrance can draw the line left to right.
+function drawHistoryLine(chartEl) {
+  const mark = () => {
+    const line = chartEl.querySelector('.scatterlayer .js-line');
+    if (!line) return false;
+    line.classList.add('history-line-draw');
+    line.setAttribute('pathLength', '1');
+    chartEl.querySelector('.scatterlayer .js-fill')?.classList.add('history-area-in');
+    return true;
+  };
+  if (mark() || typeof MutationObserver !== 'function') return;
+  const observer = new MutationObserver(() => { if (mark()) observer.disconnect(); });
+  observer.observe(chartEl, { childList: true, subtree: true });
+  setTimeout(() => observer.disconnect(), 3000);
+}
+
+let entranceTimer = null;
+// Leaving Home ends a running entrance, so coming back within 1.6s does not replay it.
+document.addEventListener('ca:route', (event) => {
+  if (event.detail?.route === 'home') return;
+  clearTimeout(entranceTimer);
+  document.querySelector('[data-page="home"]')?.removeAttribute('data-entrance');
+});
+
 async function renderHome() {
   const isCurrent = startRender('home');
+  const homePage = document.querySelector('[data-page="home"]');
   document.getElementById('home-name').textContent = currentUser ? `, ${currentUser.displayName}` : '';
   document.querySelectorAll('.js-goal-agent').forEach((chip) => { chip.dataset.agent = goalAgent(); });
   document.getElementById('home-ask-agent').textContent = `${agentName()} · opens in Ask AI`;
@@ -423,6 +448,7 @@ async function renderHome() {
   refresh.hidden = access !== 'ok';
   range.hidden = access !== 'ok';
   if (access !== 'ok') {
+    homePage.removeAttribute('data-entrance');
     value.textContent = '';
     change.textContent = '';
     stats.innerHTML = '';
@@ -437,12 +463,14 @@ async function renderHome() {
     return;
   }
   stats.hidden = false;
+  stats.classList.add('is-loading');
   stats.innerHTML = ['Invested', 'Returns', "Today's change", 'Liabilities'].map((label) => kpiCard(label, '…')).join('');
   setHtml(chart, loadingBlock());
   parts.forEach((part) => { part.innerHTML = loadingBlock(); });
   const [portfolio, trend] = await Promise.all([getPortfolio().catch((error) => ({ error })), getHistory(homeRange).catch(() => null)]);
   if (!isCurrent()) return;
   if (portfolio.error || !portfolio.available) {
+    homePage.removeAttribute('data-entrance');
     range.hidden = true;
     value.textContent = '';
     change.textContent = '';
@@ -463,10 +491,21 @@ async function renderHome() {
   change.innerHTML = moved
     ? `<span class="change-pill ${toneOf(moved.change)}">${moved.change < 0 ? '▼' : '▲'} ${escHtml(signedMoney(moved.change))} · ${escHtml(percent(moved.pct))}</span> <span>${escHtml(spanPhrase(moved.days))}</span>`
     : `<span>From your snapshot of ${escHtml(formatDate(portfolio.asOfDate))}</span>`;
+  // The entrance plays on the first Home render of a browser session only; the figures are written once, final.
+  let storage = null;
+  try { storage = window.sessionStorage; } catch (error) { /* blocked */ }
+  const play = claimEntrance(storage);
+  if (play) {
+    homePage.dataset.entrance = 'play';
+    clearTimeout(entranceTimer);
+    entranceTimer = setTimeout(() => homePage.removeAttribute('data-entrance'), 1600);
+  }
   setHtml(chart, points.length > 1
     ? historyChartHtml(points, `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${homeRange} days`, { compact: true, area: true, height: 220 })
     : '<p class="page-muted home-chart-empty">The trend appears after a second daily snapshot.</p>');
+  if (play && points.length > 1) drawHistoryLine(chart);
   stats.innerHTML = homeKpis(figures, portfolio.holdings || []);
+  stats.classList.remove('is-loading');
   parts[0].innerHTML = allocationCard(figures.by_asset_type || []);
   parts[1].innerHTML = topHoldingsList(figures.top_holdings || []);
   parts[2].innerHTML = insightList(portfolio);
@@ -660,7 +699,7 @@ async function renderPortfolio() {
         ${caps ? panel('Direct stocks by market cap', `<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`) : ''}
       </div>
     </div>
-    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings <span aria-hidden="true">→</span></a>' })}
+    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings</a>' })}
     ${notes.length ? panel('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
     ${promptChips([
       ['Explain my allocation', 'Explain my current asset allocation and what stands out.'],
@@ -796,7 +835,7 @@ function holdingsFilters(rows) {
       </div>
       <div class="holdings-find">
         <label class="holdings-search">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-magnifying-glass"></use></svg>
           <span class="sr-only">Search holdings by name, code or broker</span>
           <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
         </label>
@@ -846,7 +885,7 @@ function brokerSplit(rows) {
   if (shown.length < 2) return '';
   const series = (index) => `series-${(index % SERIES_COUNT) + 1}`;
   const label = shown.map((row) => `${row.broker} ${percent(row.share_of_listed_holdings_pct)}`).join(', ');
-  return `<section class="panel home-card" aria-labelledby="by-broker-title">
+  return `<section class="broker-split" aria-labelledby="by-broker-title">
     <div class="card-head"><h2 id="by-broker-title" class="card-title">By broker</h2></div>
     <div class="stack-bar" role="img" aria-label="${escHtml(label)}">${shown.map((row, index) =>
       `<span class="${series(index)}" style="width:${(Number(row.share_of_listed_holdings_pct) || 0).toFixed(2)}%"></span>`).join('')}</div>
@@ -890,6 +929,7 @@ async function renderHoldings() {
   if (source.available === false) {
     setHtml(body, head + notice('No holdings to show', source.problem || 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.'));
     showActiveSourceTab(body);
+    placeTabIndicator(body, { from: lastTabIndicator });
     return;
   }
   latestHoldings = source.holdings || [];
@@ -906,6 +946,62 @@ async function renderHoldings() {
     ${brokerSplit(source.figures?.by_broker)}`);
   renderHoldingsTable();
   showActiveSourceTab(body);
+  placeTabIndicator(body, { from: lastTabIndicator });
+}
+
+// The underline under the active source tab. renderHoldings rebuilds the body on every tab click, so the previous
+// underline's place is kept here: the new bar starts there and slides (css transition) to the new tab.
+let lastTabIndicator = null;
+let tabIndicatorListening = false;
+// Leaving Holdings forgets the underline, so coming back starts in place instead of sliding from an old spot.
+document.addEventListener('ca:route', (event) => { if (event.detail?.route !== 'holdings') lastTabIndicator = null; });
+
+function measureTabIndicator(body) {
+  const bar = body.querySelector('.source-tabs');
+  const active = bar?.querySelector('.source-tab[aria-pressed="true"]');
+  if (!bar || !active) return null;
+  // The bar is the tabs' offset parent (position: relative), so its own offset is zero in this frame.
+  return { bar, ...tabIndicator(active, { offsetLeft: 0, offsetWidth: bar.offsetWidth }) };
+}
+
+function setTabIndicator(bar, { x, w }) {
+  bar.style.setProperty('--tab-x', `${x}px`);
+  bar.style.setProperty('--tab-w', String(w / 100));
+}
+
+// Puts the underline somewhere with its transition off, and commits it, so nothing animates to get there.
+function snapTabIndicator(bar, place) {
+  bar.classList.add('is-placing');
+  setTabIndicator(bar, place);
+  getComputedStyle(bar, '::after').transform; // commit while transitions are off
+  bar.classList.remove('is-placing');
+  getComputedStyle(bar, '::after').transform; // and commit with them back on, so the next change transitions
+}
+
+function placeTabIndicator(body, { from } = {}) {
+  const target = measureTabIndicator(body);
+  if (!target || !(target.w > 0)) return;
+  // A bar may already have been styled without the variables (a forced layout earlier in the render), so the
+  // start is always committed with transitions off: the previous tab's place when there is one, else the target.
+  const slides = from && from.w > 0 && (from.x !== target.x || from.w !== target.w);
+  snapTabIndicator(target.bar, slides ? from : target);
+  if (slides) setTabIndicator(target.bar, target);
+  lastTabIndicator = { x: target.x, w: target.w };
+  if (tabIndicatorListening) return;
+  tabIndicatorListening = true;
+  // Resizes, tab logos and fonts change tab widths: the underline snaps to the new place instead of sliding.
+  const settle = () => {
+    const current = measureTabIndicator(body);
+    if (!current || !(current.w > 0)) return;
+    // A logo that loads from cache changes nothing: leave a slide in progress alone.
+    if (lastTabIndicator && lastTabIndicator.x === current.x && lastTabIndicator.w === current.w) return;
+    snapTabIndicator(current.bar, current);
+    lastTabIndicator = { x: current.x, w: current.w };
+  };
+  window.addEventListener('resize', settle);
+  // load does not bubble, so listen while capturing.
+  body.addEventListener('load', settle, true);
+  document.fonts?.ready?.then(settle);
 }
 
 // On a phone the tabs scroll sideways; keep the selected one in sight.
@@ -913,7 +1009,7 @@ function showActiveSourceTab(body) {
   const active = body.querySelector('.source-tab[aria-pressed="true"]');
   const bar = active?.parentElement;
   if (!bar || bar.scrollWidth <= bar.clientWidth) return;
-  bar.scrollLeft = Math.max(0, active.offsetLeft - bar.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
+  bar.scrollLeft = Math.max(0, active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
 }
 
 function renderHoldingsTable() {

@@ -23,6 +23,14 @@ function tokenBlock(css, selector) {
   return tokens;
 }
 
+// The declarations of the first rule whose selector list is exactly `selector` (any nesting depth).
+function ruleBody(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|[}{;])[ \\t]*${escaped}\\s*\\{([^}]*)\\}`, 'm').exec(css);
+  assert.ok(match, `no rule for ${selector}`);
+  return match[1];
+}
+
 test('only Geist and Geist Mono are loaded', () => {
   const html = readHtml();
   assert.match(html, /family=Geist:wght@400;500;600;700/);
@@ -105,7 +113,14 @@ test('radii come from the scale', () => {
 test('no background gradients and no generic shadows', () => {
   for (const name of ['app.css', 'public.css', 'admin.css']) {
     const css = readCss(name);
-    assert.equal((css.match(/gradient\(/g) || []).length, 0, name);
+    const gradients = (css.match(/gradient\(/g) || []).length;
+    if (name === 'app.css') {
+      // Exactly one: the Home hero figure's text gradient.
+      assert.equal(gradients, 1, name);
+      assert.match(ruleBody(css, '#home-networth-value'), /linear-gradient\(/);
+    } else {
+      assert.equal(gradients, 0, name);
+    }
     assert.doesNotMatch(css, /box-shadow:\s*0 1px 3px rgba\(0,\s*0,\s*0/, name);
     assert.doesNotMatch(css, /--shadow-sm:\s*0/, name);
   }
@@ -150,11 +165,11 @@ test('every sprite icon referenced by the app exists in icons.svg', () => {
   assert.ok(fs.existsSync(path.join(FRONTEND, 'icons-LICENSE.txt')));
 });
 
-test('index.html keeps inline svg only for the brand marks, the illustration, the Google mark and the model caret', () => {
+test('index.html keeps inline svg only for the brand marks, the Google mark and the model caret', () => {
   const html = readHtml();
   const inline = [...html.matchAll(/<svg\b([^>]*)>/g)].map((m) => m[1]);
   for (const attrs of inline) {
-    const allowed = /viewBox="0 0 28 28"/.test(attrs) || /viewBox="0 0 260 170"/.test(attrs)
+    const allowed = /viewBox="0 0 28 28"/.test(attrs)
       || /class="google-mark"/.test(attrs) || /class="model-caret"/.test(attrs) || /class="icon"/.test(attrs);
     assert.ok(allowed, `unexpected inline svg: ${attrs}`);
   }
@@ -354,4 +369,314 @@ test('the sign-in gate is one column on the canvas, not a card', () => {
   assert.doesNotMatch(card, /border:\s*1px|box-shadow|background:\s*var\(--surface\)/);
   assert.match(card, /width:\s*min\(400px, 100%\)/);
   assert.match(/\.profile-gate\s*\{([^}]*)\}/.exec(css)[1], /background:\s*var\(--canvas\)/);
+});
+
+test('hero tokens', () => {
+  const css = readCss();
+  const dark = tokenBlock(css, ':root[data-theme="dark"]');
+  const light = tokenBlock(css, ':root');
+  assert.equal(dark.get('--hero-from'), '#FFFFFF');
+  assert.equal(dark.get('--hero-to'), '#9B9B9B');
+  assert.equal(light.get('--hero-from'), '#000000');
+  assert.equal(light.get('--hero-to'), '#666666');
+});
+
+test('the hero figure is 60px with the gradient, 36px on phones', () => {
+  const css = readCss();
+  const rule = ruleBody(css, '#home-networth-value');
+  assert.match(rule, /font-size:\s*60px/);
+  assert.match(rule, /line-height:\s*1;/);
+  assert.match(rule, /font-weight:\s*600/);
+  assert.match(rule, /letter-spacing:\s*-0?\.035em/);
+  assert.match(rule, /linear-gradient\(90deg, var\(--hero-from\), var\(--hero-to\)\)/);
+  assert.match(rule, /background-clip:\s*text/);
+  assert.match(rule, /color:\s*transparent/);
+  assert.match(rule, /overflow-wrap:\s*anywhere/);
+  const phone = /@media \(max-width: 899px\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(phone, 'no max-width: 899px media block');
+  assert.match(ruleBody(phone[1], '#home-networth-value'), /font-size:\s*36px/);
+  const forced = /@media \(forced-colors: active\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(forced, 'no forced-colors block');
+  const forcedRule = ruleBody(forced[1], '#home-networth-value');
+  assert.match(forcedRule, /color:\s*CanvasText/);
+  assert.match(forcedRule, /background:\s*none/);
+  assert.match(ruleBody(css, '#home-networth-value:empty'), /display:\s*none/);
+});
+
+test('Home is lists and plain figures, not cards', () => {
+  const html = readHtml();
+  const home = html.slice(html.indexOf('data-page="home"'), html.indexOf('data-page="portfolio"'));
+  assert.doesNotMatch(home, /class="panel[ "]/);
+  assert.doesNotMatch(home, /home-card/);
+  assert.doesNotMatch(home, /→/);
+  assert.match(home, /ph-caret-right/);
+  const sprite = fs.readFileSync(path.join(FRONTEND, 'icons.svg'), 'utf8');
+  assert.match(sprite, /<symbol id="ph-caret-right"[^>]*fill="currentColor"/);
+  const css = readCss();
+  const strip = ruleBody(css, '.kpi-strip');
+  assert.match(strip, /background:\s*var\(--surface\)/);
+  assert.match(strip, /border-radius:\s*(12px|var\(--radius-lg\))/);
+  assert.match(strip, /padding:\s*24px/);
+  assert.doesNotMatch(strip, /border:/);
+  const card = ruleBody(css, '.kpi-card');
+  assert.doesNotMatch(card, /border:|background:|box-shadow:/);
+  assert.match(ruleBody(css, '.kpi-value'), /font-size:\s*24px/);
+  assert.match(ruleBody(css, '.kpi-label'), /font-size:\s*14px/);
+  assert.match(ruleBody(css, '.home-composer'), /background:\s*var\(--surface\)/);
+  assert.doesNotMatch(ruleBody(css, '.home-composer'), /border:/);
+  assert.match(ruleBody(css, '.home-composer:focus-within'), /var\(--accent\)/);
+});
+
+test('pages.js Home and Holdings templates have no arrow glyphs', () => {
+  const js = readJs('pages.js');
+  for (const fn of ['kpiCard', 'allocationCard', 'topHoldingsList', 'insightList', 'renderHomeGoals', 'renderHome', 'sourceTabs', 'holdingsRows']) {
+    const start = js.search(new RegExp(`(?:async )?function ${fn}\\(`));
+    assert.ok(start >= 0, fn);
+    const next = js.indexOf('\nfunction ', start + 10);
+    const body = js.slice(start, next < 0 ? undefined : next);
+    assert.doesNotMatch(body, /→/, fn);
+  }
+  assert.doesNotMatch(readHtml(), /icons\.svg\?v=2/);
+});
+
+test('Home list rows highlight on hover', () => {
+  const css = readCss();
+  for (const sel of ['.alloc-list li:hover', '.holding-list li:hover', '.change-list li:hover']) {
+    assert.match(css, new RegExp(`${sel.replace(/[.:]/g, '\\$&')}[^{]*\\{[^}]*background:\\s*var\\(--surface-2\\)`), sel);
+  }
+});
+
+test('the Home markup balances its divs and sections', () => {
+  const html = readHtml();
+  const home = html.slice(html.indexOf('data-page="home"'), html.indexOf('data-page="portfolio"'));
+  const count = (text, re) => (text.match(re) || []).length;
+  assert.equal(count(home, /<div[\s>]/g), count(home, /<\/div>/g), 'div');
+  // The slice starts inside Home's opening <section> tag and ends after Portfolio's, so the counts match.
+  assert.equal(count(home, /<section[\s>]/g), count(home, /<\/section>/g), 'section');
+});
+
+test('the page view region balances its divs and sections', () => {
+  const html = readHtml();
+  const start = html.indexOf('<div id="page-view"');
+  // From #page-view to its own closing </div>, just before the </section> that ends the chat area.
+  const end = html.lastIndexOf('</div>', html.indexOf('<!-- ── Right rail')) + '</div>'.length;
+  const region = html.slice(start, end);
+  const count = (re) => (region.match(re) || []).length;
+  assert.equal(count(/<div[\s>]/g), count(/<\/div>/g), 'div');
+  assert.equal(count(/<section[\s>]/g), count(/<\/section>/g), 'section');
+});
+
+test('the Home entrance animates the figure, the line, the area and the KPI row', () => {
+  const css = readCss();
+  const play = (sel) => ruleBody(css, `[data-entrance="play"] ${sel}`);
+  assert.match(play('#home-networth-value'), /animation:[^;]*entrance-in[^;]*var\(--ease\)/);
+  assert.match(play('#home-stats'), /animation:[^;]*entrance-in[^;]*var\(--ease\)[^;]*650ms/);
+  assert.match(play('.history-line-draw'), /animation:[^;]*line-draw[^;]*900ms var\(--ease\) 150ms/);
+  assert.match(play('.history-area-in'), /animation:[^;]*area-in[^;]*700ms var\(--ease\)/);
+  const kf = keyframes(css.replace(reducedMotionBlock(css), ''));
+  assert.match(kf.get('line-draw'), /stroke-dashoffset:\s*1[\s\S]*stroke-dashoffset:\s*0/);
+  assert.match(kf.get('entrance-in'), /translateY\(8px\)/);
+  // line-draw is the one keyframe allowed to animate something other than transform and opacity.
+  for (const [name, body] of kf) {
+    if (name === 'line-draw') continue;
+    assert.doesNotMatch(body, /stroke-dashoffset|(?<![-\w])(width|height|top|left|margin|background)\s*:/, name);
+  }
+  const block = reducedMotionBlock(css);
+  const inside = keyframes(block);
+  for (const name of ['entrance-in', 'area-in']) {
+    assert.ok(inside.has(name), name);
+    assert.doesNotMatch(inside.get(name), /transform/, name);
+  }
+  assert.match(block, /\.history-line-draw\s*\{[^}]*animation:\s*none[^}]*stroke-dasharray:\s*none/);
+});
+
+test('renderHome claims the entrance once and never animates a figure in script', () => {
+  const js = readJs('pages.js');
+  const start = js.indexOf('async function renderHome()');
+  const body = js.slice(start, js.indexOf('\nfunction homeKpis', start));
+  assert.equal((body.match(/claimEntrance\(/g) || []).length, 1);
+  assert.doesNotMatch(body, /setInterval|requestAnimationFrame/);
+  assert.match(body, /removeAttribute\('data-entrance'\)/);
+  // The empty, private and error branches each clear the attribute before returning.
+  const branches = body.split("homePage.removeAttribute('data-entrance');").length - 1;
+  assert.ok(branches >= 2, 'the not-connected/private and the no-snapshot/error branches clear data-entrance');
+  assert.match(js, /addEventListener\('ca:route'[\s\S]{0,300}clearTimeout\(entranceTimer\)[\s\S]{0,120}removeAttribute\('data-entrance'\)/);
+  assert.match(body, /drawHistoryLine/);
+  assert.match(js, /\.scatterlayer \.js-line/);
+  assert.match(js, /history-line-draw/);
+  assert.match(js, /history-area-in/);
+});
+
+test('Home KPI placeholders stay hidden while loading, so nothing flashes before the entrance', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '#home-stats.is-loading'), /visibility:\s*hidden/);
+  const js = readJs('pages.js');
+  const start = js.indexOf('async function renderHome()');
+  const body = js.slice(start, js.indexOf('\nfunction homeKpis', start));
+  assert.match(body, /classList\.add\('is-loading'\)/);
+  assert.match(body, /classList\.remove\('is-loading'\)/);
+});
+
+test('prompt row icon tiles use --surface-2, so they show on the light canvas', () => {
+  assert.match(ruleBody(readCss(), '.prompt-row-icon'), /background:\s*var\(--surface-2\)/);
+});
+
+test('prompt row: the trailing caret rule does not reach the icon tile', () => {
+  const css = readCss();
+  assert.match(css, /\.prompt-row > \.icon:last-child\s*\{/);
+  assert.doesNotMatch(css, /\.prompt-row \.icon:last-child/);
+});
+
+test('print: the hero figure is plain black text, not transparent clipped text', () => {
+  const css = readCss();
+  const prints = [...css.matchAll(/@media print\s*\{([\s\S]*?)\n\}/g)].map((m) => m[1]).join('\n');
+  const rule = prints.match(/body #home-networth-value\s*\{([^}]*)\}/);
+  assert.ok(rule, 'a print rule for the hero figure');
+  assert.match(rule[1], /background:\s*none/);
+  assert.match(rule[1], /color:\s*#000/);
+});
+
+test('hidden Home stats and focus rings do not rely on colour alone', () => {
+  const css = readCss();
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+  assert.match(ruleBody(css, '#home-stats.is-loading'), /visibility:\s*hidden/);
+  assert.match(ruleBody(css, '.home-composer:focus-within'), /outline:\s*2px solid var\(--accent\)/);
+});
+
+test('follow-up chips fill backwards so a disabled chip keeps its opacity', () => {
+  assert.match(ruleBody(readCss(), '.answer-follow-ups .chip'), /animation:[^;]*backwards/);
+});
+
+test('dead Home and tone rules are gone', () => {
+  assert.doesNotMatch(readCss(), /\.figure-xl|\.tone-(green|blue|amber|violet)\b/);
+});
+
+test('Holdings: sliding tab underline, table on the surface, sticky header', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.source-tabs'), /position:\s*relative/);
+  const after = ruleBody(css.replace(reducedMotionBlock(css), ''), '.source-tabs::after');
+  assert.match(after, /height:\s*2px/);
+  assert.match(after, /background:\s*var\(--accent\)/);
+  assert.match(after, /width:\s*100px/);
+  assert.match(after, /transform:\s*translateX\(var\(--tab-x,\s*0(px)?\)\)\s*scaleX\(/);
+  assert.match(after, /transition:\s*transform var\(--dur-move\) var\(--ease\)/);
+  assert.doesNotMatch(ruleBody(css, '.source-tab[aria-pressed="true"]'), /border-bottom-color/);
+  const panel = ruleBody(css, '.holdings-panel');
+  assert.match(panel, /background:\s*var\(--surface\)/);
+  assert.doesNotMatch(panel, /border\s*:/);
+  assert.doesNotMatch(panel, /overflow:\s*hidden/);
+  assert.match(panel, /overflow:\s*clip/);
+  const th = ruleBody(css, '.holdings-table thead th');
+  assert.match(th, /position:\s*sticky/);
+  assert.match(th, /top:\s*calc\(-1 \* var\(--page-pad-top/);
+  assert.match(ruleBody(css, '#page-view'), /--page-pad-top:\s*28px[^}]*padding:\s*var\(--page-pad-top\)/);
+  assert.match(ruleBody(css, '.source-tabs.is-placing::after'), /transition:\s*none/);
+  assert.match(th, /background:\s*var\(--surface(-2)?\)/);
+  assert.match(ruleBody(css, '.holdings-table tbody tr:hover'), /var\(--surface-2\)/);
+  // Scrolling sideways is only for pages under 900px (a container query); above it sticky needs no scroll ancestor.
+  assert.doesNotMatch(css, /^\.holdings-scroll\s*\{/m);
+  assert.match(css, /@container \(max-width: 900px\) \{\s*\.holdings-scroll \{ overflow-x: auto; \}/);
+  assert.match(reducedMotionBlock(css), /\.source-tabs::after\s*\{[^}]*transition:\s*none/);
+  assert.match(css, /\.holdings-table tbody tr\s*\{[^}]*grid-template-areas/);
+  assert.doesNotMatch(readJs('pages.js'), /→/);
+});
+
+test('placeTabIndicator carries the old underline across the rebuild and reruns on resize and logo load', () => {
+  const js = readJs('pages.js');
+  assert.match(js, /function placeTabIndicator\(/);
+  assert.match(js, /tabIndicator\(/);
+  assert.match(js, /--tab-x/);
+  assert.match(js, /--tab-w/);
+  assert.match(js, /addEventListener\('resize'/);
+  assert.match(js, /addEventListener\('load'/);
+  assert.match(js, /document\.fonts\?\.ready/);
+  assert.match(js, /function snapTabIndicator/);
+  assert.match(js, /target\.w > 0/);
+});
+
+test('Ask AI: 720px column, answers as text on the canvas, questions as quiet blocks', () => {
+  const css = readCss();
+  assert.match(css, /#chat-area\s*\{\s*--chat-w:\s*720px;/);
+  const body = ruleBody(css, '.message.assistant .message-body');
+  assert.match(body, /max-width:\s*65ch/);
+  assert.doesNotMatch(body, /background|border/);
+  const lead = ruleBody(css, '.message.assistant .message-body > p:first-child');
+  assert.match(lead, /font-size:\s*18px/);
+  assert.match(lead, /line-height:\s*28px/);
+  assert.match(lead, /font-weight:\s*500/);
+  const question = ruleBody(css, '.message.user .message-body');
+  assert.match(question, /background:\s*var\(--surface\)/);
+  assert.match(question, /border-radius:\s*12px/);
+  assert.match(question, /padding:\s*12px 16px/);
+  assert.doesNotMatch(question, /border:|border-color/);
+  assert.doesNotMatch(css, /:root\[data-theme="dark"\] \.message\.user \.message-body/);
+});
+
+test('Ask AI: a new answer rises, follow-up chips arrive staggered', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.message'), /animation:\s*rise-in var\(--dur-move\) var\(--ease\)/);
+  assert.match(/@keyframes rise-in\s*\{\s*from\s*\{[^}]*translateY\(8px\)/.exec(css)?.[0] || '', /translateY\(8px\)/);
+  const chip = ruleBody(css, '.answer-follow-ups .chip');
+  assert.match(chip, /animation:\s*rise-in var\(--dur-move\) var\(--ease\) backwards/);
+  assert.match(chip, /var\(--chip-delay/);
+  const js = readJs('app.js');
+  const fn = /function placeFollowUps[\s\S]*?\n\}\n/.exec(js)[0];
+  assert.match(fn, /staggerDelays/);
+  assert.match(fn, /--chip-delay/);
+});
+
+test('Ask AI: assistant answers have no avatar tile and the empty state has no illustration', () => {
+  const js = readJs('app.js');
+  assert.doesNotMatch(js, /message-avatar/);
+  assert.doesNotMatch(readCss(), /\.message-avatar|\.hero-art|\.coins|\.hero-tag/);
+  const html = readHtml();
+  assert.doesNotMatch(html, /class="hero-art"|class="coins"/);
+  assert.doesNotMatch(html.slice(html.indexOf('id="empty-state"'), html.indexOf('id="messages"')), /→|tone-(green|blue|amber|violet)/);
+  assert.match(html.slice(html.indexOf('id="empty-state"'), html.indexOf('id="messages"')), /ph-caret-right/);
+});
+
+test('Ask AI: the composer floats, the input area has no divider, the dots are 6px', () => {
+  const css = readCss();
+  const composer = ruleBody(css, '.composer');
+  assert.match(composer, /border-radius:\s*16px/);
+  assert.match(composer, /background:\s*var\(--surface\)/);
+  assert.match(composer, /box-shadow:/);
+  assert.doesNotMatch(ruleBody(css, '#input-area'), /border-top/);
+  const dot = ruleBody(css, '.typing-indicator span');
+  assert.match(dot, /width:\s*6px/);
+  assert.match(dot, /height:\s*6px/);
+  assert.match(dot, /var\(--text-muted\)/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*@keyframes typing-bounce/);
+  const head = ruleBody(css, '.chat-head-title');
+  assert.match(head, /font-size:\s*24px/);
+  assert.match(ruleBody(css, '.chat-head-sub'), /font-size:\s*14px/);
+});
+
+test('the Ask AI rail has no card borders or dividers', () => {
+  const css = readCss();
+  const html = readHtml();
+  const js = readJs('rail.js');
+  assert.doesNotMatch(css, /\.rail-section \+ \.rail-section\s*\{[^}]*border/);
+  assert.match(ruleBody(css, '#right-rail'), /border-left:\s*0/);
+  assert.match(ruleBody(css, '#right-rail'), /background:\s*transparent/);
+  assert.doesNotMatch(css, /#right-rail\s*\{[^}]*border-left-color/);
+  assert.match(ruleBody(css, '#right-rail'), /gap:\s*40px/);
+  const card = ruleBody(css, '.rail-card');
+  assert.match(card, /background:\s*var\(--surface\)/);
+  assert.match(card, /border-radius:\s*12px/);
+  assert.doesNotMatch(card, /border:|box-shadow/);
+  const head = ruleBody(css, '.rail-head h2');
+  assert.match(head, /font-size:\s*14px/);
+  assert.match(head, /line-height:\s*20px/);
+  assert.match(head, /font-weight:\s*600/);
+  assert.match(ruleBody(css, '.rail-kicker'), /font-size:\s*14px[^}]*font-weight:\s*600|font-weight:\s*600[^}]*font-size:\s*14px/);
+  assert.match(ruleBody(css, '.rail-chat:hover'), /background:\s*var\(--surface-2\)/);
+  assert.match(ruleBody(css, '#right-rail .rail-figure'), /font-size:\s*24px[^}]*line-height:\s*32px[^}]*font-weight:\s*600/);
+  assert.match(ruleBody(css, '.source-dot'), /background:\s*var\(--tone/);
+  assert.match(ruleBody(css, '.source-row.is-good'), /--tone:\s*var\(--accent\)/);
+  assert.doesNotMatch(js, /→/);
+  const rail = html.slice(html.indexOf('<aside id="right-rail"'));
+  assert.doesNotMatch(rail.slice(0, rail.indexOf('</aside>')), /→/);
+  assert.match(rail, /class="rail-section rail-card"[^>]*aria-labelledby="rail-portfolio-title"/);
+  assert.match(js, /rail-chat-day/);
 });

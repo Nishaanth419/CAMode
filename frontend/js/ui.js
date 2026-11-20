@@ -286,6 +286,32 @@
     return Array.from({ length: count }, (_, i) => Math.min(i * step, max));
   }
 
+  // The Home entrance plays on the first Home render of a browser session. Storage can be missing or throw, so a
+  // module-level flag also keeps it to once per page load.
+  const ENTRANCE_KEY = 'ca-mode-entrance';
+  let entranceSpent = false;
+  function claimEntrance(storage) {
+    // A storage that works is the record for the browser session; without one, the flag is.
+    try {
+      if (storage) {
+        if (storage.getItem(ENTRANCE_KEY) === '1') return false;
+        storage.setItem(ENTRANCE_KEY, '1');
+        return true;
+      }
+    } catch (error) { /* blocked storage: the flag decides */ }
+    if (entranceSpent) return false;
+    entranceSpent = true;
+    return true;
+  }
+
+  // Where the active tab sits inside its bar, from offsets (never viewport rects, so a scrolled bar is right).
+  function tabIndicator(active, bar) {
+    if (!active) return { x: 0, w: 0 };
+    const x = Number(active.offsetLeft) - Number(bar?.offsetLeft || 0);
+    const w = Number(active.offsetWidth);
+    return { x: Number.isFinite(x) ? Math.max(0, x) : 0, w: Number.isFinite(w) ? Math.max(0, w) : 0 };
+  }
+
   const VIEW_TRANSITION_PATIENCE_MS = 400;
   // Runs a DOM update inside a view transition when the browser has one. The update always runs, and an error
   // from it rejects; a transition that is skipped or aborted never does.
@@ -323,7 +349,7 @@
     withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
-    commandResults, moveActive, commandWaitsForAnswer, staggerDelays,
+    commandResults, moveActive, commandWaitsForAnswer, staggerDelays, ENTRANCE_KEY, claimEntrance, tabIndicator,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);
