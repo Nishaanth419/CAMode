@@ -1374,7 +1374,7 @@ body.gate-open #app { visibility: hidden; }
   text-align: center;
 }
 /* Borders, not shadows, in dark mode. */
-:root[data-theme="dark"] .gate-card, :root[data-theme="dark"] .profile-dialog { box-shadow: none; }
+:root[data-theme="dark"] .gate-card { box-shadow: none; }
 .gate-logo { display: inline-grid; width: 44px; height: 44px; margin-bottom: 16px; border-radius: 12px; }
 .gate-logo svg { width: 26px; height: 26px; }
 .gate-title { color: var(--text); font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 32px; }
