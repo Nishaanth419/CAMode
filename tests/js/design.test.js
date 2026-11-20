@@ -86,6 +86,15 @@ test('no uppercase, italic or weights above bold', () => {
 
 module.exports = { readCss, readHtml, readJs, tokenBlock };
 
+test('the command menu is a dialog with a combobox driving a listbox', () => {
+  const html = readHtml();
+  const menu = html.slice(html.indexOf('<dialog id="command-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="command-dialog"')));
+  assert.match(menu, /aria-label="Command menu"/);
+  assert.match(menu, /id="command-input"[^>]*role="combobox"[^>]*aria-controls="command-list"/);
+  assert.match(menu, /id="command-list"[^>]*role="listbox"/);
+  assert.match(readCss(), /\.command-dialog\s*\{[^}]*width:\s*min\(640px/);
+});
+
 test('radii come from the scale', () => {
   const ok = /^(0|2px|4px|6px|8px|12px|16px|50%|9999px|inherit|var\(--radius-[a-z]+\))$/;
   for (const name of ['app.css', 'public.css', 'admin.css']) {

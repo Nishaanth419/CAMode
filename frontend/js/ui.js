@@ -239,10 +239,44 @@
     return /Mac|iPhone|iPad/.test(platform || '') ? '⌘K' : 'Ctrl K';
   }
 
+  // What the command menu lists for a query. A blank query browses pages, recent chats and actions; anything typed
+  // can always be asked of either agent, then pages, chats and actions whose label holds every word of it.
+  function commandResults(query, { pages = [], chats = [], actions = [] } = {}) {
+    const text = String(query || '').trim();
+    const pageItems = pages.map((page) => ({ id: `page-${page.route}`, kind: 'page', label: page.label, hint: '', value: page.route }));
+    const chatItems = chats.map((chat) => ({ id: `chat-${chat.id}`, kind: 'chat', label: chat.title || 'New chat', hint: '', value: String(chat.id) }));
+    const actionItems = actions.map((action) => ({ id: `action-${action.id}`, kind: 'action', label: action.label, hint: '', value: action.id }));
+    if (!text) {
+      return [
+        { title: 'Pages', items: pageItems },
+        { title: 'Recent chats', items: chatItems.slice(0, 5) },
+        { title: 'Actions', items: actionItems },
+      ].filter((group) => group.items.length);
+    }
+    const words = text.toLowerCase().split(/\s+/);
+    const matches = (item) => words.every((word) => item.label.toLowerCase().includes(word));
+    return [
+      { title: 'Ask', items: [
+        { id: 'ask-portfolio', kind: 'ask', label: `Ask Portfolio Analyzer: "${text}"`, hint: 'Enter', value: text, agent: 'portfolio' },
+        { id: 'ask-finance', kind: 'ask', label: `Ask Finance Agent: "${text}"`, hint: '', value: text, agent: 'finance' },
+      ] },
+      { title: 'Pages', items: pageItems.filter(matches) },
+      { title: 'Chats', items: chatItems.filter(matches).slice(0, 6) },
+      { title: 'Actions', items: actionItems.filter(matches) },
+    ].filter((group) => group.items.length);
+  }
+
+  // The next active option for the arrow keys, wrapping at both ends; -1 when there is nothing to move through.
+  function moveActive(index, delta, count) {
+    if (!count) return -1;
+    return (((index + delta) % count) + count) % count;
+  }
+
   const api = {
     CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
+    commandResults, moveActive,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

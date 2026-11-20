@@ -1,5 +1,5 @@
-/* CA Mode: the app shell. The desktop sidebar that opens and closes, and the keyboard shortcuts.
-   Loaded after pages.js; uses setSidebarOpen() from app.js and the helpers from ui.js. */
+/* CA Mode: the app shell. The desktop sidebar that opens and closes, the command menu and the keyboard shortcuts.
+   Loaded after pages.js; uses the globals of app.js and pages.js and the helpers from ui.js. */
 
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const commandOpen = document.getElementById('command-open');
@@ -23,10 +23,200 @@ function setSidebarCollapsed(collapsed, { save = true } = {}) {
   if (save && window.innerWidth > 1280) saveSidebarState(sidebarStorage(), collapsed ? 'closed' : 'open');
 }
 
-// Task 2 puts the command menu here; until then the search button takes focus.
-function openCommand() {
-  commandOpen.focus();
+/* ── Command menu ───────────────────────────────────────────────────── */
+const commandDialog = document.getElementById('command-dialog');
+const commandInput = document.getElementById('command-input');
+const commandList = document.getElementById('command-list');
+let commandItems = [];
+let commandActive = -1;
+let commandOpener = null;
+
+const COMMAND_ICONS = {
+  ask: '/icons.svg?v=2#ph-chat-circle',
+  chat: '/icons.svg?v=2#ph-chats',
+  page: '/icons.svg?v=2#ph-arrow-right',
+  'new-chat': '/icons.svg?v=2#ph-plus',
+  'refresh-snapshot': '/icons.svg?v=2#ph-pulse',
+  'add-goal': '/icons.svg?v=2#ph-target',
+  'connect-broker': '/icons.svg?v=2#ph-stack',
+  'sign-out': '/icons.svg?v=2#ph-arrow-right',
+  light: '/icons.svg?v=2#ph-sun',
+  dark: '/icons.svg?v=2#ph-moon',
+};
+
+// Every page except not-found, labelled with its own title (Ask AI for the chat).
+function commandPages() {
+  return Object.keys(ROUTE_META).filter((route) => route !== 'not-found').map((route) => ({ route, label: ROUTE_META[route][0] }));
 }
+
+function commandActions() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  return [
+    { id: 'new-chat', label: 'New chat' },
+    // Offered when the pages offer their own refresh button: INDmoney connected and snapshots kept.
+    ...(portfolioAccess() === 'ok' ? [{ id: 'refresh-snapshot', label: 'Refresh snapshot' }] : []),
+    { id: 'add-goal', label: 'Add a goal' },
+    { id: 'connect-broker', label: 'Connect a broker' },
+    { id: 'theme', label: dark ? 'Switch to light mode' : 'Switch to dark mode' },
+    { id: 'sign-out', label: 'Sign out' },
+  ];
+}
+
+function commandIcon(item) {
+  if (item.kind === 'page') {
+    return document.querySelector(`#sidebar .nav-item[data-route="${item.value}"] use`)?.getAttribute('href') || COMMAND_ICONS.page;
+  }
+  if (item.kind === 'action' && item.value === 'theme') return document.documentElement.dataset.theme === 'dark' ? COMMAND_ICONS.light : COMMAND_ICONS.dark;
+  return COMMAND_ICONS[item.kind === 'action' ? item.value : item.kind] || COMMAND_ICONS.page;
+}
+
+// Rows are built with textContent: chat titles and the query are the user's own text.
+function commandOption(item, index) {
+  const option = document.createElement('div');
+  option.className = 'command-option';
+  option.id = `command-option-${index}`;
+  option.setAttribute('role', 'option');
+  option.setAttribute('aria-selected', 'false');
+  option.dataset.index = String(index);
+  const tile = document.createElement('span');
+  tile.className = 'command-tile';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', commandIcon(item));
+  svg.appendChild(use);
+  tile.appendChild(svg);
+  const label = document.createElement('span');
+  label.className = 'command-label';
+  label.textContent = item.label;
+  option.append(tile, label);
+  if (item.hint) {
+    const hint = document.createElement('kbd');
+    hint.setAttribute('aria-hidden', 'true');
+    hint.textContent = item.hint;
+    option.appendChild(hint);
+  }
+  return option;
+}
+
+function renderCommandResults() {
+  const groups = commandResults(commandInput.value, { pages: commandPages(), chats, actions: commandActions() });
+  commandItems = groups.flatMap((group) => group.items);
+  let index = 0;
+  commandList.replaceChildren(...groups.map((group, groupIndex) => {
+    const element = document.createElement('div');
+    element.className = 'command-group';
+    element.setAttribute('role', 'group');
+    const title = document.createElement('p');
+    title.className = 'command-group-title';
+    title.id = `command-group-${groupIndex}`;
+    title.textContent = group.title;
+    element.setAttribute('aria-labelledby', title.id);
+    element.appendChild(title);
+    for (const item of group.items) element.appendChild(commandOption(item, index++));
+    return element;
+  }));
+  setCommandActive(commandItems.length ? 0 : -1);
+}
+
+function setCommandActive(index) {
+  commandActive = index;
+  commandList.querySelectorAll('[role="option"]').forEach((option) => {
+    option.setAttribute('aria-selected', String(Number(option.dataset.index) === index));
+  });
+  const active = index >= 0 ? document.getElementById(`command-option-${index}`) : null;
+  if (active) {
+    commandInput.setAttribute('aria-activedescendant', active.id);
+    active.scrollIntoView({ block: 'nearest' });
+  } else {
+    commandInput.removeAttribute('aria-activedescendant');
+  }
+}
+
+function openCommandMenu(opener = document.activeElement) {
+  if (commandDialog.open || document.body.classList.contains('gate-open')) return;
+  commandOpener = opener;
+  commandInput.value = '';
+  renderCommandResults();
+  commandDialog.showModal();
+  commandInput.focus();
+}
+
+// Focus goes back to whatever opened the menu; an action run afterwards may still move it (the composer, a dialog).
+function restoreCommandFocus() {
+  const opener = commandOpener;
+  commandOpener = null;
+  if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
+}
+
+function closeCommandMenu() {
+  if (!commandDialog.open) return;
+  commandDialog.close();
+  restoreCommandFocus();
+}
+
+// Errors show where the person is looking: in the conversation on Ask AI, else as a toast.
+function reportCommandError(error) {
+  if (currentRoute === 'chat') showError(error);
+  else toast(errorText(error));
+}
+
+async function runCommand(item) {
+  closeCommandMenu();
+  try {
+    if (item.kind === 'page') navigate(item.value);
+    else if (item.kind === 'chat') {
+      navigate('chat');
+      await selectChat(item.value);
+    } else if (item.kind === 'ask') await runPrompt(item.value, item.agent);
+    else if (item.value === 'new-chat') {
+      navigate('chat');
+      await startNewChat();
+    } else if (item.value === 'refresh-snapshot') {
+      toast('Saving snapshot…');
+      await refreshSnapshot();
+      toast('Snapshot saved.');
+    } else if (item.value === 'add-goal') {
+      navigate('goals');
+      openGoalDialog();
+    } else if (item.value === 'connect-broker') await openBrokers();
+    else if (item.value === 'theme') toggleTheme();
+    else if (item.value === 'sign-out') {
+      await fetch('/api/session/logout', { method: 'POST' });
+      await loadChats();
+    }
+  } catch (error) {
+    reportCommandError(error);
+  }
+}
+
+commandInput.addEventListener('input', renderCommandResults);
+commandInput.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    setCommandActive(moveActive(commandActive, event.key === 'ArrowDown' ? 1 : -1, commandItems.length));
+  } else if (event.key === 'Enter' && !isComposingEnter(event)) {
+    event.preventDefault();
+    if (commandItems[commandActive]) runCommand(commandItems[commandActive]);
+  }
+});
+commandList.addEventListener('click', (event) => {
+  const option = event.target.closest('[role="option"]');
+  if (option) runCommand(commandItems[Number(option.dataset.index)]);
+});
+commandList.addEventListener('pointermove', (event) => {
+  const option = event.target.closest('[role="option"]');
+  if (option && Number(option.dataset.index) !== commandActive) setCommandActive(Number(option.dataset.index));
+});
+// The panel fills the dialog box, so a click on the dialog itself is a click on the backdrop.
+commandDialog.addEventListener('click', (event) => {
+  if (event.target === commandDialog) closeCommandMenu();
+});
+// Esc closes the dialog natively. A close queued by an earlier close() can arrive after a re-open, so check it is shut.
+commandDialog.addEventListener('close', () => {
+  if (!commandDialog.open) restoreCommandFocus();
+});
 
 setSidebarCollapsed(
   initialSidebarState({ stored: readSidebarState(sidebarStorage()), width: window.innerWidth }) === 'closed',
@@ -35,8 +225,8 @@ setSidebarCollapsed(
 // Turn the column animation on only after the starting state has painted, so a load never slides the sidebar shut.
 requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add('shell-ready')));
 sidebarToggle.addEventListener('click', () => setSidebarCollapsed(!document.documentElement.classList.contains('sidebar-closed')));
-commandOpen.addEventListener('click', openCommand);
-commandOpenPhone.addEventListener('click', openCommand);
+commandOpen.addEventListener('click', (event) => openCommandMenu(event.currentTarget));
+commandOpenPhone.addEventListener('click', (event) => openCommandMenu(event.currentTarget));
 document.getElementById('search-kbd').textContent = shortcutLabel(navigator.platform || navigator.userAgent);
 
 document.addEventListener('keydown', (event) => {
@@ -47,6 +237,6 @@ document.addEventListener('keydown', (event) => {
   });
   if (!shortcut) return;
   event.preventDefault();
-  if (shortcut === 'command') openCommand();
+  if (shortcut === 'command') openCommandMenu();
   else setSidebarCollapsed(!document.documentElement.classList.contains('sidebar-closed'));
 });

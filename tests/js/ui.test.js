@@ -264,3 +264,30 @@ test('boot.js applies the same starting state as initialSidebarState before the 
     assert.equal(classes.has('sidebar-closed'), expected === 'closed', `${stored} at ${width}px`);
   }
 });
+
+const PAGES = [{ route: 'home', label: 'Home' }, { route: 'holdings', label: 'Holdings' }];
+const ACTIONS = [{ id: 'new-chat', label: 'New chat' }, { id: 'theme', label: 'Switch to light mode' }];
+const CHATS = [{ id: 'c1', title: 'Am I too concentrated in banks?' }, { id: 'c2', title: '' }];
+test('a blank command query lists pages, recent chats and actions', () => {
+  const groups = ui.commandResults('  ', { pages: PAGES, chats: CHATS, actions: ACTIONS });
+  assert.deepEqual(groups.map((g) => g.title), ['Pages', 'Recent chats', 'Actions']);
+  assert.equal(groups[1].items[1].label, 'New chat');
+});
+test('a command query offers both agents first, then matches', () => {
+  const groups = ui.commandResults('Bank', { pages: PAGES, chats: CHATS, actions: ACTIONS });
+  assert.deepEqual(groups.map((g) => g.title), ['Ask', 'Chats']);
+  assert.equal(groups[0].items[0].label, 'Ask Portfolio Analyzer: "Bank"');
+  assert.equal(groups[0].items[0].agent, 'portfolio');
+  assert.equal(groups[0].items[1].agent, 'finance');
+  assert.equal(groups[1].items[0].id, 'chat-c1');
+});
+test('a query matching nothing still offers to ask, and no chats is fine', () => {
+  const groups = ui.commandResults('zzz', { pages: PAGES, chats: [], actions: ACTIONS });
+  assert.deepEqual(groups.map((g) => g.title), ['Ask']);
+  assert.deepEqual(ui.commandResults('light mode', { pages: [], chats: [], actions: ACTIONS })[1].items.map((i) => i.id), ['action-theme']);
+});
+test('arrow keys wrap through the results', () => {
+  assert.equal(ui.moveActive(0, -1, 4), 3);
+  assert.equal(ui.moveActive(3, 1, 4), 0);
+  assert.equal(ui.moveActive(-1, 1, 0), -1);
+});

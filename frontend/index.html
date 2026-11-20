@@ -28,16 +28,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/app.css?v=66" />
+  <link rel="stylesheet" href="/css/app.css?v=67" />
   <script src="/js/boot.js?v=1"></script>
   <script src="https://cdn.plot.ly/plotly-4.1.1.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous" charset="utf-8" defer></script>
   <script src="/js/demo.js?v=5" defer></script>
   <script src="/js/finance.js?v=18" defer></script>
   <script src="/js/trace.js?v=17" defer></script>
-  <script src="/js/ui.js?v=5" defer></script>
+  <script src="/js/ui.js?v=6" defer></script>
   <script src="/js/app.js?v=56" defer></script>
   <script src="/js/pages.js?v=40" defer></script>
-  <script src="/js/shell.js?v=3" defer></script>
+  <script src="/js/shell.js?v=4" defer></script>
   <script src="/js/rail.js?v=11" defer></script>
 </head>
 <body>
@@ -876,6 +876,16 @@
         <button class="rail-button dialog-save" type="submit">Save</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="command-dialog" class="command-dialog" aria-label="Command menu">
+    <div class="command-search">
+      <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
+      <label class="sr-only" for="command-input">Search or ask</label>
+      <input id="command-input" type="text" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="command-list" autocomplete="off" spellcheck="false" placeholder="Search or ask">
+      <kbd>Esc</kbd>
+    </div>
+    <div id="command-list" class="command-list" role="listbox" aria-label="Results"></div>
+    <p class="command-foot" aria-hidden="true">↑ ↓ to move · Enter to open · Esc to close</p>
   </dialog>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-body">
     <form method="dialog">
