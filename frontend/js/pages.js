@@ -403,8 +403,25 @@ function historyChartHtml(points, title, options = {}) {
   return chartHtml({ type: 'line', title, unit: '₹', series: netWorthSeries(points) }, { history: true, ...options });
 }
 
+// Marks the history line and its area after Plotly has drawn them, so the entrance can draw the line left to right.
+function drawHistoryLine(chartEl) {
+  const mark = () => {
+    const line = chartEl.querySelector('.scatterlayer .js-line');
+    if (!line) return false;
+    line.classList.add('history-line-draw');
+    line.setAttribute('pathLength', '1');
+    chartEl.querySelector('.scatterlayer .js-fill')?.classList.add('history-area-in');
+    return true;
+  };
+  if (mark() || typeof MutationObserver !== 'function') return;
+  const observer = new MutationObserver(() => { if (mark()) observer.disconnect(); });
+  observer.observe(chartEl, { childList: true, subtree: true });
+  setTimeout(() => observer.disconnect(), 3000);
+}
+
 async function renderHome() {
   const isCurrent = startRender('home');
+  const homePage = document.querySelector('[data-page="home"]');
   document.getElementById('home-name').textContent = currentUser ? `, ${currentUser.displayName}` : '';
   document.querySelectorAll('.js-goal-agent').forEach((chip) => { chip.dataset.agent = goalAgent(); });
   document.getElementById('home-ask-agent').textContent = `${agentName()} · opens in Ask AI`;
@@ -423,6 +440,7 @@ async function renderHome() {
   refresh.hidden = access !== 'ok';
   range.hidden = access !== 'ok';
   if (access !== 'ok') {
+    homePage.removeAttribute('data-entrance');
     value.textContent = '';
     change.textContent = '';
     stats.innerHTML = '';
@@ -443,6 +461,7 @@ async function renderHome() {
   const [portfolio, trend] = await Promise.all([getPortfolio().catch((error) => ({ error })), getHistory(homeRange).catch(() => null)]);
   if (!isCurrent()) return;
   if (portfolio.error || !portfolio.available) {
+    homePage.removeAttribute('data-entrance');
     range.hidden = true;
     value.textContent = '';
     change.textContent = '';
@@ -463,9 +482,18 @@ async function renderHome() {
   change.innerHTML = moved
     ? `<span class="change-pill ${toneOf(moved.change)}">${moved.change < 0 ? '▼' : '▲'} ${escHtml(signedMoney(moved.change))} · ${escHtml(percent(moved.pct))}</span> <span>${escHtml(spanPhrase(moved.days))}</span>`
     : `<span>From your snapshot of ${escHtml(formatDate(portfolio.asOfDate))}</span>`;
+  // The entrance plays on the first Home render of a browser session only; the figures are written once, final.
+  let storage = null;
+  try { storage = window.sessionStorage; } catch (error) { /* blocked */ }
+  const play = claimEntrance(storage);
+  if (play) {
+    homePage.dataset.entrance = 'play';
+    setTimeout(() => homePage.removeAttribute('data-entrance'), 1600);
+  }
   setHtml(chart, points.length > 1
     ? historyChartHtml(points, `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${homeRange} days`, { compact: true, area: true, height: 220 })
     : '<p class="page-muted home-chart-empty">The trend appears after a second daily snapshot.</p>');
+  if (play && points.length > 1) drawHistoryLine(chart);
   stats.innerHTML = homeKpis(figures, portfolio.holdings || []);
   parts[0].innerHTML = allocationCard(figures.by_asset_type || []);
   parts[1].innerHTML = topHoldingsList(figures.top_holdings || []);

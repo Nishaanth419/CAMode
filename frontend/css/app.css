@@ -1402,6 +1402,15 @@ body:not(.route-chat) #right-rail { display: none; }
 @keyframes page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes page-out { from { opacity: 1; } to { opacity: 0; } }
 
+/* Home entrance: only while [data-entrance="play"] is set (the first Home render of a browser session). */
+@keyframes entrance-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes area-in { from { opacity: 0; } to { opacity: 1; } }
+[data-entrance="play"] #home-networth-value { animation: entrance-in var(--dur-move) var(--ease) both; }
+[data-entrance="play"] #home-stats { animation: entrance-in var(--dur-fade) var(--ease) 650ms both; }
+[data-entrance="play"] .history-line-draw { stroke-dasharray: 1; animation: line-draw 900ms var(--ease) 150ms both; }
+[data-entrance="play"] .history-area-in { animation: area-in 700ms var(--ease) both; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 200ms !important;
@@ -1413,6 +1422,9 @@ body:not(.route-chat) #right-rail { display: none; }
   /* Opacity only: no movement for anyone who asked for less of it. */
   @keyframes rise-in { from { opacity: 0; } to { opacity: 1; } }
   @keyframes page-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes entrance-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes area-in { from { opacity: 0; } to { opacity: 1; } }
+  [data-entrance="play"] .history-line-draw, .history-line-draw { animation: none; stroke-dasharray: none; }
   ::view-transition-old(*), ::view-transition-new(*) { animation-duration: 200ms !important; }
   @keyframes typing-bounce { 0%, 80%, 100% { opacity: .4; } 40% { opacity: 1; } }
   @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }

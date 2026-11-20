@@ -26,7 +26,7 @@ function tokenBlock(css, selector) {
 // The declarations of the first rule whose selector list is exactly `selector` (any nesting depth).
 function ruleBody(css, selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`(?:^|[}{;\\s])${escaped}\\s*\\{([^}]*)\\}`, 'm').exec(css);
+  const match = new RegExp(`(?:^|[}{;])[ \\t]*${escaped}\\s*\\{([^}]*)\\}`, 'm').exec(css);
   assert.ok(match, `no rule for ${selector}`);
   return match[1];
 }
@@ -464,4 +464,41 @@ test('the page view region balances its divs and sections', () => {
   const count = (re) => (region.match(re) || []).length;
   assert.equal(count(/<div[\s>]/g), count(/<\/div>/g), 'div');
   assert.equal(count(/<section[\s>]/g), count(/<\/section>/g), 'section');
+});
+
+test('the Home entrance animates the figure, the line, the area and the KPI row', () => {
+  const css = readCss();
+  const play = (sel) => ruleBody(css, `[data-entrance="play"] ${sel}`);
+  assert.match(play('#home-networth-value'), /animation:[^;]*entrance-in[^;]*var\(--ease\)/);
+  assert.match(play('#home-stats'), /animation:[^;]*entrance-in[^;]*var\(--ease\)[^;]*650ms/);
+  assert.match(play('.history-line-draw'), /animation:[^;]*line-draw[^;]*900ms var\(--ease\) 150ms/);
+  assert.match(play('.history-area-in'), /animation:[^;]*area-in[^;]*700ms var\(--ease\)/);
+  const kf = keyframes(css.replace(reducedMotionBlock(css), ''));
+  assert.match(kf.get('line-draw'), /stroke-dashoffset:\s*1[\s\S]*stroke-dashoffset:\s*0/);
+  assert.match(kf.get('entrance-in'), /translateY\(8px\)/);
+  // line-draw is the one keyframe allowed to animate something other than transform and opacity.
+  for (const [name, body] of kf) {
+    if (name === 'line-draw') continue;
+    assert.doesNotMatch(body, /stroke-dashoffset|(?<![-\w])(width|height|top|left|margin|background)\s*:/, name);
+  }
+  const block = reducedMotionBlock(css);
+  const inside = keyframes(block);
+  for (const name of ['entrance-in', 'area-in']) {
+    assert.ok(inside.has(name), name);
+    assert.doesNotMatch(inside.get(name), /transform/, name);
+  }
+  assert.match(block, /\.history-line-draw\s*\{[^}]*animation:\s*none[^}]*stroke-dasharray:\s*none/);
+});
+
+test('renderHome claims the entrance once and never animates a figure in script', () => {
+  const js = readJs('pages.js');
+  const start = js.indexOf('async function renderHome()');
+  const body = js.slice(start, js.indexOf('\nfunction homeKpis', start));
+  assert.equal((body.match(/claimEntrance\(/g) || []).length, 1);
+  assert.doesNotMatch(body, /setInterval|requestAnimationFrame/);
+  assert.match(body, /removeAttribute\('data-entrance'\)/);
+  assert.match(body, /drawHistoryLine/);
+  assert.match(js, /\.scatterlayer \.js-line/);
+  assert.match(js, /history-line-draw/);
+  assert.match(js, /history-area-in/);
 });
