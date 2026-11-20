@@ -186,7 +186,7 @@ function applyTheme(theme) {
   themeToggle.setAttribute('aria-label', nextLabel);
   themeToggle.title = nextLabel;
   themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg#ph-sun' : '/icons.svg#ph-moon');
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', selected === 'dark' ? '#070a08' : '#f4f7f5');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
   localStorage.setItem('ca-mode-theme', selected);
 }
 
@@ -200,8 +200,7 @@ themeToggle.addEventListener('click', () => {
     const view = graph.closest('.data-chart')?.dataset.chartView;
     if (!spec || !window.Plotly || view === 'table') return;
     // History charts take their line and shading colours from the theme too.
-    if (spec.history || spec.page) window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
-    else window.Plotly.relayout(graph, plotlyLayout(spec, view));
+    window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
   });
 });
 
@@ -2340,25 +2339,40 @@ function renderChartTable(spec) {
   return `<div class="chart-data-scroll"><table class="chart-data-table"><thead><tr><th>Category</th><th>Value</th><th>Share</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+// Every chart colour and the font come from the CSS tokens, read on each draw so a theme change redraws correctly.
+function chartTheme() {
+  const style = getComputedStyle(document.documentElement);
+  const read = (name) => style.getPropertyValue(name).trim();
+  return {
+    font: read('--sans'), text: read('--text'), muted: read('--text-soft'), line: read('--line'), surface: read('--surface'),
+    accent: read('--accent'), gain: read('--gain'), loss: read('--loss'),
+    series: [1, 2, 3, 4, 5, 6, 7, 8].map(n => read(`--series-${n}`)),
+  };
+}
+
+// '#RRGGBB' and an alpha to the rgba() string Plotly needs for a translucent fill.
+function withAlpha(hex, alpha) {
+  const value = /^#([0-9a-f]{6})$/i.exec(hex || '')?.[1];
+  if (!value) return hex;
+  const channel = (i) => parseInt(value.slice(i, i + 2), 16);
+  return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${alpha})`;
+}
+
 function plotlyLayout(spec, view) {
-  const style = getComputedStyle(document.body);
-  const text = style.getPropertyValue('--text').trim() || '#e5e7eb';
-  const muted = style.getPropertyValue('--text-soft').trim() || '#9ca3af';
-  const border = style.getPropertyValue('--border').trim() || '#374151';
-  const surface = style.getPropertyValue('--surface').trim() || '#111827';
+  const theme = chartTheme();
+  const { text, muted, surface } = theme;
+  const border = theme.line;
   const unit = spec.unit ? ` (${spec.unit})` : '';
   const layout = {
     title: { text: cleanChartText(spec.title || 'Portfolio data'), x: 0.02, xanchor: 'left', font: { size: 15 } },
     autosize: true, height: 360, margin: { l: 64, r: 24, t: 56, b: 58 },
     paper_bgcolor: surface, plot_bgcolor: surface,
-    font: { family: 'Inter, sans-serif', color: text, size: 12 },
-    colorway: document.documentElement.dataset.theme === 'dark'
-      ? ['#8fdc4e', '#f2d64b', '#5ec8f2', '#c9a7ff', '#ff9f6b', '#5fe0b5', '#f27aa6', '#9aa59d']
-      : ['#27835e', '#5d88b5', '#d09b4f', '#a56d9a', '#d16f62', '#4b9bb1', '#8aa657', '#8973af'],
+    font: { family: theme.font, color: text, size: 12 },
+    colorway: theme.series,
     legend: { orientation: 'h', y: -0.22, font: { color: muted } },
     xaxis: { gridcolor: border, zerolinecolor: border, automargin: true },
     yaxis: { gridcolor: border, zerolinecolor: border, automargin: true, title: { text: unit.trim() } },
-    hoverlabel: { bgcolor: surface, bordercolor: border, font: { color: text } },
+    hoverlabel: { bgcolor: surface, bordercolor: border, font: { family: theme.font, color: text } },
   };
   if (spec.history) return historyLayout(spec, layout, muted);
   if (spec.page) {
@@ -2435,9 +2449,7 @@ function historyLayout(spec, layout, muted) {
 }
 
 function historyTraces(spec) {
-  const style = getComputedStyle(document.body);
-  const accent = style.getPropertyValue('--accent').trim() || '#8fdc4e';
-  const glow = style.getPropertyValue('--accent-glow').trim() || 'rgba(143, 220, 78, .25)';
+  const { accent } = chartTheme();
   const ticks = historyTicks(spec);
   return spec.series.map((item, index) => ({
     type: 'scatter', mode: item.points.length > 40 ? 'lines' : 'lines+markers', name: item.name,
@@ -2446,8 +2458,7 @@ function historyTraces(spec) {
     hovertemplate: spec.series.length > 1 ? '%{fullData.name}: %{customdata}<extra></extra>' : '%{customdata}<extra></extra>',
     line: { width: 2.5, ...(index === 0 ? { color: accent } : {}) }, marker: { size: 6 },
     ...(spec.area && index === 0 && ticks.length ? {
-      fill: 'tozeroy', fillcolor: glow,
-      fillgradient: { type: 'vertical', start: ticks[ticks.length - 1], stop: ticks[0], colorscale: [[0, glow], [1, 'rgba(0, 0, 0, 0)']] },
+      fill: 'tozeroy', fillcolor: withAlpha(accent, 0.08),
     } : {}),
   }));
 }
@@ -2461,6 +2472,7 @@ function plotlyConfig(spec) {
 
 function plotlyTraces(spec, view) {
   if (spec.history) return historyTraces(spec);
+  const theme = chartTheme();
   if (spec.type === 'candlestick') return [{
     type: 'candlestick',
     x: spec.candles.map(item => item.label),
@@ -2468,8 +2480,8 @@ function plotlyTraces(spec, view) {
     high: spec.candles.map(item => item.high),
     low: spec.candles.map(item => item.low),
     close: spec.candles.map(item => item.close),
-    increasing: { line: { color: '#27835e' } },
-    decreasing: { line: { color: '#d16f62' } },
+    increasing: { line: { color: theme.gain } },
+    decreasing: { line: { color: theme.loss } },
     hoverlabel: { namelength: -1 },
   }];
   if (spec.type === 'line') return spec.series.map(item => ({

@@ -161,3 +161,18 @@ test('sprite icons are filled, whatever stroke rules the context sets', () => {
   }
   assert.match(readCss(), /\.icon \{[^}]*width: 20px[^}]*height: 20px[^}]*flex-shrink: 0/);
 });
+
+test('chart code takes every colour and the font from chartTheme(), with no hex literals', () => {
+  const src = readJs('app.js');
+  assert.doesNotMatch(src, /'Inter[,']/);
+  assert.match(src, /function chartTheme\(\)/);
+  const start = src.indexOf('function renderDataChart');
+  const end = src.indexOf('function renderPlotlyCharts');
+  assert.ok(start > 0 && end > start);
+  const region = src.slice(start, end);
+  assert.doesNotMatch(region, /#[0-9a-fA-F]{3,6}\b/);
+  const outside = region.replace(/function chartTheme\(\) \{[\s\S]*?\n\}\n/, '');
+  assert.doesNotMatch(outside, /getPropertyValue|getComputedStyle/);
+  assert.match(src, /getComputedStyle\(document\.documentElement\)/);
+  assert.doesNotMatch(src, /setAttribute\('content', selected === 'dark' \? '#/);
+});
