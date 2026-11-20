@@ -445,3 +445,23 @@ test('Home list rows highlight on hover', () => {
     assert.match(css, new RegExp(`${sel.replace(/[.:]/g, '\\$&')}[^{]*\\{[^}]*background:\\s*var\\(--surface-2\\)`), sel);
   }
 });
+
+test('the Home markup balances its divs and sections', () => {
+  const html = readHtml();
+  const home = html.slice(html.indexOf('data-page="home"'), html.indexOf('data-page="portfolio"'));
+  const count = (text, re) => (text.match(re) || []).length;
+  assert.equal(count(home, /<div[\s>]/g), count(home, /<\/div>/g), 'div');
+  // The slice starts inside Home's opening <section> tag and ends after Portfolio's, so the counts match.
+  assert.equal(count(home, /<section[\s>]/g), count(home, /<\/section>/g), 'section');
+});
+
+test('the page view region balances its divs and sections', () => {
+  const html = readHtml();
+  const start = html.indexOf('<div id="page-view"');
+  // From #page-view to its own closing </div>, just before the </section> that ends the chat area.
+  const end = html.lastIndexOf('</div>', html.indexOf('<!-- ── Right rail')) + '</div>'.length;
+  const region = html.slice(start, end);
+  const count = (re) => (region.match(re) || []).length;
+  assert.equal(count(/<div[\s>]/g), count(/<\/div>/g), 'div');
+  assert.equal(count(/<section[\s>]/g), count(/<\/section>/g), 'section');
+});
