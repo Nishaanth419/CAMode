@@ -165,11 +165,11 @@ test('every sprite icon referenced by the app exists in icons.svg', () => {
   assert.ok(fs.existsSync(path.join(FRONTEND, 'icons-LICENSE.txt')));
 });
 
-test('index.html keeps inline svg only for the brand marks, the illustration, the Google mark and the model caret', () => {
+test('index.html keeps inline svg only for the brand marks, the Google mark and the model caret', () => {
   const html = readHtml();
   const inline = [...html.matchAll(/<svg\b([^>]*)>/g)].map((m) => m[1]);
   for (const attrs of inline) {
-    const allowed = /viewBox="0 0 28 28"/.test(attrs) || /viewBox="0 0 260 170"/.test(attrs)
+    const allowed = /viewBox="0 0 28 28"/.test(attrs)
       || /class="google-mark"/.test(attrs) || /class="model-caret"/.test(attrs) || /class="icon"/.test(attrs);
     assert.ok(allowed, `unexpected inline svg: ${attrs}`);
   }
@@ -544,4 +544,62 @@ test('placeTabIndicator carries the old underline across the rebuild and reruns 
   assert.match(js, /document\.fonts\?\.ready/);
   assert.match(js, /function snapTabIndicator/);
   assert.match(js, /target\.w > 0/);
+});
+
+test('Ask AI: 720px column, answers as text on the canvas, questions as quiet blocks', () => {
+  const css = readCss();
+  assert.match(css, /#chat-area\s*\{\s*--chat-w:\s*720px;/);
+  const body = ruleBody(css, '.message.assistant .message-body');
+  assert.match(body, /max-width:\s*65ch/);
+  assert.doesNotMatch(body, /background|border/);
+  const lead = ruleBody(css, '.message.assistant .message-body > p:first-child');
+  assert.match(lead, /font-size:\s*18px/);
+  assert.match(lead, /line-height:\s*28px/);
+  assert.match(lead, /font-weight:\s*500/);
+  const question = ruleBody(css, '.message.user .message-body');
+  assert.match(question, /background:\s*var\(--surface\)/);
+  assert.match(question, /border-radius:\s*12px/);
+  assert.match(question, /padding:\s*12px 16px/);
+  assert.doesNotMatch(question, /border:|border-color/);
+  assert.doesNotMatch(css, /:root\[data-theme="dark"\] \.message\.user \.message-body/);
+});
+
+test('Ask AI: a new answer rises, follow-up chips arrive staggered', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.message'), /animation:\s*rise-in var\(--dur-move\) var\(--ease\)/);
+  assert.match(/@keyframes rise-in\s*\{\s*from\s*\{[^}]*translateY\(8px\)/.exec(css)?.[0] || '', /translateY\(8px\)/);
+  const chip = ruleBody(css, '.answer-follow-ups .chip');
+  assert.match(chip, /animation:\s*rise-in var\(--dur-move\) var\(--ease\) both/);
+  assert.match(chip, /var\(--chip-delay/);
+  const js = readJs('app.js');
+  const fn = /function placeFollowUps[\s\S]*?\n\}\n/.exec(js)[0];
+  assert.match(fn, /staggerDelays/);
+  assert.match(fn, /--chip-delay/);
+});
+
+test('Ask AI: assistant answers have no avatar tile and the empty state has no illustration', () => {
+  const js = readJs('app.js');
+  assert.doesNotMatch(js, /message-avatar/);
+  assert.doesNotMatch(readCss(), /\.message-avatar|\.hero-art|\.coins|\.hero-tag/);
+  const html = readHtml();
+  assert.doesNotMatch(html, /class="hero-art"|class="coins"/);
+  assert.doesNotMatch(html.slice(html.indexOf('id="empty-state"'), html.indexOf('id="messages"')), /→|tone-(green|blue|amber|violet)/);
+  assert.match(html.slice(html.indexOf('id="empty-state"'), html.indexOf('id="messages"')), /ph-caret-right/);
+});
+
+test('Ask AI: the composer floats, the input area has no divider, the dots are 6px', () => {
+  const css = readCss();
+  const composer = ruleBody(css, '.composer');
+  assert.match(composer, /border-radius:\s*16px/);
+  assert.match(composer, /background:\s*var\(--surface\)/);
+  assert.match(composer, /box-shadow:/);
+  assert.doesNotMatch(ruleBody(css, '#input-area'), /border-top/);
+  const dot = ruleBody(css, '.typing-indicator span');
+  assert.match(dot, /width:\s*6px/);
+  assert.match(dot, /height:\s*6px/);
+  assert.match(dot, /var\(--text-muted\)/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*@keyframes typing-bounce/);
+  const head = ruleBody(css, '.chat-head-title');
+  assert.match(head, /font-size:\s*24px/);
+  assert.match(ruleBody(css, '.chat-head-sub'), /font-size:\s*14px/);
 });
