@@ -176,7 +176,10 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 ::-webkit-scrollbar-thumb { border-radius: 6px; background: var(--surface-3); }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-/* Shared stroke-icon treatment */
+/* Phosphor sprite icons: filled paths (the symbols set fill and stroke themselves, so the stroke rules below never reach them). */
+.icon { width: 20px; height: 20px; flex-shrink: 0; }
+
+/* Shared stroke-icon treatment (inline svg that is not a sprite icon) */
 .nav-item svg,
 .account-gear svg,
 .icon-button svg,

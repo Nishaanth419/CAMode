@@ -124,3 +124,40 @@ test('no browser dialogs in the app scripts', () => {
     assert.doesNotMatch(readJs(name), /window\.confirm\(|(^|[^\w.])confirm\(|\balert\(/m, name);
   }
 });
+
+test('every sprite icon referenced by the app exists in icons.svg', () => {
+  const sprite = fs.readFileSync(path.join(FRONTEND, 'icons.svg'), 'utf8');
+  const symbols = new Set([...sprite.matchAll(/<symbol id="(ph-[\w-]+)" viewBox="0 0 256 256"/g)].map((m) => m[1]));
+  assert.ok(symbols.size > 0);
+  const sources = [readHtml(), readJs('pages.js'), readJs('app.js')];
+  const used = new Set();
+  for (const source of sources) {
+    for (const m of source.matchAll(/\/icons\.svg#(ph-[\w-]+)/g)) used.add(m[1]);
+  }
+  assert.ok(used.size > 0);
+  for (const id of used) assert.ok(symbols.has(id), `missing symbol ${id}`);
+  for (const id of symbols) assert.ok(used.has(id), `unused symbol ${id}`);
+  assert.match(sprite, /Phosphor Icons.*MIT.*icons-LICENSE\.txt/s);
+  assert.ok(fs.existsSync(path.join(FRONTEND, 'icons-LICENSE.txt')));
+});
+
+test('index.html keeps inline svg only for the brand marks, the illustration, the Google mark and the model caret', () => {
+  const html = readHtml();
+  const inline = [...html.matchAll(/<svg\b([^>]*)>/g)].map((m) => m[1]);
+  for (const attrs of inline) {
+    const allowed = /viewBox="0 0 28 28"/.test(attrs) || /viewBox="0 0 260 170"/.test(attrs)
+      || /class="google-mark"/.test(attrs) || /class="model-caret"/.test(attrs) || /class="icon"/.test(attrs);
+    assert.ok(allowed, `unexpected inline svg: ${attrs}`);
+  }
+  assert.doesNotMatch(html, /<svg class="icon"[^>]*>(?!<use )/);
+  assert.doesNotMatch(readJs('app.js'), /themeToggleIcon\.innerHTML/);
+});
+
+test('sprite icons are filled, whatever stroke rules the context sets', () => {
+  const sprite = fs.readFileSync(path.join(FRONTEND, 'icons.svg'), 'utf8');
+  for (const m of sprite.matchAll(/<symbol\b([^>]*)>/g)) {
+    assert.match(m[1], /fill="currentColor"/);
+    assert.match(m[1], /stroke="none"/);
+  }
+  assert.match(readCss(), /\.icon \{[^}]*width: 20px[^}]*height: 20px[^}]*flex-shrink: 0/);
+});
