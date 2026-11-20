@@ -291,3 +291,10 @@ test('arrow keys wrap through the results', () => {
   assert.equal(ui.moveActive(3, 1, 4), 0);
   assert.equal(ui.moveActive(-1, 1, 0), -1);
 });
+test('commands that start, switch or end a conversation wait for the answer in progress', () => {
+  const actions = ['new-chat', 'sign-out', 'connect-broker', 'theme', 'add-goal'].map((id) => ({ id, label: id }));
+  const browse = ui.commandResults('', { pages: PAGES, chats: CHATS, actions }).flatMap((g) => g.items);
+  const ask = ui.commandResults('banks', { pages: [], chats: [], actions: [] })[0].items;
+  const waits = [...browse, ...ask].filter(ui.commandWaitsForAnswer).map((item) => item.id);
+  assert.deepEqual(waits, ['chat-c1', 'chat-c2', 'action-new-chat', 'action-sign-out', 'action-connect-broker', 'ask-portfolio', 'ask-finance']);
+});

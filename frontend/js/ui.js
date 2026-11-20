@@ -266,6 +266,13 @@
     ].filter((group) => group.items.length);
   }
 
+  // Commands that need the conversation free: they would start, switch or end it, or open the profile panel
+  // (which refuses while an answer streams). They wait until the current answer has finished.
+  const COMMANDS_AFTER_ANSWER = ['new-chat', 'connect-broker', 'sign-out'];
+  function commandWaitsForAnswer(item) {
+    return item.kind === 'ask' || item.kind === 'chat' || (item.kind === 'action' && COMMANDS_AFTER_ANSWER.includes(item.value));
+  }
+
   // The next active option for the arrow keys, wrapping at both ends; -1 when there is nothing to move through.
   function moveActive(index, delta, count) {
     if (!count) return -1;
@@ -276,7 +283,7 @@
     CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
-    commandResults, moveActive,
+    commandResults, moveActive, commandWaitsForAnswer,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

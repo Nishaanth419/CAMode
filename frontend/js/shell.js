@@ -164,6 +164,10 @@ function reportCommandError(error) {
 
 async function runCommand(item) {
   closeCommandMenu();
+  if (isStreaming && commandWaitsForAnswer(item)) {
+    toast('An answer is still coming. Try again when it finishes.');
+    return;
+  }
   try {
     if (item.kind === 'page') navigate(item.value);
     else if (item.kind === 'chat') {
