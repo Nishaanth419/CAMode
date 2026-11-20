@@ -294,3 +294,14 @@ test('boot.js runs in <head> before paint and the closed state lives on the root
   assert.match(readJs('shell.js'), /document\.documentElement\.classList\.toggle\('sidebar-closed'/);
   assert.match(fs.readFileSync(path.join(FRONTEND, 'sw.js'), 'utf8'), /APP_SHELL = \[[^\]]*'\/js\/boot\.js'/);
 });
+
+test('profile, goal and allocation dialogs are right-side slide-overs', () => {
+  const css = readCss();
+  const rule = /\.profile-dialog\s*\{([^}]*)\}/.exec(css)[1];
+  assert.match(rule, /margin:\s*0 0 0 auto/);
+  assert.match(rule, /height:\s*100dvh/);
+  assert.match(rule, /border-radius:\s*16px 0 0 16px/);
+  assert.match(css, /@starting-style\s*\{[^{}]*\.profile-dialog\[open\]\s*\{[^}]*transform:\s*translateX\(100%\)/);
+  const reduce = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduce, /\.profile-dialog[^{]*\{[^}]*transform:\s*none/);
+});

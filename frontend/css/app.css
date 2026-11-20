@@ -1397,6 +1397,8 @@ body:not(.route-chat) #right-rail { display: none; }
   #app { transition: none !important; }
   /* The command menu fades in place instead of scaling. */
   .command-dialog { transform: none !important; }
+  /* Slide-overs fade in place instead of sliding. */
+  .profile-dialog, .profile-dialog[open] { transform: none !important; }
 }
 
 /* In-app confirmation (app.js confirmAction) */
@@ -1649,20 +1651,37 @@ body.gate-open #app { visibility: hidden; }
 .gate-card .field input, .gate-card .field select { min-height: 44px; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Slide-overs: the profile, goal and allocation editors open from the right. */
 .profile-dialog {
-  width: min(560px, calc(100% - 32px));
-  margin: auto;
+  width: min(480px, 100%);
+  max-width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0 0 0 auto;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  overflow-y: auto;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 16px 0 0 16px;
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow-lg);
+  opacity: 0;
+  transform: translateX(100%);
+  transition: transform var(--dur-move) var(--ease), opacity var(--dur-fade) var(--ease), overlay var(--dur-move) allow-discrete, display var(--dur-move) allow-discrete;
 }
-.profile-dialog::backdrop { background: rgba(10, 10, 10, .4); }
+.profile-dialog[open] { opacity: 1; transform: translateX(0); }
+@starting-style { .profile-dialog[open] { opacity: 0; transform: translateX(100%); } }
+.goal-dialog { width: min(560px, 100%); }
+.profile-dialog::backdrop { background: rgba(10, 10, 10, .4); opacity: 0; transition: opacity var(--dur-fade) var(--ease), overlay var(--dur-move) allow-discrete, display var(--dur-move) allow-discrete; }
+.profile-dialog[open]::backdrop { opacity: 1; }
+@starting-style { .profile-dialog[open]::backdrop { opacity: 0; } }
 :root[data-theme="dark"] .profile-dialog::backdrop { background: rgba(0, 0, 0, .65); }
 .profile-dialog form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 24px; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* The head stays in view while the panel scrolls; the form's 24px padding is pulled back out. */
+.profile-dialog .dialog-head { position: sticky; top: 0; z-index: 2; margin: -24px -24px 0; padding: 20px 24px 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.profile-dialog .dialog-actions { position: sticky; bottom: 0; z-index: 2; margin: 0 -24px -24px; padding: 14px 24px 20px; border-top: 1px solid var(--line); background: var(--surface); }
 .dialog-head h2 { color: var(--text); font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
 /* Each part of the profile dialog is a section with a 15/600 heading, divided by rules. */
 .dialog-section { display: grid; gap: 10px; }
@@ -2062,7 +2081,6 @@ body.gate-open #app { visibility: hidden; }
 .data-table td.alloc-goals { min-width: 150px; white-space: normal; }
 
 @media (max-width: 600px) {
-  .goal-dialog { width: 100%; max-width: 100%; margin: 0; border-radius: 0; }
   .goal-dialog .dialog-actions { flex-wrap: wrap; }
   .goal-dialog .dialog-actions .rail-button { flex: 1 1 100%; }
   .chip-row-label { min-width: 100%; }
@@ -2839,4 +2857,8 @@ body.gate-open #app { visibility: hidden; }
 }
 @media print {
   .download-actions, .downloads-card { display: none !important; }
+}
+
+@media (max-width: 640px) {
+  .profile-dialog, .goal-dialog { width: 100%; border-left: 0; border-radius: 0; }
 }
