@@ -446,7 +446,7 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
   color: var(--text-muted);
   font-family: var(--sans);
   font-size: 12px;
-  line-height: 18px;
+  line-height: 16px;
 }
 .search-box:focus-within .search-kbd { display: none; }
 .topbar-spacer { flex: 1 1 0; }
@@ -530,7 +530,7 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
   font-family: var(--serif);
   font-size: clamp(24px, 2.6vw, 30px);
   font-weight: 700;
-  letter-spacing: -.5px;
+  letter-spacing: -.02em;
   line-height: 1.22;
 }
 .hero-sub { max-width: 520px; margin-top: 10px; color: var(--text-soft); font-size: 14px; }
@@ -1826,7 +1826,7 @@ body.gate-open #app { visibility: hidden; }
 /* ── Right rail cards ───────────────────────────────────────────── */
 .rail-head h2 { min-width: 0; }
 .rail-copy.rail-error { color: var(--error); }
-.rail-figure { color: var(--text); font-size: 30px; font-weight: 700; letter-spacing: -.8px; line-height: 36px; font-variant-numeric: tabular-nums; }
+.rail-figure { color: var(--text); font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 36px; font-variant-numeric: tabular-nums; }
 .rail-change { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .link-button { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; }
 .link-button:hover { text-decoration: underline; }
@@ -2171,7 +2171,7 @@ body.gate-open #app { visibility: hidden; }
   .kpi-label { font-size: 12px; }
   .kpi-value { margin-top: 4px; font-size: 16px; }
   .kpi-note { font-size: 12px; }
-  .figure-xl { font-size: 30px; }
+  .figure-xl { font-size: 30px; line-height: 36px; }
   .home-networth, .home-ask, .home-card { padding: 16px; }
   .home-chart, .home-chart-empty { min-height: 160px; }
   .ask-why { min-height: 40px; }
