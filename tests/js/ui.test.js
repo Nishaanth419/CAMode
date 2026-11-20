@@ -349,7 +349,7 @@ test('the Home entrance plays once per browser session', () => {
 test('a blocked storage still plays the entrance once', () => {
   const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
   const first = ui.claimEntrance(blocked);
-  assert.equal(typeof first, 'boolean');
+  assert.equal(first, true);
   assert.equal(ui.claimEntrance(blocked), false);
   assert.equal(ui.claimEntrance(null), false);
 });

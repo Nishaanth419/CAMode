@@ -497,6 +497,10 @@ test('renderHome claims the entrance once and never animates a figure in script'
   assert.equal((body.match(/claimEntrance\(/g) || []).length, 1);
   assert.doesNotMatch(body, /setInterval|requestAnimationFrame/);
   assert.match(body, /removeAttribute\('data-entrance'\)/);
+  // The empty, private and error branches each clear the attribute before returning.
+  const branches = body.split("homePage.removeAttribute('data-entrance');").length - 1;
+  assert.ok(branches >= 2, 'the not-connected/private and the no-snapshot/error branches clear data-entrance');
+  assert.match(js, /addEventListener\('ca:route'[\s\S]{0,300}clearTimeout\(entranceTimer\)[\s\S]{0,120}removeAttribute\('data-entrance'\)/);
   assert.match(body, /drawHistoryLine/);
   assert.match(js, /\.scatterlayer \.js-line/);
   assert.match(js, /history-line-draw/);
@@ -515,6 +519,36 @@ test('Home KPI placeholders stay hidden while loading, so nothing flashes before
 
 test('prompt row icon tiles use --surface-2, so they show on the light canvas', () => {
   assert.match(ruleBody(readCss(), '.prompt-row-icon'), /background:\s*var\(--surface-2\)/);
+});
+
+test('prompt row: the trailing caret rule does not reach the icon tile', () => {
+  const css = readCss();
+  assert.match(css, /\.prompt-row > \.icon:last-child\s*\{/);
+  assert.doesNotMatch(css, /\.prompt-row \.icon:last-child/);
+});
+
+test('print: the hero figure is plain black text, not transparent clipped text', () => {
+  const css = readCss();
+  const prints = [...css.matchAll(/@media print\s*\{([\s\S]*?)\n\}/g)].map((m) => m[1]).join('\n');
+  const rule = prints.match(/body #home-networth-value\s*\{([^}]*)\}/);
+  assert.ok(rule, 'a print rule for the hero figure');
+  assert.match(rule[1], /background:\s*none/);
+  assert.match(rule[1], /color:\s*#000/);
+});
+
+test('hidden Home stats and focus rings do not rely on colour alone', () => {
+  const css = readCss();
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+  assert.match(ruleBody(css, '#home-stats.is-loading'), /visibility:\s*hidden/);
+  assert.match(ruleBody(css, '.home-composer:focus-within'), /outline:\s*2px solid var\(--accent\)/);
+});
+
+test('follow-up chips fill backwards so a disabled chip keeps its opacity', () => {
+  assert.match(ruleBody(readCss(), '.answer-follow-ups .chip'), /animation:[^;]*backwards/);
+});
+
+test('dead Home and tone rules are gone', () => {
+  assert.doesNotMatch(readCss(), /\.figure-xl|\.tone-(green|blue|amber|violet)\b/);
 });
 
 test('Holdings: sliding tab underline, table on the surface, sticky header', () => {
@@ -583,7 +617,7 @@ test('Ask AI: a new answer rises, follow-up chips arrive staggered', () => {
   assert.match(ruleBody(css, '.message'), /animation:\s*rise-in var\(--dur-move\) var\(--ease\)/);
   assert.match(/@keyframes rise-in\s*\{\s*from\s*\{[^}]*translateY\(8px\)/.exec(css)?.[0] || '', /translateY\(8px\)/);
   const chip = ruleBody(css, '.answer-follow-ups .chip');
-  assert.match(chip, /animation:\s*rise-in var\(--dur-move\) var\(--ease\) both/);
+  assert.match(chip, /animation:\s*rise-in var\(--dur-move\) var\(--ease\) backwards/);
   assert.match(chip, /var\(--chip-delay/);
   const js = readJs('app.js');
   const fn = /function placeFollowUps[\s\S]*?\n\}\n/.exec(js)[0];

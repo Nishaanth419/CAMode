@@ -214,10 +214,6 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 }
 
 /* Tone helpers for icon tiles */
-.tone-green  { --tone: var(--green); --tone-text: var(--gain-text);  --tone-soft: var(--green-soft); }
-.tone-blue   { --tone: var(--blue); --tone-text: var(--blue-text);   --tone-soft: var(--blue-soft); }
-.tone-amber  { --tone: var(--amber); --tone-text: var(--warning-text);  --tone-soft: var(--amber-soft); }
-.tone-violet { --tone: var(--violet); --tone-text: var(--violet-text); --tone-soft: var(--violet-soft); }
 .tone-red    { --tone: var(--red); --tone-text: var(--loss-text);    --tone-soft: var(--red-soft); }
 
 /* ── App shell ──────────────────────────────────────────────────── */
@@ -701,7 +697,7 @@ html.sidebar-closed #sidebar .account-trigger { gap: 0; }
   font-size: 14px;
   box-shadow: none;
   white-space: nowrap;
-  animation: rise-in var(--dur-move) var(--ease) both;
+  animation: rise-in var(--dur-move) var(--ease) backwards;
   animation-delay: var(--chip-delay, 0ms);
 }
 .answer-follow-ups .chip:hover { background: var(--surface-2); color: var(--text); }
@@ -1139,8 +1135,6 @@ kbd {
 }
 body:not(.route-chat) #right-rail { display: none; }
 
-@media (max-width: 1080px) {
-}
 
 /* Below 900px the sidebar becomes a drawer opened from More in the bottom tab bar. */
 @media (max-width: 900px) {
@@ -1986,6 +1980,7 @@ body.gate-open #app { visibility: hidden; }
   #sidebar, #topbar, #right-rail, #tabbar, #chat-scroll, #input-area, .page-actions, .page-chips, .table-action, .seg { display: none !important; }
   #page-view { overflow: visible; padding: 0; }
   .panel { box-shadow: none; break-inside: avoid; }
+  body #home-networth-value { background: none; color: #000; -webkit-text-fill-color: #000; }
 }
 
 /* ── Right rail cards ───────────────────────────────────────────── */
@@ -2134,8 +2129,6 @@ body.gate-open #app { visibility: hidden; }
 .kpi-label { color: var(--text-soft); font-size: 14px; font-weight: 400; line-height: 20px; }
 .kpi-value { color: var(--text); font-size: 24px; font-weight: 600; letter-spacing: -.01em; line-height: 32px; overflow-wrap: anywhere; }
 .kpi-note { color: var(--text-muted); font-size: 12px; line-height: 16px; }
-.figure-xl { margin-top: 6px; color: var(--text); font-size: 36px; font-weight: 700; letter-spacing: -.02em; line-height: 40px; overflow-wrap: anywhere; }
-.figure-xl:empty { display: none; }
 
 /* Home: the net-worth hero, then lists on the canvas */
 .home-hero { display: block; }
@@ -2191,7 +2184,7 @@ body.gate-open #app { visibility: hidden; }
   background: var(--surface);
   transition: box-shadow var(--dur-fade) var(--ease);
 }
-.home-composer:focus-within { box-shadow: 0 0 0 2px var(--accent); }
+.home-composer:focus-within { outline: 2px solid var(--accent); outline-offset: 0; box-shadow: 0 0 0 2px var(--accent); }
 .home-composer textarea { min-height: 66px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 16px; line-height: 24px; resize: none; }
 .home-composer textarea::placeholder { color: var(--text-muted); }
 .home-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -2230,7 +2223,7 @@ body.gate-open #app { visibility: hidden; }
 .prompt-row-icon svg { width: 14px; height: 14px; }
 .prompt-row-text { flex: 1; min-width: 0; }
 .prompt-row-arrow { color: var(--text-muted); }
-.prompt-row .icon:last-child { width: 16px; height: 16px; color: var(--text-muted); }
+.prompt-row > .icon:last-child { width: 16px; height: 16px; color: var(--text-muted); }
 
 .series-1 { background: var(--series-1); }
 .series-2 { background: var(--series-2); }

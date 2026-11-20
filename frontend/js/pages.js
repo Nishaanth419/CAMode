@@ -419,6 +419,14 @@ function drawHistoryLine(chartEl) {
   setTimeout(() => observer.disconnect(), 3000);
 }
 
+let entranceTimer = null;
+// Leaving Home ends a running entrance, so coming back within 1.6s does not replay it.
+document.addEventListener('ca:route', (event) => {
+  if (event.detail?.route === 'home') return;
+  clearTimeout(entranceTimer);
+  document.querySelector('[data-page="home"]')?.removeAttribute('data-entrance');
+});
+
 async function renderHome() {
   const isCurrent = startRender('home');
   const homePage = document.querySelector('[data-page="home"]');
@@ -489,7 +497,8 @@ async function renderHome() {
   const play = claimEntrance(storage);
   if (play) {
     homePage.dataset.entrance = 'play';
-    setTimeout(() => homePage.removeAttribute('data-entrance'), 1600);
+    clearTimeout(entranceTimer);
+    entranceTimer = setTimeout(() => homePage.removeAttribute('data-entrance'), 1600);
   }
   setHtml(chart, points.length > 1
     ? historyChartHtml(points, `${series.includesBrokers ? 'Net worth with brokers' : 'Net worth'}, last ${homeRange} days`, { compact: true, area: true, height: 220 })
@@ -920,6 +929,7 @@ async function renderHoldings() {
   if (source.available === false) {
     setHtml(body, head + notice('No holdings to show', source.problem || 'Nothing has been fetched from this source yet. If its login has ended, reconnect it from your profile.'));
     showActiveSourceTab(body);
+    placeTabIndicator(body, { from: lastTabIndicator });
     return;
   }
   latestHoldings = source.holdings || [];
@@ -999,7 +1009,7 @@ function showActiveSourceTab(body) {
   const active = body.querySelector('.source-tab[aria-pressed="true"]');
   const bar = active?.parentElement;
   if (!bar || bar.scrollWidth <= bar.clientWidth) return;
-  bar.scrollLeft = Math.max(0, active.offsetLeft - bar.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
+  bar.scrollLeft = Math.max(0, active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
 }
 
 function renderHoldingsTable() {
