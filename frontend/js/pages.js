@@ -263,18 +263,43 @@ function navigate(route, sub = '') {
   renderRoute();
 }
 
+let routeRendered = false;
+let routeToken = 0;
+// Resolves once the latest route's page is showing and its post-swap work has run (already resolved when the
+// change was not animated). Callers that navigate() and then need the new page visible (focus) wait on it.
+let routeSwapped = Promise.resolve();
 function renderRoute() {
   const { route, sub } = parseHash();
   const isChat = route === 'chat';
   const changed = route !== currentRoute;
+  const animate = changed && routeRendered;
+  routeRendered = true;
   currentRoute = route;
   currentSub = sub;
-  chatHead.hidden = !isChat;
-  chatScroll.hidden = !isChat;
-  inputArea.hidden = !isChat;
-  pageView.hidden = isChat;
-  document.body.classList.toggle('route-chat', isChat);
-  pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
+  const token = ++routeToken;
+  // Showing and hiding the two bodies is what a view transition animates; with one it runs a frame later.
+  // A superseded swap (a timer fallback arriving late) must not show its older page; the latest one always runs.
+  const swap = () => {
+    if (token !== routeToken) return;
+    chatHead.hidden = !isChat;
+    chatScroll.hidden = !isChat;
+    inputArea.hidden = !isChat;
+    pageView.hidden = isChat;
+    document.body.classList.toggle('route-chat', isChat);
+    pageView.querySelectorAll('.page').forEach((page) => { page.hidden = page.dataset.page !== route; });
+  };
+  // Everything that needs the new page visible (scrolling, sizing charts, the rail) runs after the swap, and only
+  // for the latest route: a later navigation supersedes it.
+  const after = () => {
+    if (token !== routeToken) return;
+    document.dispatchEvent(new CustomEvent('ca:route', { detail: { route } }));
+    if (isChat) {
+      scrollToBottom();
+      return;
+    }
+    if (changed) pageView.scrollTop = 0;
+    renderPage(route).catch((error) => console.warn('Page failed to render:', error));
+  };
   updateRouteMeta(route, sub);
   countPageView(route);
   document.querySelectorAll('#sidebar [data-route], #tabbar [data-route]').forEach((link) => {
@@ -284,13 +309,13 @@ function renderRoute() {
   // Pages without their own tab live behind More.
   document.getElementById('menu-toggle').classList.toggle('is-active', !document.querySelector(`#tabbar [data-route="${route}"]`));
   setSidebarOpen(false);
-  document.dispatchEvent(new CustomEvent('ca:route', { detail: { route } }));
-  if (isChat) {
-    scrollToBottom();
-    return;
+  if (animate) {
+    routeSwapped = withViewTransition(document, swap).then(after, (error) => console.warn('Page change failed:', error));
+  } else {
+    swap();
+    after();
+    routeSwapped = Promise.resolve();
   }
-  if (changed) pageView.scrollTop = 0;
-  renderPage(route).catch((error) => console.warn('Page failed to render:', error));
 }
 
 async function renderPage(route) {
@@ -771,7 +796,7 @@ function holdingsFilters(rows) {
       </div>
       <div class="holdings-find">
         <label class="holdings-search">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=1#ph-magnifying-glass"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
           <span class="sr-only">Search holdings by name, code or broker</span>
           <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
         </label>

@@ -79,6 +79,7 @@
   --rail-w: 340px;
   --content-w: 1180px;
   --tabbar-h: 64px;
+  --tabbar-bg: rgba(246, 246, 245, .86);
 }
 
 :root[data-theme="dark"] {
@@ -93,6 +94,7 @@
   --text: #FFFFFF;
   --text-soft: #A3A3A3;
   --text-muted: #8A8A8A;
+  --tabbar-bg: rgba(24, 24, 24, .86);
   --accent: #C2A66B;
   --accent-2: #C2A66B;
   --accent-3: #CDB47E;
@@ -179,6 +181,8 @@ button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 [hidden] { display: none !important; }
 ::selection { background: var(--accent-glow); color: var(--text); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A page heading focused by script after a command-menu page change marks where reading starts, not a control. */
+.page h1[tabindex="-1"]:focus { outline: none; }
 html { scroll-behavior: smooth; }
 button, .button { transition: background var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease), border-color var(--dur-fade) var(--ease), transform var(--dur-move) var(--ease); }
 button:active:not(:disabled), .button:active { transform: scale(.98); }
@@ -192,8 +196,6 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 .icon { width: 20px; height: 20px; flex-shrink: 0; }
 
 /* Shared stroke-icon treatment (inline svg that is not a sprite icon) */
-.nav-item svg,
-.account-gear svg,
 .icon-button svg,
 .search-box svg,
 .feature-icon svg,
@@ -221,18 +223,25 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   height: 100%;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  transition: grid-template-columns var(--dur-move) var(--ease);
 }
+/* Cmd/Ctrl+B or the toggle closes the sidebar to its icons (shell.js); only its column animates. */
+html.sidebar-closed { --sidebar-w: 64px; }
+/* No slide on load: shell.js adds .shell-ready two frames after it applies the starting state. */
+body:not(.shell-ready) #app { transition: none; }
 
 /* ── Sidebar ─────────────────────────────────────────────────────── */
 #sidebar {
   display: flex;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px 14px 14px;
-  border-right: 1px solid var(--side-border);
-  background: var(--side-bg);
+  gap: 12px;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
   color: var(--side-text);
+  overflow-x: hidden;
   overflow-y: auto;
 }
 #sidebar::-webkit-scrollbar-thumb { background: var(--surface-3); }
@@ -240,11 +249,16 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 /* Only the recent chats shrink and scroll, so the profile button stays in view;
    the sidebar itself scrolls only when even the menu does not fit. */
 #sidebar > * { flex-shrink: 0; }
+/* Labels clip and fade while the column narrows, so nothing spills past it. */
+.nav-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: clip; transition: opacity var(--dur-fade) var(--ease); }
+
+.sidebar-head { display: flex; height: 44px; align-items: center; justify-content: space-between; gap: 8px; }
 .brand {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 10px;
-  padding: 4px 6px;
+  padding: 0 4px;
   color: inherit;
   text-decoration: none;
 }
@@ -260,7 +274,27 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 }
 .logo-mark svg { width: 22px; height: 22px; }
 .brand-copy { display: flex; flex-direction: column; line-height: 1.25; }
-.logo-text { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.logo-text { font-size: 16px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; }
+.sidebar-toggle { border-color: transparent; color: var(--side-soft); }
+.sidebar-toggle .icon { width: 20px; height: 20px; }
+
+.command-open {
+  display: flex;
+  width: 100%;
+  height: 40px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: left;
+  transition: border-color var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease);
+}
+.command-open:hover { border-color: var(--border-hover); color: var(--text); }
+.command-open > .nav-label:not(kbd) { flex: 1; }
 
 .new-chat-button {
   display: inline-grid;
@@ -276,48 +310,40 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 }
 .new-chat-button:hover { background: var(--accent); color: var(--accent-ink); }
 .new-chat-button svg { width: 16px; height: 16px; stroke-width: 2.4; }
-.section-actions { display: inline-flex; align-items: center; gap: 10px; }
 
-.main-nav { display: grid; gap: 12px; }
+.main-nav { display: grid; gap: 16px; }
 .nav-group { display: grid; gap: 2px; }
-.nav-group-label {
-  padding: 0 10px 4px;
-  color: var(--side-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
 .nav-item {
+  position: relative;
   display: flex;
-  min-height: var(--control-h);
+  height: 36px;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   padding: 0 10px;
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   color: var(--side-soft);
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
   transition: background var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease);
 }
-.nav-item svg { width: 18px; height: 18px; flex-shrink: 0; color: currentColor; transition: color var(--dur-fade) var(--ease); }
+.nav-item .icon { width: 20px; height: 20px; color: currentColor; transition: color var(--dur-fade) var(--ease); }
 .nav-item:hover { background: var(--side-hover); color: var(--side-text); }
-.nav-item[aria-current="page"] { background: var(--side-active); color: var(--side-active-text); font-weight: 600; }
-.nav-item[aria-current="page"] svg { color: var(--side-active-icon); }
+.nav-item[aria-current="page"] { background: var(--surface-2); color: var(--text); }
+.nav-item[aria-current="page"] .icon { color: var(--accent); }
 
 .sidebar-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 4px 0 10px;
-  border-top: 1px solid var(--side-border);
-  color: var(--side-muted);
+  border-top: 1px solid var(--line);
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
-.see-all { color: var(--side-soft); font-size: 12px; font-weight: 500; text-decoration: none; }
-.see-all:hover, .see-all[aria-current="page"] { color: var(--side-active-text); }
 #chat-list { flex: 0 1 auto; min-height: 56px; margin: -6px -6px 0; padding: 0 6px; overflow-y: auto; }
 #chat-list::-webkit-scrollbar-thumb { background: var(--surface-3); }
 #chat-list::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
@@ -374,11 +400,9 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
 .sidebar-account {
   display: flex;
   align-items: center;
-  gap: 10px;
   margin-top: auto;
-  padding: 6px;
-  border: 1px solid var(--side-border);
-  border-radius: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
 }
 .account-avatar {
   display: grid;
@@ -392,14 +416,25 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   font-size: 14px;
   font-weight: 600;
 }
+.sidebar-account .account-avatar { border-radius: 8px; }
 .account-avatar.is-connected { background: var(--mint); color: var(--accent-ink); }
-.account-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.3; }
-.account-copy strong { font-size: 14px; font-weight: 600; }
-.account-copy small { overflow: hidden; color: var(--side-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.account-gear { display: grid; width: 32px; height: 32px; flex-shrink: 0; place-items: center; border-radius: 8px; color: var(--side-soft); transition: color var(--dur-fade) var(--ease), background var(--dur-fade) var(--ease); }
-.account-gear svg { width: 18px; height: 18px; }
-.account-trigger:hover .account-gear { background: var(--side-hover); color: var(--side-text); }
+.account-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.3; transition: opacity var(--dur-fade) var(--ease); }
+.account-copy strong { overflow: hidden; font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.account-copy small { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 #sidebar-scrim { display: none; }
+
+/* Closed: icons only; shell.js gives each item its name as a native title. The sidebar keeps scrolling, so the
+   profile button stays reachable on short windows. The phone drawer undoes all of this. */
+html.sidebar-closed #sidebar .brand,
+html.sidebar-closed #sidebar .sidebar-section-head,
+html.sidebar-closed #sidebar #chat-list,
+html.sidebar-closed #sidebar .search-kbd { display: none; }
+html.sidebar-closed #sidebar .sidebar-head { justify-content: center; }
+html.sidebar-closed #sidebar .nav-label { width: 0; opacity: 0; }
+html.sidebar-closed #sidebar .account-copy { width: 0; flex: 0 0 0; opacity: 0; overflow: hidden; }
+html.sidebar-closed #sidebar .nav-item,
+html.sidebar-closed #sidebar .command-open,
+html.sidebar-closed #sidebar .account-trigger { gap: 0; }
 
 /* ── Main column ─────────────────────────────────────────────────── */
 #chat-area {
@@ -411,24 +446,22 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   overflow: hidden;
 }
 
+/* The phone header: shown only below 900px, where the sidebar becomes a drawer. */
 #topbar {
   position: relative;
-  display: flex;
-  min-height: 73px;
+  display: none;
   align-items: center;
-  gap: 12px;
-  padding: 16px 32px;
+  gap: 8px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
 }
-/* The brand moves into the top bar when the sidebar becomes a drawer. */
-.topbar-brand { display: none; align-items: center; gap: 10px; color: var(--text); font-size: 16px; font-weight: 700; text-decoration: none; }
-.topbar-account { display: none; }
+.topbar-brand { display: inline-flex; align-items: center; gap: 10px; margin-right: auto; color: var(--text); font-size: 16px; font-weight: 600; text-decoration: none; }
+/* The conversation search on All chats. */
 .search-box {
   display: flex;
   height: var(--control-h);
-  flex: 1 1 280px;
-  max-width: 520px;
+  flex: 1 1 240px;
+  max-width: 360px;
   min-width: 0;
   align-items: center;
   gap: 10px;
@@ -465,8 +498,7 @@ button:active:not(:disabled), .button:active { transform: scale(.98); }
   font-size: 12px;
   line-height: 16px;
 }
-.search-box:focus-within .search-kbd { display: none; }
-.topbar-spacer { flex: 1 1 0; }
+.theme-toggle { gap: 8px; }
 
 #status-badge {
   display: inline-flex;
@@ -1176,6 +1208,24 @@ body:not(.route-chat) #right-rail { display: none; }
     box-shadow: var(--shadow-lg);
   }
   body.sidebar-open #sidebar { transform: translateX(0); visibility: visible; transition: transform var(--dur-move) var(--ease); }
+  /* The drawer's items arrive one after another (--stagger is set per item by setSidebarOpen). */
+  /* Closing, they fade out together (no stagger) while the panel slides away, so it never leaves empty. */
+  #sidebar .brand, #sidebar #command-open, #sidebar .nav-item, #sidebar .sidebar-section-head, #sidebar #chat-list .chat-row, #sidebar .sidebar-account {
+    opacity: 0;
+    transform: translateX(-8px);
+    transition: opacity var(--dur-fade) var(--ease);
+  }
+  body.sidebar-open #sidebar .brand,
+  body.sidebar-open #sidebar #command-open,
+  body.sidebar-open #sidebar .nav-item,
+  body.sidebar-open #sidebar .sidebar-section-head,
+  body.sidebar-open #sidebar #chat-list .chat-row,
+  body.sidebar-open #sidebar .sidebar-account {
+    opacity: 1;
+    transform: none;
+    transition: opacity var(--dur-fade) var(--ease), transform var(--dur-fade) var(--ease);
+    transition-delay: var(--stagger, 0ms);
+  }
   #sidebar-scrim {
     position: fixed;
     inset: 0;
@@ -1185,17 +1235,27 @@ body:not(.route-chat) #right-rail { display: none; }
   }
   #sidebar-scrim[hidden] { display: none !important; }
   .chat-delete { opacity: 1; }
-  #topbar { min-height: 0; gap: 8px; padding: max(10px, env(safe-area-inset-top)) 16px 10px; }
-  .topbar-brand { display: inline-flex; }
+  /* The drawer is always the open sidebar, whatever the desktop choice; it has no toggle of its own. */
+  html.sidebar-closed { --sidebar-w: 248px; }
+  html.sidebar-closed #sidebar .brand,
+  html.sidebar-closed #sidebar .sidebar-section-head { display: flex; }
+  html.sidebar-closed #sidebar #chat-list { display: block; }
+  html.sidebar-closed #sidebar .sidebar-head { justify-content: space-between; }
+  html.sidebar-closed #sidebar .nav-label { width: auto; opacity: 1; }
+  html.sidebar-closed #sidebar .account-copy { width: auto; flex: 1; opacity: 1; }
+  html.sidebar-closed #sidebar .nav-item,
+  html.sidebar-closed #sidebar .command-open { gap: 12px; }
+  html.sidebar-closed #sidebar .account-trigger { gap: 10px; }
+  .sidebar-toggle { display: none; }
+  .search-kbd { display: none; }
+  #topbar { display: flex; min-height: 56px; padding: max(6px, env(safe-area-inset-top)) 16px 6px; }
   .topbar-brand .logo-mark { width: 30px; height: 30px; border-radius: 8px; }
   .topbar-brand .logo-mark svg { width: 20px; height: 20px; }
-  .topbar-spacer { display: none; }
-  .search-box { flex: 1 1 auto; max-width: none; }
-  .search-kbd { display: none; }
+  #command-open-phone { width: 44px; height: 44px; border-color: transparent; }
   .topbar-account {
     display: grid;
-    width: var(--control-h);
-    height: var(--control-h);
+    width: 44px;
+    height: 44px;
     flex-shrink: 0;
     place-items: center;
     padding: 0;
@@ -1275,14 +1335,17 @@ body:not(.route-chat) #right-rail { display: none; }
     z-index: 20;
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    padding: 6px max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
-    border-top: 1px solid var(--border);
-    background: var(--surface);
+    padding: 6px max(6px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+    border-top: 1px solid var(--line);
+    background: var(--tabbar-bg);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
   }
-  :root[data-theme="dark"] #tabbar { border-top-color: var(--side-border); background: var(--side-bg); }
   .tab {
+    position: relative;
     display: flex;
-    min-height: 52px;
+    min-width: 44px;
+    min-height: 48px;
     flex-direction: column;
     align-items: center;
     justify-content: center;
@@ -1291,34 +1354,30 @@ body:not(.route-chat) #right-rail { display: none; }
     border: 0;
     border-radius: var(--radius-md);
     background: transparent;
-    color: var(--text-soft);
+    color: var(--text-muted);
     font-size: 12px;
     font-weight: 500;
     text-decoration: none;
   }
-  .tab-icon { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 12px; }
-  .tab svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-  .tab[aria-current="page"], .tab.is-active { color: var(--accent-text); font-weight: 600; }
-  :root:not([data-theme="dark"]) .tab[aria-current="page"], :root:not([data-theme="dark"]) .tab.is-active { color: var(--accent-text); }
-  .tab-ask .tab-icon { width: 40px; height: 32px; background: var(--accent); color: var(--accent-ink); }
+  .tab-icon { display: grid; width: 28px; height: 28px; place-items: center; }
+  .tab svg { width: 22px; height: 22px; }
+  .tab[aria-current="page"], .tab.is-active { color: var(--text); }
+  /* A short accent bar above the current tab's icon. */
+  .tab[aria-current="page"]::before, #menu-toggle.is-active::before {
+    content: "";
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    width: 20px;
+    height: 3px;
+    margin-left: -10px;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    background: var(--accent);
+  }
 }
 
 @media (max-width: 560px) {
-  /* Only the dot shows; the text stays for screen readers. */
-  #status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  #status-badge { width: 24px; height: var(--control-h); flex-shrink: 0; justify-content: center; padding: 0; border: 0; background: transparent; }
-  /* The search field folds to an icon and opens across the top bar when focused. */
-  .search-box { flex: 0 0 var(--control-h); width: var(--control-h); justify-content: center; padding: 0; margin-left: auto; }
-  .search-box input { width: 0; flex: 0 0 0; }
-  .search-box:focus-within {
-    position: absolute;
-    inset: auto 16px auto 16px;
-    z-index: 2;
-    width: auto;
-    justify-content: flex-start;
-    padding: 0 12px;
-  }
-  .search-box:focus-within input { flex: 1 1 auto; }
+  .page-actions .search-box { flex: 1 1 100%; max-width: none; }
   .feature-cards { grid-template-columns: 1fr; gap: 10px; }
   .feature-card { padding: 12px; }
   .hero-sub { font-size: 12px; }
@@ -1328,6 +1387,16 @@ body:not(.route-chat) #right-rail { display: none; }
 @media (max-width: 640px) {
   .chat-trace:not([open]) .chat-trace-tags { display: none; }
 }
+
+/* Page changes: the body cross-fades and rises 8px; the sidebar and top bar never move. */
+#page-view, #chat-scroll { view-transition-name: page-body; }
+/* Only opacity and transform animate: the group's default width/height morph is off. */
+::view-transition-group(page-body) { animation: none; }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-old(page-body) { animation: page-out var(--dur-fade) var(--ease) both; }
+::view-transition-new(page-body) { animation: page-in var(--dur-fade) var(--ease) both; }
+@keyframes page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes page-out { from { opacity: 1; } to { opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1339,9 +1408,25 @@ body:not(.route-chat) #right-rail { display: none; }
   }
   /* Opacity only: no movement for anyone who asked for less of it. */
   @keyframes rise-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes page-in { from { opacity: 0; } to { opacity: 1; } }
+  ::view-transition-old(*), ::view-transition-new(*) { animation-duration: 200ms !important; }
   @keyframes typing-bounce { 0%, 80%, 100% { opacity: .4; } 40% { opacity: 1; } }
   @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
   button:active:not(:disabled), .button:active { transform: none; }
+  #app { transition: none !important; }
+  /* The command menu fades in place instead of scaling. */
+  .command-dialog { transform: none !important; }
+  /* Slide-overs fade in place instead of sliding. */
+  .profile-dialog, .profile-dialog[open] { transform: none !important; }
+  /* The More drawer fades in with its items together instead of sliding and staggering. */
+  @media (max-width: 900px) {
+    #sidebar, body.sidebar-open #sidebar { transform: none !important; opacity: 0; }
+    body.sidebar-open #sidebar { opacity: 1; }
+    #sidebar .brand, #sidebar #command-open, #sidebar .nav-item, #sidebar .sidebar-section-head, #sidebar #chat-list .chat-row, #sidebar .sidebar-account {
+      transform: none !important;
+      transition-delay: 0ms !important;
+    }
+  }
 }
 
 /* In-app confirmation (app.js confirmAction) */
@@ -1366,6 +1451,75 @@ body:not(.route-chat) #right-rail { display: none; }
 .confirm-dialog p { margin: 0 0 16px; color: var(--text-soft); font-size: 14px; line-height: 20px; }
 .confirm-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .confirm-dialog .dialog-actions .rail-button, .confirm-dialog .dialog-actions .gate-secondary, .confirm-dialog .danger-button { flex: 0 0 auto; width: auto; }
+
+/* ── Command menu (shell.js openCommandMenu) ─────────────────────── */
+.command-dialog {
+  width: min(640px, calc(100% - 32px));
+  max-height: min(560px, 76vh);
+  margin: 12vh auto auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity var(--dur-fade) var(--ease), transform var(--dur-fade) var(--ease);
+}
+.command-dialog[open] { display: flex; flex-direction: column; }
+@starting-style { .command-dialog[open] { opacity: 0; transform: scale(.98); } }
+.command-dialog::backdrop { background: rgba(0, 0, 0, .6); opacity: 1; transition: opacity var(--dur-fade) var(--ease); }
+@starting-style { .command-dialog[open]::backdrop { opacity: 0; } }
+.command-search { display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--text-muted); }
+.command-search input {
+  flex: 1;
+  min-width: 0;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+.command-search input::placeholder { color: var(--text-muted); }
+.command-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; overscroll-behavior: contain; }
+.command-group + .command-group { margin-top: 8px; }
+.command-group-title { margin: 0; padding: 6px 8px 4px; color: var(--text-muted); font-size: 12px; font-weight: 500; line-height: 16px; }
+.command-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background var(--dur-fade) var(--ease);
+}
+.command-option:hover { background: var(--surface-2); }
+.command-option[aria-selected="true"] { background: var(--surface-3); }
+.command-tile {
+  display: grid;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  transition: background var(--dur-fade) var(--ease), color var(--dur-fade) var(--ease);
+}
+.command-tile .icon { width: 16px; height: 16px; }
+.command-option[aria-selected="true"] .command-tile { background: var(--accent-wash); color: var(--accent); }
+.command-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-option kbd { flex-shrink: 0; }
+.command-foot { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--text-muted); font-size: 12px; line-height: 16px; }
 
 /* ── Profiles: account trigger, picker, settings dialog ──────────── */
 .account-trigger {
@@ -1410,17 +1564,12 @@ body.gate-open #app { visibility: hidden; }
   background: var(--canvas);
 }
 .gate-card {
-  width: min(440px, 100%);
-  padding: 32px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-md);
+  width: min(400px, 100%);
+  padding: 0;
   text-align: center;
 }
-/* Borders, not shadows, in dark mode. */
-:root[data-theme="dark"] .gate-card { box-shadow: none; }
-.gate-logo { display: inline-grid; width: 44px; height: 44px; margin-bottom: 16px; border-radius: 12px; }
+.gate-logo { display: inline-grid; width: 44px; height: 44px; margin-bottom: 8px; border-radius: 12px; }
+.gate-brand { margin: 0 0 20px; color: var(--text); font-size: 16px; font-weight: 600; line-height: 24px; }
 .gate-logo svg { width: 26px; height: 26px; }
 .gate-title { color: var(--text); font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 32px; }
 .gate-sub { margin: 8px 0 24px; color: var(--text-soft); font-size: 14px; line-height: 20px; }
@@ -1525,24 +1674,41 @@ body.gate-open #app { visibility: hidden; }
 .gate-card .field input, .gate-card .field select { min-height: 44px; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Slide-overs: the profile, goal and allocation editors open from the right. */
 .profile-dialog {
-  width: min(560px, calc(100% - 32px));
-  margin: auto;
+  width: min(480px, 100%);
+  max-width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0 0 0 auto;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  overflow-y: auto;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 16px 0 0 16px;
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow-lg);
+  opacity: 0;
+  transform: translateX(100%);
+  transition: transform var(--dur-move) var(--ease), opacity var(--dur-fade) var(--ease), overlay var(--dur-move) allow-discrete, display var(--dur-move) allow-discrete;
 }
-.profile-dialog::backdrop { background: rgba(10, 10, 10, .4); }
+.profile-dialog[open] { opacity: 1; transform: translateX(0); }
+@starting-style { .profile-dialog[open] { opacity: 0; transform: translateX(100%); } }
+.goal-dialog { width: min(560px, 100%); }
+.profile-dialog::backdrop { background: rgba(10, 10, 10, .4); opacity: 0; transition: opacity var(--dur-fade) var(--ease), overlay var(--dur-move) allow-discrete, display var(--dur-move) allow-discrete; }
+.profile-dialog[open]::backdrop { opacity: 1; }
+@starting-style { .profile-dialog[open]::backdrop { opacity: 0; } }
 :root[data-theme="dark"] .profile-dialog::backdrop { background: rgba(0, 0, 0, .65); }
 .profile-dialog form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 24px; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* The head stays in view while the panel scrolls; the form's 24px padding is pulled back out. */
+.profile-dialog .dialog-head { position: sticky; top: 0; z-index: 2; margin: -24px -24px 0; padding: max(20px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) 14px max(24px, env(safe-area-inset-left)); border-bottom: 1px solid var(--line); background: var(--surface); }
+.profile-dialog .dialog-actions { position: sticky; bottom: 0; z-index: 2; margin: 0 -24px -24px; padding: 14px max(24px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); border-top: 1px solid var(--line); background: var(--surface); }
 .dialog-head h2 { color: var(--text); font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
 /* Each part of the profile dialog is a section with a 15/600 heading, divided by rules. */
 .dialog-section { display: grid; gap: 10px; }
-.dialog-section + .dialog-section, .brokers-section + .dialog-section { padding-top: 16px; border-top: 1px solid var(--border); }
+.dialog-section + .dialog-section, .brokers-section + .dialog-section, .dialog-section + .brokers-section { padding-top: 16px; border-top: 1px solid var(--border); }
 .dialog-section-title { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
 .dialog-sub { color: var(--text-soft); font-size: 12px; line-height: 16px; }
 .field-hint { color: var(--text-muted); font-size: 12px; font-weight: 400; }
@@ -1652,7 +1818,6 @@ body.gate-open #app { visibility: hidden; }
 .data-actions .field { flex: 1 1 100%; }
 
 @media (max-width: 560px) {
-  .gate-card { padding: 26px 18px; }
   .data-actions { flex-direction: column; align-items: stretch; }
   .data-actions .field { flex-basis: auto; }
   .field-grid { grid-template-columns: 1fr; }
@@ -1938,7 +2103,6 @@ body.gate-open #app { visibility: hidden; }
 .data-table td.alloc-goals { min-width: 150px; white-space: normal; }
 
 @media (max-width: 600px) {
-  .goal-dialog { width: 100%; max-width: 100%; margin: 0; border-radius: 0; }
   .goal-dialog .dialog-actions { flex-wrap: wrap; }
   .goal-dialog .dialog-actions .rail-button { flex: 1 1 100%; }
   .chip-row-label { min-width: 100%; }
@@ -2709,10 +2873,13 @@ body.gate-open #app { visibility: hidden; }
   .download-actions .gate-secondary { flex: 1 1 100%; }
   .not-found { padding: 28px 18px; }
   .not-found-code { font-size: 36px; }
-  .gate-card { padding: 24px 18px; }
   /* The quieter header action keeps its own width so the primary one fits on one line. */
   .page-head .page-actions > #activity-refresh, .page-head .page-actions > #print-report { flex: 0 0 auto; }
 }
 @media print {
   .download-actions, .downloads-card { display: none !important; }
+}
+
+@media (max-width: 640px) {
+  .profile-dialog, .goal-dialog { width: 100%; border-left: 0; border-radius: 0; }
 }

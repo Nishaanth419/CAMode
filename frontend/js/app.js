@@ -74,7 +74,7 @@ const planBrokers = document.getElementById('plan-brokers');
 const planName = document.getElementById('plan-name');
 const planUsage = document.getElementById('plan-usage');
 const PROFILE_FIELDS = ['riskAppetite', 'ageBand', 'investmentHorizonYears', 'monthlyInvestmentInr', 'primaryGoal', 'taxSlabPct'];
-// The sidebar lists this many recent chats; "See all" opens the full list.
+// The sidebar lists this many recent chats; All chats in the menu opens the full list.
 const SIDEBAR_CHATS = 6;
 let isConnected = false;
 // True between a successful load of the signed-in, unlocked, consenting profile and the next loadChats().
@@ -185,14 +185,16 @@ function applyTheme(theme) {
   const nextLabel = selected === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
   themeToggle.setAttribute('aria-label', nextLabel);
   themeToggle.title = nextLabel;
-  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=1#ph-sun' : '/icons.svg?v=1#ph-moon');
+  const themeLabel = document.getElementById('theme-toggle-label');
+  if (themeLabel) themeLabel.textContent = nextLabel;
+  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=2#ph-sun' : '/icons.svg?v=2#ph-moon');
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
   localStorage.setItem('ca-mode-theme', selected);
 }
 
 // Dark is the default look; a new key so everyone sees it once, then their own choice sticks.
 applyTheme(localStorage.getItem('ca-mode-theme') || 'dark');
-themeToggle.addEventListener('click', () => {
+function toggleTheme() {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   // Plotly bakes colors into each chart, so redraw open charts for the new theme.
   document.querySelectorAll('.plotly-chart[data-plotly-ready]').forEach(graph => {
@@ -202,7 +204,8 @@ themeToggle.addEventListener('click', () => {
     // History charts take their line and shading colours from the theme too.
     window.Plotly.react(graph, plotlyTraces(spec, view), plotlyLayout(spec, view), plotlyConfig(spec));
   });
-});
+}
+themeToggle.addEventListener('click', toggleTheme);
 
 function updateGreeting() {
   const hour = new Date().getHours();
@@ -218,22 +221,17 @@ function setSidebarOpen(open) {
   document.body.classList.toggle('sidebar-open', open);
   sidebarScrim.hidden = !open;
   menuToggle.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const items = document.querySelectorAll('#sidebar .brand, #sidebar #command-open, #sidebar .nav-item, #sidebar .sidebar-section-head, #sidebar #chat-list .chat-row, #sidebar .sidebar-account');
+    const delays = staggerDelays(items.length);
+    items.forEach((item, i) => item.style.setProperty('--stagger', `${delays[i]}ms`));
+  }
   if (open && !wasOpen) document.querySelector('#sidebar .nav-item')?.focus();
   else if (!open && wasOpen && document.getElementById('sidebar').contains(document.activeElement)) menuToggle.focus();
 }
 menuToggle.addEventListener('click', () => setSidebarOpen(!document.body.classList.contains('sidebar-open')));
 sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') setSidebarOpen(false);
-  // Cmd+K (Ctrl+K elsewhere) jumps to the search field, unless a sign-in screen or dialog is open.
-  if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
-    && !document.body.classList.contains('gate-open') && !document.querySelector('dialog[open]')) {
-    event.preventDefault();
-    chatSearch.focus();
-    chatSearch.select();
-  }
-});
-if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) document.getElementById('search-kbd').textContent = '⌘K';
+// Escape and the keyboard shortcuts are handled in shell.js.
 
 /* ── Phone keyboard ───────────────────────────────────────────────────── */
 // iOS shrinks only the visual viewport when the on-screen keyboard opens, which would leave the composer under
@@ -1680,7 +1678,8 @@ async function startNewChat() {
   activeChatId = null;
   resetConversationView();
   renderChats();
-  userInput.focus();
+  // The composer is hidden until a page change to Ask AI has been applied.
+  (typeof routeSwapped === 'undefined' ? Promise.resolve() : routeSwapped).then(() => userInput.focus());
 }
 
 async function createChat() {

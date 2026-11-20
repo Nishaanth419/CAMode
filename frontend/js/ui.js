@@ -196,9 +196,134 @@
     return { title: fill(entry.title), body: fill(entry.body), confirmLabel: entry.confirmLabel, cancelLabel: 'Cancel', danger: entry.danger };
   }
 
+  // The desktop sidebar's open or closed choice, kept per browser. Storage can be missing or throw (private
+  // windows, blocked site data): reads then give null and writes report false, and the app works without it.
+  const SIDEBAR_KEY = 'ca-mode-sidebar';
+  const SIDEBAR_STATES = ['open', 'closed'];
+
+  function readSidebarState(storage) {
+    try {
+      const value = storage ? storage.getItem(SIDEBAR_KEY) : null;
+      return SIDEBAR_STATES.includes(value) ? value : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveSidebarState(storage, state) {
+    try {
+      storage.setItem(SIDEBAR_KEY, state);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Up to 1280px the sidebar starts closed whatever was saved; wider, it follows the saved choice (open by default).
+  function initialSidebarState({ stored, width }) {
+    if (width <= 1280) return 'closed';
+    return stored === 'closed' ? 'closed' : 'open';
+  }
+
+  // Cmd (Ctrl elsewhere) + K opens the command menu and + B toggles the sidebar, never over a sign-in screen or dialog.
+  // While the command menu itself is open, + K closes it again (and + B does nothing).
+  function shortcutFor(event, { gateOpen, dialogOpen, commandOpen = false }) {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return null;
+    const key = String(event.key || '').toLowerCase();
+    if (commandOpen) return key === 'k' ? 'close-command' : null;
+    if (gateOpen || dialogOpen) return null;
+    if (key === 'k') return 'command';
+    if (key === 'b') return 'sidebar';
+    return null;
+  }
+
+  function shortcutLabel(platform) {
+    return /Mac|iPhone|iPad/.test(platform || '') ? '⌘K' : 'Ctrl K';
+  }
+
+  // What the command menu lists for a query. A blank query browses pages, recent chats and actions; anything typed
+  // can always be asked of either agent, then pages, chats and actions whose label holds every word of it.
+  function commandResults(query, { pages = [], chats = [], actions = [] } = {}) {
+    const text = String(query || '').trim();
+    const pageItems = pages.map((page) => ({ id: `page-${page.route}`, kind: 'page', label: page.label, hint: '', value: page.route }));
+    const chatItems = chats.map((chat) => ({ id: `chat-${chat.id}`, kind: 'chat', label: chat.title || 'New chat', hint: '', value: String(chat.id) }));
+    const actionItems = actions.map((action) => ({ id: `action-${action.id}`, kind: 'action', label: action.label, hint: '', value: action.id }));
+    if (!text) {
+      return [
+        { title: 'Pages', items: pageItems },
+        { title: 'Recent chats', items: chatItems.slice(0, 5) },
+        { title: 'Actions', items: actionItems },
+      ].filter((group) => group.items.length);
+    }
+    const words = text.toLowerCase().split(/\s+/);
+    const matches = (item) => words.every((word) => item.label.toLowerCase().includes(word));
+    return [
+      { title: 'Ask', items: [
+        { id: 'ask-portfolio', kind: 'ask', label: `Ask Portfolio Analyzer: "${text}"`, hint: 'Enter', value: text, agent: 'portfolio' },
+        { id: 'ask-finance', kind: 'ask', label: `Ask Finance Agent: "${text}"`, hint: '', value: text, agent: 'finance' },
+      ] },
+      { title: 'Pages', items: pageItems.filter(matches) },
+      { title: 'Chats', items: chatItems.filter(matches).slice(0, 6) },
+      { title: 'Actions', items: actionItems.filter(matches) },
+    ].filter((group) => group.items.length);
+  }
+
+  // Commands that need the conversation free: they would start, switch or end it, or open the profile panel
+  // (which refuses while an answer streams). They wait until the current answer has finished.
+  const COMMANDS_AFTER_ANSWER = ['new-chat', 'connect-broker', 'sign-out'];
+  function commandWaitsForAnswer(item) {
+    return item.kind === 'ask' || item.kind === 'chat' || (item.kind === 'action' && COMMANDS_AFTER_ANSWER.includes(item.value));
+  }
+
+  // The next active option for the arrow keys, wrapping at both ends; -1 when there is nothing to move through.
+  function moveActive(index, delta, count) {
+    if (!count) return -1;
+    return (((index + delta) % count) + count) % count;
+  }
+
+  // Start delays (ms) for the drawer's items: one step apart, none later than max.
+  function staggerDelays(count, step = 60, max = 360) {
+    return Array.from({ length: count }, (_, i) => Math.min(i * step, max));
+  }
+
+  const VIEW_TRANSITION_PATIENCE_MS = 400;
+  // Runs a DOM update inside a view transition when the browser has one. The update always runs, and an error
+  // from it rejects; a transition that is skipped or aborted never does.
+  async function withViewTransition(doc, update) {
+    if (typeof doc?.startViewTransition !== 'function') {
+      await update();
+      return;
+    }
+    // The browser runs the update at its next rendering opportunity; if it never comes (a page that is not
+    // being painted), a timer runs it instead. It only ever runs once, and its error rejects `ran`.
+    let started = null;
+    let run;
+    const ran = new Promise((resolve, reject) => {
+      run = () => { started = started || Promise.resolve().then(update).then(resolve, reject); return started; };
+    });
+    let transition;
+    try {
+      transition = doc.startViewTransition(run);
+    } catch {
+      run();
+      await ran;
+      return;
+    }
+    transition.ready?.catch(() => {});
+    transition.finished?.catch(() => {});
+    const timer = setTimeout(run, VIEW_TRANSITION_PATIENCE_MS);
+    try {
+      await ran;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   const api = {
-    CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
+    SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
+    commandResults, moveActive, commandWaitsForAnswer, staggerDelays,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

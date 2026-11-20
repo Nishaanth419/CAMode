@@ -86,6 +86,15 @@ test('no uppercase, italic or weights above bold', () => {
 
 module.exports = { readCss, readHtml, readJs, tokenBlock };
 
+test('the command menu is a dialog with a combobox driving a listbox', () => {
+  const html = readHtml();
+  const menu = html.slice(html.indexOf('<dialog id="command-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="command-dialog"')));
+  assert.match(menu, /aria-label="Command menu"/);
+  assert.match(menu, /id="command-input"[^>]*role="combobox"[^>]*aria-controls="command-list"/);
+  assert.match(menu, /id="command-list"[^>]*role="listbox"/);
+  assert.match(readCss(), /\.command-dialog\s*\{[^}]*width:\s*min\(640px/);
+});
+
 test('radii come from the scale', () => {
   const ok = /^(0|2px|4px|6px|8px|12px|16px|50%|9999px|inherit|var\(--radius-[a-z]+\))$/;
   for (const name of ['app.css', 'public.css', 'admin.css']) {
@@ -120,7 +129,7 @@ test('reduced motion stops movement and loops', () => {
 test('keyboard focus is always visible', () => assert.match(readCss(), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/));
 
 test('no browser dialogs in the app scripts', () => {
-  for (const name of ['app.js', 'pages.js', 'demo.js']) {
+  for (const name of ['app.js', 'pages.js', 'demo.js', 'shell.js']) {
     assert.doesNotMatch(readJs(name), /window\.confirm\(|(^|[^\w.])confirm\(|\balert\(/m, name);
   }
 });
@@ -129,7 +138,7 @@ test('every sprite icon referenced by the app exists in icons.svg', () => {
   const sprite = fs.readFileSync(path.join(FRONTEND, 'icons.svg'), 'utf8');
   const symbols = new Set([...sprite.matchAll(/<symbol id="(ph-[\w-]+)" viewBox="0 0 256 256"/g)].map((m) => m[1]));
   assert.ok(symbols.size > 0);
-  const sources = [readHtml(), readJs('pages.js'), readJs('app.js')];
+  const sources = [readHtml(), readJs('pages.js'), readJs('app.js'), readJs('shell.js')];
   const used = new Set();
   for (const source of sources) {
     for (const m of source.matchAll(/\/icons\.svg\?v=\d+#(ph-[\w-]+)/g)) used.add(m[1]);
@@ -244,3 +253,105 @@ for (const [theme, selector] of [['light', ':root'], ['dark', ':root[data-theme=
   });
 }
 test.after(() => { if (process.env.SHOW_CONTRAST) console.log(CONTRAST_ROWS.join('\n')); });
+
+test('the sidebar opens at 248px and closes to 64px, animating only its column', () => {
+  const css = readCss();
+  assert.match(css, /--sidebar-w:\s*248px/);
+  assert.match(css, /html\.sidebar-closed\s*\{[^}]*--sidebar-w:\s*64px/);
+  assert.match(css, /#app\s*\{[^}]*transition:\s*grid-template-columns var\(--dur-move\) var\(--ease\)/);
+  assert.match(css, /body:not\(\.shell-ready\) #app\s*\{\s*transition:\s*none;?\s*\}/);
+  assert.match(readJs('shell.js'), /classList\.add\('shell-ready'\)/);
+});
+test('the sidebar keeps its hooks and drops the group labels and the top bar search', () => {
+  const html = readHtml();
+  for (const id of ['sidebar', 'sidebar-toggle', 'command-open', 'chat-list', 'new-chat-button', 'account-trigger', 'sidebar-scrim', 'topbar', 'topbar-account', 'chat-search', 'status-badge', 'theme-toggle', 'menu-toggle']) {
+    assert.match(html, new RegExp(`id="${id}"`), id);
+  }
+  assert.doesNotMatch(html, /nav-group-label/);
+  assert.match(html, /id="sidebar-toggle"[^>]*aria-expanded="true"[^>]*aria-label="Close sidebar"/);
+  const sidebar = html.slice(html.indexOf('<aside id="sidebar"'), html.indexOf('</aside>'));
+  const order = [...sidebar.matchAll(/data-route="([\w-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, ['home', 'portfolio', 'holdings', 'chat', 'activity', 'chats', 'goals', 'returns', 'planning', 'markets', 'reports']);
+  const profile = html.slice(html.indexOf('<dialog id="profile-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="profile-dialog"')));
+  assert.match(profile, /id="status-badge"/);
+  assert.match(profile, /id="theme-toggle"/);
+  const allChats = html.slice(html.indexOf('data-page="chats"'), html.indexOf('data-page="not-found"'));
+  assert.match(allChats, /id="chat-search"/);
+});
+test('closed-sidebar rules are desktop only; the phone drawer always shows the open sidebar', () => {
+  const css = readCss();
+  const phone = css.slice(css.indexOf('@media (max-width: 900px)'));
+  assert.match(phone.slice(0, phone.indexOf('\n}\n')), /html\.sidebar-closed #sidebar/);
+});
+test('the closed sidebar keeps scrolling and names its items with native titles, not CSS tooltips', () => {
+  const css = readCss();
+  const closedRules = [...css.matchAll(/html\.sidebar-closed #sidebar[^{]*\{([^}]*)\}/g)];
+  for (const [, body] of closedRules) assert.doesNotMatch(body, /overflow(-y)?:\s*visible/);
+  assert.doesNotMatch(css, /html\.sidebar-closed #sidebar \.nav-item:hover \.nav-label/);
+  assert.match(css, /#sidebar\s*\{[^}]*overflow-y:\s*auto/);
+  const shell = readJs('shell.js');
+  assert.match(shell, /classList\.toggle\('sidebar-closed', collapsed\);\n\s*setSidebarTitles\(collapsed\);/);
+  assert.match(shell, /querySelectorAll\('#sidebar \.nav-item, #command-open, #account-trigger'\)/);
+  assert.match(shell, /if \(item\.hasAttribute\('title'\)\) return;/);
+  assert.match(shell, /item\.removeAttribute\('title'\)/);
+});
+test('the phone drawer fades its items out together when it closes', () => {
+  const css = readCss();
+  const phone = css.slice(css.indexOf('@media (max-width: 900px)'));
+  const base = /#sidebar \.brand, #sidebar #command-open, #sidebar \.nav-item[^{]*\{([^}]*)\}/.exec(phone)[1];
+  assert.match(base, /opacity:\s*0/);
+  assert.match(base, /transition:\s*opacity var\(--dur-fade\) var\(--ease\)/);
+  assert.doesNotMatch(base, /transition-delay/);
+});
+test('boot.js runs in <head> before paint and the closed state lives on the root element', () => {
+  const html = readHtml();
+  const head = html.slice(0, html.indexOf('</head>'));
+  const tag = /<script src="\/js\/boot\.js\?v=\d+"([^>]*)><\/script>/.exec(head);
+  assert.ok(tag, 'boot.js is not in <head>');
+  assert.doesNotMatch(tag[1], /defer|async|type="module"/);
+  assert.ok(head.indexOf('/css/app.css') < head.indexOf('/js/boot.js'));
+  assert.doesNotMatch(readCss(), /body\.sidebar-closed/);
+  assert.match(readJs('shell.js'), /document\.documentElement\.classList\.toggle\('sidebar-closed'/);
+  assert.match(fs.readFileSync(path.join(FRONTEND, 'sw.js'), 'utf8'), /APP_SHELL = \[[^\]]*'\/js\/boot\.js'/);
+});
+
+test('profile, goal and allocation dialogs are right-side slide-overs', () => {
+  const css = readCss();
+  const rule = /\.profile-dialog\s*\{([^}]*)\}/.exec(css)[1];
+  assert.match(rule, /margin:\s*0 0 0 auto/);
+  assert.match(rule, /height:\s*100dvh/);
+  assert.match(rule, /border-radius:\s*16px 0 0 16px/);
+  assert.match(css, /@starting-style\s*\{[^{}]*\.profile-dialog\[open\]\s*\{[^}]*transform:\s*translateX\(100%\)/);
+  const reduce = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduce, /\.profile-dialog[^{]*\{[^}]*transform:\s*none/);
+});
+
+test('slide-over head and actions keep clear of the notch and home indicator', () => {
+  const css = readCss();
+  assert.match(css, /\.profile-dialog \.dialog-head\s*\{[^}]*padding:\s*max\(20px, env\(safe-area-inset-top\)\)/);
+  assert.match(css, /\.profile-dialog \.dialog-actions\s*\{[^}]*max\(20px, env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.profile-dialog \.dialog-head\s*\{[^}]*env\(safe-area-inset-right\)/);
+});
+
+test('the phone tab bar marks the current tab with an accent bar and the drawer staggers its items', () => {
+  const css = readCss();
+  assert.match(css, /\.tab\[aria-current="page"\][^{]*::before\s*\{[^}]*background:\s*var\(--accent\)/);
+  assert.match(css, /body\.sidebar-open #sidebar [^{]*\{[^}]*transition-delay:\s*var\(--stagger/);
+  const reduce = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduce, /#sidebar[^{]*\{[^}]*transform:\s*none/);
+});
+
+test('the page body cross-fades and rises 8px; the sidebar never moves', () => {
+  const css = readCss();
+  assert.match(css, /#page-view,\s*#chat-scroll\s*\{[^}]*view-transition-name:\s*page-body/);
+  assert.match(css, /::view-transition-new\(page-body\)\s*\{[^}]*animation:[^;]*var\(--dur-fade\) var\(--ease\)/);
+  assert.match(css, /::view-transition-old\(root\),\s*::view-transition-new\(root\)\s*\{[^}]*animation:\s*none/);
+});
+
+test('the sign-in gate is one column on the canvas, not a card', () => {
+  const css = readCss();
+  const card = /\.gate-card\s*\{([^}]*)\}/.exec(css)[1];
+  assert.doesNotMatch(card, /border:\s*1px|box-shadow|background:\s*var\(--surface\)/);
+  assert.match(card, /width:\s*min\(400px, 100%\)/);
+  assert.match(/\.profile-gate\s*\{([^}]*)\}/.exec(css)[1], /background:\s*var\(--canvas\)/);
+});

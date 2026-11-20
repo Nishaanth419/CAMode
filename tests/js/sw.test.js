@@ -104,4 +104,5 @@ test('API, auth and other files are never answered from the cache', async () => 
 
 test('the icon sprite is part of the cached shell', () => {
   assert.match(SOURCE, /APP_SHELL = \[[^\]]*'\/icons\.svg'/);
+  assert.match(SOURCE, /APP_SHELL = \[[^\]]*'\/js\/shell\.js'/);
 });
