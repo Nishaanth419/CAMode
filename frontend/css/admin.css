@@ -7,7 +7,7 @@
 .public-page-wide > #admin section { max-width: none; }
 .admin-muted { color: var(--text-soft); font-size: 14px; }
 .admin-error { color: var(--danger); font-size: 14px; }
-.admin-message { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: var(--muted-bg); }
+.admin-message { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; background: var(--muted-bg); }
 .admin-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 16px; }
 .admin-signin { max-width: 520px; }
 
@@ -22,7 +22,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .admin-danger:hover { border-color: var(--danger); }
 
 .admin-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 0 0 14px; }
-.admin-tile { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.admin-tile { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .admin-tile strong { font-size: 24px; line-height: 32px; font-variant-numeric: tabular-nums; }
 .admin-tile-label { color: var(--text-soft); font-size: 12px; }
 
@@ -37,7 +37,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .admin-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .admin-actions button { white-space: nowrap; }
 .admin-badges { display: flex; flex-wrap: wrap; gap: 4px; }
-.admin-badge { padding: 2px 8px; border-radius: 999px; background: var(--muted-bg); font-size: 12px; white-space: nowrap; }
+.admin-badge { padding: 2px 8px; border-radius: 6px; background: var(--muted-bg); font-size: 12px; white-space: nowrap; }
 .admin-badge-warn { color: var(--warn); }
 
 .admin-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }

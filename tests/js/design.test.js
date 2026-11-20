@@ -85,3 +85,15 @@ test('no uppercase, italic or weights above bold', () => {
 });
 
 module.exports = { readCss, readHtml, readJs, tokenBlock };
+
+test('radii come from the scale', () => {
+  const ok = /^(0|2px|4px|6px|8px|12px|16px|50%|9999px|inherit|var\(--radius-[a-z]+\))$/;
+  for (const [, v] of readCss().matchAll(/border-radius:\s*([^;]+);/g)) for (const part of v.trim().split(/\s+/)) assert.match(part, ok, v);
+});
+
+test('no background gradients and no generic shadows', () => {
+  const css = readCss();
+  assert.equal((css.match(/gradient\(/g) || []).length, 0);
+  assert.doesNotMatch(css, /box-shadow:\s*0 1px 3px rgba\(0,\s*0,\s*0/);
+  assert.doesNotMatch(css, /--shadow-sm:\s*0/);
+});
