@@ -520,7 +520,9 @@ test('Holdings: sliding tab underline, table on the surface, sticky header', () 
   assert.match(panel, /overflow:\s*clip/);
   const th = ruleBody(css, '.holdings-table thead th');
   assert.match(th, /position:\s*sticky/);
-  assert.match(th, /top:\s*-28px/); // #page-view pads its scrollport by 28px on desktop
+  assert.match(th, /top:\s*calc\(-1 \* var\(--page-pad-top/);
+  assert.match(ruleBody(css, '#page-view'), /--page-pad-top:\s*28px[^}]*padding:\s*var\(--page-pad-top\)/);
+  assert.match(ruleBody(css, '.source-tabs.is-placing::after'), /transition:\s*none/);
   assert.match(th, /background:\s*var\(--surface(-2)?\)/);
   assert.match(ruleBody(css, '.holdings-table tbody tr:hover'), /var\(--surface-2\)/);
   // Scrolling sideways is only for pages under 900px (a container query); above it sticky needs no scroll ancestor.
@@ -539,4 +541,7 @@ test('placeTabIndicator carries the old underline across the rebuild and reruns 
   assert.match(js, /--tab-w/);
   assert.match(js, /addEventListener\('resize'/);
   assert.match(js, /addEventListener\('load'/);
+  assert.match(js, /document\.fonts\?\.ready/);
+  assert.match(js, /function snapTabIndicator/);
+  assert.match(js, /target\.w > 0/);
 });

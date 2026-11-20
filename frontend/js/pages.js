@@ -957,33 +957,39 @@ function setTabIndicator(bar, { x, w }) {
   bar.style.setProperty('--tab-w', String(w / 100));
 }
 
+// Puts the underline somewhere with its transition off, and commits it, so nothing animates to get there.
+function snapTabIndicator(bar, place) {
+  bar.classList.add('is-placing');
+  setTabIndicator(bar, place);
+  getComputedStyle(bar, '::after').transform; // commit while transitions are off
+  bar.classList.remove('is-placing');
+  getComputedStyle(bar, '::after').transform; // and commit with them back on, so the next change transitions
+}
+
 function placeTabIndicator(body, { from } = {}) {
   const target = measureTabIndicator(body);
-  if (!target) return;
-  const fresh = from && from.w > 0;
-  if (fresh) {
-    // The bar may already have been styled without the variables (a forced layout earlier in the render), which
-    // would leave a transition from nothing running. Put the old place in with transitions off, commit it, then
-    // switch them back on so the change below slides from there.
-    target.bar.classList.add('is-placing');
-    setTabIndicator(target.bar, from);
-    getComputedStyle(target.bar, '::after').transform; // commit the start
-    target.bar.classList.remove('is-placing');
-    getComputedStyle(target.bar, '::after').transform;
-  }
-  setTabIndicator(target.bar, target);
+  if (!target || !(target.w > 0)) return;
+  // A bar may already have been styled without the variables (a forced layout earlier in the render), so the
+  // start is always committed with transitions off: the previous tab's place when there is one, else the target.
+  const slides = from && from.w > 0 && (from.x !== target.x || from.w !== target.w);
+  snapTabIndicator(target.bar, slides ? from : target);
+  if (slides) setTabIndicator(target.bar, target);
   lastTabIndicator = { x: target.x, w: target.w };
   if (tabIndicatorListening) return;
   tabIndicatorListening = true;
+  // Resizes, tab logos and fonts change tab widths: the underline snaps to the new place instead of sliding.
   const settle = () => {
     const current = measureTabIndicator(body);
-    if (!current) return;
-    setTabIndicator(current.bar, current);
+    if (!current || !(current.w > 0)) return;
+    // A logo that loads from cache changes nothing: leave a slide in progress alone.
+    if (lastTabIndicator && lastTabIndicator.x === current.x && lastTabIndicator.w === current.w) return;
+    snapTabIndicator(current.bar, current);
     lastTabIndicator = { x: current.x, w: current.w };
   };
   window.addEventListener('resize', settle);
-  // Tab logos change a tab's width when they arrive (load does not bubble, so listen while capturing).
+  // load does not bubble, so listen while capturing.
   body.addEventListener('load', settle, true);
+  document.fonts?.ready?.then(settle);
 }
 
 // On a phone the tabs scroll sideways; keep the selected one in sight.
