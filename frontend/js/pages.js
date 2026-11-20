@@ -660,7 +660,7 @@ async function renderPortfolio() {
         ${caps ? panel('Direct stocks by market cap', `<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`) : ''}
       </div>
     </div>
-    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings <span aria-hidden="true">→</span></a>' })}
+    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings</a>' })}
     ${notes.length ? panel('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
     ${promptChips([
       ['Explain my allocation', 'Explain my current asset allocation and what stands out.'],
@@ -796,7 +796,7 @@ function holdingsFilters(rows) {
       </div>
       <div class="holdings-find">
         <label class="holdings-search">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=2#ph-magnifying-glass"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-magnifying-glass"></use></svg>
           <span class="sr-only">Search holdings by name, code or broker</span>
           <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
         </label>

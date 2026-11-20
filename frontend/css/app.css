@@ -19,6 +19,8 @@
   --accent-glow: rgba(138, 111, 53, 0.25);
   --accent-wash: rgba(138, 111, 53, 0.1);
   --accent-wash2: rgba(138, 111, 53, 0.05);
+  --hero-from: #000000;
+  --hero-to: #666666;
   --mint: #8A6F35;
   --gain: #2E7D57;
   --loss: #B5483A;
@@ -103,6 +105,8 @@
   --accent-glow: rgba(194, 166, 107, 0.25);
   --accent-wash: rgba(194, 166, 107, 0.1);
   --accent-wash2: rgba(194, 166, 107, 0.05);
+  --hero-from: #FFFFFF;
+  --hero-to: #9B9B9B;
   --mint: #C2A66B;
   --gain: #5FB38A;
   --loss: #E07A6A;
@@ -1857,6 +1861,9 @@ body.gate-open #app { visibility: hidden; }
 .panel-link:hover { text-decoration: underline; }
 .panel .data-chart { margin: 0; padding: 0; border: 0; box-shadow: none; }
 .panel .data-chart-title { display: none; }
+.home-networth .data-chart { margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.home-networth .data-chart-title { display: none; }
+.home-networth .chart-heading { justify-content: flex-end; }
 .panel .chart-heading { justify-content: flex-end; }
 .page .feature-card { grid-template-columns: minmax(0, 1fr) 14px; }
 .empty-panel { display: grid; justify-items: start; gap: 8px; padding: 26px; }
@@ -2021,7 +2028,7 @@ body.gate-open #app { visibility: hidden; }
   #app { display: block; height: auto; }
   #sidebar, #topbar, #right-rail, #tabbar, #chat-scroll, #input-area, .page-actions, .page-chips, .table-action, .seg { display: none !important; }
   #page-view { overflow: visible; padding: 0; }
-  .panel, .kpi-card { box-shadow: none; break-inside: avoid; }
+  .panel { box-shadow: none; break-inside: avoid; }
 }
 
 /* ── Right rail cards ───────────────────────────────────────────── */
@@ -2158,32 +2165,41 @@ body.gate-open #app { visibility: hidden; }
 }
 .page-head .page-actions > .gate-secondary { border-color: var(--border-hover); font-weight: 500; }
 
-.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 16px; }
+.card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 12px; margin-bottom: 16px; }
 .card-title { color: var(--text); font-size: 14px; font-weight: 600; line-height: 20px; }
-.card-head .panel-link { font-size: 12px; }
+.card-head .panel-link { font-size: 14px; }
 .home-card { padding: 20px; }
 
-.kpi-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+/* Figures: one --surface block of plain figures, wherever the strip is used. */
+.kpi-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; padding: 24px; border-radius: 12px; background: var(--surface); }
 .kpi-strip-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.kpi-card {
-  min-width: 0;
-  padding: 16px 18px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-kpi);
-  background: var(--surface);
-}
-.kpi-label { color: var(--text-soft); font-size: 12px; font-weight: 500; line-height: 16px; }
-.kpi-value { margin-top: 6px; color: var(--text); font-size: 20px; font-weight: 700; letter-spacing: -.01em; line-height: 28px; overflow-wrap: anywhere; }
-.kpi-note { margin-top: 4px; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.kpi-card { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
+.kpi-label { color: var(--text-soft); font-size: 14px; font-weight: 400; line-height: 20px; }
+.kpi-value { color: var(--text); font-size: 24px; font-weight: 600; letter-spacing: -.01em; line-height: 32px; overflow-wrap: anywhere; }
+.kpi-note { color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .figure-xl { margin-top: 6px; color: var(--text); font-size: 36px; font-weight: 700; letter-spacing: -.02em; line-height: 40px; overflow-wrap: anywhere; }
 .figure-xl:empty { display: none; }
 
-/* Home: the net-worth hero beside the question box */
-.home-hero { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
-.home-networth { display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; }
-.home-networth-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+/* Home: the net-worth hero, then lists on the canvas */
+.home-hero { display: block; }
+.home-networth { display: flex; flex-direction: column; gap: 24px; }
+.home-networth-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.home-networth-figures { display: flex; flex-direction: column; gap: 8px; }
 .home-networth .kpi-label { margin: 0; }
-.home-change { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; color: var(--text-soft); }
+#home-networth-value {
+  margin: 0;
+  background: linear-gradient(90deg, var(--hero-from), var(--hero-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: 60px;
+  font-weight: 600;
+  letter-spacing: -.035em;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+#home-networth-value:empty { display: none; }
+.home-change { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 0; color: var(--text-soft); }
 .home-change:empty { display: none; }
 .change-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); font-weight: 600; }
 .change-pill.is-up { background: var(--green-soft); }
@@ -2191,7 +2207,6 @@ body.gate-open #app { visibility: hidden; }
 .home-chart { min-height: 220px; }
 .home-chart-empty { display: grid; min-height: 220px; place-items: center; text-align: center; }
 .history-chart .plotly-chart { min-height: 0; }
-.panel .data-chart.history-chart { background: transparent; }
 .history-chart .chart-heading { display: none; }
 .home-empty {
   display: grid;
@@ -2204,18 +2219,23 @@ body.gate-open #app { visibility: hidden; }
 .home-empty-title { color: var(--text); font-weight: 600; }
 .home-empty .inline-button { margin-top: 4px; }
 
-.home-ask { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.home-stack { display: flex; flex-direction: column; gap: 64px; }
+.home-split { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 48px; }
+.home-section { display: flex; flex-direction: column; min-width: 0; gap: 16px; }
+.home-section-title { color: var(--text); font-size: 20px; font-weight: 600; letter-spacing: -.01em; line-height: 28px; }
+.home-section .card-head { margin-bottom: 0; }
+.home-section .panel-link { font-size: 14px; font-weight: 500; }
+
 .home-composer {
   display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--border);
+  gap: 12px;
+  padding: 16px;
   border-radius: 12px;
-  background: var(--surface-2);
-  transition: border-color var(--dur-fade) var(--ease), box-shadow var(--dur-fade) var(--ease);
+  background: var(--surface);
+  transition: box-shadow var(--dur-fade) var(--ease);
 }
-.home-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
-.home-composer textarea { min-height: 66px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; line-height: 20px; resize: none; }
+.home-composer:focus-within { box-shadow: 0 0 0 2px var(--accent); }
+.home-composer textarea { min-height: 66px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 16px; line-height: 24px; resize: none; }
 .home-composer textarea::placeholder { color: var(--text-muted); }
 .home-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .home-composer-agent { min-width: 0; color: var(--text-muted); font-size: 12px; }
@@ -2231,32 +2251,29 @@ body.gate-open #app { visibility: hidden; }
   color: var(--accent-ink);
 }
 .home-composer button:hover { background: var(--accent-3); }
-.home-composer button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.prompt-rows { display: grid; gap: 2px; list-style: none; }
+.prompt-rows { display: grid; list-style: none; }
 .prompt-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   min-height: 44px;
-  padding: 6px 10px;
+  padding: 12px 8px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--text);
+  color: var(--text-soft);
+  font-size: 14px;
   text-align: left;
 }
-.prompt-row:hover { background: var(--surface-2); }
+.prompt-row:hover { background: var(--surface-2); color: var(--text); }
 .prompt-row:disabled { cursor: wait; opacity: .5; }
-.prompt-row-icon { display: grid; width: 28px; height: 28px; flex-shrink: 0; place-items: center; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--accent-text); }
+.prompt-row-icon { display: grid; width: 28px; height: 28px; flex-shrink: 0; place-items: center; border-radius: var(--radius-sm); background: var(--surface); color: var(--accent-text); }
 .prompt-row:hover .prompt-row-icon { background: var(--surface-3); }
-.prompt-row-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.prompt-row-icon svg { width: 14px; height: 14px; }
 .prompt-row-text { flex: 1; min-width: 0; }
 .prompt-row-arrow { color: var(--text-muted); }
-
-/* Home: allocation, largest holdings and goals */
-.home-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.home-bottom { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.prompt-row .icon:last-child { width: 16px; height: 16px; color: var(--text-muted); }
 
 .series-1 { background: var(--series-1); }
 .series-2 { background: var(--series-2); }
@@ -2268,21 +2285,22 @@ body.gate-open #app { visibility: hidden; }
 .series-8 { background: var(--series-8); }
 .stack-bar { display: flex; gap: 2px; height: 12px; margin-bottom: 16px; overflow: hidden; border-radius: 6px; }
 .stack-bar span { min-width: 3px; }
-.alloc-list { display: grid; gap: 10px; list-style: none; }
-.alloc-list li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto 3.6rem; align-items: center; gap: 10px; }
+.alloc-list { display: grid; list-style: none; }
+.alloc-list li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 64px; align-items: center; gap: 12px; padding: 12px 8px; border-radius: 8px; font-size: 14px; line-height: 20px; }
 .alloc-swatch { width: 10px; height: 10px; border-radius: 4px; }
 .alloc-name { color: var(--text); overflow-wrap: anywhere; }
-.alloc-value { color: var(--text-soft); }
-.alloc-pct { color: var(--text); font-weight: 600; text-align: right; }
+.alloc-value { color: var(--text); font-weight: 500; }
+.alloc-pct { color: var(--text-soft); font-weight: 400; text-align: right; }
 
 .holding-list { display: grid; list-style: none; }
-.holding-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
-.holding-list li:first-child { padding-top: 0; border-top: 0; }
+.holding-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 8px; border-radius: 8px; }
 .holding-main { display: grid; min-width: 0; gap: 2px; }
 .holding-title { color: var(--text); font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
 .holding-main small, .holding-pnl { color: var(--text-muted); font-size: 12px; }
 .holding-figures { display: grid; flex-shrink: 0; gap: 2px; text-align: right; }
 .holding-figures strong { color: var(--text); font-weight: 600; }
+.alloc-list li, .holding-list li, .change-list li { transition: background-color var(--dur-fade) var(--ease); }
+.alloc-list li:hover, .holding-list li:hover, .change-list li:hover { background: var(--surface-2); }
 
 .is-good { --tone: var(--green); --tone-text: var(--gain-text); --tone-soft: var(--green-soft); }
 .is-conditional { --tone: var(--blue); --tone-text: var(--blue-text); --tone-soft: var(--blue-soft); }
@@ -2294,9 +2312,8 @@ body.gate-open #app { visibility: hidden; }
 .goal-progress-list button {
   display: grid;
   gap: 6px;
-  width: calc(100% + 16px);
-  margin: 0 -8px;
-  padding: 8px;
+  width: 100%;
+  padding: 12px 8px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -2318,8 +2335,8 @@ body.gate-open #app { visibility: hidden; }
 }
 .add-row:hover { border-color: var(--accent); color: var(--text); }
 
-.change-list { display: grid; gap: 8px; list-style: none; }
-.change-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.change-list { display: grid; list-style: none; }
+.change-list li { display: flex; align-items: center; gap: 12px; padding: 12px 8px; border-radius: 8px; }
 .change-mark { flex-shrink: 0; font-weight: 700; }
 .change-mark.is-other { color: var(--warning-text); }
 .change-body { display: grid; flex: 1; min-width: 0; gap: 1px; }
@@ -2340,39 +2357,25 @@ body.gate-open #app { visibility: hidden; }
 .ask-why:disabled { cursor: wait; opacity: .5; }
 .home-chat-list .chat-select { padding-top: 8px; padding-bottom: 8px; }
 
-@container (max-width: 980px) {
-  .home-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .home-cards > :last-child { grid-column: 1 / -1; }
-}
 @container (max-width: 900px) {
   /* Five figures in two columns: net worth across the top, then two rows of two. */
   .kpi-strip-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kpi-strip-5 > :first-child { grid-column: 1 / -1; }
-}
-@container (max-width: 860px) {
-  /* One column: net worth, the four figures, then the question box. */
-  .home-hero { display: contents; }
-  .home-networth { order: 1; }
-  #home-stats { order: 2; }
-  .home-ask { order: 3; }
-  .home-cards { order: 4; }
-  .home-bottom { order: 5; }
-}
-@container (max-width: 720px) {
   .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .home-bottom { grid-template-columns: minmax(0, 1fr); }
+  .home-split { grid-template-columns: minmax(0, 1fr); gap: 64px; }
 }
 @container (max-width: 620px) {
-  .home-cards { grid-template-columns: minmax(0, 1fr); }
-  .kpi-strip { gap: 10px; }
-  .kpi-card { padding: 12px 14px; }
-  .kpi-label { font-size: 12px; }
-  .kpi-value { margin-top: 4px; font-size: 16px; }
-  .kpi-note { font-size: 12px; }
-  .figure-xl { font-size: 30px; line-height: 36px; }
-  .home-networth, .home-ask, .home-card { padding: 16px; }
+  .kpi-strip { gap: 16px; padding: 16px; }
+  .kpi-value { font-size: 20px; line-height: 28px; }
+  .home-stack { gap: 48px; }
   .home-chart, .home-chart-empty { min-height: 160px; }
   .ask-why { min-height: 40px; }
+}
+@media (max-width: 899px) {
+  #home-networth-value { font-size: 36px; line-height: 40px; }
+}
+@media (forced-colors: active) {
+  #home-networth-value { background: none; color: CanvasText; }
 }
 
 /* ── Holdings: source tabs, filters, the holdings table and CAS statements ── */

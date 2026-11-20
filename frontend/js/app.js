@@ -187,7 +187,7 @@ function applyTheme(theme) {
   themeToggle.title = nextLabel;
   const themeLabel = document.getElementById('theme-toggle-label');
   if (themeLabel) themeLabel.textContent = nextLabel;
-  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=2#ph-sun' : '/icons.svg?v=2#ph-moon');
+  themeToggleIcon.querySelector('use')?.setAttribute('href', selected === 'dark' ? '/icons.svg?v=3#ph-sun' : '/icons.svg?v=3#ph-moon');
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
   localStorage.setItem('ca-mode-theme', selected);
 }

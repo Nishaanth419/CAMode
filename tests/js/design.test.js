@@ -23,6 +23,14 @@ function tokenBlock(css, selector) {
   return tokens;
 }
 
+// The declarations of the first rule whose selector list is exactly `selector` (any nesting depth).
+function ruleBody(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|[}{;\\s])${escaped}\\s*\\{([^}]*)\\}`, 'm').exec(css);
+  assert.ok(match, `no rule for ${selector}`);
+  return match[1];
+}
+
 test('only Geist and Geist Mono are loaded', () => {
   const html = readHtml();
   assert.match(html, /family=Geist:wght@400;500;600;700/);
@@ -105,7 +113,14 @@ test('radii come from the scale', () => {
 test('no background gradients and no generic shadows', () => {
   for (const name of ['app.css', 'public.css', 'admin.css']) {
     const css = readCss(name);
-    assert.equal((css.match(/gradient\(/g) || []).length, 0, name);
+    const gradients = (css.match(/gradient\(/g) || []).length;
+    if (name === 'app.css') {
+      // Exactly one: the Home hero figure's text gradient.
+      assert.equal(gradients, 1, name);
+      assert.match(ruleBody(css, '#home-networth-value'), /linear-gradient\(/);
+    } else {
+      assert.equal(gradients, 0, name);
+    }
     assert.doesNotMatch(css, /box-shadow:\s*0 1px 3px rgba\(0,\s*0,\s*0/, name);
     assert.doesNotMatch(css, /--shadow-sm:\s*0/, name);
   }
@@ -354,4 +369,79 @@ test('the sign-in gate is one column on the canvas, not a card', () => {
   assert.doesNotMatch(card, /border:\s*1px|box-shadow|background:\s*var\(--surface\)/);
   assert.match(card, /width:\s*min\(400px, 100%\)/);
   assert.match(/\.profile-gate\s*\{([^}]*)\}/.exec(css)[1], /background:\s*var\(--canvas\)/);
+});
+
+test('hero tokens', () => {
+  const css = readCss();
+  const dark = tokenBlock(css, ':root[data-theme="dark"]');
+  const light = tokenBlock(css, ':root');
+  assert.equal(dark.get('--hero-from'), '#FFFFFF');
+  assert.equal(dark.get('--hero-to'), '#9B9B9B');
+  assert.equal(light.get('--hero-from'), '#000000');
+  assert.equal(light.get('--hero-to'), '#666666');
+});
+
+test('the hero figure is 60px with the gradient, 36px on phones', () => {
+  const css = readCss();
+  const rule = ruleBody(css, '#home-networth-value');
+  assert.match(rule, /font-size:\s*60px/);
+  assert.match(rule, /line-height:\s*1;/);
+  assert.match(rule, /font-weight:\s*600/);
+  assert.match(rule, /letter-spacing:\s*-0?\.035em/);
+  assert.match(rule, /linear-gradient\(90deg, var\(--hero-from\), var\(--hero-to\)\)/);
+  assert.match(rule, /background-clip:\s*text/);
+  assert.match(rule, /color:\s*transparent/);
+  assert.match(rule, /overflow-wrap:\s*anywhere/);
+  const phone = /@media \(max-width: 899px\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(phone, 'no max-width: 899px media block');
+  assert.match(ruleBody(phone[1], '#home-networth-value'), /font-size:\s*36px/);
+  const forced = /@media \(forced-colors: active\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(forced, 'no forced-colors block');
+  const forcedRule = ruleBody(forced[1], '#home-networth-value');
+  assert.match(forcedRule, /color:\s*CanvasText/);
+  assert.match(forcedRule, /background:\s*none/);
+  assert.match(ruleBody(css, '#home-networth-value:empty'), /display:\s*none/);
+});
+
+test('Home is lists and plain figures, not cards', () => {
+  const html = readHtml();
+  const home = html.slice(html.indexOf('data-page="home"'), html.indexOf('data-page="portfolio"'));
+  assert.doesNotMatch(home, /class="panel[ "]/);
+  assert.doesNotMatch(home, /home-card/);
+  assert.doesNotMatch(home, /→/);
+  assert.match(home, /ph-caret-right/);
+  const sprite = fs.readFileSync(path.join(FRONTEND, 'icons.svg'), 'utf8');
+  assert.match(sprite, /<symbol id="ph-caret-right"[^>]*fill="currentColor"/);
+  const css = readCss();
+  const strip = ruleBody(css, '.kpi-strip');
+  assert.match(strip, /background:\s*var\(--surface\)/);
+  assert.match(strip, /border-radius:\s*(12px|var\(--radius-lg\))/);
+  assert.match(strip, /padding:\s*24px/);
+  assert.doesNotMatch(strip, /border:/);
+  const card = ruleBody(css, '.kpi-card');
+  assert.doesNotMatch(card, /border:|background:|box-shadow:/);
+  assert.match(ruleBody(css, '.kpi-value'), /font-size:\s*24px/);
+  assert.match(ruleBody(css, '.kpi-label'), /font-size:\s*14px/);
+  assert.match(ruleBody(css, '.home-composer'), /background:\s*var\(--surface\)/);
+  assert.doesNotMatch(ruleBody(css, '.home-composer'), /border:/);
+  assert.match(ruleBody(css, '.home-composer:focus-within'), /var\(--accent\)/);
+});
+
+test('pages.js Home and Holdings templates have no arrow glyphs', () => {
+  const js = readJs('pages.js');
+  for (const fn of ['kpiCard', 'allocationCard', 'topHoldingsList', 'insightList', 'renderHomeGoals', 'renderHome', 'sourceTabs', 'holdingsRows']) {
+    const start = js.search(new RegExp(`(?:async )?function ${fn}\\(`));
+    assert.ok(start >= 0, fn);
+    const next = js.indexOf('\nfunction ', start + 10);
+    const body = js.slice(start, next < 0 ? undefined : next);
+    assert.doesNotMatch(body, /→/, fn);
+  }
+  assert.doesNotMatch(readHtml(), /icons\.svg\?v=2/);
+});
+
+test('Home list rows highlight on hover', () => {
+  const css = readCss();
+  for (const sel of ['.alloc-list li:hover', '.holding-list li:hover', '.change-list li:hover']) {
+    assert.match(css, new RegExp(`${sel.replace(/[.:]/g, '\\$&')}[^{]*\\{[^}]*background:\\s*var\\(--surface-2\\)`), sel);
+  }
 });
