@@ -851,3 +851,103 @@ test('Reports: downloads are plain buttons', () => {
   assert.ok(rulesWithSelector(css, '.download-actions').length, 'no .download-actions rule');
   for (const body of rulesWithSelector(css, '.downloads-card')) assert.doesNotMatch(body, /border/);
 });
+
+// Declarations of every rule naming `selector`, as one string, so a border can be found wherever it is set.
+const borderIn = (css, selector) => rulesWithSelector(css, selector).filter((body) => /(^|;)\s*border(-top|-left)?\s*:/.test(body));
+
+test('Goals: cards are surfaces with no borders, drafts and behind goals marked without one', () => {
+  const css = readCss();
+  const card = ruleBody(css, '.goal-card');
+  assert.match(card, /background:\s*var\(--surface\)/);
+  assert.match(card, /border-radius:\s*12px/);
+  assert.match(card, /padding:\s*24px/);
+  assert.doesNotMatch(card, /(^|;)\s*border\s*:/);
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (/\.goal-card\.is-(behind|draft)/.test(m[1])) assert.doesNotMatch(m[2], /border/, m[1].trim());
+  }
+  assert.match(ruleBody(css, '.goal-ring-track'), /stroke-width:\s*6/);
+  assert.match(ruleBody(css, '.goal-ring-fill'), /stroke-width:\s*6/);
+  const label = ruleBody(css, '.goal-ring text');
+  assert.match(label, /font-size:\s*14px/);
+  assert.match(label, /font-weight:\s*600/);
+  assert.match(ruleBody(css, '.goal-figures dd'), /font-size:\s*16px/);
+});
+
+test('Goals: the callout is not a left-border block', () => {
+  const css = readCss();
+  const callout = ruleBody(css, '.goal-callout');
+  assert.doesNotMatch(callout, /border(-left)?\s*:/);
+  assert.match(callout, /background:\s*var\(--surface\)/);
+  assert.match(callout, /font-size:\s*14px/);
+  const dot = ruleBody(css, '.goal-callout::before');
+  assert.match(dot, /width:\s*8px/);
+  assert.match(dot, /height:\s*8px/);
+  assert.match(dot, /background:\s*var\(--warning\)/);
+});
+
+test('Goals: no inner borders', () => {
+  const css = readCss();
+  for (const selector of ['.goal-gap-options li', '.fund-item', '.verdict-chip', '.context-item', '.goal-section', '.goal-foot']) {
+    assert.ok(rulesWithSelector(css, selector).length, `no rule for ${selector}`);
+    assert.deepEqual(borderIn(css, selector), [], selector);
+  }
+  for (const [tone, soft, text] of [['allowed', 'green-soft', 'gain-text'], ['caution', 'amber-soft', 'warning-text'], ['unsuitable', 'red-soft', 'loss-text']]) {
+    const body = ruleBody(css, `.verdict-chip.is-${tone}`);
+    assert.match(body, new RegExp(`background:\\s*var\\(--${soft}\\)`), tone);
+    assert.match(body, new RegExp(`color:\\s*var\\(--${text}\\)`), tone);
+    assert.doesNotMatch(body, /border/, tone);
+  }
+  assert.match(ruleBody(css, '.goal-gap'), /background:\s*var\(--surface-2\)/);
+  const option = ruleBody(css, '.goal-gap-options li');
+  assert.match(option, /background:\s*var\(--surface-3\)/);
+  assert.match(option, /border-radius:\s*8px/);
+});
+
+test('Goals: disclosures use a sprite caret and fade in', () => {
+  const css = readCss();
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (m[1].includes('.goal-toggle')) assert.doesNotMatch(m[2], /content:\s*"▾"/, m[1].trim());
+  }
+  const card = functionSource(readJs('pages.js'), 'goalCard');
+  const toggle = /<button class="goal-toggle"[^`]*?<\/button>/.exec(card);
+  assert.ok(toggle, 'no goal-toggle button in goalCard');
+  assert.match(toggle[0], /<svg class="icon" aria-hidden="true"><use href="\/icons\.svg\?v=\d+#ph-caret-down"><\/use><\/svg>/);
+  assert.match(toggle[0], /data-goal-panel/);
+  assert.match(toggle[0], /aria-expanded/);
+  assert.match(card, /class="goal-panel"[^`]*hidden/);
+  const open = ruleBody(css, '.goal-toggle[aria-expanded="true"] .icon');
+  assert.match(open, /transform:\s*rotate\(180deg\)/);
+  assert.match(open, /transition:\s*transform var\(--dur-move\) var\(--ease\)/);
+  assert.doesNotMatch(ruleBody(css, '.goal-toggle'), /border\s*:\s*1px/);
+  const panel = ruleBody(css, '.goal-panel:not([hidden])');
+  const name = /animation:\s*([\w-]+)/.exec(panel)?.[1];
+  assert.ok(name, 'the open panel has no animation');
+  const reduced = keyframes(reducedMotionBlock(css));
+  assert.ok(reduced.has(name), `${name} is not redefined for reduced motion`);
+  assert.match(reduced.get(name), /opacity/);
+  assert.doesNotMatch(reduced.get(name), /transform/);
+});
+
+test('Goals: reading text is 14px', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.goal-panel'), /font-size:\s*14px/);
+  assert.match(ruleBody(css, '.goal-checks'), /font-size:\s*14px/);
+});
+
+test('Goals: allocations and saved context are page sections', () => {
+  const pages = readJs('pages.js');
+  const investments = functionSource(pages, 'renderGoalInvestments');
+  assert.match(investments, /goal-investments-body/);
+  assert.match(investments, /pageSection\(|page-section/);
+  assert.match(investments, /tableSurface\(|table-surface/);
+  assert.match(investments, /alloc-table/);
+  assert.doesNotMatch(investments, /\bpanel\(/);
+  assert.match(functionSource(pages, 'renderSavedContext'), /saved-context-body/);
+  const context = functionSource(pages, 'savedContextHtml');
+  assert.match(context, /pageSection\(|page-section/);
+  assert.doesNotMatch(context, /\bpanel\(/);
+  const css = readCss();
+  const item = ruleBody(css, '.context-item');
+  assert.match(item, /background:\s*var\(--surface-2\)/);
+  assert.match(item, /border-radius:\s*8px/);
+});

@@ -847,7 +847,7 @@ function holdingsFilters(rows) {
       </div>
       <div class="holdings-find">
         <label class="holdings-search">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-magnifying-glass"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-magnifying-glass"></use></svg>
           <span class="sr-only">Search holdings by name, code or broker</span>
           <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
         </label>
@@ -1939,7 +1939,7 @@ function goalCard(goal) {
     ${warnings.length ? `<ul class="goal-checks">${warnings.map((warning) => `<li>${escHtml(warning)}</li>`).join('')}</ul>` : ''}
     ${gapPanel(plan)}
     <div class="goal-foot">
-      ${panels.map(([key, text]) => `<button class="goal-toggle" type="button" aria-expanded="false" aria-controls="${id(key)}" data-goal-panel>${escHtml(text)}</button>`).join('')}
+      ${panels.map(([key, text]) => `<button class="goal-toggle" type="button" aria-expanded="false" aria-controls="${id(key)}" data-goal-panel>${escHtml(text)}<svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-down"></use></svg></button>`).join('')}
       <span class="goal-foot-gap" aria-hidden="true"></span>
       <button class="goal-action" type="button" data-edit-goal="${escHtml(goal.id)}">Edit</button>
       <button class="goal-action is-danger" type="button" data-delete-goal="${escHtml(goal.id)}">Delete</button>
@@ -1993,10 +1993,10 @@ async function renderGoalInvestments(goals, isCurrent) {
   const missing = data.missing.length
     ? `<p class="goal-meta is-warn">Assigned but not in the latest snapshot (value unknown, not counted): ${data.missing.map((item) => escHtml(item.name)).join(', ')}.</p>` : '';
   const unassigned = data.holdings.filter((item) => item.unassignedPct > 0);
-  host.innerHTML = panel('Your investments and goals', `
+  host.innerHTML = pageSection('Your investments and goals', `
     <p class="goal-meta">Assign what you already hold to a goal. Only INR holdings count toward an INR goal, and a holding is never counted twice. This is bookkeeping: nothing is bought or sold. Snapshot ${escHtml(formatDate(data.asOfDate))}${data.stale ? ' (old)' : ''}.</p>
-    <div class="table-scroll"><table class="data-table alloc-table"><thead><tr><th>Holding</th><th>Value</th><th>Assigned to</th><th>Unassigned</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="goal-meta">${unassigned.length} of ${data.holdings.length} holdings have some of their value unassigned.</p>${missing}`, { className: 'goal-alloc' });
+    ${tableSurface(`<table class="data-table alloc-table"><thead><tr><th>Holding</th><th>Value</th><th>Assigned to</th><th>Unassigned</th><th></th></tr></thead><tbody>${rows}</tbody></table>`)}
+    <p class="goal-meta">${unassigned.length} of ${data.holdings.length} holdings have some of their value unassigned.</p>${missing}`, { id: 'goal-investments-title', className: 'goal-alloc' });
 }
 
 /* Goal editor */
@@ -2320,7 +2320,7 @@ function savedContextHtml(data, goals) {
   const decisions = (confirmed.decisions || []).slice().reverse();
   const goalOptions = goals.map((goal) => `<option value="${escHtml(goal.id)}">${escHtml(goal.name)}</option>`).join('');
   const hasAnything = preferences || decisions.length || goals.length;
-  return panel('What the assistant can use', `
+  return pageSection('What the assistant can use', `
     <p class="page-muted">Only what you entered is saved, and the assistant sees an item only when your question is about it. CA Mode never saves details the assistant infers from your chats, and goal projections are recalculated each time, never stored.</p>
     <div class="context-grid">
       <section aria-labelledby="context-profile-title">
@@ -2345,7 +2345,7 @@ function savedContextHtml(data, goals) {
       </section>
     </div>
     ${hasAnything ? '<button class="gate-secondary danger-text" type="button" data-clear-context>Remove all goals, decisions and profile details</button>' : ''}`,
-  { className: 'saved-context' });
+  { id: 'saved-context-title', className: 'saved-context' });
 }
 
 async function renderSavedContext(goals) {

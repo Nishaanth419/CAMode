@@ -48,16 +48,16 @@ let commandActive = -1;
 let commandOpener = null;
 
 const COMMAND_ICONS = {
-  ask: '/icons.svg?v=3#ph-chat-circle',
-  chat: '/icons.svg?v=3#ph-chats',
-  page: '/icons.svg?v=3#ph-arrow-right',
-  'new-chat': '/icons.svg?v=3#ph-plus',
-  'refresh-snapshot': '/icons.svg?v=3#ph-pulse',
-  'add-goal': '/icons.svg?v=3#ph-target',
-  'connect-broker': '/icons.svg?v=3#ph-stack',
-  'sign-out': '/icons.svg?v=3#ph-arrow-right',
-  light: '/icons.svg?v=3#ph-sun',
-  dark: '/icons.svg?v=3#ph-moon',
+  ask: '/icons.svg?v=4#ph-chat-circle',
+  chat: '/icons.svg?v=4#ph-chats',
+  page: '/icons.svg?v=4#ph-arrow-right',
+  'new-chat': '/icons.svg?v=4#ph-plus',
+  'refresh-snapshot': '/icons.svg?v=4#ph-pulse',
+  'add-goal': '/icons.svg?v=4#ph-target',
+  'connect-broker': '/icons.svg?v=4#ph-stack',
+  'sign-out': '/icons.svg?v=4#ph-arrow-right',
+  light: '/icons.svg?v=4#ph-sun',
+  dark: '/icons.svg?v=4#ph-moon',
 };
 
 // Every page except not-found, labelled with its own title (Ask AI for the chat).
