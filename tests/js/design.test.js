@@ -680,3 +680,114 @@ test('the Ask AI rail has no card borders or dividers', () => {
   assert.match(rail, /class="rail-section rail-card"[^>]*aria-labelledby="rail-portfolio-title"/);
   assert.match(js, /rail-chat-day/);
 });
+
+// Every rule (selector list -> body) in `css`, flattened through at-rule blocks.
+function rulesWithSelector(css, selector) {
+  const found = [];
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1].replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((s) => s.trim());
+    if (selectors.includes(selector)) found.push(m[2]);
+  }
+  return found;
+}
+
+// The contents of each `@container (max-width: 640px)` block, braces matched.
+function containerBlocks(css, query) {
+  const blocks = [];
+  let from = 0;
+  for (;;) {
+    const start = css.indexOf(query, from);
+    if (start < 0) return blocks;
+    const open = css.indexOf('{', start);
+    let depth = 1;
+    let i = open + 1;
+    for (; depth > 0 && i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') depth -= 1;
+    }
+    blocks.push(css.slice(open + 1, i - 1));
+    from = i;
+  }
+}
+
+test('page kit: sections sit on the canvas with Home\'s heading size', () => {
+  const css = readCss();
+  const section = ruleBody(css, '.page-section');
+  assert.match(section, /display:\s*grid/);
+  assert.match(section, /gap:\s*16px/);
+  assert.doesNotMatch(section, /background|border|padding/);
+  const titles = rulesWithSelector(css, '.page-section .card-title');
+  assert.ok(titles.some((body) => /font-size:\s*20px/.test(body) && /line-height:\s*28px/.test(body)), 'no 20px/28px rule for .page-section .card-title');
+});
+
+test('page kit: surface and table blocks have no border', () => {
+  const css = readCss();
+  for (const selector of ['.surface-block', '.table-surface']) {
+    const body = ruleBody(css, selector);
+    assert.match(body, /background:\s*var\(--surface\)/, selector);
+    assert.match(body, /border-radius:\s*12px/, selector);
+    assert.doesNotMatch(body, /border:/, selector);
+  }
+});
+
+test('tables read at 14px with quiet headers and surface hover', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.data-table th, .data-table td'), /padding:\s*12px;/);
+  assert.match(ruleBody(css, '.data-table th, .data-table td'), /border-bottom:\s*1px solid var\(--line\)/);
+  assert.match(ruleBody(css, '.data-table'), /font-size:\s*14px/);
+  const th = ruleBody(css, '.data-table th');
+  assert.match(th, /font-size:\s*12px/);
+  assert.match(th, /font-weight:\s*500/);
+  assert.match(ruleBody(css, '.data-table tbody tr:hover'), /background:\s*var\(--surface-2\)/);
+  assert.doesNotMatch(css, /#activity-body \.data-table\s*\{[^}]*font-size:\s*12px/);
+});
+
+test('phone tables stay cards on the canvas', () => {
+  const block = containerBlocks(readCss(), '@container (max-width: 640px)').find((b) => b.includes('.card-table tbody tr'));
+  assert.ok(block, 'no 640px container block for card tables');
+  const row = ruleBody(block, '.card-table tbody tr');
+  assert.match(row, /background:\s*var\(--surface\)/);
+  assert.match(row, /border-radius:\s*12px/);
+  const surface = ruleBody(block, '.table-surface');
+  assert.match(surface, /background:\s*none/);
+  assert.match(surface, /padding:\s*0/);
+});
+
+test('segmented controls nest their radii', () => {
+  const css = readCss();
+  const seg = ruleBody(css, '.seg');
+  assert.match(seg, /border-radius:\s*8px/);
+  assert.match(seg, /padding:\s*2px/);
+  assert.match(ruleBody(css, '.seg button'), /border-radius:\s*6px/);
+});
+
+test('the 404 section is a column on the canvas with one action', () => {
+  const css = readCss();
+  assert.doesNotMatch(ruleBody(css, '.not-found'), /border:/);
+  const code = ruleBody(css, '.not-found-code');
+  assert.match(code, /font-size:\s*60px/);
+  assert.match(code, /line-height:\s*1;/);
+  assert.match(code, /color:\s*var\(--text-muted\)/);
+  const html = readHtml();
+  const start = html.indexOf('data-page="not-found"');
+  const section = html.slice(start, html.indexOf('</section>', start));
+  const links = [...section.matchAll(/<a\b[^>]*>/g)];
+  assert.equal(links.length, 1);
+  assert.match(links[0][0], /class="[^"]*rail-button/);
+  assert.doesNotMatch(section, /→/);
+});
+
+test('batch 3 markup never uses the page kit', () => {
+  const html = readHtml();
+  const slice = (from, to) => html.slice(html.indexOf(from), html.indexOf(to));
+  assert.doesNotMatch(slice('data-page="home"', 'data-page="portfolio"'), /page-section/);
+  assert.doesNotMatch(slice('data-page="holdings"', 'data-page="returns"'), /page-section/);
+  const pages = readJs('pages.js');
+  for (const name of ['renderHome', 'renderHoldings']) {
+    const start = pages.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, name);
+    const rest = pages.slice(start + 1);
+    const ends = [rest.indexOf('\nfunction '), rest.indexOf('\nasync function ')].filter((i) => i >= 0);
+    assert.doesNotMatch(rest.slice(0, Math.min(...ends)), /page-section/, name);
+  }
+});
