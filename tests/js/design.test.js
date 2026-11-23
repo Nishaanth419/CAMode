@@ -157,8 +157,29 @@ test('reduced motion stops movement and loops', () => {
 test('keyboard focus is always visible', () => assert.match(readCss(), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/));
 
 test('no browser dialogs in the app scripts', () => {
-  for (const name of ['app.js', 'pages.js', 'demo.js', 'shell.js']) {
-    assert.doesNotMatch(readJs(name), /window\.confirm\(|(^|[^\w.])confirm\(|\balert\(/m, name);
+  for (const name of ['app.js', 'pages.js', 'demo.js', 'shell.js', 'admin.js']) {
+    assert.doesNotMatch(readJs(name), /window\.(confirm|prompt|alert)\(|(^|[^\w.])(confirm|prompt)\(|\balert\(/m, name);
+  }
+});
+
+test('admin page: dialog, flat figures, tables and buttons on the tokens', () => {
+  const css = readCss('admin.css');
+  const dialog = ruleBody(css, '.admin-dialog');
+  assert.match(dialog, /border-radius:\s*16px/);
+  assert.match(css, /\.admin-dialog::backdrop\s*\{/);
+  assert.doesNotMatch(ruleBody(css, '.admin-tile'), /(^|[;\s])border:/);
+  const tiles = ruleBody(css, '.admin-tiles');
+  assert.match(tiles, /background:\s*var\(--surface\)/);
+  assert.match(tiles, /border-radius:\s*12px/);
+  const th = ruleBody(css, '.admin-table th');
+  assert.match(th, /font-size:\s*12px/);
+  assert.match(th, /font-weight:\s*500/);
+  for (const m of css.matchAll(/([^{}]*:hover[^{}]*)\{([^}]*)\}/g)) {
+    assert.doesNotMatch(m[2], /border-color:\s*var\(--accent\)/, m[1].trim());
+  }
+  assert.match(ruleBody(css, '.admin-danger'), /color:\s*var\(--loss-text\)/);
+  for (const name of ['--danger', '--warn', '--muted-bg', '--border']) {
+    assert.doesNotMatch(css, new RegExp(`var\\(${name}\\)`), `admin.css reads ${name}`);
   }
 });
 
@@ -1109,7 +1130,8 @@ test('All chats: period groups are labelled lists on the canvas', () => {
 });
 
 const PUBLIC_TOKENS = ['--canvas', '--surface', '--surface-2', '--line', '--text', '--text-soft', '--text-muted',
-  '--accent', '--accent-text', '--accent-ink', '--loss-text', '--warning-text'];
+  '--accent', '--accent-3', '--accent-text', '--accent-ink', '--loss-text', '--warning-text',
+  '--red-soft', '--danger-border', '--shadow-lg'];
 
 test('public pages carry the app\'s token values in both themes', () => {
   const app = readCss();

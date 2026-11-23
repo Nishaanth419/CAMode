@@ -1,13 +1,13 @@
 /* Privacy policy, terms, pricing and 404 pages, served without the app shell.
    The token values equal app.css's light (:root) and dark (:root[data-theme="dark"]) ones;
-   design.test.js checks every name both pages share. admin.css builds on these names. */
+   design.test.js checks every name both pages share. admin.css builds on these names
+   (--accent-3, --red-soft, --danger-border and --shadow-lg are there for its buttons and dialog). */
 :root {
   color-scheme: light dark;
   --canvas: #FFFFFF;
   --surface: #F6F6F5;
   --surface-2: #EFEFED;
   --line: #E4E4E1;
-  --border: #E4E4E1;
   --text: #0A0A0A;
   --text-soft: #4A4A4A;
   --text-muted: #6B6B6B;
@@ -17,6 +17,9 @@
   --accent-ink: #FFFFFF;
   --loss-text: #A03F33;
   --warning-text: #805A0E;
+  --red-soft: rgba(181, 72, 58, 0.12);
+  --danger-border: rgba(181, 72, 58, 0.45);
+  --shadow-lg: 0 24px 64px rgba(10, 10, 10, .12);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -24,7 +27,6 @@
     --surface: #181818;
     --surface-2: #1F1F1F;
     --line: #313131;
-    --border: #313131;
     --text: #FFFFFF;
     --text-soft: #A3A3A3;
     --text-muted: #8A8A8A;
@@ -34,6 +36,9 @@
     --accent-ink: #000000;
     --loss-text: #E07A6A;
     --warning-text: #D9A54A;
+    --red-soft: rgba(224, 122, 106, 0.12);
+    --danger-border: rgba(224, 122, 106, 0.45);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, .7);
   }
 }
 * { box-sizing: border-box; }
