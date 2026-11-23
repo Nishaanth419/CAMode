@@ -2794,18 +2794,20 @@ body.gate-open #app { visibility: hidden; }
 .calc-tabs button { flex-shrink: 0; white-space: nowrap; }
 .calc-inputs-card .card-head { margin-bottom: 12px; }
 .calc-field { gap: 8px; }
-.calc-field > span { color: var(--text-soft); font-size: 12px; font-weight: 500; }
+.calc-field > span { color: var(--text-soft); font-size: 14px; font-weight: 500; line-height: 20px; }
+.calc-inputs-card .card-title { font-size: 18px; font-weight: 600; line-height: 28px; }
+.calc-field input[type="number"] { min-height: 40px; }
 .calc-field input[type="number"] { font-variant-numeric: tabular-nums; }
 .calc-field input[type="range"] { height: 18px; min-height: 0; }
-.calc-results { display: grid; min-width: 0; gap: 16px; }
+.calc-results { display: grid; min-width: 0; gap: 32px; }
 .kpi-strip-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.calc-results .data-table .total-row td { border-bottom: 0; }
+.calc-results .data-table .total-row td { border-top: 0; border-bottom: 0; font-weight: 600; }
 .calc-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.calc-actions > button { width: auto; min-height: var(--control-h); padding: 0 16px; border-radius: var(--radius-md); font-size: 14px; }
+.calc-actions > button { width: auto; min-height: 40px; padding: 0 16px; border-radius: var(--radius-md); font-size: 14px; }
 .calc-actions > .gate-secondary { font-weight: 500; }
 
 /* Portfolio, Markets and Reports: sections on the canvas, 32px apart. */
-#portfolio-body, #markets-body, #reports-body { gap: 32px; }
+#portfolio-body, #markets-body, #reports-body, #calc-body { gap: 32px; }
 #portfolio-body .page-columns, #portfolio-body .page-stack { gap: 32px; }
 /* Markets' forms and live questions sit outside #markets-body: 18px page gap + 14px. */
 [data-page="markets"] > .markets-forms, [data-page="markets"] > .page-section { margin-top: 14px; }

@@ -1006,3 +1006,23 @@ test('Tax: exemption meter and planning list are flat', () => {
   assert.match(item, /border-radius:\s*12px/);
   assert.deepEqual(borderIn(css, '.planning-list li'), []);
 });
+
+test('Calculators: inputs on a surface block, results on the canvas', () => {
+  const pages = readJs('pages.js');
+  const planning = functionSource(pages, 'renderPlanning');
+  assert.match(planning, /class="surface-block[^"]*calc-inputs-card/);
+  assert.doesNotMatch(planning, /class="panel[\s"]/);
+  const output = functionSource(pages, 'renderCalcOutput');
+  assert.doesNotMatch(output, /class="panel[\s"]|home-card/);
+  assert.match(output, /pageSection\('Year by year'/);
+  assert.match(output, /pageSection\('How it adds up', tableSurface\(/);
+});
+
+test('Calculators: fields read at 14px and sliders take the accent', () => {
+  const css = readCss();
+  const label = ruleBody(css, '.calc-field > span');
+  assert.match(label, /font-size:\s*14px/);
+  assert.match(label, /font-weight:\s*500/);
+  assert.match(ruleBody(css, '.calc-field input[type="range"]'), /accent-color:\s*var\(--accent\)/);
+  assert.match(readCss(), /#calc-body\s*\{[^}]*gap:\s*32px/);
+});

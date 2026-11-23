@@ -1441,8 +1441,8 @@ const CALCULATORS = {
           ['Old regime', moneyShort(result.old.total), `${money(result.old.total)} · ${effective('old')} of income`],
           [result.saving ? `${better} saves` : 'Both regimes', result.saving ? moneyShort(result.saving) : 'Same tax', result.saving ? `${money(result.saving)} a year` : ''],
         ],
-        table: `<div class="table-scroll"><table class="data-table"><thead><tr><th></th><th>New regime</th><th>Old regime</th></tr></thead><tbody>${rows}
-          <tr class="total-row"><td>Total tax</td><td>${money(result.new.total)}</td><td>${money(result.old.total)}</td></tr></tbody></table></div>`,
+        table: `<table class="data-table"><thead><tr><th></th><th>New regime</th><th>Old regime</th></tr></thead><tbody>${rows}
+          <tr class="total-row"><td>Total tax</td><td>${money(result.new.total)}</td><td>${money(result.old.total)}</td></tr></tbody></table>`,
         note: `For resident individuals below 60 in ${TAX_RULES.label}. All income is taxed at slab rates here: capital gains, senior-citizen limits and employer NPS contributions are not included. Check your final figure with a tax professional or the income tax portal.`,
         prompt: `My salary is ${money(values.salary)} a year with ${money(values.other)} of other income and ${money(values.deductions)} of old-regime deductions. A calculator estimates ${money(result.new.total)} tax under the new regime and ${money(result.old.total)} under the old regime for ${TAX_RULES.label}. What else should I consider when choosing a regime, and which deductions could I be missing?`,
       };
@@ -1501,7 +1501,7 @@ function renderPlanning() {
   // Inputs on the left, results on the right; they stack when the page is narrow (container query on #calc-body).
   setHtml(document.getElementById('calc-body'), `
     <div class="calc-layout">
-      <section class="panel home-card calc-inputs-card" aria-labelledby="calc-inputs-title">
+      <section class="surface-block calc-inputs-card" aria-labelledby="calc-inputs-title">
         <div class="card-head"><h2 id="calc-inputs-title" class="card-title">${escHtml(calc.title)}</h2></div>
         <div class="calc-inputs">${inputs}</div>
       </section>
@@ -1526,12 +1526,11 @@ function renderCalcOutput() {
     return;
   }
   const result = calc.compute(values);
-  const card = (title, body) => `<section class="panel home-card"><div class="card-head"><h3 class="card-title">${escHtml(title)}</h3></div>${body}</section>`;
   setHtml(output, `
     <div class="kpi-strip kpi-strip-3">${result.results.map(([label, value, note]) => kpiCard(label, value, note)).join('')}</div>
-    ${result.series ? card('Year by year', chartHtml({ type: 'line', title: calc.title, unit: '₹', series: result.series },
-    { history: true, xTitle: 'Year', yTitle: 'Amount (₹)', height: 300 })) : ''}
-    ${result.table ? card('How it adds up', result.table) : ''}
+    ${result.series ? pageSection('Year by year', chartHtml({ type: 'line', title: calc.title, unit: '₹', series: result.series },
+    { history: true, xTitle: 'Year', yTitle: 'Amount (₹)', height: 300 }), { id: 'calc-year-title' }) : ''}
+    ${result.table ? pageSection('How it adds up', tableSurface(result.table), { id: 'calc-table-title' }) : ''}
     ${result.note ? `<p class="page-muted calc-note">${escHtml(result.note)}</p>` : ''}
     <div class="calc-actions">
       <button class="gate-secondary" type="button" data-agent="finance" data-prompt="${escHtml(result.prompt)}">Ask Finance Agent about this</button>
