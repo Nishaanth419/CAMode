@@ -791,3 +791,63 @@ test('batch 3 markup never uses the page kit', () => {
     assert.doesNotMatch(rest.slice(0, Math.min(...ends)), /page-section/, name);
   }
 });
+
+// The source of `function name(` (or `async function name(`) up to the next top-level function.
+function functionSource(js, name) {
+  const start = js.search(new RegExp(`(?:async )?function ${name}\\(`));
+  assert.ok(start >= 0, `no function ${name}`);
+  const rest = js.slice(start + 1);
+  const ends = [rest.indexOf('\nfunction '), rest.indexOf('\nasync function ')].filter((i) => i >= 0);
+  return rest.slice(0, Math.min(...ends));
+}
+
+test('Portfolio, Reports and Markets sections are page sections', () => {
+  const pages = readJs('pages.js');
+  assert.match(functionSource(pages, 'pageSection'), /<section class="page-section/);
+  assert.match(functionSource(pages, 'tableSurface'), /class="[^"]*table-surface/);
+  for (const name of ['renderPortfolio', 'renderReports', 'renderMarkets', 'downloadsPanel']) {
+    const source = functionSource(pages, name);
+    assert.match(source, /pageSection\(|page-section/, name);
+    assert.doesNotMatch(source, /class="panel[\s"]|\bpanel\(|reportCard\(|home-card/, name);
+  }
+  for (const name of ['renderPortfolio', 'renderReports', 'renderMarkets', 'moverTable', 'holdingsTable']) {
+    const source = functionSource(pages, name);
+    assert.doesNotMatch(source, /class="panel[\s"]|home-card/, name);
+    for (const m of source.matchAll(/class="data-table/g)) {
+      assert.match(source.slice(Math.max(0, m.index - 120), m.index), /table-surface|tableSurface\(/, `${name}: a data-table outside .table-surface`);
+    }
+  }
+});
+
+test('Portfolio: charts on the canvas, concentration as ruled rows', () => {
+  const css = readCss();
+  const chart = rulesWithSelector(css, '.page-section .data-chart');
+  assert.ok(chart.some((body) => /background:\s*(transparent|none)/.test(body) && /padding:\s*0/.test(body)), 'charts in a page section keep a surface');
+  const row = ruleBody(css, '#portfolio-body .fact-list div');
+  assert.match(row, /font-size:\s*14px/);
+  assert.match(row, /border-bottom:\s*1px solid var\(--line\)/);
+  const block = containerBlocks(css, '@container (max-width: 640px)').find((b) => b.includes('.card-table tbody tr'));
+  assert.match(ruleBody(block, '.table-surface:not(:has(> .card-table))'), /background:\s*var\(--surface\)/);
+});
+
+test('Markets: forms on the surface, live questions end in a caret', () => {
+  const html = readHtml();
+  const start = html.indexOf('data-page="markets"');
+  const markets = html.slice(start, html.indexOf('data-page="goals"'));
+  assert.doesNotMatch(markets, /→/);
+  assert.doesNotMatch(markets, /class="panel[\s"]/);
+  assert.equal(markets.match(/ph-caret-right/g)?.length, 4);
+  for (const id of ['stock-chart-title', 'mf-category-title']) {
+    assert.match(markets, new RegExp(`<section class="[^"]*surface-block[^"]*" aria-labelledby="${id}"`), id);
+  }
+  assert.match(markets, /<section class="[^"]*page-section[^"]*" aria-labelledby="markets-live-title"/);
+  for (const m of markets.matchAll(/<span class="prompt-row-arrow"[^>]*>([\s\S]*?)<\/span>/g)) {
+    assert.match(m[1], /^<svg class="icon" aria-hidden="true"><use href="\/icons\.svg\?v=\d+#ph-caret-right"><\/use><\/svg>$/);
+  }
+});
+
+test('Reports: downloads are plain buttons', () => {
+  const css = readCss();
+  assert.ok(rulesWithSelector(css, '.download-actions').length, 'no .download-actions rule');
+  for (const body of rulesWithSelector(css, '.downloads-card')) assert.doesNotMatch(body, /border/);
+});

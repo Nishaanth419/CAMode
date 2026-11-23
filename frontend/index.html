@@ -416,7 +416,7 @@
           </header>
           <div id="markets-body"></div>
           <div class="markets-forms">
-            <section class="panel home-card" aria-labelledby="stock-chart-title">
+            <section class="surface-block" aria-labelledby="stock-chart-title">
               <div class="card-head"><h2 id="stock-chart-title" class="card-title">Stock price chart</h2></div>
               <form id="stock-chart-form" class="inline-form">
                 <label class="field"><span>NSE symbol</span><input id="stock-symbol" type="text" maxlength="20" placeholder="e.g. INFY" autocapitalize="characters" spellcheck="false" required /></label>
@@ -427,7 +427,7 @@
               </form>
               <p class="form-note">Opens in Ask AI as a candlestick chart from INDmoney's daily prices.</p>
             </section>
-            <section class="panel home-card" aria-labelledby="mf-category-title">
+            <section class="surface-block" aria-labelledby="mf-category-title">
               <div class="card-head"><h2 id="mf-category-title" class="card-title">Compare mutual funds</h2></div>
               <form id="mf-category-form" class="inline-form">
                 <label class="field"><span>Category</span>
@@ -441,21 +441,21 @@
               <p class="form-note">Opens in Ask AI: returns, expense ratio and risk from INDmoney, with the ones you hold marked.</p>
             </section>
           </div>
-          <section class="panel home-card" aria-labelledby="markets-live-title">
+          <section class="page-section" aria-labelledby="markets-live-title">
             <div class="card-head"><h2 id="markets-live-title" class="card-title">Live questions</h2></div>
             <ul class="prompt-rows prompt-grid" aria-label="Live questions">
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Show the stocks on my watchlist with their latest prices and today's change.">
                 <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-eye"></use></svg></span>
-                <span class="prompt-row-text">Watchlist prices<small>Latest prices for stocks you track</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <span class="prompt-row-text">Watchlist prices<small>Latest prices for stocks you track</small></span><span class="prompt-row-arrow" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-caret-right"></use></svg></span></button></li>
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="Which of my holdings moved the most today? Show the top gainers and losers.">
                 <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-trend-up"></use></svg></span>
-                <span class="prompt-row-text">Today's movers<small>Live gainers and losers you hold</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <span class="prompt-row-text">Today's movers<small>Live gainers and losers you hold</small></span><span class="prompt-row-arrow" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-caret-right"></use></svg></span></button></li>
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="List my active SIPs across stocks and mutual funds with their monthly amounts and next dates.">
                 <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-calendar-blank"></use></svg></span>
-                <span class="prompt-row-text">SIP calendar<small>Your active SIPs and amounts</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <span class="prompt-row-text">SIP calendar<small>Your active SIPs and amounts</small></span><span class="prompt-row-arrow" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-caret-right"></use></svg></span></button></li>
               <li><button class="prompt-row" type="button" data-agent="portfolio" data-prompt="How are my US stocks doing? Show their value in USD and INR.">
                 <span class="prompt-row-icon" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-globe"></use></svg></span>
-                <span class="prompt-row-text">US stocks<small>Your US holdings in USD and INR</small></span><span class="prompt-row-arrow" aria-hidden="true">→</span></button></li>
+                <span class="prompt-row-text">US stocks<small>Your US holdings in USD and INR</small></span><span class="prompt-row-arrow" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-caret-right"></use></svg></span></button></li>
             </ul>
           </section>
         </section>

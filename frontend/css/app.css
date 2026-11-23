@@ -1807,6 +1807,10 @@ body.gate-open #app { visibility: hidden; }
 .page-section .card-head { margin-bottom: 0; }
 .surface-block { background: var(--surface); border-radius: 12px; padding: 24px; }
 .table-surface { background: var(--surface); border-radius: 12px; padding: 4px 16px; overflow-x: auto; }
+/* A chart in a section is drawn on the canvas, named by the section heading. */
+.page-section .data-chart { margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.page-section .data-chart-title { display: none; }
+.page-section .chart-heading { justify-content: flex-end; }
 .panel {
   min-width: 0;
   padding: 18px;
@@ -2770,9 +2774,22 @@ body.gate-open #app { visibility: hidden; }
 .calc-actions > button { width: auto; min-height: var(--control-h); padding: 0 16px; border-radius: var(--radius-md); font-size: 14px; }
 .calc-actions > .gate-secondary { font-weight: 500; }
 
-/* Markets: the two forms as cards, then live questions in two columns. */
+/* Portfolio, Markets and Reports: sections on the canvas, 32px apart. */
+#portfolio-body, #markets-body, #reports-body { gap: 32px; }
+#portfolio-body .page-columns, #portfolio-body .page-stack { gap: 32px; }
+/* Markets' forms and live questions sit outside #markets-body: 18px page gap + 14px. */
+[data-page="markets"] > .markets-forms, [data-page="markets"] > .page-section { margin-top: 14px; }
+/* Concentration: plain ruled rows, no card. */
+#portfolio-body .fact-list { gap: 0; }
+#portfolio-body .fact-list div { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 20px; }
+#portfolio-body .fact-list dd { font-variant-numeric: tabular-nums; }
+
+/* Markets: the two forms on the surface, then live questions in two columns. */
 .markets-forms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.markets-movers { gap: 16px; }
+.markets-movers { gap: 32px; }
+/* Live questions end in the same 16px caret as Home's prompt rows. */
+[data-page="markets"] .prompt-row-arrow { display: grid; place-items: center; }
+[data-page="markets"] .prompt-row-arrow .icon { width: 16px; height: 16px; }
 .form-note { margin-top: 10px; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .prompt-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
 #activity-body .status-pill { padding: 2px 10px; font-size: 12px; line-height: 16px; }
@@ -2825,6 +2842,8 @@ body.gate-open #app { visibility: hidden; }
   .card-table tbody tr:hover { background: var(--surface); }
   /* The rows are the cards, so their wrapper drops its own surface. */
   .table-surface { background: none; padding: 0; border-radius: 0; }
+  /* Tables that stay tables (Portfolio's holdings and splits) keep their surface. */
+  .table-surface:not(:has(> .card-table)) { background: var(--surface); padding: 4px 16px; border-radius: 12px; }
   .card-table td { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; padding: 0; border: 0; text-align: right; white-space: normal; }
   .card-table td::before { grid-row: span 3; color: var(--text-muted); font-size: 12px; font-weight: 400; text-align: left; content: attr(data-label); }
   .card-table td.is-up::before, .card-table td.is-down::before { color: var(--text-muted); }
@@ -2852,6 +2871,7 @@ body.gate-open #app { visibility: hidden; }
 }
 @media print {
   .download-actions, .downloads-card { display: none !important; }
+  #reports-body .page-section, #portfolio-body .page-section { break-inside: avoid; }
 }
 
 @media (max-width: 640px) {

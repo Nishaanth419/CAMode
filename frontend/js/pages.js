@@ -119,6 +119,18 @@ function panel(title, body, { action = '', className = '' } = {}) {
   return `<section class="panel ${className}"><div class="rail-head"><h2>${escHtml(title)}</h2>${action}</div>${body}</section>`;
 }
 
+// A section on the canvas (batch 4 pages): heading row with optional actions, then the body.
+function pageSection(title, body, { id = '', actions = '', className = '' } = {}) {
+  const label = id ? ` aria-labelledby="${id}"` : '';
+  const heading = `<h2${id ? ` id="${id}"` : ''} class="card-title">${escHtml(title)}</h2>`;
+  return `<section class="page-section${className ? ` ${className}` : ''}"${label}><div class="card-head">${heading}${actions}</div>${body}</section>`;
+}
+
+// A table on the surface; scrolls sideways inside its block when wide.
+function tableSurface(tableHtml) {
+  return `<div class="table-scroll table-surface">${tableHtml}</div>`;
+}
+
 function notice(title, body, actionHtml = '') {
   return `<section class="panel empty-panel"><h2>${escHtml(title)}</h2><p>${escHtml(body)}</p>${actionHtml}</section>`;
 }
@@ -690,17 +702,17 @@ async function renderPortfolio() {
 
   setHtml(body, `
     <div class="kpi-strip kpi-strip-5" aria-label="Key figures">${stats}</div>
-    ${panel('Net worth trend', '<div id="trend-chart"></div>', { action: trendControls() })}
+    ${pageSection('Net worth trend', '<div id="trend-chart"></div>', { actions: trendControls() })}
     <div class="page-columns">
-      ${panel('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }, { page: true }))}
+      ${pageSection('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }, { page: true }))}
       <div class="page-stack">
-        ${panel('Concentration', concentration)}
-        ${classes ? panel('Asset classes', `<table class="data-table compact"><thead><tr><th>Class</th><th>Value</th><th>Share</th></tr></thead><tbody>${classes}</tbody></table>`) : ''}
-        ${caps ? panel('Direct stocks by market cap', `<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`) : ''}
+        ${pageSection('Concentration', concentration)}
+        ${classes ? pageSection('Asset classes', tableSurface(`<table class="data-table compact"><thead><tr><th>Class</th><th>Value</th><th>Share</th></tr></thead><tbody>${classes}</tbody></table>`)) : ''}
+        ${caps ? pageSection('Direct stocks by market cap', tableSurface(`<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`)) : ''}
       </div>
     </div>
-    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings</a>' })}
-    ${notes.length ? panel('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
+    ${pageSection('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { actions: '<a class="panel-link" href="#/holdings">All holdings</a>' })}
+    ${notes.length ? pageSection('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
     ${promptChips([
       ['Explain my allocation', 'Explain my current asset allocation and what stands out.'],
       ['Concentration risk', 'Is my portfolio too concentrated? Look at my largest holdings and sectors.'],
@@ -757,7 +769,7 @@ function holdingsTable(holdings, { compact = false } = {}) {
       <td><button class="table-action" type="button" data-agent="portfolio" data-prompt="${escHtml(ask)}">Ask</button></td>`}
     </tr>`;
   }).join('');
-  return `<div class="table-scroll"><table class="data-table"><thead><tr>
+  return `<div class="table-scroll table-surface"><table class="data-table"><thead><tr>
       <th>Holding</th><th>Value</th>${compact ? '' : '<th>Invested</th>'}<th>P&amp;L</th><th>Share</th>${compact ? '' : '<th>1 day</th><th><span class="sr-only">Ask AI</span></th>'}
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -1589,7 +1601,6 @@ async function renderMarkets() {
   const unreported = holdings.length - moved.length - flat;
   const caps = (data.figures.by_market_cap_direct_stocks || []).map((row) => ({ label: row.market_cap || 'Other', value: row.current_value_inr }));
   document.getElementById('markets-asof').textContent = `Day moves from your snapshot of ${formatCaptured(data.capturedAt)}. Live prices come from INDmoney through Portfolio Analyzer.`;
-  const card = (title, bodyHtml, className = '') => `<section class="panel home-card ${className}"><div class="card-head"><h2 class="card-title">${escHtml(title)}</h2></div>${bodyHtml}</section>`;
   setHtml(body, `
     <div class="kpi-strip">
       ${kpiCard('Day change', moved.length ? signedMoney(dayChange) : '—', moved.length ? `${percent(previous ? dayChange / previous * 100 : NaN, { signed: true })} of the day before` : 'No day change reported', toneOf(dayChange))}
@@ -1598,10 +1609,10 @@ async function renderMarkets() {
       ${kpiCard('Unchanged', String(flat), [unreported ? `${unreported} not reported` : '', `${holdings.length} holdings`].filter(Boolean).join(' · '))}
     </div>
     <div class="page-columns markets-movers">
-      ${card('Top gainers', moverTable(up, 'No holding rose in this snapshot.'))}
-      ${card('Top losers', moverTable(down, 'No holding fell in this snapshot.'))}
+      ${pageSection('Top gainers', moverTable(up, 'No holding rose in this snapshot.'))}
+      ${pageSection('Top losers', moverTable(down, 'No holding fell in this snapshot.'))}
     </div>
-    ${caps.length ? card('Your stocks by market cap', chartHtml({ type: 'donut', title: 'Direct stocks by market cap', unit: '₹', data: caps }, { page: true })) : ''}`);
+    ${caps.length ? pageSection('Your stocks by market cap', chartHtml({ type: 'donut', title: 'Direct stocks by market cap', unit: '₹', data: caps }, { page: true })) : ''}`);
 }
 
 // Up to five movers; on phones each row becomes a card (CSS, .mover-table).
@@ -1611,7 +1622,7 @@ function moverTable(items, emptyText) {
     const base = (item.current_value_inr || 0) - item.one_day_change_inr;
     return `<tr><td class="m-name" data-label="Holding">${escHtml(item.name || item.code)}</td><td class="m-value" data-label="Value">${money(item.current_value_inr)}</td><td class="m-change ${toneOf(item.one_day_change_inr)}" data-label="Day change">${signedMoney(item.one_day_change_inr)}<small>${percent(base ? item.one_day_change_inr / base * 100 : NaN, { signed: true })}</small></td></tr>`;
   }).join('');
-  return `<div class="table-scroll"><table class="data-table card-table mover-table"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="table-scroll table-surface"><table class="data-table card-table mover-table"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 document.getElementById('stock-chart-form').addEventListener('submit', (event) => {
@@ -2453,9 +2464,9 @@ async function renderReports() {
       ${kpiCard('12-month high', moneyShort(high.networthInr), formatDate(high.date))}
       ${kpiCard('12-month low', moneyShort(low.networthInr), formatDate(low.date))}
     </div>
-    ${reportCard('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
-    ${reportCard('Change by period', `<div class="table-scroll"><table class="data-table card-table report-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table></div>`)}
-    ${reportCard('Month-end net worth', `<div class="table-scroll"><table class="data-table card-table report-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table></div>`)}
+    ${pageSection('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
+    ${pageSection('Change by period', tableSurface(`<table class="data-table card-table report-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table>`))}
+    ${pageSection('Month-end net worth', tableSurface(`<table class="data-table card-table report-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table>`))}
     ${downloadsPanel(true)}`);
 }
 
@@ -2464,11 +2475,11 @@ function reportCard(title, body, className = '') {
 }
 
 function downloadsPanel(hasSnapshots) {
-  return reportCard('Downloads', `<div class="download-actions">
+  return pageSection('Downloads', `<div class="download-actions">
       ${hasSnapshots ? '<button class="gate-secondary" type="button" data-download="history">Net worth history (CSV)</button><button class="gate-secondary" type="button" data-download="holdings">Holdings (CSV)</button>' : ''}
       <button class="gate-secondary" type="button" data-download="export">Export all my data</button>
     </div>
-    <p class="page-muted">CSV files open in Excel or Google Sheets. The full export (JSON) includes chats, snapshots, goals and CAS holdings and asks for your PIN.</p>`, 'downloads-card');
+    <p class="page-muted">CSV files open in Excel or Google Sheets. The full export (JSON) includes chats, snapshots, goals and CAS holdings and asks for your PIN.</p>`, { className: 'downloads-card' });
 }
 
 document.addEventListener('click', async (event) => {
