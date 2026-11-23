@@ -1026,3 +1026,71 @@ test('Calculators: fields read at 14px and sliders take the accent', () => {
   assert.match(ruleBody(css, '.calc-field input[type="range"]'), /accent-color:\s*var\(--accent\)/);
   assert.match(readCss(), /#calc-body\s*\{[^}]*gap:\s*32px/);
 });
+
+// Visible border: any border declaration other than 0, none or transparent.
+const visibleBorderIn = (css, selector) => borderIn(css, selector)
+  .filter((body) => [...body.matchAll(/(?:^|;)\s*border(?:-top|-left)?\s*:\s*([^;]+)/g)].some((m) => !/^(0|none|0 none|[^;]*transparent)\s*$/.test(m[1].trim())));
+
+test('Activity: rows and records are borderless surfaces', () => {
+  const css = readCss();
+  for (const selector of ['.activity-item', '.activity-skeleton', '#activity-body .evidence-card', '.run-card']) {
+    const body = ruleBody(css, selector);
+    assert.match(body, /border-radius:\s*12px/, selector);
+    assert.deepEqual(visibleBorderIn(css, selector), [], selector);
+  }
+  for (const selector of ['.activity-item', '.activity-skeleton', '.run-card']) {
+    assert.match(ruleBody(css, selector), /background:\s*var\(--surface\)/, selector);
+  }
+  for (const selector of ['#activity-body .evidence-card', '.run-card']) {
+    assert.match(ruleBody(css, selector), /padding:\s*24px/, selector);
+  }
+  assert.match(ruleBody(css, '.activity-item:hover'), /background:\s*var\(--surface-2\)/);
+  assert.match(ruleBody(css, '.skeleton-row span'), /animation:\s*skeleton-fade/);
+  // Sections inside a record are separated by space, not rules; their summaries read at 16px.
+  assert.deepEqual(visibleBorderIn(css, '#activity-body .evidence-section'), []);
+  assert.match(ruleBody(css, '#activity-body .evidence-section'), /border-top:\s*0/);
+  const summary = ruleBody(css, '#activity-body .evidence-section > summary');
+  assert.match(summary, /font-size:\s*16px/);
+  assert.match(summary, /line-height:\s*24px/);
+  assert.match(summary, /font-weight:\s*600/);
+  // The compact card under an answer keeps its own rules.
+  assert.match(ruleBody(css, '.evidence-card'), /padding:\s*14px 16px/);
+});
+
+test('Activity: page-size reading text', () => {
+  const css = readCss();
+  for (const selector of ['#activity-body .evidence-summary', '.activity-outcome', '#activity-body .timeline-summary']) {
+    const body = ruleBody(css, selector);
+    assert.match(body, /font-size:\s*14px/, selector);
+    assert.match(body, /line-height:\s*20px/, selector);
+  }
+  assert.match(ruleBody(css, '.activity-item .timeline-meta'), /font-size:\s*12px/);
+  assert.doesNotMatch(css, /#activity-body \.timeline-summary\s*,[^{]*\{[^}]*font-size:\s*12px/);
+});
+
+test('Activity: lists are page sections', () => {
+  const pages = readJs('pages.js');
+  const list = functionSource(pages, 'drawActivityList');
+  assert.match(list, /class="page-section activity-section"/);
+  assert.match(readCss(), /#activity-body\s*\{[^}]*gap:\s*32px/);
+  for (const name of ['drawActivityList', 'loadActivityDetail', 'drawActivityDetail', 'loadRunDetail', 'startInvestigation']) {
+    assert.doesNotMatch(functionSource(pages, name), /class="panel[\s"]|home-card|→/, name);
+  }
+  assert.match(pages, /class="panel-link activity-back"/);
+});
+
+test('All chats: period groups are labelled lists on the canvas', () => {
+  const pages = readJs('pages.js');
+  const all = functionSource(pages, 'renderAllChats');
+  assert.match(all, /'page-section chat-group-card'/);
+  assert.doesNotMatch(all, /panel|home-card/);
+  const css = readCss();
+  for (const body of rulesWithSelector(css, '.chat-group-card')) assert.doesNotMatch(body, /background|padding/);
+  const heading = ruleBody(css, '#all-chats .chat-group');
+  assert.match(heading, /font-size:\s*14px/);
+  assert.match(heading, /line-height:\s*20px/);
+  assert.match(heading, /font-weight:\s*500/);
+  assert.match(heading, /color:\s*var\(--text-soft\)/);
+  assert.match(ruleBody(css, '#page-view .chat-select:hover'), /background:\s*var\(--surface-2\)/);
+  assert.match(css, /#all-chats\s*\{[^}]*gap:\s*32px/);
+});

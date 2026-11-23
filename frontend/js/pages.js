@@ -2619,7 +2619,7 @@ function drawActivityList(refreshError = null) {
     return;
   }
   const chatIds = new Set(chats.map((chat) => chat.id));
-  const section = (id, title, count, body) => `<section class="activity-section" aria-labelledby="${id}">
+  const section = (id, title, count, body) => `<section class="page-section activity-section" aria-labelledby="${id}">
     <div class="card-head"><h2 id="${id}" class="card-title">${title}${count === null ? '' : ` <span class="seg-count">${count}</span>`}</h2></div>${body}</section>`;
   const investigationsHtml = items.length
     ? section('activity-investigations-title', 'Portfolio investigations', items.length, renderActivityList(items, { filter: activityState.filter, chatIds }))
@@ -2771,10 +2771,10 @@ function renderAllChats() {
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(chat);
   }
-  // One card per period, rows like Home's "Continue a chat".
+  // One labelled list per period on the canvas, rows like Home's "Continue a chat".
   for (const [label, items] of groups) {
     const card = document.createElement('section');
-    card.className = 'panel home-card chat-group-card';
+    card.className = 'page-section chat-group-card';
     const heading = document.createElement('h2');
     heading.className = 'card-title chat-group';
     heading.textContent = label;
