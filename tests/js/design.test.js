@@ -1144,6 +1144,16 @@ test('public pages: Geist, flat sections, no shadows', () => {
   assert.doesNotMatch(featured, /box-shadow/);
   assert.match(featured, /border:\s*1px solid var\(--accent\)/);
   assert.doesNotMatch(css, /box-shadow/);
+  // The price is a <p class="plan-price">: no rule that reaches a plan's paragraphs may reset its size.
+  assert.match(ruleBody(css, '.plan-price'), /font-size:\s*30px/);
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1].replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((sel) => sel.trim());
+    for (const sel of selectors) {
+      if (/\.plan\b(?!-)[^,]*\sp(?![\w-])/.test(sel) && /font-size|line-height|(^|[;\s])font:/.test(m[2])) {
+        assert.match(sel, /:not\(\.plan-price\)/, `${sel} would resize the plan price`);
+      }
+    }
+  }
   assert.match(css, /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
   const code = ruleBody(css, '.public-code');
   assert.match(code, /font-size:\s*60px/);
