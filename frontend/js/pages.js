@@ -1117,7 +1117,7 @@ function benchmarkPanel(data) {
   const own = returnFigure(p);
   const theirs = benchmarkFigure(b);
   const difference = b.status === 'ok' ? benchmarkDifference(b.differenceInr, b.label) : '';
-  return reportCard('Compared with a benchmark', `
+  return pageSection('Compared with a benchmark', `
     <div class="filter-chips benchmark-chips" role="group" aria-label="Benchmark">${chips}</div>
     <div class="kpi-strip kpi-strip-3">
       ${kpiCard('Your mutual funds', own.short, own.label || own.note)}
@@ -1145,8 +1145,8 @@ function returnsSchemeRow(item) {
 }
 
 function returnsTabs(active) {
-  return `<div class="seg seg-small" role="tablist" aria-label="Returns and tax">${[['returns', 'Returns'], ['tax', 'Tax']].map(([id, label]) =>
-    `<button type="button" role="tab" data-returns-tab="${id}" aria-selected="${id === active}" aria-pressed="${id === active}">${label}</button>`).join('')}</div>`;
+  return `<div class="returns-tabs" role="tablist" aria-label="Returns and tax">${[['returns', 'Returns'], ['tax', 'Tax']].map(([id, label]) =>
+    `<button type="button" class="returns-tab" role="tab" data-returns-tab="${id}" aria-selected="${id === active}" aria-pressed="${id === active}">${label}</button>`).join('')}</div>`;
 }
 
 async function renderReturns() {
@@ -1189,10 +1189,10 @@ async function renderReturns() {
       ${kpiCard('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}
     </div>
     ${data.benchmark ? benchmarkPanel(data) : ''}
-    ${excluded ? reportCard('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul class="note-list">${excluded}</ul>`) : ''}
-    ${reportCard('By fund', `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
+    ${excluded ? pageSection('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul class="note-list">${excluded}</ul>`) : ''}
+    ${pageSection('By fund', tableSurface(`<table class="data-table card-table"><thead><tr>
       <th>Fund</th><th>Return</th><th>vs benchmark</th><th>Current value</th><th>Invested</th><th>Unrealised</th><th>Realised</th>
-    </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
+    </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table>`))}
     <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
 
@@ -1211,15 +1211,15 @@ function navSourceNote(item) {
 function exemptionPanel(exemption) {
   const share = exemptionShare(exemption);
   if (share.usedPct === null) return '';
-  return reportCard('Equity long-term exemption', `
+  return pageSection('Equity long-term exemption', `
     <p class="stat-sub">${escHtml(share.text)}</p>
-    <span class="progress-bar" role="meter" aria-label="Exemption used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${share.usedPct}"><span style="width:${share.usedPct}%"></span></span>
+    <span class="progress-bar exemption-meter" role="meter" aria-label="Exemption used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${share.usedPct}"><span style="width:${share.usedPct}%"></span></span>
     <p class="page-muted">${escHtml(exemption.note || '')}</p>`);
 }
 
 function taxRowsTable(rows) {
   if (!rows.length) return '<p class="page-muted">No mutual fund units were redeemed in this financial year.</p>';
-  return `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
+  return tableSurface(`<table class="data-table card-table"><thead><tr>
     <th>Class</th><th>Term</th><th>Rule</th><th>Section</th><th>Rate</th><th>Gains</th><th>Losses</th><th>Net</th>
   </tr></thead><tbody>${rows.map((row) => `<tr>
     <td>${escHtml(taxClassLabel(row.taxClass))}</td>
@@ -1230,7 +1230,7 @@ function taxRowsTable(rows) {
     <td data-label="Gains">${money(row.gains)}</td>
     <td data-label="Losses">${money(row.losses)}</td>
     <td data-label="Net">${money(row.net)}</td>
-  </tr>`).join('')}</tbody></table></div>`;
+  </tr>`).join('')}</tbody></table>`);
 }
 
 function setOffBlock(position) {
@@ -1240,7 +1240,7 @@ function setOffBlock(position) {
   if (carry) {
     lines.push(`<li>Losses left: ${money(carry.short)} short-term, ${money(carry.long)} long-term. ${escHtml(carry.note)}</li>`);
   }
-  return lines.length ? reportCard('Losses', `<ul class="note-list">${lines.join('')}</ul>`) : '';
+  return lines.length ? pageSection('Losses', `<ul class="note-list">${lines.join('')}</ul>`) : '';
 }
 
 function leftOutBlock(position) {
@@ -1250,13 +1250,14 @@ function leftOutBlock(position) {
   ];
   if (!items.length) return '';
   const gain = position.unclassified ? `<p class="page-muted">Gains with no tax estimate: ${money(position.unclassified.gain)}.</p>` : '';
-  return reportCard('Not in the estimate', `${gain}<ul class="note-list">${items.join('')}</ul>`);
+  return pageSection('Not in the estimate', `${gain}<ul class="note-list">${items.join('')}</ul>`);
 }
 
+// One group of planning options: a subheading, then each fund as a card on the surface.
 function planningCard(title, items, row, empty) {
   const body = items.length ? `<ul class="note-list planning-list">${items.map((item) => `<li>${row(item)}</li>`).join('')}</ul>`
     : `<p class="page-muted">${escHtml(empty)}</p>`;
-  return reportCard(title, body);
+  return `<div class="planning-group"><h3 class="planning-title">${escHtml(title)}</h3>${body}</div>`;
 }
 
 function planningBlock(planning) {
@@ -1283,7 +1284,7 @@ function planningBlock(planning) {
   if (planning.left.length) {
     cards.push(planningCard('Funds without planning figures', planning.left, (item) => `${fund(item)}: ${escHtml(item.reason)}`, ''));
   }
-  return `<h2 class="card-title">Before 31 March</h2>${cards.join('')}${reportCard('About these options', taxNotes(planning.notes))}`;
+  return `${pageSection('Before 31 March', cards.join(''))}${pageSection('About these options', taxNotes(planning.notes))}`;
 }
 
 async function renderTax() {
@@ -1313,8 +1314,8 @@ async function renderTax() {
   const estimate = taxEstimate(position.tax);
   const totals = position.totals || {};
   const slabLine = position.tax.slabPct === null || position.tax.slabPct === undefined
-    ? `<p class="page-muted">No tax slab is set, so slab-taxed gains are shown without tax. <button type="button" class="gate-secondary inline-button" data-open-profile>Add your tax slab</button></p>`
-    : `<p class="page-muted">Slab-taxed gains use your ${position.tax.slabPct}% slab from your profile.</p>`;
+    ? `<p class="page-muted slab-line">No tax slab is set, so slab-taxed gains are shown without tax. <button type="button" class="gate-secondary inline-button" data-open-profile>Add your tax slab</button></p>`
+    : `<p class="page-muted slab-line">Slab-taxed gains use your ${position.tax.slabPct}% slab from your profile.</p>`;
   setHtml(body, `
     ${returnsTabs('tax')}
     <div class="filter-chips" role="group" aria-label="Financial year">${chips}</div>
@@ -1326,11 +1327,11 @@ async function renderTax() {
     </div>
     ${slabLine}
     ${exemptionPanel(position.exemption)}
-    ${reportCard('Gains by rule', taxRowsTable(position.rows))}
+    ${pageSection('Gains by rule', taxRowsTable(position.rows))}
     ${setOffBlock(position)}
     ${leftOutBlock(position)}
     ${planningBlock(data.planning)}
-    ${reportCard('About these figures', taxNotes(position.notes))}`);
+    ${pageSection('About these figures', taxNotes(position.notes))}`);
 }
 
 // A new tax slab changes the estimate.
@@ -2468,10 +2469,6 @@ async function renderReports() {
     ${pageSection('Change by period', tableSurface(`<table class="data-table card-table report-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table>`))}
     ${pageSection('Month-end net worth', tableSurface(`<table class="data-table card-table report-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table>`))}
     ${downloadsPanel(true)}`);
-}
-
-function reportCard(title, body, className = '') {
-  return `<section class="panel home-card ${className}"><div class="card-head"><h2 class="card-title">${escHtml(title)}</h2></div>${body}</section>`;
 }
 
 function downloadsPanel(hasSnapshots) {

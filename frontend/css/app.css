@@ -1987,7 +1987,7 @@ body.gate-open #app { visibility: hidden; }
 @media print {
   body { overflow: visible; background: #fff; }
   #app { display: block; height: auto; }
-  #sidebar, #topbar, #right-rail, #tabbar, #chat-scroll, #input-area, .page-actions, .page-chips, .table-action, .seg { display: none !important; }
+  #sidebar, #topbar, #right-rail, #tabbar, #chat-scroll, #input-area, .page-actions, .page-chips, .table-action, .seg, .returns-tabs { display: none !important; }
   #page-view { overflow: visible; padding: 0; }
   .panel { box-shadow: none; break-inside: avoid; }
   body #home-networth-value { background: none; color: #000; -webkit-text-fill-color: #000; }
@@ -2380,9 +2380,8 @@ body.gate-open #app { visibility: hidden; }
 .holdings-panel { padding: 0; overflow: clip; border-radius: var(--radius-lg); background: var(--surface); }
 .holdings-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
 .filter-chips { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
-/* Returns: the benchmark chips sit above the comparison tiles (higher specificity than the phone padding below). */
-.filter-chips.benchmark-chips { padding-bottom: 12px; }
-.benchmark-chips + .kpi-strip { margin-bottom: 12px; }
+/* Returns: the benchmark chips sit above the comparison strip; the section's 16px gap spaces them. */
+#returns-body .benchmark-chips + .kpi-strip { margin: 0; }
 .filter-chip {
   flex-shrink: 0;
   min-height: 34px;
@@ -2742,12 +2741,37 @@ body.gate-open #app { visibility: hidden; }
 
 /* ── Calculators, Markets, Reports, Returns, Activity and All chats ── */
 #calc-body, #markets-body, #reports-body, #returns-body, #activity-body, #all-chats { container-type: inline-size; }
-#returns-body, #all-chats { display: grid; gap: 16px; }
+#all-chats { display: grid; gap: 16px; }
+#returns-body { display: grid; gap: 32px; }
 /* One column that never grows past the page: a wide table scrolls inside its card instead. */
 #calc-body, #markets-body, #reports-body, #returns-body, #activity-body, #all-chats { grid-template-columns: minmax(0, 1fr); }
 .run-card .data-table td { white-space: normal; }
 .run-card .markdown-table-wrap { overflow-x: auto; }
 #activity-body { gap: 24px; }
+
+/* Returns & tax: sections on the canvas, 32px apart; the tab bar, year chips, strip and slab line sit 16px apart. */
+.returns-tabs { display: flex; gap: 24px; min-width: 0; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.returns-tabs::-webkit-scrollbar { display: none; }
+.returns-tab { flex-shrink: 0; min-height: var(--control-h); margin-bottom: -1px; padding: 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-soft); font-size: 14px; font-weight: 500; line-height: 20px; white-space: nowrap; }
+.returns-tab:hover { color: var(--text); }
+.returns-tab[aria-selected="true"] { border-bottom: 2px solid var(--accent); color: var(--text); font-weight: 600; }
+#returns-body > .returns-tabs, #returns-body > .filter-chips { margin-bottom: -16px; }
+#returns-body > .kpi-strip + .slab-line { margin-top: -16px; }
+#returns-body .kpi-value { font-variant-numeric: tabular-nums; }
+#returns-body .page-muted, #returns-body .stat-sub { font-size: 12px; line-height: 16px; }
+.slab-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.slab-line .inline-button { margin-top: 0; }
+#returns-body .note-list { font-size: 14px; line-height: 20px; }
+/* The exemption meter: a 12px track on --surface-2 with the used share in the accent. */
+#returns-body .exemption-meter { height: 12px; border-radius: 9999px; background: var(--surface-2); }
+#returns-body .exemption-meter span { background: var(--accent); }
+/* Planning options: a subheading per group, each fund a flat card on the surface. */
+.planning-group { display: grid; gap: 12px; }
+.planning-group + .planning-group { margin-top: 16px; }
+.planning-title { color: var(--text); font-size: 16px; font-weight: 600; line-height: 24px; }
+.planning-list { gap: 8px; padding-left: 0; list-style: none; }
+.planning-list li { padding: 16px; border-radius: 12px; background: var(--surface); color: var(--text-soft); font-size: 14px; line-height: 20px; }
+.planning-list li strong { color: var(--text); font-weight: 600; }
 
 /* Empty states everywhere: a dashed box that says why, then one action (System board). */
 .panel.empty-panel,

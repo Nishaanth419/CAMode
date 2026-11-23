@@ -951,3 +951,58 @@ test('Goals: allocations and saved context are page sections', () => {
   assert.match(item, /background:\s*var\(--surface-2\)/);
   assert.match(item, /border-radius:\s*8px/);
 });
+
+const RETURNS_SOURCES = ['renderReturns', 'renderTax', 'benchmarkPanel', 'exemptionPanel', 'taxRowsTable', 'setOffBlock', 'leftOutBlock', 'planningCard', 'planningBlock'];
+// One function's body only: up to its closing brace at the start of a line (renderTax is followed by listeners and CALCULATORS).
+const ownSource = (js, name) => { const source = functionSource(js, name); return source.slice(0, source.indexOf('\n}\n') + 2); };
+
+test('Returns: sections on the canvas, no strip nested in a surface', () => {
+  const pages = readJs('pages.js');
+  for (const name of ['renderReturns', 'renderTax']) {
+    assert.match(functionSource(pages, name), /pageSection\(|page-section/, name);
+  }
+  for (const name of RETURNS_SOURCES) {
+    const source = ownSource(pages, name);
+    // Panels only through notice() (empty states); no report cards or surface blocks around a strip.
+    assert.doesNotMatch(source, /class="panel[\s"]|\bpanel\(|reportCard\(|home-card|surface-block/, name);
+    for (const m of source.matchAll(/class="data-table/g)) {
+      assert.match(source.slice(Math.max(0, m.index - 120), m.index), /table-surface|tableSurface\(/, `${name}: a data-table outside .table-surface`);
+    }
+  }
+  assert.match(readCss(), /#returns-body\s*\{[^}]*gap:\s*32px/);
+});
+
+test('Returns: the tab bar is an underline bar', () => {
+  const pages = readJs('pages.js');
+  const tabs = functionSource(pages, 'returnsTabs');
+  assert.match(tabs, /class="returns-tabs"/);
+  assert.match(tabs, /class="returns-tab"/);
+  assert.match(tabs, /data-returns-tab/);
+  assert.doesNotMatch(tabs, /\bseg\b/);
+  const css = readCss();
+  const tab = ruleBody(css, '.returns-tab');
+  assert.match(tab, /font-size:\s*14px/);
+  assert.match(tab, /border-bottom:\s*2px solid transparent/);
+  assert.match(tab, /background:\s*transparent/);
+  assert.doesNotMatch(tab, /transition|animation/);
+  const selected = ruleBody(css, '.returns-tab[aria-selected="true"]');
+  assert.match(selected, /border-bottom:\s*2px solid var\(--accent\)/);
+  assert.doesNotMatch(selected, /background/);
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (m[1].includes('.returns-tab')) assert.doesNotMatch(m[2], /transform|animation/, m[1].trim());
+  }
+});
+
+test('Tax: exemption meter and planning list are flat', () => {
+  const css = readCss();
+  const track = ruleBody(css, '#returns-body .exemption-meter');
+  assert.match(track, /background:\s*var\(--surface-2\)/);
+  assert.match(track, /border-radius:\s*9999px/);
+  assert.match(track, /height:\s*12px/);
+  assert.match(ruleBody(css, '#returns-body .exemption-meter span'), /background:\s*var\(--accent\)/);
+  assert.match(functionSource(readJs('pages.js'), 'exemptionPanel'), /class="progress-bar exemption-meter"/);
+  const item = ruleBody(css, '.planning-list li');
+  assert.match(item, /background:\s*var\(--surface\)/);
+  assert.match(item, /border-radius:\s*12px/);
+  assert.deepEqual(borderIn(css, '.planning-list li'), []);
+});
