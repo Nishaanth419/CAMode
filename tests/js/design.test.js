@@ -23,6 +23,19 @@ function tokenBlock(css, selector) {
   return tokens;
 }
 
+// The custom properties of `selector` inside the `@media (media) { ... }` block, found by brace matching.
+function mediaTokenBlock(css, media, selector) {
+  const start = css.indexOf(`@media (${media})`);
+  assert.ok(start >= 0, `no @media (${media}) block`);
+  const open = css.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < css.length; i++) {
+    if (css[i] === '{') depth++;
+    if (css[i] === '}' && --depth === 0) return tokenBlock(css.slice(open + 1, i), selector);
+  }
+  throw new Error(`unterminated @media (${media}) block`);
+}
+
 // The declarations of the first rule whose selector list is exactly `selector` (any nesting depth).
 function ruleBody(css, selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -127,7 +140,7 @@ test('no background gradients and no generic shadows', () => {
 });
 
 test('transitions use the motion tokens', () => {
-  const css = readCss();
+  const css = ['app.css', 'public.css', 'admin.css'].map((name) => readCss(name)).join('\n');
   for (const [, v] of css.matchAll(/transition:\s*([^;]+);/g)) {
     assert.doesNotMatch(v, /(?<![-\w])(ease-in-out|ease-in|ease-out|ease|linear)(?![-\w])/, v);
     for (const [, ms] of v.matchAll(/(\d+)ms/g)) assert.ok(Number(ms) >= 200, v);
@@ -1093,4 +1106,46 @@ test('All chats: period groups are labelled lists on the canvas', () => {
   assert.match(heading, /color:\s*var\(--text-soft\)/);
   assert.match(ruleBody(css, '#page-view .chat-select:hover'), /background:\s*var\(--surface-2\)/);
   assert.match(css, /#all-chats\s*\{[^}]*gap:\s*32px/);
+});
+
+const PUBLIC_TOKENS = ['--canvas', '--surface', '--surface-2', '--line', '--text', '--text-soft', '--text-muted',
+  '--accent', '--accent-text', '--accent-ink', '--loss-text', '--warning-text'];
+
+test('public pages carry the app\'s token values in both themes', () => {
+  const app = readCss();
+  const pub = readCss('public.css');
+  const appLight = tokenBlock(app, ':root');
+  const appDark = tokenBlock(app, ':root[data-theme="dark"]');
+  const pubLight = tokenBlock(pub, ':root');
+  const pubDark = mediaTokenBlock(pub, 'prefers-color-scheme: dark', ':root');
+  for (const name of PUBLIC_TOKENS) {
+    assert.ok(appLight.has(name), `app.css light has ${name}`);
+    assert.equal(pubLight.get(name), appLight.get(name), `light ${name}`);
+    assert.equal(pubDark.get(name), appDark.get(name), `dark ${name}`);
+  }
+});
+
+test('public pages: Geist, flat sections, no shadows', () => {
+  const css = readCss('public.css');
+  const body = ruleBody(css, 'body');
+  assert.match(body, /background:\s*var\(--canvas\)/);
+  const family = /font(?:-family)?:[^;]*?('Geist'[^;]*);/.exec(body);
+  assert.ok(family, 'body uses Geist');
+  assert.doesNotMatch(body, /font(?:-family)?:[^;]*(Inter|-apple-system)[^;]*'Geist'/);
+  assert.doesNotMatch(css, /Inter|-apple-system/);
+  for (const sectionBody of rulesWithSelector(css, 'section')) {
+    assert.doesNotMatch(sectionBody, /(^|[;\s])border:/);
+    assert.doesNotMatch(sectionBody, /background/);
+  }
+  const plan = ruleBody(css, '.plan');
+  assert.match(plan, /background:\s*var\(--surface\)/);
+  assert.match(plan, /border-radius:\s*12px/);
+  const featured = ruleBody(css, '.plan-featured');
+  assert.doesNotMatch(featured, /box-shadow/);
+  assert.match(featured, /border:\s*1px solid var\(--accent\)/);
+  assert.doesNotMatch(css, /box-shadow/);
+  assert.match(css, /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
+  const code = ruleBody(css, '.public-code');
+  assert.match(code, /font-size:\s*60px/);
+  assert.match(code, /color:\s*var\(--text-muted\)/);
 });
