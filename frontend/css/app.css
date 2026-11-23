@@ -2796,14 +2796,14 @@ body.gate-open #app { visibility: hidden; }
 .calc-field { gap: 8px; }
 .calc-field > span { color: var(--text-soft); font-size: 14px; font-weight: 500; line-height: 20px; }
 .calc-inputs-card .card-title { font-size: 18px; font-weight: 600; line-height: 28px; }
-.calc-field input[type="number"] { min-height: 40px; }
+.calc-field input[type="number"] { min-height: var(--control-h); }
 .calc-field input[type="number"] { font-variant-numeric: tabular-nums; }
 .calc-field input[type="range"] { height: 18px; min-height: 0; }
 .calc-results { display: grid; min-width: 0; gap: 32px; }
 .kpi-strip-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .calc-results .data-table .total-row td { border-top: 0; border-bottom: 0; font-weight: 600; }
 .calc-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.calc-actions > button { width: auto; min-height: 40px; padding: 0 16px; border-radius: var(--radius-md); font-size: 14px; }
+.calc-actions > button { width: auto; min-height: var(--control-h); padding: 0 16px; border-radius: var(--radius-md); font-size: 14px; }
 .calc-actions > .gate-secondary { font-weight: 500; }
 
 /* Portfolio, Markets and Reports: sections on the canvas, 32px apart. */
