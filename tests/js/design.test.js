@@ -23,6 +23,19 @@ function tokenBlock(css, selector) {
   return tokens;
 }
 
+// The custom properties of `selector` inside the `@media (media) { ... }` block, found by brace matching.
+function mediaTokenBlock(css, media, selector) {
+  const start = css.indexOf(`@media (${media})`);
+  assert.ok(start >= 0, `no @media (${media}) block`);
+  const open = css.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < css.length; i++) {
+    if (css[i] === '{') depth++;
+    if (css[i] === '}' && --depth === 0) return tokenBlock(css.slice(open + 1, i), selector);
+  }
+  throw new Error(`unterminated @media (${media}) block`);
+}
+
 // The declarations of the first rule whose selector list is exactly `selector` (any nesting depth).
 function ruleBody(css, selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -127,7 +140,7 @@ test('no background gradients and no generic shadows', () => {
 });
 
 test('transitions use the motion tokens', () => {
-  const css = readCss();
+  const css = ['app.css', 'public.css', 'admin.css'].map((name) => readCss(name)).join('\n');
   for (const [, v] of css.matchAll(/transition:\s*([^;]+);/g)) {
     assert.doesNotMatch(v, /(?<![-\w])(ease-in-out|ease-in|ease-out|ease|linear)(?![-\w])/, v);
     for (const [, ms] of v.matchAll(/(\d+)ms/g)) assert.ok(Number(ms) >= 200, v);
@@ -144,8 +157,29 @@ test('reduced motion stops movement and loops', () => {
 test('keyboard focus is always visible', () => assert.match(readCss(), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/));
 
 test('no browser dialogs in the app scripts', () => {
-  for (const name of ['app.js', 'pages.js', 'demo.js', 'shell.js']) {
-    assert.doesNotMatch(readJs(name), /window\.confirm\(|(^|[^\w.])confirm\(|\balert\(/m, name);
+  for (const name of ['app.js', 'pages.js', 'demo.js', 'shell.js', 'admin.js']) {
+    assert.doesNotMatch(readJs(name), /window\.(confirm|prompt|alert)\(|(^|[^\w.])(confirm|prompt)\(|\balert\(/m, name);
+  }
+});
+
+test('admin page: dialog, flat figures, tables and buttons on the tokens', () => {
+  const css = readCss('admin.css');
+  const dialog = ruleBody(css, '.admin-dialog');
+  assert.match(dialog, /border-radius:\s*16px/);
+  assert.match(css, /\.admin-dialog::backdrop\s*\{/);
+  assert.doesNotMatch(ruleBody(css, '.admin-tile'), /(^|[;\s])border:/);
+  const tiles = ruleBody(css, '.admin-tiles');
+  assert.match(tiles, /background:\s*var\(--surface\)/);
+  assert.match(tiles, /border-radius:\s*12px/);
+  const th = ruleBody(css, '.admin-table th');
+  assert.match(th, /font-size:\s*12px/);
+  assert.match(th, /font-weight:\s*500/);
+  for (const m of css.matchAll(/([^{}]*:hover[^{}]*)\{([^}]*)\}/g)) {
+    assert.doesNotMatch(m[2], /border-color:\s*var\(--accent\)/, m[1].trim());
+  }
+  assert.match(ruleBody(css, '.admin-danger'), /color:\s*var\(--loss-text\)/);
+  for (const name of ['--danger', '--warn', '--muted-bg', '--border']) {
+    assert.doesNotMatch(css, new RegExp(`var\\(${name}\\)`), `admin.css reads ${name}`);
   }
 });
 
@@ -679,4 +713,492 @@ test('the Ask AI rail has no card borders or dividers', () => {
   assert.doesNotMatch(rail.slice(0, rail.indexOf('</aside>')), /→/);
   assert.match(rail, /class="rail-section rail-card"[^>]*aria-labelledby="rail-portfolio-title"/);
   assert.match(js, /rail-chat-day/);
+});
+
+// Every rule (selector list -> body) in `css`, flattened through at-rule blocks.
+function rulesWithSelector(css, selector) {
+  const found = [];
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1].replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((s) => s.trim());
+    if (selectors.includes(selector)) found.push(m[2]);
+  }
+  return found;
+}
+
+// The contents of each `@container (max-width: 640px)` block, braces matched.
+function containerBlocks(css, query) {
+  const blocks = [];
+  let from = 0;
+  for (;;) {
+    const start = css.indexOf(query, from);
+    if (start < 0) return blocks;
+    const open = css.indexOf('{', start);
+    let depth = 1;
+    let i = open + 1;
+    for (; depth > 0 && i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') depth -= 1;
+    }
+    blocks.push(css.slice(open + 1, i - 1));
+    from = i;
+  }
+}
+
+test('page kit: sections sit on the canvas with Home\'s heading size', () => {
+  const css = readCss();
+  const section = ruleBody(css, '.page-section');
+  assert.match(section, /display:\s*grid/);
+  assert.match(section, /gap:\s*16px/);
+  assert.doesNotMatch(section, /background|border|padding/);
+  const titles = rulesWithSelector(css, '.page-section .card-title');
+  assert.ok(titles.some((body) => /font-size:\s*20px/.test(body) && /line-height:\s*28px/.test(body)), 'no 20px/28px rule for .page-section .card-title');
+});
+
+test('page kit: surface and table blocks have no border', () => {
+  const css = readCss();
+  for (const selector of ['.surface-block', '.table-surface']) {
+    const body = ruleBody(css, selector);
+    assert.match(body, /background:\s*var\(--surface\)/, selector);
+    assert.match(body, /border-radius:\s*12px/, selector);
+    assert.doesNotMatch(body, /border:/, selector);
+  }
+});
+
+test('tables read at 14px with quiet headers and surface hover', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.data-table th, .data-table td'), /padding:\s*12px;/);
+  assert.match(ruleBody(css, '.data-table th, .data-table td'), /border-bottom:\s*1px solid var\(--line\)/);
+  assert.match(ruleBody(css, '.data-table'), /font-size:\s*14px/);
+  const th = ruleBody(css, '.data-table th');
+  assert.match(th, /font-size:\s*12px/);
+  assert.match(th, /font-weight:\s*500/);
+  assert.match(ruleBody(css, '.data-table tbody tr:hover'), /background:\s*var\(--surface-2\)/);
+  assert.doesNotMatch(css, /#activity-body \.data-table\s*\{[^}]*font-size:\s*12px/);
+});
+
+test('phone tables stay cards on the canvas', () => {
+  const block = containerBlocks(readCss(), '@container (max-width: 640px)').find((b) => b.includes('.card-table tbody tr'));
+  assert.ok(block, 'no 640px container block for card tables');
+  const row = ruleBody(block, '.card-table tbody tr');
+  assert.match(row, /background:\s*var\(--surface\)/);
+  assert.match(row, /border-radius:\s*12px/);
+  const surface = ruleBody(block, '.table-surface');
+  assert.match(surface, /background:\s*none/);
+  assert.match(surface, /padding:\s*0/);
+});
+
+test('segmented controls nest their radii', () => {
+  const css = readCss();
+  const seg = ruleBody(css, '.seg');
+  assert.match(seg, /border-radius:\s*8px/);
+  assert.match(seg, /padding:\s*2px/);
+  assert.match(ruleBody(css, '.seg button'), /border-radius:\s*6px/);
+});
+
+test('the 404 section is a column on the canvas with one action', () => {
+  const css = readCss();
+  assert.doesNotMatch(ruleBody(css, '.not-found'), /border:/);
+  const code = ruleBody(css, '.not-found-code');
+  assert.match(code, /font-size:\s*60px/);
+  assert.match(code, /line-height:\s*1;/);
+  assert.match(code, /color:\s*var\(--text-muted\)/);
+  const html = readHtml();
+  const start = html.indexOf('data-page="not-found"');
+  const section = html.slice(start, html.indexOf('</section>', start));
+  const links = [...section.matchAll(/<a\b[^>]*>/g)];
+  assert.equal(links.length, 1);
+  assert.match(links[0][0], /class="[^"]*rail-button/);
+  assert.doesNotMatch(section, /→/);
+});
+
+test('batch 3 markup never uses the page kit', () => {
+  const html = readHtml();
+  const slice = (from, to) => html.slice(html.indexOf(from), html.indexOf(to));
+  assert.doesNotMatch(slice('data-page="home"', 'data-page="portfolio"'), /page-section/);
+  assert.doesNotMatch(slice('data-page="holdings"', 'data-page="returns"'), /page-section/);
+  const pages = readJs('pages.js');
+  for (const name of ['renderHome', 'renderHoldings']) {
+    const start = pages.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, name);
+    const rest = pages.slice(start + 1);
+    const ends = [rest.indexOf('\nfunction '), rest.indexOf('\nasync function ')].filter((i) => i >= 0);
+    assert.doesNotMatch(rest.slice(0, Math.min(...ends)), /page-section/, name);
+  }
+});
+
+// The source of `function name(` (or `async function name(`) up to the next top-level function.
+function functionSource(js, name) {
+  const start = js.search(new RegExp(`(?:async )?function ${name}\\(`));
+  assert.ok(start >= 0, `no function ${name}`);
+  const rest = js.slice(start + 1);
+  const ends = [rest.indexOf('\nfunction '), rest.indexOf('\nasync function ')].filter((i) => i >= 0);
+  return rest.slice(0, Math.min(...ends));
+}
+
+test('Portfolio, Reports and Markets sections are page sections', () => {
+  const pages = readJs('pages.js');
+  assert.match(functionSource(pages, 'pageSection'), /<section class="page-section/);
+  assert.match(functionSource(pages, 'tableSurface'), /class="[^"]*table-surface/);
+  for (const name of ['renderPortfolio', 'renderReports', 'renderMarkets', 'downloadsPanel']) {
+    const source = functionSource(pages, name);
+    assert.match(source, /pageSection\(|page-section/, name);
+    assert.doesNotMatch(source, /class="panel[\s"]|\bpanel\(|reportCard\(|home-card/, name);
+  }
+  for (const name of ['renderPortfolio', 'renderReports', 'renderMarkets', 'moverTable', 'holdingsTable']) {
+    const source = functionSource(pages, name);
+    assert.doesNotMatch(source, /class="panel[\s"]|home-card/, name);
+    for (const m of source.matchAll(/class="data-table/g)) {
+      assert.match(source.slice(Math.max(0, m.index - 120), m.index), /table-surface|tableSurface\(/, `${name}: a data-table outside .table-surface`);
+    }
+  }
+});
+
+test('Portfolio: charts on the canvas, concentration as ruled rows', () => {
+  const css = readCss();
+  const chart = rulesWithSelector(css, '.page-section .data-chart');
+  assert.ok(chart.some((body) => /background:\s*(transparent|none)/.test(body) && /padding:\s*0/.test(body)), 'charts in a page section keep a surface');
+  const row = ruleBody(css, '#portfolio-body .fact-list div');
+  assert.match(row, /font-size:\s*14px/);
+  assert.match(row, /border-bottom:\s*1px solid var\(--line\)/);
+  const block = containerBlocks(css, '@container (max-width: 640px)').find((b) => b.includes('.card-table tbody tr'));
+  assert.match(ruleBody(block, '.table-surface:not(:has(> .card-table))'), /background:\s*var\(--surface\)/);
+});
+
+test('Markets: forms on the surface, live questions end in a caret', () => {
+  const html = readHtml();
+  const start = html.indexOf('data-page="markets"');
+  const markets = html.slice(start, html.indexOf('data-page="goals"'));
+  assert.doesNotMatch(markets, /→/);
+  assert.doesNotMatch(markets, /class="panel[\s"]/);
+  assert.equal(markets.match(/ph-caret-right/g)?.length, 4);
+  for (const id of ['stock-chart-title', 'mf-category-title']) {
+    assert.match(markets, new RegExp(`<section class="[^"]*surface-block[^"]*" aria-labelledby="${id}"`), id);
+  }
+  assert.match(markets, /<section class="[^"]*page-section[^"]*" aria-labelledby="markets-live-title"/);
+  for (const m of markets.matchAll(/<span class="prompt-row-arrow"[^>]*>([\s\S]*?)<\/span>/g)) {
+    assert.match(m[1], /^<svg class="icon" aria-hidden="true"><use href="\/icons\.svg\?v=\d+#ph-caret-right"><\/use><\/svg>$/);
+  }
+});
+
+test('Reports: downloads are plain buttons', () => {
+  const css = readCss();
+  assert.ok(rulesWithSelector(css, '.download-actions').length, 'no .download-actions rule');
+  for (const body of rulesWithSelector(css, '.downloads-card')) assert.doesNotMatch(body, /border/);
+});
+
+// Declarations of every rule naming `selector`, as one string, so a border can be found wherever it is set.
+const borderIn = (css, selector) => rulesWithSelector(css, selector).filter((body) => /(^|;)\s*border(-top|-left)?\s*:/.test(body));
+
+test('Goals: cards are surfaces with no borders, drafts and behind goals marked without one', () => {
+  const css = readCss();
+  const card = ruleBody(css, '.goal-card');
+  assert.match(card, /background:\s*var\(--surface\)/);
+  assert.match(card, /border-radius:\s*12px/);
+  assert.match(card, /padding:\s*24px/);
+  assert.doesNotMatch(card, /(^|;)\s*border\s*:/);
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (/\.goal-card\.is-(behind|draft)/.test(m[1])) assert.doesNotMatch(m[2], /border/, m[1].trim());
+  }
+  assert.match(ruleBody(css, '.goal-ring-track'), /stroke-width:\s*6/);
+  assert.match(ruleBody(css, '.goal-ring-fill'), /stroke-width:\s*6/);
+  const label = ruleBody(css, '.goal-ring text');
+  assert.match(label, /font-size:\s*14px/);
+  assert.match(label, /font-weight:\s*600/);
+  assert.match(ruleBody(css, '.goal-figures dd'), /font-size:\s*16px/);
+});
+
+test('Goals: the callout is not a left-border block', () => {
+  const css = readCss();
+  const callout = ruleBody(css, '.goal-callout');
+  assert.doesNotMatch(callout, /border(-left)?\s*:/);
+  assert.match(callout, /background:\s*var\(--surface\)/);
+  assert.match(callout, /font-size:\s*14px/);
+  const dot = ruleBody(css, '.goal-callout::before');
+  assert.match(dot, /width:\s*8px/);
+  assert.match(dot, /height:\s*8px/);
+  assert.match(dot, /background:\s*var\(--warning\)/);
+});
+
+test('Goals: no inner borders', () => {
+  const css = readCss();
+  for (const selector of ['.goal-gap-options li', '.fund-item', '.verdict-chip', '.context-item', '.goal-section', '.goal-foot']) {
+    assert.ok(rulesWithSelector(css, selector).length, `no rule for ${selector}`);
+    assert.deepEqual(borderIn(css, selector), [], selector);
+  }
+  for (const [tone, soft, text] of [['allowed', 'green-soft', 'gain-text'], ['caution', 'amber-soft', 'warning-text'], ['unsuitable', 'red-soft', 'loss-text']]) {
+    const body = ruleBody(css, `.verdict-chip.is-${tone}`);
+    assert.match(body, new RegExp(`background:\\s*var\\(--${soft}\\)`), tone);
+    assert.match(body, new RegExp(`color:\\s*var\\(--${text}\\)`), tone);
+    assert.doesNotMatch(body, /border/, tone);
+  }
+  assert.match(ruleBody(css, '.goal-gap'), /background:\s*var\(--surface-2\)/);
+  const option = ruleBody(css, '.goal-gap-options li');
+  assert.match(option, /background:\s*var\(--surface-3\)/);
+  assert.match(option, /border-radius:\s*8px/);
+});
+
+test('Goals: disclosures use a sprite caret and fade in', () => {
+  const css = readCss();
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (m[1].includes('.goal-toggle')) assert.doesNotMatch(m[2], /content:\s*"▾"/, m[1].trim());
+  }
+  const card = functionSource(readJs('pages.js'), 'goalCard');
+  const toggle = /<button class="goal-toggle"[^`]*?<\/button>/.exec(card);
+  assert.ok(toggle, 'no goal-toggle button in goalCard');
+  assert.match(toggle[0], /<svg class="icon" aria-hidden="true"><use href="\/icons\.svg\?v=\d+#ph-caret-down"><\/use><\/svg>/);
+  assert.match(toggle[0], /data-goal-panel/);
+  assert.match(toggle[0], /aria-expanded/);
+  assert.match(card, /class="goal-panel"[^`]*hidden/);
+  const open = ruleBody(css, '.goal-toggle[aria-expanded="true"] .icon');
+  assert.match(open, /transform:\s*rotate\(180deg\)/);
+  assert.match(open, /transition:\s*transform var\(--dur-move\) var\(--ease\)/);
+  assert.doesNotMatch(ruleBody(css, '.goal-toggle'), /border\s*:\s*1px/);
+  const panel = ruleBody(css, '.goal-panel:not([hidden])');
+  const name = /animation:\s*([\w-]+)/.exec(panel)?.[1];
+  assert.ok(name, 'the open panel has no animation');
+  const reduced = keyframes(reducedMotionBlock(css));
+  assert.ok(reduced.has(name), `${name} is not redefined for reduced motion`);
+  assert.match(reduced.get(name), /opacity/);
+  assert.doesNotMatch(reduced.get(name), /transform/);
+});
+
+test('Goals: reading text is 14px', () => {
+  const css = readCss();
+  assert.match(ruleBody(css, '.goal-panel'), /font-size:\s*14px/);
+  assert.match(ruleBody(css, '.goal-checks'), /font-size:\s*14px/);
+});
+
+test('Goals: allocations and saved context are page sections', () => {
+  const pages = readJs('pages.js');
+  const investments = functionSource(pages, 'renderGoalInvestments');
+  assert.match(investments, /goal-investments-body/);
+  assert.match(investments, /pageSection\(|page-section/);
+  assert.match(investments, /tableSurface\(|table-surface/);
+  assert.match(investments, /alloc-table/);
+  assert.doesNotMatch(investments, /\bpanel\(/);
+  assert.match(functionSource(pages, 'renderSavedContext'), /saved-context-body/);
+  const context = functionSource(pages, 'savedContextHtml');
+  assert.match(context, /pageSection\(|page-section/);
+  assert.doesNotMatch(context, /\bpanel\(/);
+  const css = readCss();
+  const item = ruleBody(css, '.context-item');
+  assert.match(item, /background:\s*var\(--surface-2\)/);
+  assert.match(item, /border-radius:\s*8px/);
+});
+
+const RETURNS_SOURCES = ['renderReturns', 'renderTax', 'benchmarkPanel', 'exemptionPanel', 'taxRowsTable', 'setOffBlock', 'leftOutBlock', 'planningCard', 'planningBlock'];
+// One function's body only: up to its closing brace at the start of a line (renderTax is followed by listeners and CALCULATORS).
+const ownSource = (js, name) => { const source = functionSource(js, name); return source.slice(0, source.indexOf('\n}\n') + 2); };
+
+test('Returns: sections on the canvas, no strip nested in a surface', () => {
+  const pages = readJs('pages.js');
+  for (const name of ['renderReturns', 'renderTax']) {
+    assert.match(functionSource(pages, name), /pageSection\(|page-section/, name);
+  }
+  for (const name of RETURNS_SOURCES) {
+    const source = ownSource(pages, name);
+    // Panels only through notice() (empty states); no report cards or surface blocks around a strip.
+    assert.doesNotMatch(source, /class="panel[\s"]|\bpanel\(|reportCard\(|home-card|surface-block/, name);
+    for (const m of source.matchAll(/class="data-table/g)) {
+      assert.match(source.slice(Math.max(0, m.index - 120), m.index), /table-surface|tableSurface\(/, `${name}: a data-table outside .table-surface`);
+    }
+  }
+  assert.match(readCss(), /#returns-body\s*\{[^}]*gap:\s*32px/);
+});
+
+test('Returns: the tab bar is an underline bar', () => {
+  const pages = readJs('pages.js');
+  const tabs = functionSource(pages, 'returnsTabs');
+  assert.match(tabs, /class="returns-tabs"/);
+  assert.match(tabs, /class="returns-tab"/);
+  assert.match(tabs, /data-returns-tab/);
+  assert.doesNotMatch(tabs, /\bseg\b/);
+  const css = readCss();
+  const tab = ruleBody(css, '.returns-tab');
+  assert.match(tab, /font-size:\s*14px/);
+  assert.match(tab, /border-bottom:\s*2px solid transparent/);
+  assert.match(tab, /background:\s*transparent/);
+  assert.doesNotMatch(tab, /transition|animation/);
+  const selected = ruleBody(css, '.returns-tab[aria-selected="true"]');
+  assert.match(selected, /border-bottom:\s*2px solid var\(--accent\)/);
+  assert.doesNotMatch(selected, /background/);
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (m[1].includes('.returns-tab')) assert.doesNotMatch(m[2], /transform|animation/, m[1].trim());
+  }
+});
+
+test('Tax: exemption meter and planning list are flat', () => {
+  const css = readCss();
+  const track = ruleBody(css, '#returns-body .exemption-meter');
+  assert.match(track, /background:\s*var\(--surface-2\)/);
+  assert.match(track, /border-radius:\s*9999px/);
+  assert.match(track, /height:\s*12px/);
+  assert.match(ruleBody(css, '#returns-body .exemption-meter span'), /background:\s*var\(--accent\)/);
+  assert.match(functionSource(readJs('pages.js'), 'exemptionPanel'), /class="progress-bar exemption-meter"/);
+  const item = ruleBody(css, '.planning-list li');
+  assert.match(item, /background:\s*var\(--surface\)/);
+  assert.match(item, /border-radius:\s*12px/);
+  assert.deepEqual(borderIn(css, '.planning-list li'), []);
+});
+
+test('Calculators: inputs on a surface block, results on the canvas', () => {
+  const pages = readJs('pages.js');
+  const planning = functionSource(pages, 'renderPlanning');
+  assert.match(planning, /class="surface-block[^"]*calc-inputs-card/);
+  assert.doesNotMatch(planning, /class="panel[\s"]/);
+  const output = functionSource(pages, 'renderCalcOutput');
+  assert.doesNotMatch(output, /class="panel[\s"]|home-card/);
+  assert.match(output, /pageSection\('Year by year'/);
+  assert.match(output, /pageSection\('How it adds up', tableSurface\(/);
+});
+
+test('Calculators: fields read at 14px and sliders take the accent', () => {
+  const css = readCss();
+  const label = ruleBody(css, '.calc-field > span');
+  assert.match(label, /font-size:\s*14px/);
+  assert.match(label, /font-weight:\s*500/);
+  assert.match(ruleBody(css, '.calc-field input[type="range"]'), /accent-color:\s*var\(--accent\)/);
+  assert.match(readCss(), /#calc-body\s*\{[^}]*gap:\s*32px/);
+});
+
+// Visible border: any border declaration other than 0, none or transparent.
+const visibleBorderIn = (css, selector) => borderIn(css, selector)
+  .filter((body) => [...body.matchAll(/(?:^|;)\s*border(?:-top|-left)?\s*:\s*([^;]+)/g)].some((m) => !/^(0|none|0 none|[^;]*transparent)\s*$/.test(m[1].trim())));
+
+test('Activity: rows and records are borderless surfaces', () => {
+  const css = readCss();
+  for (const selector of ['.activity-item', '.activity-skeleton', '#activity-body .evidence-card', '.run-card']) {
+    const body = ruleBody(css, selector);
+    assert.match(body, /border-radius:\s*12px/, selector);
+    assert.deepEqual(visibleBorderIn(css, selector), [], selector);
+  }
+  for (const selector of ['.activity-item', '.activity-skeleton', '.run-card']) {
+    assert.match(ruleBody(css, selector), /background:\s*var\(--surface\)/, selector);
+  }
+  for (const selector of ['#activity-body .evidence-card', '.run-card']) {
+    assert.match(ruleBody(css, selector), /padding:\s*24px/, selector);
+  }
+  assert.match(ruleBody(css, '.activity-item:hover'), /background:\s*var\(--surface-2\)/);
+  assert.match(ruleBody(css, '.skeleton-row span'), /animation:\s*skeleton-fade/);
+  // Sections inside a record are separated by space, not rules; their summaries read at 16px.
+  assert.deepEqual(visibleBorderIn(css, '#activity-body .evidence-section'), []);
+  assert.match(ruleBody(css, '#activity-body .evidence-section'), /border-top:\s*0/);
+  const summary = ruleBody(css, '#activity-body .evidence-section > summary');
+  assert.match(summary, /font-size:\s*16px/);
+  assert.match(summary, /line-height:\s*24px/);
+  assert.match(summary, /font-weight:\s*600/);
+  // The compact card under an answer keeps its own rules.
+  assert.match(ruleBody(css, '.evidence-card'), /padding:\s*14px 16px/);
+});
+
+test('Activity: page-size reading text', () => {
+  const css = readCss();
+  for (const selector of ['#activity-body .evidence-summary', '.activity-outcome', '#activity-body .timeline-summary']) {
+    const body = ruleBody(css, selector);
+    assert.match(body, /font-size:\s*14px/, selector);
+    assert.match(body, /line-height:\s*20px/, selector);
+  }
+  assert.match(ruleBody(css, '.activity-item .timeline-meta'), /font-size:\s*12px/);
+  assert.doesNotMatch(css, /#activity-body \.timeline-summary\s*,[^{]*\{[^}]*font-size:\s*12px/);
+});
+
+test('Activity: lists are page sections', () => {
+  const pages = readJs('pages.js');
+  const list = functionSource(pages, 'drawActivityList');
+  assert.match(list, /class="page-section activity-section"/);
+  assert.match(readCss(), /#activity-body\s*\{[^}]*gap:\s*32px/);
+  for (const name of ['drawActivityList', 'loadActivityDetail', 'drawActivityDetail', 'loadRunDetail', 'startInvestigation']) {
+    assert.doesNotMatch(functionSource(pages, name), /class="panel[\s"]|home-card|→/, name);
+  }
+  assert.match(pages, /class="panel-link activity-back"/);
+});
+
+test('All chats: period groups are labelled lists on the canvas', () => {
+  const pages = readJs('pages.js');
+  const all = functionSource(pages, 'renderAllChats');
+  assert.match(all, /'page-section chat-group-card'/);
+  assert.doesNotMatch(all, /panel|home-card/);
+  const css = readCss();
+  for (const body of rulesWithSelector(css, '.chat-group-card')) assert.doesNotMatch(body, /background|padding/);
+  const heading = ruleBody(css, '#all-chats .chat-group');
+  assert.match(heading, /font-size:\s*14px/);
+  assert.match(heading, /line-height:\s*20px/);
+  assert.match(heading, /font-weight:\s*500/);
+  assert.match(heading, /color:\s*var\(--text-soft\)/);
+  assert.match(ruleBody(css, '#page-view .chat-select:hover'), /background:\s*var\(--surface-2\)/);
+  assert.match(css, /#all-chats\s*\{[^}]*gap:\s*32px/);
+});
+
+const PUBLIC_TOKENS = ['--canvas', '--surface', '--surface-2', '--line', '--text', '--text-soft', '--text-muted',
+  '--accent', '--accent-3', '--accent-text', '--accent-ink', '--loss-text', '--warning-text',
+  '--red-soft', '--danger-border', '--shadow-lg'];
+
+test('public pages carry the app\'s token values in both themes', () => {
+  const app = readCss();
+  const pub = readCss('public.css');
+  const appLight = tokenBlock(app, ':root');
+  const appDark = tokenBlock(app, ':root[data-theme="dark"]');
+  const pubLight = tokenBlock(pub, ':root');
+  const pubDark = mediaTokenBlock(pub, 'prefers-color-scheme: dark', ':root');
+  for (const name of PUBLIC_TOKENS) {
+    assert.ok(appLight.has(name), `app.css light has ${name}`);
+    assert.equal(pubLight.get(name), appLight.get(name), `light ${name}`);
+    assert.equal(pubDark.get(name), appDark.get(name), `dark ${name}`);
+  }
+});
+
+test('public pages: Geist, flat sections, no shadows', () => {
+  const css = readCss('public.css');
+  const body = ruleBody(css, 'body');
+  assert.match(body, /background:\s*var\(--canvas\)/);
+  const family = /font(?:-family)?:[^;]*?('Geist'[^;]*);/.exec(body);
+  assert.ok(family, 'body uses Geist');
+  assert.doesNotMatch(body, /font(?:-family)?:[^;]*(Inter|-apple-system)[^;]*'Geist'/);
+  assert.doesNotMatch(css, /Inter|-apple-system/);
+  for (const sectionBody of rulesWithSelector(css, 'section')) {
+    assert.doesNotMatch(sectionBody, /(^|[;\s])border:/);
+    assert.doesNotMatch(sectionBody, /background/);
+  }
+  const plan = ruleBody(css, '.plan');
+  assert.match(plan, /background:\s*var\(--surface\)/);
+  assert.match(plan, /border-radius:\s*12px/);
+  const featured = ruleBody(css, '.plan-featured');
+  assert.doesNotMatch(featured, /box-shadow/);
+  assert.match(featured, /border:\s*1px solid var\(--accent\)/);
+  assert.doesNotMatch(css, /box-shadow/);
+  // The price is a <p class="plan-price">: no rule that reaches a plan's paragraphs may reset its size.
+  assert.match(ruleBody(css, '.plan-price'), /font-size:\s*30px/);
+  for (const m of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1].replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((sel) => sel.trim());
+    for (const sel of selectors) {
+      if (/\.plan\b(?!-)[^,]*\sp(?![\w-])/.test(sel) && /font-size|line-height|(^|[;\s])font:/.test(m[2])) {
+        assert.match(sel, /:not\(\.plan-price\)/, `${sel} would resize the plan price`);
+      }
+    }
+  }
+  assert.match(css, /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
+  const code = ruleBody(css, '.public-code');
+  assert.match(code, /font-size:\s*60px/);
+  assert.match(code, /color:\s*var\(--text-muted\)/);
+});
+
+test('Activity records: no arrow glyphs and no browser disclosure triangles', () => {
+  const css = readCss();
+  assert.doesNotMatch(readJs('pages.js'), /← All activity/);
+  assert.match(readJs('pages.js'), /#ph-caret-left"><\/use><\/svg>All activity/);
+  assert.match(css, /#activity-body \.evidence-section > summary::-webkit-details-marker, #activity-body \.timeline-details > summary::-webkit-details-marker \{ display: none; \}/);
+  assert.match(css, /#activity-body \.evidence-section > summary, #activity-body \.timeline-details > summary \{[^}]*list-style: none;/);
+});
+
+test('public page footers space their links apart', () => {
+  assert.match(readCss('public.css'), /\.public-link \+ \.public-link \{ margin-left: 12px; \}/);
+});
+
+test('every moving keyframe is defined before the reduced-motion block, so its fade wins', () => {
+  const css = readCss();
+  const block = css.indexOf('@media (prefers-reduced-motion: reduce)');
+  assert.ok(block > 0);
+  for (const match of css.matchAll(/@keyframes ([\w-]+) \{([^@]*?)\}\s*\}/g)) {
+    if (match.index > block && /transform/.test(match[2])) assert.fail(`@keyframes ${match[1]} moves and comes after the reduced-motion block`);
+  }
 });

@@ -119,6 +119,18 @@ function panel(title, body, { action = '', className = '' } = {}) {
   return `<section class="panel ${className}"><div class="rail-head"><h2>${escHtml(title)}</h2>${action}</div>${body}</section>`;
 }
 
+// A section on the canvas (batch 4 pages): heading row with optional actions, then the body.
+function pageSection(title, body, { id = '', actions = '', className = '' } = {}) {
+  const label = id ? ` aria-labelledby="${id}"` : '';
+  const heading = `<h2${id ? ` id="${id}"` : ''} class="card-title">${escHtml(title)}</h2>`;
+  return `<section class="page-section${className ? ` ${className}` : ''}"${label}><div class="card-head">${heading}${actions}</div>${body}</section>`;
+}
+
+// A table on the surface; scrolls sideways inside its block when wide.
+function tableSurface(tableHtml) {
+  return `<div class="table-scroll table-surface">${tableHtml}</div>`;
+}
+
 function notice(title, body, actionHtml = '') {
   return `<section class="panel empty-panel"><h2>${escHtml(title)}</h2><p>${escHtml(body)}</p>${actionHtml}</section>`;
 }
@@ -690,17 +702,17 @@ async function renderPortfolio() {
 
   setHtml(body, `
     <div class="kpi-strip kpi-strip-5" aria-label="Key figures">${stats}</div>
-    ${panel('Net worth trend', '<div id="trend-chart"></div>', { action: trendControls() })}
+    ${pageSection('Net worth trend', '<div id="trend-chart"></div>', { actions: trendControls() })}
     <div class="page-columns">
-      ${panel('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }, { page: true }))}
+      ${pageSection('Allocation by asset type', chartHtml({ type: 'donut', title: 'Allocation by asset type', unit: '₹', data: allocation }, { page: true }))}
       <div class="page-stack">
-        ${panel('Concentration', concentration)}
-        ${classes ? panel('Asset classes', `<table class="data-table compact"><thead><tr><th>Class</th><th>Value</th><th>Share</th></tr></thead><tbody>${classes}</tbody></table>`) : ''}
-        ${caps ? panel('Direct stocks by market cap', `<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`) : ''}
+        ${pageSection('Concentration', concentration)}
+        ${classes ? pageSection('Asset classes', tableSurface(`<table class="data-table compact"><thead><tr><th>Class</th><th>Value</th><th>Share</th></tr></thead><tbody>${classes}</tbody></table>`)) : ''}
+        ${caps ? pageSection('Direct stocks by market cap', tableSurface(`<table class="data-table compact"><thead><tr><th>Market cap</th><th>Value</th><th>Share</th></tr></thead><tbody>${caps}</tbody></table>`)) : ''}
       </div>
     </div>
-    ${panel('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { action: '<a class="panel-link" href="#/holdings">All holdings</a>' })}
-    ${notes.length ? panel('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
+    ${pageSection('Top holdings', holdingsTable(f.top_holdings || [], { compact: true }), { actions: '<a class="panel-link" href="#/holdings">All holdings</a>' })}
+    ${notes.length ? pageSection('About these numbers', `<ul class="note-list">${notes.map((note) => `<li>${escHtml(note)}</li>`).join('')}</ul>`) : ''}
     ${promptChips([
       ['Explain my allocation', 'Explain my current asset allocation and what stands out.'],
       ['Concentration risk', 'Is my portfolio too concentrated? Look at my largest holdings and sectors.'],
@@ -757,7 +769,7 @@ function holdingsTable(holdings, { compact = false } = {}) {
       <td><button class="table-action" type="button" data-agent="portfolio" data-prompt="${escHtml(ask)}">Ask</button></td>`}
     </tr>`;
   }).join('');
-  return `<div class="table-scroll"><table class="data-table"><thead><tr>
+  return `<div class="table-scroll table-surface"><table class="data-table"><thead><tr>
       <th>Holding</th><th>Value</th>${compact ? '' : '<th>Invested</th>'}<th>P&amp;L</th><th>Share</th>${compact ? '' : '<th>1 day</th><th><span class="sr-only">Ask AI</span></th>'}
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -835,7 +847,7 @@ function holdingsFilters(rows) {
       </div>
       <div class="holdings-find">
         <label class="holdings-search">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=3#ph-magnifying-glass"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-magnifying-glass"></use></svg>
           <span class="sr-only">Search holdings by name, code or broker</span>
           <input id="holding-search" type="search" placeholder="Search holdings" value="${escHtml(holdingsView.query)}" autocomplete="off" />
         </label>
@@ -1105,7 +1117,7 @@ function benchmarkPanel(data) {
   const own = returnFigure(p);
   const theirs = benchmarkFigure(b);
   const difference = b.status === 'ok' ? benchmarkDifference(b.differenceInr, b.label) : '';
-  return reportCard('Compared with a benchmark', `
+  return pageSection('Compared with a benchmark', `
     <div class="filter-chips benchmark-chips" role="group" aria-label="Benchmark">${chips}</div>
     <div class="kpi-strip kpi-strip-3">
       ${kpiCard('Your mutual funds', own.short, own.label || own.note)}
@@ -1133,8 +1145,8 @@ function returnsSchemeRow(item) {
 }
 
 function returnsTabs(active) {
-  return `<div class="seg seg-small" role="tablist" aria-label="Returns and tax">${[['returns', 'Returns'], ['tax', 'Tax']].map(([id, label]) =>
-    `<button type="button" role="tab" data-returns-tab="${id}" aria-selected="${id === active}" aria-pressed="${id === active}">${label}</button>`).join('')}</div>`;
+  return `<div class="returns-tabs" role="tablist" aria-label="Returns and tax">${[['returns', 'Returns'], ['tax', 'Tax']].map(([id, label]) =>
+    `<button type="button" class="returns-tab" role="tab" data-returns-tab="${id}" aria-selected="${id === active}" aria-pressed="${id === active}">${label}</button>`).join('')}</div>`;
 }
 
 async function renderReturns() {
@@ -1177,10 +1189,10 @@ async function renderReturns() {
       ${kpiCard('Realised gain', money(p.realisedGain), 'On units already redeemed', toneOf(p.realisedGain))}
     </div>
     ${data.benchmark ? benchmarkPanel(data) : ''}
-    ${excluded ? reportCard('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul class="note-list">${excluded}</ul>`) : ''}
-    ${reportCard('By fund', `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
+    ${excluded ? pageSection('Left out of the totals', `<p class="page-muted">${escHtml(coverageText)}.</p><ul class="note-list">${excluded}</ul>`) : ''}
+    ${pageSection('By fund', tableSurface(`<table class="data-table card-table"><thead><tr>
       <th>Fund</th><th>Return</th><th>vs benchmark</th><th>Current value</th><th>Invested</th><th>Unrealised</th><th>Realised</th>
-    </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table></div>`)}
+    </tr></thead><tbody>${data.schemes.map(returnsSchemeRow).join('')}</tbody></table>`))}
     <p class="page-muted">Current values use the latest NAV published by AMFI, or the statement's own NAV when that is newer. Funds held before the statement starts, or whose units do not add up, are left out of the totals. ${escHtml(RETURNS_NOTE)}</p>`);
 }
 
@@ -1199,15 +1211,15 @@ function navSourceNote(item) {
 function exemptionPanel(exemption) {
   const share = exemptionShare(exemption);
   if (share.usedPct === null) return '';
-  return reportCard('Equity long-term exemption', `
+  return pageSection('Equity long-term exemption', `
     <p class="stat-sub">${escHtml(share.text)}</p>
-    <span class="progress-bar" role="meter" aria-label="Exemption used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${share.usedPct}"><span style="width:${share.usedPct}%"></span></span>
+    <span class="progress-bar exemption-meter" role="meter" aria-label="Exemption used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${share.usedPct}"><span style="width:${share.usedPct}%"></span></span>
     <p class="page-muted">${escHtml(exemption.note || '')}</p>`);
 }
 
 function taxRowsTable(rows) {
   if (!rows.length) return '<p class="page-muted">No mutual fund units were redeemed in this financial year.</p>';
-  return `<div class="table-scroll"><table class="data-table card-table"><thead><tr>
+  return tableSurface(`<table class="data-table card-table"><thead><tr>
     <th>Class</th><th>Term</th><th>Rule</th><th>Section</th><th>Rate</th><th>Gains</th><th>Losses</th><th>Net</th>
   </tr></thead><tbody>${rows.map((row) => `<tr>
     <td>${escHtml(taxClassLabel(row.taxClass))}</td>
@@ -1218,7 +1230,7 @@ function taxRowsTable(rows) {
     <td data-label="Gains">${money(row.gains)}</td>
     <td data-label="Losses">${money(row.losses)}</td>
     <td data-label="Net">${money(row.net)}</td>
-  </tr>`).join('')}</tbody></table></div>`;
+  </tr>`).join('')}</tbody></table>`);
 }
 
 function setOffBlock(position) {
@@ -1228,7 +1240,7 @@ function setOffBlock(position) {
   if (carry) {
     lines.push(`<li>Losses left: ${money(carry.short)} short-term, ${money(carry.long)} long-term. ${escHtml(carry.note)}</li>`);
   }
-  return lines.length ? reportCard('Losses', `<ul class="note-list">${lines.join('')}</ul>`) : '';
+  return lines.length ? pageSection('Losses', `<ul class="note-list">${lines.join('')}</ul>`) : '';
 }
 
 function leftOutBlock(position) {
@@ -1238,13 +1250,14 @@ function leftOutBlock(position) {
   ];
   if (!items.length) return '';
   const gain = position.unclassified ? `<p class="page-muted">Gains with no tax estimate: ${money(position.unclassified.gain)}.</p>` : '';
-  return reportCard('Not in the estimate', `${gain}<ul class="note-list">${items.join('')}</ul>`);
+  return pageSection('Not in the estimate', `${gain}<ul class="note-list">${items.join('')}</ul>`);
 }
 
+// One group of planning options: a subheading, then each fund as a card on the surface.
 function planningCard(title, items, row, empty) {
   const body = items.length ? `<ul class="note-list planning-list">${items.map((item) => `<li>${row(item)}</li>`).join('')}</ul>`
     : `<p class="page-muted">${escHtml(empty)}</p>`;
-  return reportCard(title, body);
+  return `<div class="planning-group"><h3 class="planning-title">${escHtml(title)}</h3>${body}</div>`;
 }
 
 function planningBlock(planning) {
@@ -1271,7 +1284,7 @@ function planningBlock(planning) {
   if (planning.left.length) {
     cards.push(planningCard('Funds without planning figures', planning.left, (item) => `${fund(item)}: ${escHtml(item.reason)}`, ''));
   }
-  return `<h2 class="card-title">Before 31 March</h2>${cards.join('')}${reportCard('About these options', taxNotes(planning.notes))}`;
+  return `${pageSection('Before 31 March', cards.join(''))}${pageSection('About these options', taxNotes(planning.notes))}`;
 }
 
 async function renderTax() {
@@ -1301,8 +1314,8 @@ async function renderTax() {
   const estimate = taxEstimate(position.tax);
   const totals = position.totals || {};
   const slabLine = position.tax.slabPct === null || position.tax.slabPct === undefined
-    ? `<p class="page-muted">No tax slab is set, so slab-taxed gains are shown without tax. <button type="button" class="gate-secondary inline-button" data-open-profile>Add your tax slab</button></p>`
-    : `<p class="page-muted">Slab-taxed gains use your ${position.tax.slabPct}% slab from your profile.</p>`;
+    ? `<p class="page-muted slab-line">No tax slab is set, so slab-taxed gains are shown without tax. <button type="button" class="gate-secondary inline-button" data-open-profile>Add your tax slab</button></p>`
+    : `<p class="page-muted slab-line">Slab-taxed gains use your ${position.tax.slabPct}% slab from your profile.</p>`;
   setHtml(body, `
     ${returnsTabs('tax')}
     <div class="filter-chips" role="group" aria-label="Financial year">${chips}</div>
@@ -1314,11 +1327,11 @@ async function renderTax() {
     </div>
     ${slabLine}
     ${exemptionPanel(position.exemption)}
-    ${reportCard('Gains by rule', taxRowsTable(position.rows))}
+    ${pageSection('Gains by rule', taxRowsTable(position.rows))}
     ${setOffBlock(position)}
     ${leftOutBlock(position)}
     ${planningBlock(data.planning)}
-    ${reportCard('About these figures', taxNotes(position.notes))}`);
+    ${pageSection('About these figures', taxNotes(position.notes))}`);
 }
 
 // A new tax slab changes the estimate.
@@ -1428,8 +1441,8 @@ const CALCULATORS = {
           ['Old regime', moneyShort(result.old.total), `${money(result.old.total)} · ${effective('old')} of income`],
           [result.saving ? `${better} saves` : 'Both regimes', result.saving ? moneyShort(result.saving) : 'Same tax', result.saving ? `${money(result.saving)} a year` : ''],
         ],
-        table: `<div class="table-scroll"><table class="data-table"><thead><tr><th></th><th>New regime</th><th>Old regime</th></tr></thead><tbody>${rows}
-          <tr class="total-row"><td>Total tax</td><td>${money(result.new.total)}</td><td>${money(result.old.total)}</td></tr></tbody></table></div>`,
+        table: `<table class="data-table"><thead><tr><th></th><th>New regime</th><th>Old regime</th></tr></thead><tbody>${rows}
+          <tr class="total-row"><td>Total tax</td><td>${money(result.new.total)}</td><td>${money(result.old.total)}</td></tr></tbody></table>`,
         note: `For resident individuals below 60 in ${TAX_RULES.label}. All income is taxed at slab rates here: capital gains, senior-citizen limits and employer NPS contributions are not included. Check your final figure with a tax professional or the income tax portal.`,
         prompt: `My salary is ${money(values.salary)} a year with ${money(values.other)} of other income and ${money(values.deductions)} of old-regime deductions. A calculator estimates ${money(result.new.total)} tax under the new regime and ${money(result.old.total)} under the old regime for ${TAX_RULES.label}. What else should I consider when choosing a regime, and which deductions could I be missing?`,
       };
@@ -1488,7 +1501,7 @@ function renderPlanning() {
   // Inputs on the left, results on the right; they stack when the page is narrow (container query on #calc-body).
   setHtml(document.getElementById('calc-body'), `
     <div class="calc-layout">
-      <section class="panel home-card calc-inputs-card" aria-labelledby="calc-inputs-title">
+      <section class="surface-block calc-inputs-card" aria-labelledby="calc-inputs-title">
         <div class="card-head"><h2 id="calc-inputs-title" class="card-title">${escHtml(calc.title)}</h2></div>
         <div class="calc-inputs">${inputs}</div>
       </section>
@@ -1513,12 +1526,11 @@ function renderCalcOutput() {
     return;
   }
   const result = calc.compute(values);
-  const card = (title, body) => `<section class="panel home-card"><div class="card-head"><h3 class="card-title">${escHtml(title)}</h3></div>${body}</section>`;
   setHtml(output, `
     <div class="kpi-strip kpi-strip-3">${result.results.map(([label, value, note]) => kpiCard(label, value, note)).join('')}</div>
-    ${result.series ? card('Year by year', chartHtml({ type: 'line', title: calc.title, unit: '₹', series: result.series },
-    { history: true, xTitle: 'Year', yTitle: 'Amount (₹)', height: 300 })) : ''}
-    ${result.table ? card('How it adds up', result.table) : ''}
+    ${result.series ? pageSection('Year by year', chartHtml({ type: 'line', title: calc.title, unit: '₹', series: result.series },
+    { history: true, xTitle: 'Year', yTitle: 'Amount (₹)', height: 300 }), { id: 'calc-year-title' }) : ''}
+    ${result.table ? pageSection('How it adds up', tableSurface(result.table), { id: 'calc-table-title' }) : ''}
     ${result.note ? `<p class="page-muted calc-note">${escHtml(result.note)}</p>` : ''}
     <div class="calc-actions">
       <button class="gate-secondary" type="button" data-agent="finance" data-prompt="${escHtml(result.prompt)}">Ask Finance Agent about this</button>
@@ -1589,7 +1601,6 @@ async function renderMarkets() {
   const unreported = holdings.length - moved.length - flat;
   const caps = (data.figures.by_market_cap_direct_stocks || []).map((row) => ({ label: row.market_cap || 'Other', value: row.current_value_inr }));
   document.getElementById('markets-asof').textContent = `Day moves from your snapshot of ${formatCaptured(data.capturedAt)}. Live prices come from INDmoney through Portfolio Analyzer.`;
-  const card = (title, bodyHtml, className = '') => `<section class="panel home-card ${className}"><div class="card-head"><h2 class="card-title">${escHtml(title)}</h2></div>${bodyHtml}</section>`;
   setHtml(body, `
     <div class="kpi-strip">
       ${kpiCard('Day change', moved.length ? signedMoney(dayChange) : '—', moved.length ? `${percent(previous ? dayChange / previous * 100 : NaN, { signed: true })} of the day before` : 'No day change reported', toneOf(dayChange))}
@@ -1598,10 +1609,10 @@ async function renderMarkets() {
       ${kpiCard('Unchanged', String(flat), [unreported ? `${unreported} not reported` : '', `${holdings.length} holdings`].filter(Boolean).join(' · '))}
     </div>
     <div class="page-columns markets-movers">
-      ${card('Top gainers', moverTable(up, 'No holding rose in this snapshot.'))}
-      ${card('Top losers', moverTable(down, 'No holding fell in this snapshot.'))}
+      ${pageSection('Top gainers', moverTable(up, 'No holding rose in this snapshot.'))}
+      ${pageSection('Top losers', moverTable(down, 'No holding fell in this snapshot.'))}
     </div>
-    ${caps.length ? card('Your stocks by market cap', chartHtml({ type: 'donut', title: 'Direct stocks by market cap', unit: '₹', data: caps }, { page: true })) : ''}`);
+    ${caps.length ? pageSection('Your stocks by market cap', chartHtml({ type: 'donut', title: 'Direct stocks by market cap', unit: '₹', data: caps }, { page: true })) : ''}`);
 }
 
 // Up to five movers; on phones each row becomes a card (CSS, .mover-table).
@@ -1611,7 +1622,7 @@ function moverTable(items, emptyText) {
     const base = (item.current_value_inr || 0) - item.one_day_change_inr;
     return `<tr><td class="m-name" data-label="Holding">${escHtml(item.name || item.code)}</td><td class="m-value" data-label="Value">${money(item.current_value_inr)}</td><td class="m-change ${toneOf(item.one_day_change_inr)}" data-label="Day change">${signedMoney(item.one_day_change_inr)}<small>${percent(base ? item.one_day_change_inr / base * 100 : NaN, { signed: true })}</small></td></tr>`;
   }).join('');
-  return `<div class="table-scroll"><table class="data-table card-table mover-table"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="table-scroll table-surface"><table class="data-table card-table mover-table"><thead><tr><th>Holding</th><th>Value</th><th>Day change</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 document.getElementById('stock-chart-form').addEventListener('submit', (event) => {
@@ -1928,7 +1939,7 @@ function goalCard(goal) {
     ${warnings.length ? `<ul class="goal-checks">${warnings.map((warning) => `<li>${escHtml(warning)}</li>`).join('')}</ul>` : ''}
     ${gapPanel(plan)}
     <div class="goal-foot">
-      ${panels.map(([key, text]) => `<button class="goal-toggle" type="button" aria-expanded="false" aria-controls="${id(key)}" data-goal-panel>${escHtml(text)}</button>`).join('')}
+      ${panels.map(([key, text]) => `<button class="goal-toggle" type="button" aria-expanded="false" aria-controls="${id(key)}" data-goal-panel>${escHtml(text)}<svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-down"></use></svg></button>`).join('')}
       <span class="goal-foot-gap" aria-hidden="true"></span>
       <button class="goal-action" type="button" data-edit-goal="${escHtml(goal.id)}">Edit</button>
       <button class="goal-action is-danger" type="button" data-delete-goal="${escHtml(goal.id)}">Delete</button>
@@ -1982,10 +1993,10 @@ async function renderGoalInvestments(goals, isCurrent) {
   const missing = data.missing.length
     ? `<p class="goal-meta is-warn">Assigned but not in the latest snapshot (value unknown, not counted): ${data.missing.map((item) => escHtml(item.name)).join(', ')}.</p>` : '';
   const unassigned = data.holdings.filter((item) => item.unassignedPct > 0);
-  host.innerHTML = panel('Your investments and goals', `
+  host.innerHTML = pageSection('Your investments and goals', `
     <p class="goal-meta">Assign what you already hold to a goal. Only INR holdings count toward an INR goal, and a holding is never counted twice. This is bookkeeping: nothing is bought or sold. Snapshot ${escHtml(formatDate(data.asOfDate))}${data.stale ? ' (old)' : ''}.</p>
-    <div class="table-scroll"><table class="data-table alloc-table"><thead><tr><th>Holding</th><th>Value</th><th>Assigned to</th><th>Unassigned</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="goal-meta">${unassigned.length} of ${data.holdings.length} holdings have some of their value unassigned.</p>${missing}`, { className: 'goal-alloc' });
+    ${tableSurface(`<table class="data-table alloc-table"><thead><tr><th>Holding</th><th>Value</th><th>Assigned to</th><th>Unassigned</th><th></th></tr></thead><tbody>${rows}</tbody></table>`)}
+    <p class="goal-meta">${unassigned.length} of ${data.holdings.length} holdings have some of their value unassigned.</p>${missing}`, { id: 'goal-investments-title', className: 'goal-alloc' });
 }
 
 /* Goal editor */
@@ -2309,7 +2320,7 @@ function savedContextHtml(data, goals) {
   const decisions = (confirmed.decisions || []).slice().reverse();
   const goalOptions = goals.map((goal) => `<option value="${escHtml(goal.id)}">${escHtml(goal.name)}</option>`).join('');
   const hasAnything = preferences || decisions.length || goals.length;
-  return panel('What the assistant can use', `
+  return pageSection('What the assistant can use', `
     <p class="page-muted">Only what you entered is saved, and the assistant sees an item only when your question is about it. CA Mode never saves details the assistant infers from your chats, and goal projections are recalculated each time, never stored.</p>
     <div class="context-grid">
       <section aria-labelledby="context-profile-title">
@@ -2334,7 +2345,7 @@ function savedContextHtml(data, goals) {
       </section>
     </div>
     ${hasAnything ? '<button class="gate-secondary danger-text" type="button" data-clear-context>Remove all goals, decisions and profile details</button>' : ''}`,
-  { className: 'saved-context' });
+  { id: 'saved-context-title', className: 'saved-context' });
 }
 
 async function renderSavedContext(goals) {
@@ -2453,22 +2464,18 @@ async function renderReports() {
       ${kpiCard('12-month high', moneyShort(high.networthInr), formatDate(high.date))}
       ${kpiCard('12-month low', moneyShort(low.networthInr), formatDate(low.date))}
     </div>
-    ${reportCard('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
-    ${reportCard('Change by period', `<div class="table-scroll"><table class="data-table card-table report-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table></div>`)}
-    ${reportCard('Month-end net worth', `<div class="table-scroll"><table class="data-table card-table report-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table></div>`)}
+    ${pageSection('Net worth over time', reportPoints.length > 1 ? historyChartHtml(reportPoints, 'Net worth, last 12 months') : '<p class="page-muted">The chart appears once there are two days of snapshots.</p>')}
+    ${pageSection('Change by period', tableSurface(`<table class="data-table card-table report-table"><thead><tr><th>Period</th><th>From</th><th>To</th><th>Change</th><th>%</th></tr></thead><tbody>${periods}</tbody></table>`))}
+    ${pageSection('Month-end net worth', tableSurface(`<table class="data-table card-table report-table"><thead><tr><th>Month</th><th>Net worth</th><th>Change</th><th>%</th></tr></thead><tbody>${monthRows}</tbody></table>`))}
     ${downloadsPanel(true)}`);
 }
 
-function reportCard(title, body, className = '') {
-  return `<section class="panel home-card ${className}"><div class="card-head"><h2 class="card-title">${escHtml(title)}</h2></div>${body}</section>`;
-}
-
 function downloadsPanel(hasSnapshots) {
-  return reportCard('Downloads', `<div class="download-actions">
+  return pageSection('Downloads', `<div class="download-actions">
       ${hasSnapshots ? '<button class="gate-secondary" type="button" data-download="history">Net worth history (CSV)</button><button class="gate-secondary" type="button" data-download="holdings">Holdings (CSV)</button>' : ''}
       <button class="gate-secondary" type="button" data-download="export">Export all my data</button>
     </div>
-    <p class="page-muted">CSV files open in Excel or Google Sheets. The full export (JSON) includes chats, snapshots, goals and CAS holdings and asks for your PIN.</p>`, 'downloads-card');
+    <p class="page-muted">CSV files open in Excel or Google Sheets. The full export (JSON) includes chats, snapshots, goals and CAS holdings and asks for your PIN.</p>`, { className: 'downloads-card' });
 }
 
 document.addEventListener('click', async (event) => {
@@ -2612,7 +2619,7 @@ function drawActivityList(refreshError = null) {
     return;
   }
   const chatIds = new Set(chats.map((chat) => chat.id));
-  const section = (id, title, count, body) => `<section class="activity-section" aria-labelledby="${id}">
+  const section = (id, title, count, body) => `<section class="page-section activity-section" aria-labelledby="${id}">
     <div class="card-head"><h2 id="${id}" class="card-title">${title}${count === null ? '' : ` <span class="seg-count">${count}</span>`}</h2></div>${body}</section>`;
   const investigationsHtml = items.length
     ? section('activity-investigations-title', 'Portfolio investigations', items.length, renderActivityList(items, { filter: activityState.filter, chatIds }))
@@ -2627,7 +2634,7 @@ function drawActivityList(refreshError = null) {
 
 async function loadActivityDetail(id) {
   const ticket = activityState.detailRequests.next();
-  const back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>';
+  const back = '<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>';
   const shown = activityState.record?.id === id ? activityState.record : null;
   if (!shown) setHtml(activityBody, back + loadingBlock());
   let record;
@@ -2646,7 +2653,7 @@ async function loadActivityDetail(id) {
   if (isActive(record)) scheduleActivityPoll(() => loadActivityDetail(id));
 }
 
-function drawActivityDetail(record, back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>') {
+function drawActivityDetail(record, back = '<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>') {
   const chatId = record.request?.chatId;
   const actions = [
     chatId && chats.some((chat) => chat.id === chatId)
@@ -2662,7 +2669,7 @@ function drawActivityDetail(record, back = '<a class="panel-link activity-back" 
 
 async function loadRunDetail(id) {
   const ticket = activityState.detailRequests.next();
-  const back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>';
+  const back = '<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>';
   setHtml(activityBody, back + loadingBlock());
   let record;
   try {
@@ -2696,7 +2703,7 @@ async function startInvestigation(button, baselineDate = null) {
       navigate('activity', record.id);
     } else {
       // Private mode, or the result could not be saved: show it once, here.
-      setHtml(activityBody, `<a class="panel-link activity-back" href="#/activity">← All activity</a>${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
+      setHtml(activityBody, `<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
     }
   } catch (error) {
     toast(error.message);
@@ -2764,10 +2771,10 @@ function renderAllChats() {
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(chat);
   }
-  // One card per period, rows like Home's "Continue a chat".
+  // One labelled list per period on the canvas, rows like Home's "Continue a chat".
   for (const [label, items] of groups) {
     const card = document.createElement('section');
-    card.className = 'panel home-card chat-group-card';
+    card.className = 'page-section chat-group-card';
     const heading = document.createElement('h2');
     heading.className = 'card-title chat-group';
     heading.textContent = label;

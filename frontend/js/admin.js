@@ -1,8 +1,41 @@
-/* Admin page (/admin): profiles, plans and usage from /api/admin/*. Never shows PIN-locked history. */
+/* Admin page (/admin): profiles, plans and usage from /api/admin/*. Never shows PIN-locked history.
+   Loaded in Node by tests/js/admin.test.js: the page only starts when there is a document. */
 (() => {
   'use strict';
 
-  const root = document.getElementById('admin');
+  const root = typeof document !== 'undefined' ? document.getElementById('admin') : null;
+
+  // In-app confirmations instead of window.confirm / window.prompt. {name} is filled by adminConfirmCopy().
+  const ADMIN_CONFIRMS = {
+    signOut: {
+      title: 'Sign {name} out everywhere?',
+      body: 'Every browser signed in to this profile is signed out. Their data stays.',
+      confirmLabel: 'Sign out everywhere',
+      danger: false,
+    },
+    deleteProfile: {
+      title: 'Delete {name}?',
+      body: 'This deletes the profile and everything it owns: chats, goals, snapshots and the INDmoney connection. It cannot be undone.',
+      confirmLabel: 'Delete profile',
+      danger: true,
+      field: 'Type the profile name to confirm',
+    },
+  };
+
+  function adminConfirmCopy(key, values = {}) {
+    const entry = ADMIN_CONFIRMS[key];
+    if (!entry) throw new Error(`Unknown confirmation: ${key}`);
+    const fill = (text) => text.replace(/\{(\w+)\}/g, (match, name) => (name in values ? String(values[name]) : match));
+    const copy = { title: fill(entry.title), body: fill(entry.body), confirmLabel: entry.confirmLabel, danger: entry.danger };
+    if (entry.field) copy.field = entry.field;
+    return copy;
+  }
+
+  // Only the confirm button confirms; Cancel, Esc ('') and a backdrop click do not. The typed text is passed on as typed.
+  function confirmResult(action, typed) {
+    if (action !== 'confirm') return null;
+    return typed === undefined ? { confirmed: true } : { confirmed: true, typed };
+  }
   const SIGN_IN_ERRORS = {
     not_admin: 'That Google account is not on this copy’s admin list (ADMIN_EMAILS).',
     cancelled: 'Google sign-in was cancelled.',
@@ -24,6 +57,36 @@
       node.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
     return node;
+  }
+
+  // One modal <dialog> per question, removed when it closes; focus goes back to the button that opened it.
+  function askAdmin(key, values = {}) {
+    const copy = adminConfirmCopy(key, values);
+    const opener = document.activeElement;
+    const titleId = `admin-dialog-title-${Date.now()}`;
+    const input = copy.field ? el('input', { type: 'text', autocomplete: 'off', spellcheck: 'false' }) : null;
+    const cancel = el('button', { type: 'button', class: 'admin-secondary', onclick: () => dialog.close('cancel') }, 'Cancel');
+    const accept = el('button', { type: 'submit', value: 'confirm', class: copy.danger ? 'admin-danger' : 'admin-primary' }, copy.confirmLabel);
+    const dialog = el('dialog', { class: 'admin-dialog', 'aria-labelledby': titleId },
+      el('form', { method: 'dialog' },
+        el('h2', { id: titleId }, copy.title),
+        el('p', {}, copy.body),
+        input ? el('label', { class: 'admin-field' }, el('span', {}, copy.field), input) : null,
+        el('div', { class: 'admin-dialog-actions' }, cancel, accept),
+      ));
+    return new Promise((resolve) => {
+      dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close('backdrop'); });
+      dialog.addEventListener('close', () => {
+        const result = confirmResult(dialog.returnValue, input ? input.value : undefined);
+        dialog.remove();
+        if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
+        resolve(result);
+      }, { once: true });
+      document.body.append(dialog);
+      dialog.returnValue = '';
+      dialog.showModal();
+      (input || (copy.danger ? cancel : accept)).focus();
+    });
   }
 
   const dateFormat = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
@@ -121,21 +184,19 @@
       el('button', {
         type: 'button',
         title: 'End every browser session signed in to this profile',
-        onclick: () => {
-          if (!window.confirm(`Sign ${profile.name} out on every device?`)) return;
+        onclick: async () => {
+          if (!await askAdmin('signOut', { name: profile.name })) return;
           act(`Signed ${profile.name} out everywhere.`, () => api(`/api/admin/profiles/${id}/sign-out`, { method: 'POST' }));
         },
       }, 'Sign out'),
       el('button', {
         type: 'button',
         class: 'admin-danger',
-        onclick: () => {
-          const typed = window.prompt(
-            `Delete ${profile.name} and everything it owns (chats, goals, snapshots, INDmoney connection)? ` +
-            'This cannot be undone. Type the profile name to confirm.');
-          if (typed === null) return;
+        onclick: async () => {
+          const result = await askAdmin('deleteProfile', { name: profile.name });
+          if (!result) return;
           act(`Deleted ${profile.name}.`, () => api(`/api/admin/profiles/${id}`, {
-            method: 'DELETE', body: JSON.stringify({ confirmName: typed }),
+            method: 'DELETE', body: JSON.stringify({ confirmName: result.typed }),
           }));
         },
       }, 'Delete'),
@@ -302,5 +363,6 @@
     }
   }
 
-  start();
+  if (typeof module === 'object' && module.exports) module.exports = { ADMIN_CONFIRMS, adminConfirmCopy, confirmResult, askAdmin };
+  if (typeof document !== 'undefined') start();
 })();
