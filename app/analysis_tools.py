@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import json
 import operator
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -35,6 +36,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, Division
 from typing import Any, Final
 
 from . import options_math, price_action
+from .portfolio_math import name_matches
 
 COMPACT_OVER_CHARS: Final = 2500
 MAX_ROWS: Final = 40
@@ -153,6 +155,8 @@ def resolve_path(value: Any, path: str) -> tuple[Any, str, dict[str, Any]]:
     """
     if not path:
         return value, path, {}
+    # The outline's own words copied into a path ("figures.all_holdings.listOf", "x.firstItem.name").
+    path = re.sub(r"\.firstItem(?=\.|$)", ".0", re.sub(r"\.listOf$", "", path))
     target = _get(value, path)
     if target is not None:
         return target, path, {}
@@ -191,17 +195,41 @@ def _number(value: Any) -> Decimal | None:
     return options_math.dec(value) if not isinstance(value, (dict, list)) else None
 
 
-_SYMBOLS: Final = {">": "gt", ">=": "ge", "<": "lt", "<=": "le", "==": "eq", "=": "eq", "!=": "ne"}
+_OPS: Final = ("gt", "ge", "lt", "le", "eq", "ne", "between", "contains", "exists")
+# Symbols and the other names models use for an op (ca-mode wrote {"operator": "contains"} on 2026-11-19).
+_OP_ALIASES: Final = {
+    ">": "gt", ">=": "ge", "<": "lt", "<=": "le", "==": "eq", "=": "eq", "!=": "ne",
+    "greater_than": "gt", "gte": "ge", "greater_or_equal": "ge", "less_than": "lt", "lte": "le", "less_or_equal": "le",
+    "equals": "eq", "equal": "eq", "is": "eq", "not_equals": "ne", "not_equal": "ne", "neq": "ne",
+    "includes": "contains", "include": "contains", "like": "contains", "has": "contains",
+}
+_KEY_ALIASES: Final = {"field": ("field", "column", "key", "path"), "op": ("op", "operator", "operation", "comparison", "cmp"),
+                       "value": ("value", "values", "val")}
+_CONDITION_HELP: Final = ("write {\"field\", \"op\", \"value\"} or text such as \"name contains Motilal\" or "
+                          "\"strike_price >= 22000\"; op is one of " + ", ".join(_OPS))
+
+
+def _op(raw: Any, condition: Any) -> str:
+    text = str(raw or "").strip().lower().replace(" ", "_")
+    op = _OP_ALIASES.get(text, text)
+    if op not in _OPS:
+        raise ValueError(f"cannot read the op {raw!r} in {condition!r}; {_CONDITION_HELP}")
+    return op
 
 
 def _condition(raw: Any) -> dict[str, Any]:
-    """A condition as {field, op, value}: given as such, or as text such as "put_data.delta between -0.2 -0.1"."""
+    """A condition as {field, op, value} (or the key and op names models also use), or as text such as
+    "put_data.delta between -0.2 -0.1". One it cannot read is refused, never treated as matching nothing."""
     if isinstance(raw, dict):
-        return raw
+        given = {name: next((raw[key] for key in keys if key in raw), None) for name, keys in _KEY_ALIASES.items()}
+        if given["field"] is None or given["op"] is None:
+            raise ValueError(f"cannot read the condition {raw!r}; {_CONDITION_HELP}")
+        op = _op(given["op"], raw)
+        return {"field": str(given["field"]), "op": op, **({"value": given["value"]} if given["value"] is not None else {})}
     parts = str(raw).split()
     if len(parts) < 2:
-        raise ValueError(f"cannot read the condition {raw!r}; write e.g. \"strike_price >= 22000\"")
-    field, op, rest = parts[0], _SYMBOLS.get(parts[1], parts[1]), parts[2:]
+        raise ValueError(f"cannot read the condition {raw!r}; {_CONDITION_HELP}")
+    field, op, rest = parts[0], _op(parts[1], raw), parts[2:]
     if op == "between":
         if len(rest) != 2:
             raise ValueError(f"between needs two values in {raw!r}")
@@ -218,7 +246,7 @@ def _matches(row: Any, condition: dict[str, Any]) -> bool:
         return False
     target = condition.get("value")
     if op == "contains":
-        return str(target).lower() in str(value).lower()
+        return str(target).lower() in str(value).lower() or name_matches(str(target), str(value))
     if op in ("eq", "ne"):
         a, b = _number(value), _number(target)
         same = a == b if a is not None and b is not None else str(value).lower() == str(target).lower()
@@ -581,7 +609,8 @@ def tools(store: ResultStore, now: Callable[[], datetime]) -> list[ToolSpec]:
 
     condition = {"type": "string", "description": (
         "\"<field> <op> <value>\": a dotted field inside a row and one of >, >=, <, <=, ==, !=, between (two values), "
-        "contains, exists; e.g. \"put_data.delta between -0.2 -0.1\" or \"strike_price >= 22000\"")}
+        "contains (matches a name by its words, e.g. \"name contains Motilal Midcap\"), exists; "
+        "e.g. \"put_data.delta between -0.2 -0.1\" or \"strike_price >= 22000\"")}
     return [
         ToolSpec("inspect_result",
                  "Read rows of a large earlier tool result by its resultId: give the path of a list in its outline, optional "

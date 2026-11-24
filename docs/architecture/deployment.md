@@ -35,7 +35,7 @@ Moved out of the always-loaded CLAUDE.md. Read this when changing `deploy/`, the
 - `FUND_STALE_DAYS` (5): days after a NAV date before fund returns are marked old (also `nav_stale` on `#/returns`)
 - `MF_DATA_ENABLED` (true; `conftest.py` sets false), `AMFI_NAV_URL` (`https://www.amfiindia.com/spages/NAVAll.txt`), `MFAPI_URL` (`https://api.mfapi.in`): the daily AMFI NAV download and the benchmark history
 - `AGENT_GRAPH_ENABLED` (true), `AGENT_STEP_TIMEOUT_SECONDS` (60), `AGENT_DEADLINE_SECONDS` (180, below `CHAT_DEADLINE_SECONDS`; a model call still running then is cut off and the model answers without tools): the general agent
-- `MODEL_CONCURRENCY` (else `OLLAMA_NUM_PARALLEL`, else 1), `MODEL_QUEUE_SECONDS` (20), `CHAT_DEADLINE_SECONDS` (240; below the proxy timeout, 90 behind Cloudflare), `OLLAMA_ROUTER_TIMEOUT_SECONDS` (30): `model_gate` and the classifier
+- `MODEL_CONCURRENCY` (else `OLLAMA_NUM_PARALLEL`, else 1), `MODEL_QUEUE_SECONDS` (20), `CHAT_DEADLINE_SECONDS` (240; streamed answers send a keepalive every 15 s, so a proxy's silent-request limit only affects non-streamed requests), `OLLAMA_ROUTER_TIMEOUT_SECONDS` (30): `model_gate` and the classifier
 - `PLAN_STEP_TIMEOUT_SECONDS` (60), `PLAN_DEADLINE_SECONDS` (240): planned answers
 - `INVESTIGATION_TOLERANCE_PCT` (0.5), `INVESTIGATION_TOLERANCE_INR` (1), `INVESTIGATION_STALE_HOURS` (36): investigation checks
 - `SNAPSHOT_TIME`, `SNAPSHOT_TIMEZONE`, `SNAPSHOT_RETENTION_DAYS`, `SNAPSHOT_SCHEDULER_ENABLED`: snapshot job (defaults `09:00`, `Asia/Kolkata`, `365`, `true`; falls back to a fixed +05:30 offset when tz data is missing)

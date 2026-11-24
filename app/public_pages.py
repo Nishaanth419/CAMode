@@ -90,14 +90,17 @@ def _page(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#f4f7f5" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0a1a15" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
   <meta name="description" content="{escape(description)}" />
 {robots}  <title>{escape(title)} · CA Mode</title>
   <link rel="icon" href="/favicon.ico" sizes="48x48" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/css/public.css?v=2" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/public.css?v=4" />
 {head}</head>
 <body>
   <main class="{page_class}">
@@ -195,16 +198,18 @@ def admin_page() -> str:
         body=body,
         is_indexable=False,
         is_wide=True,
-        head='  <link rel="stylesheet" href="/css/admin.css?v=1" />\n  <script src="/js/admin.js?v=3" defer></script>\n',
+        head='  <link rel="stylesheet" href="/css/admin.css?v=2" />\n  <script src="/js/admin.js?v=4" defer></script>\n',
     )
 
 
 def not_found_page() -> str:
-    body = """    <p class="public-code" aria-hidden="true">404</p>
-    <h1>Page not found</h1>
-    <p class="public-lead">This address is not part of CA Mode. It may have been mistyped, or the page has moved.</p>
-    <p><a class="public-button" href="/">Go to CA Mode</a> <a class="public-link" href="/pricing">Pricing</a>
-      <a class="public-link" href="/privacy">Privacy policy</a> <a class="public-link" href="/terms">Terms of use</a></p>"""
+    body = """    <div class="public-not-found">
+      <p class="public-code" aria-hidden="true">404</p>
+      <h1>Page not found</h1>
+      <p class="public-lead">This address is not part of CA Mode. It may have been mistyped, or the page has moved.</p>
+      <p class="public-links"><a class="public-button" href="/">Go to CA Mode</a> <a class="public-link" href="/pricing">Pricing</a>
+        <a class="public-link" href="/privacy">Privacy policy</a> <a class="public-link" href="/terms">Terms of use</a></p>
+    </div>"""
     return _page(
         title="Page not found",
         description="This address is not part of CA Mode.",

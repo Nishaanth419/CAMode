@@ -477,3 +477,11 @@ def test_redeemed_fund_that_beat_the_benchmark_is_not_comparable():
     for bench in (result["schemes"][0]["benchmark"], result["portfolio"]["benchmark"]):
         assert bench["status"] == "not_comparable" and "10 Mar 2025" in bench["reason"]
         assert bench["xirr"] is None and bench["value"] is None and bench["differenceInr"] is None
+
+
+def test_scheme_filter_matches_a_name_written_differently():
+    figures = {"available": True, "navDate": "2026-11-18", "statementPeriod": None, "benchmark": {"options": []},
+               "schemes": [{"name": "Motilal Oswal Midcap Fund - Direct Plan - Growth", "isin": "INF247L01445", "folioKey": "k"},
+                           {"name": "HDFC Index Fund Nifty 50 Plan - Direct", "isin": "INF179K01VK6", "folioKey": "k"}]}
+    body = json.loads(snapshots.mf_returns_payload(figures, "Motilal Oswal Midcap Direct Growth"))
+    assert body["scheme"]["isin"] == "INF247L01445" and body["otherMatches"] == 0

@@ -125,3 +125,63 @@ def test_conditions_can_be_written_as_text():
     assert result["matched"] > 0 and all(row["strike_price"] < 21700 for row in result["returned"])
     with pytest.raises(ValueError, match="cannot read"):
         at.inspect(store, {"result_id": rid, "path": "option_chain_data", "where": ["strike_price"]})
+
+
+def test_inspect_contains_finds_a_fund_by_its_words():
+    store = at.ResultStore()
+    rid = store.add("get_portfolio_snapshot", {}, json.dumps({"figures": {"holdings": [
+        {"name": "Motilal Oswal Midcap Fund - Direct Plan - Growth", "value": 1200},
+        {"name": "Parag Parikh Flexi Cap Fund Direct Growth", "value": 900}]}}))
+    out = at.inspect(store, {"result_id": rid, "path": "figures.holdings",
+                             "where": [{"field": "name", "op": "contains", "value": "Motilal Oswal Midcap Direct Growth"}]})
+    assert out["matched"] == 1 and out["returned"][0]["value"] == 1200
+
+
+def holdings_store():
+    store = at.ResultStore()
+    rid = store.add("get_portfolio_snapshot", {}, json.dumps({"figures": {"all_holdings": [
+        {"name": "Motilal Oswal Midcap Fund Direct Growth", "value_inr": 1200, "share_of_portfolio_pct": 4.1},
+        {"name": "Parag Parikh Flexi Cap Fund Direct Growth", "value_inr": 900, "share_of_portfolio_pct": 3.0}]}}))
+    return store, rid
+
+
+@pytest.mark.parametrize("condition", [
+    {"field": "name", "operator": "contains", "value": "Motilal"},  # recorded from ca-mode on 2026-11-19
+    {"field": "name", "op": "includes", "value": "Motilal"},
+    {"field": "value_inr", "operator": ">", "value": 1000},
+    {"field": "value_inr", "operator": "greater_than", "value": 1000},
+])
+def test_inspect_reads_conditions_written_with_other_key_and_op_names(condition):
+    store, rid = holdings_store()
+    out = at.inspect(store, {"result_id": rid, "path": "figures.all_holdings", "where": [condition]})
+    assert out["matched"] == 1 and out["returned"][0]["value_inr"] == 1200
+
+
+@pytest.mark.parametrize("condition", [
+    {"field": "name", "op": "resembles", "value": "Motilal"},
+    {"field": "name", "value": "Motilal"},
+    "name resembles Motilal",
+])
+def test_inspect_refuses_a_condition_it_cannot_read_instead_of_matching_nothing(condition):
+    store, rid = holdings_store()
+    with pytest.raises(ValueError, match="op is one of .*contains"):
+        at.inspect(store, {"result_id": rid, "path": "figures.all_holdings", "where": [condition]})
+    handler = next(spec for spec in at.tools(store, lambda: NOW) if spec.name == "inspect_result").handler
+    out = json.loads(asyncio.run(handler({"result_id": rid, "path": "figures.all_holdings", "where": [condition]})))
+    assert "contains" in out["error"]  # the model gets the reason and can fix the call
+
+
+def test_inspect_still_matches_exactly_with_eq():
+    store, rid = holdings_store()
+    out = at.inspect(store, {"result_id": rid, "path": "figures.all_holdings",
+                             "where": [{"field": "name", "op": "eq", "value": "Motilal"}]})
+    assert out["matched"] == 0
+
+
+def test_inspect_ignores_outline_words_copied_into_the_path():
+    store, rid = holdings_store()
+    out = at.inspect(store, {"result_id": rid, "path": "figures.all_holdings.listOf",
+                             "where": [{"field": "name", "operator": "contains", "value": "Motilal"}]})
+    assert out["matched"] == 1 and out["resolvedPath"] == "figures.all_holdings"
+    first = at.inspect(store, {"result_id": rid, "path": "figures.all_holdings.firstItem.name"})
+    assert first["value"] == "Motilal Oswal Midcap Fund Direct Growth"

@@ -117,9 +117,239 @@
     }
   }
 
+  // Parse a server-sent event stream pushed in arbitrary chunks. Calls onEvent(name, data) per complete event with
+  // JSON data; comments and non-JSON events are skipped. end() is true when an unfinished event was dropped.
+  function createSseParser(onEvent) {
+    let buffer = '';
+    let heldCr = false; // a trailing CR may be the first half of CRLF, so it waits for the next chunk
+    function dispatch(block) {
+      let name = 'message';
+      const data = [];
+      for (const line of block.split('\n')) {
+        if (!line || line.startsWith(':')) continue;
+        const at = line.indexOf(':');
+        const field = at < 0 ? line : line.slice(0, at);
+        let value = at < 0 ? '' : line.slice(at + 1);
+        if (value.startsWith(' ')) value = value.slice(1);
+        if (field === 'event') name = value;
+        else if (field === 'data') data.push(value);
+      }
+      if (!data.length) return;
+      let parsed;
+      try { parsed = JSON.parse(data.join('\n')); } catch { return; }
+      onEvent(name, parsed);
+    }
+    return {
+      push(text) {
+        let chunk = (heldCr ? '\r' : '') + String(text);
+        heldCr = chunk.endsWith('\r');
+        if (heldCr) chunk = chunk.slice(0, -1);
+        buffer += chunk.replace(/\r\n?/g, '\n');
+        let at;
+        while ((at = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, at);
+          buffer = buffer.slice(at + 2);
+          dispatch(block);
+        }
+      },
+      end() {
+        const partial = buffer.split('\n').some((line) => line.trim() !== '' && !line.startsWith(':'));
+        buffer = '';
+        heldCr = false;
+        return partial;
+      },
+    };
+  }
+
+  // Read a fetch response body (a ReadableStream of bytes) as server-sent events, calling onEvent(name, data) for
+  // each. Resolves true when the stream ended inside an unfinished event; rejects when a read fails.
+  async function readEventStream(body, onEvent) {
+    const parser = createSseParser(onEvent);
+    const decoder = new TextDecoder();
+    const reader = body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+    parser.push(decoder.decode());
+    return parser.end();
+  }
+
+  // Copy of every in-app confirmation (app.js confirmAction() shows it). Text only: it goes in with textContent.
+  const CONFIRMS = Object.freeze({
+    deleteStatement: Object.freeze({ title: 'Delete this statement?', body: 'Its holdings are removed from CA Mode.', confirmLabel: 'Delete statement', danger: true }),
+    privateMode: Object.freeze({ title: 'Switch to private mode?', body: 'Private mode deletes the chats and portfolio snapshots saved for this profile.', confirmLabel: 'Switch to private mode', danger: true }),
+    newRecoveryCode: Object.freeze({ title: 'Create a new recovery code?', body: 'Your current recovery code will stop working.', confirmLabel: 'Create new code', danger: false }),
+    clearHistory: Object.freeze({ title: 'Delete chats and snapshots?', body: 'Your profile and broker connections are kept.', confirmLabel: 'Delete history', danger: true }),
+    disconnectIndmoney: Object.freeze({ title: 'Disconnect INDmoney?', body: 'Saved portfolio snapshots for this profile are deleted. Your chats are kept.', confirmLabel: 'Disconnect INDmoney', danger: true }),
+    deleteChat: Object.freeze({ title: 'Delete this chat?', body: 'The chat and its answers are removed from this profile.', confirmLabel: 'Delete chat', danger: true }),
+    deleteGoal: Object.freeze({ title: 'Delete the goal "{name}"?', body: 'Decisions linked to it are kept.', confirmLabel: 'Delete goal', danger: true }),
+    deleteDecision: Object.freeze({ title: 'Delete this decision?', body: 'It is removed from what the assistant can use.', confirmLabel: 'Delete decision', danger: true }),
+    clearContext: Object.freeze({ title: 'Delete saved goals, decisions and profile details?', body: 'Chats, snapshots and statements are kept. This cannot be undone.', confirmLabel: 'Delete saved details', danger: true }),
+  });
+
+  function confirmCopy(key, values = {}) {
+    const entry = CONFIRMS[key];
+    if (!entry) throw new Error(`Unknown confirmation: ${key}`);
+    const fill = (text) => text.replace(/\{(\w+)\}/g, (match, name) => (name in values ? String(values[name]) : match));
+    return { title: fill(entry.title), body: fill(entry.body), confirmLabel: entry.confirmLabel, cancelLabel: 'Cancel', danger: entry.danger };
+  }
+
+  // The desktop sidebar's open or closed choice, kept per browser. Storage can be missing or throw (private
+  // windows, blocked site data): reads then give null and writes report false, and the app works without it.
+  const SIDEBAR_KEY = 'ca-mode-sidebar';
+  const SIDEBAR_STATES = ['open', 'closed'];
+
+  function readSidebarState(storage) {
+    try {
+      const value = storage ? storage.getItem(SIDEBAR_KEY) : null;
+      return SIDEBAR_STATES.includes(value) ? value : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveSidebarState(storage, state) {
+    try {
+      storage.setItem(SIDEBAR_KEY, state);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Up to 1280px the sidebar starts closed whatever was saved; wider, it follows the saved choice (open by default).
+  function initialSidebarState({ stored, width }) {
+    if (width <= 1280) return 'closed';
+    return stored === 'closed' ? 'closed' : 'open';
+  }
+
+  // Cmd (Ctrl elsewhere) + K opens the command menu and + B toggles the sidebar, never over a sign-in screen or dialog.
+  // While the command menu itself is open, + K closes it again (and + B does nothing).
+  function shortcutFor(event, { gateOpen, dialogOpen, commandOpen = false }) {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return null;
+    const key = String(event.key || '').toLowerCase();
+    if (commandOpen) return key === 'k' ? 'close-command' : null;
+    if (gateOpen || dialogOpen) return null;
+    if (key === 'k') return 'command';
+    if (key === 'b') return 'sidebar';
+    return null;
+  }
+
+  function shortcutLabel(platform) {
+    return /Mac|iPhone|iPad/.test(platform || '') ? '⌘K' : 'Ctrl K';
+  }
+
+  // What the command menu lists for a query. A blank query browses pages, recent chats and actions; anything typed
+  // can always be asked of either agent, then pages, chats and actions whose label holds every word of it.
+  function commandResults(query, { pages = [], chats = [], actions = [] } = {}) {
+    const text = String(query || '').trim();
+    const pageItems = pages.map((page) => ({ id: `page-${page.route}`, kind: 'page', label: page.label, hint: '', value: page.route }));
+    const chatItems = chats.map((chat) => ({ id: `chat-${chat.id}`, kind: 'chat', label: chat.title || 'New chat', hint: '', value: String(chat.id) }));
+    const actionItems = actions.map((action) => ({ id: `action-${action.id}`, kind: 'action', label: action.label, hint: '', value: action.id }));
+    if (!text) {
+      return [
+        { title: 'Pages', items: pageItems },
+        { title: 'Recent chats', items: chatItems.slice(0, 5) },
+        { title: 'Actions', items: actionItems },
+      ].filter((group) => group.items.length);
+    }
+    const words = text.toLowerCase().split(/\s+/);
+    const matches = (item) => words.every((word) => item.label.toLowerCase().includes(word));
+    return [
+      { title: 'Ask', items: [
+        { id: 'ask-portfolio', kind: 'ask', label: `Ask Portfolio Analyzer: "${text}"`, hint: 'Enter', value: text, agent: 'portfolio' },
+        { id: 'ask-finance', kind: 'ask', label: `Ask Finance Agent: "${text}"`, hint: '', value: text, agent: 'finance' },
+      ] },
+      { title: 'Pages', items: pageItems.filter(matches) },
+      { title: 'Chats', items: chatItems.filter(matches).slice(0, 6) },
+      { title: 'Actions', items: actionItems.filter(matches) },
+    ].filter((group) => group.items.length);
+  }
+
+  // Commands that need the conversation free: they would start, switch or end it, or open the profile panel
+  // (which refuses while an answer streams). They wait until the current answer has finished.
+  const COMMANDS_AFTER_ANSWER = ['new-chat', 'connect-broker', 'sign-out'];
+  function commandWaitsForAnswer(item) {
+    return item.kind === 'ask' || item.kind === 'chat' || (item.kind === 'action' && COMMANDS_AFTER_ANSWER.includes(item.value));
+  }
+
+  // The next active option for the arrow keys, wrapping at both ends; -1 when there is nothing to move through.
+  function moveActive(index, delta, count) {
+    if (!count) return -1;
+    return (((index + delta) % count) + count) % count;
+  }
+
+  // Start delays (ms) for the drawer's items: one step apart, none later than max.
+  function staggerDelays(count, step = 60, max = 360) {
+    return Array.from({ length: count }, (_, i) => Math.min(i * step, max));
+  }
+
+  // The Home entrance plays on the first Home render of a browser session. Storage can be missing or throw, so a
+  // module-level flag also keeps it to once per page load.
+  const ENTRANCE_KEY = 'ca-mode-entrance';
+  let entranceSpent = false;
+  function claimEntrance(storage) {
+    // A storage that works is the record for the browser session; without one, the flag is.
+    try {
+      if (storage) {
+        if (storage.getItem(ENTRANCE_KEY) === '1') return false;
+        storage.setItem(ENTRANCE_KEY, '1');
+        return true;
+      }
+    } catch (error) { /* blocked storage: the flag decides */ }
+    if (entranceSpent) return false;
+    entranceSpent = true;
+    return true;
+  }
+
+  // Where the active tab sits inside its bar, from offsets (never viewport rects, so a scrolled bar is right).
+  function tabIndicator(active, bar) {
+    if (!active) return { x: 0, w: 0 };
+    const x = Number(active.offsetLeft) - Number(bar?.offsetLeft || 0);
+    const w = Number(active.offsetWidth);
+    return { x: Number.isFinite(x) ? Math.max(0, x) : 0, w: Number.isFinite(w) ? Math.max(0, w) : 0 };
+  }
+
+  const VIEW_TRANSITION_PATIENCE_MS = 400;
+  // Runs a DOM update inside a view transition when the browser has one. The update always runs, and an error
+  // from it rejects; a transition that is skipped or aborted never does.
+  async function withViewTransition(doc, update) {
+    if (typeof doc?.startViewTransition !== 'function') {
+      await update();
+      return;
+    }
+    // The browser runs the update at its next rendering opportunity; if it never comes (a page that is not
+    // being painted), a timer runs it instead. It only ever runs once, and its error rejects `ran`.
+    let started = null;
+    let run;
+    const ran = new Promise((resolve, reject) => {
+      run = () => { started = started || Promise.resolve().then(update).then(resolve, reject); return started; };
+    });
+    let transition;
+    try {
+      transition = doc.startViewTransition(run);
+    } catch {
+      run();
+      await ran;
+      return;
+    }
+    transition.ready?.catch(() => {});
+    transition.finished?.catch(() => {});
+    const timer = setTimeout(run, VIEW_TRANSITION_PATIENCE_MS);
+    try {
+      await ran;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   const api = {
-    NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
+    SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
+    commandResults, moveActive, commandWaitsForAnswer, staggerDelays, ENTRANCE_KEY, claimEntrance, tabIndicator,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

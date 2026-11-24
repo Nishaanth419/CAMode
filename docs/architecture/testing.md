@@ -21,3 +21,9 @@ Tests use mocked AI, MCP and OAuth responses (no live API calls). `conftest.py` 
 | Number checks | `python -m scripts.eval_numbers` | `tests/fixtures/indmoney_sample.py` |
 
 Scripted modes are also run by `tests/test_eval_*.py`. A new eval case needs `expect` (and optionally `live.grade`). Live-case counts, baselines and scores are described under "Answer trace and Activity", "Planned answers" and "General agent" in [agent-and-planner.md](agent-and-planner.md) and in [../evals.md](../evals.md).
+
+## Tests added on main since the split
+
+- `test_chat_stream.py`: progress mapping (identifiers only, no arguments or text, sources, out-of-order results), SSE framing, keepalives, the `answer` / `error` events from a finished response, a cancelled stream never cancelling the answer, refusals keeping status codes, a plain request unchanged
+- `tests/js/admin.test.js` (`node --test`): the admin confirmation copy, the sign-out dialog having no field, only the confirm button confirming and the typed name sent as typed
+- `tests/js/design.test.js` (`node --test`): a text lint of the CSS, scripts and `index.html`: only Geist fonts, the approved dark and light tokens (same names in both themes, `--line` = `--border`), font sizes on the scale, no uppercase/italic/heavy weights, radii from tokens, no gradients or generic shadows, transitions on motion tokens, the reduced-motion block, `:focus-visible`, no browser dialogs in app scripts, every referenced sprite icon existing in `icons.svg`, inline SVG limited to the allowed marks, and no hex literals in chart code; also the page kit (sections at Home's heading size, borderless surfaces), the public pages' token parity with `app.css` and the admin page's dialog, figures, tables and buttons

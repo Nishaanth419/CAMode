@@ -127,6 +127,7 @@
     event.preventDefault();
     event.stopImmediatePropagation();
     if (target.id === 'switch-profile') exitDemo();
-    else window.alert(NOT_SAVED);
+    else if (typeof toast === 'function') toast(NOT_SAVED);
+    else { const status = document.getElementById('status-text'); if (status) status.textContent = NOT_SAVED; }
   }, true);
 })();
