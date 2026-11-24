@@ -1,4 +1,16 @@
-"""OpenAI-compatible provider chat loop with INDmoney MCP tools."""
+"""OpenAI-compatible provider chat loop with INDmoney MCP tools.
+
+Conventions kept here because nothing else states them:
+
+- The model quotes tool figures and never computes; ``_number_warning()`` flags amounts
+  that match no tool result, message or saved context.
+- Only ``McpAuthError`` ends a request as an auth failure (``AgentRunError.auth_failed``);
+  callers check that flag, never the message text, before refreshing the INDmoney token.
+  Other tool failures go back to the model as error tool results.
+- Task contracts observe an answer and never change it; the one enforced rule is that an
+  account-data question needs an account tool.
+- A trace is capped by ``bounded_trace()`` and redacted by ``redact_trace_text()``.
+"""
 
 from __future__ import annotations
 
