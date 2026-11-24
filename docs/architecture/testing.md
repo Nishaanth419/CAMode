@@ -20,4 +20,4 @@ Tests use mocked AI, MCP and OAuth responses (no live API calls). `conftest.py` 
 | Local model choice | both of the above with `--provider ollama` | |
 | Number checks | `python -m scripts.eval_numbers` | `tests/fixtures/indmoney_sample.py` |
 
-Scripted modes are also run by `tests/test_eval_*.py`. A new eval case needs `expect` (and optionally `live.grade`). Live-case counts, baselines and scores are in the old CLAUDE.md text now kept under "Answer trace and Activity" / "Planned answers" / "General agent" in [agent-and-planner.md](agent-and-planner.md) and in [../evals.md](../evals.md).
+Scripted modes are also run by `tests/test_eval_*.py`. A new eval case needs `expect` (and optionally `live.grade`). Live-case counts, baselines and scores are described under "Answer trace and Activity", "Planned answers" and "General agent" in [agent-and-planner.md](agent-and-planner.md) and in [../evals.md](../evals.md).
