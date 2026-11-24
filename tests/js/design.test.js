@@ -1181,3 +1181,15 @@ test('public pages: Geist, flat sections, no shadows', () => {
   assert.match(code, /font-size:\s*60px/);
   assert.match(code, /color:\s*var\(--text-muted\)/);
 });
+
+test('Activity records: no arrow glyphs and no browser disclosure triangles', () => {
+  const css = readCss();
+  assert.doesNotMatch(readJs('pages.js'), /← All activity/);
+  assert.match(readJs('pages.js'), /#ph-caret-left"><\/use><\/svg>All activity/);
+  assert.match(css, /\.evidence-section > summary::-webkit-details-marker, \.timeline-details > summary::-webkit-details-marker \{ display: none; \}/);
+  assert.match(css, /\.evidence-section > summary, \.timeline-details > summary \{[^}]*list-style: none;/);
+});
+
+test('public page footers space their links apart', () => {
+  assert.match(readCss('public.css'), /\.public-link \+ \.public-link \{ margin-left: 12px; \}/);
+});

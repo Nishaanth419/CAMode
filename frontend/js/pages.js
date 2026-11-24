@@ -2634,7 +2634,7 @@ function drawActivityList(refreshError = null) {
 
 async function loadActivityDetail(id) {
   const ticket = activityState.detailRequests.next();
-  const back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>';
+  const back = '<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>';
   const shown = activityState.record?.id === id ? activityState.record : null;
   if (!shown) setHtml(activityBody, back + loadingBlock());
   let record;
@@ -2653,7 +2653,7 @@ async function loadActivityDetail(id) {
   if (isActive(record)) scheduleActivityPoll(() => loadActivityDetail(id));
 }
 
-function drawActivityDetail(record, back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>') {
+function drawActivityDetail(record, back = '<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>') {
   const chatId = record.request?.chatId;
   const actions = [
     chatId && chats.some((chat) => chat.id === chatId)
@@ -2669,7 +2669,7 @@ function drawActivityDetail(record, back = '<a class="panel-link activity-back" 
 
 async function loadRunDetail(id) {
   const ticket = activityState.detailRequests.next();
-  const back = '<a class="panel-link activity-back" href="#/activity">← All activity</a>';
+  const back = '<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>';
   setHtml(activityBody, back + loadingBlock());
   let record;
   try {
@@ -2703,7 +2703,7 @@ async function startInvestigation(button, baselineDate = null) {
       navigate('activity', record.id);
     } else {
       // Private mode, or the result could not be saved: show it once, here.
-      setHtml(activityBody, `<a class="panel-link activity-back" href="#/activity">← All activity</a>${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
+      setHtml(activityBody, `<a class="panel-link activity-back" href="#/activity"><svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-left"></use></svg>All activity</a>${renderInvestigationCard(record, { chart: renderDataChart, linkToActivity: false, openSteps: true })}`);
     }
   } catch (error) {
     toast(error.message);

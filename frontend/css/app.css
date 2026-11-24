@@ -2839,6 +2839,33 @@ body.gate-open #app { visibility: hidden; }
 #activity-body .timeline-meta code, #activity-body .timeline-evidence code, #activity-body .evidence-note code { font-size: 12px; }
 #activity-body .timeline-index, #activity-body .timeline-time, #activity-body .timeline-details > summary { font-size: 12px; }
 #activity-body .trace-code { font-size: 12px; }
+/* Folding sections in a record open with a drawn chevron, not the browser's triangle. */
+.evidence-section > summary, .timeline-details > summary { display: flex; align-items: center; gap: 8px; list-style: none; }
+.evidence-section > summary::-webkit-details-marker, .timeline-details > summary::-webkit-details-marker { display: none; }
+.evidence-section > summary::before, .timeline-details > summary::before {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+  transform: translateX(-1px) rotate(-45deg);
+  transition: transform var(--dur-move) var(--ease);
+}
+.evidence-section[open] > summary::before, .timeline-details[open] > summary::before { transform: translateY(-2px) rotate(45deg); }
+#activity-body .evidence-card .markdown-table-wrap { border: 0; border-radius: 0; background: none; }
+.activity-back .icon { width: 16px; height: 16px; margin-right: 6px; }
+/* Returns by fund: notes under a figure wrap, so the fund names keep their room. */
+#returns-body .data-table td .stat-sub { white-space: normal; }
+@container (min-width: 640px) {
+  #returns-body .data-table td:first-child { min-width: 200px; }
+  #returns-body .data-table td[data-label="vs benchmark"] { min-width: 160px; }
+}
+/* All chats: the search and New chat share one row beside the title. */
+.page[data-page="chats"] .page-actions { flex: 1 1 360px; flex-wrap: nowrap; justify-content: flex-end; max-width: 520px; }
+@media (max-width: 560px) {
+  .page[data-page="chats"] .page-actions { flex-wrap: wrap; max-width: none; }
+}
 .prompt-row-text small { display: block; color: var(--text-muted); font-size: 12px; }
 .mover-table .m-name { min-width: 160px; }
 
