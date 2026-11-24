@@ -1186,10 +1186,19 @@ test('Activity records: no arrow glyphs and no browser disclosure triangles', ()
   const css = readCss();
   assert.doesNotMatch(readJs('pages.js'), /← All activity/);
   assert.match(readJs('pages.js'), /#ph-caret-left"><\/use><\/svg>All activity/);
-  assert.match(css, /\.evidence-section > summary::-webkit-details-marker, \.timeline-details > summary::-webkit-details-marker \{ display: none; \}/);
-  assert.match(css, /\.evidence-section > summary, \.timeline-details > summary \{[^}]*list-style: none;/);
+  assert.match(css, /#activity-body \.evidence-section > summary::-webkit-details-marker, #activity-body \.timeline-details > summary::-webkit-details-marker \{ display: none; \}/);
+  assert.match(css, /#activity-body \.evidence-section > summary, #activity-body \.timeline-details > summary \{[^}]*list-style: none;/);
 });
 
 test('public page footers space their links apart', () => {
   assert.match(readCss('public.css'), /\.public-link \+ \.public-link \{ margin-left: 12px; \}/);
+});
+
+test('every moving keyframe is defined before the reduced-motion block, so its fade wins', () => {
+  const css = readCss();
+  const block = css.indexOf('@media (prefers-reduced-motion: reduce)');
+  assert.ok(block > 0);
+  for (const match of css.matchAll(/@keyframes ([\w-]+) \{([^@]*?)\}\s*\}/g)) {
+    if (match.index > block && /transform/.test(match[2])) assert.fail(`@keyframes ${match[1]} moves and comes after the reduced-motion block`);
+  }
 });

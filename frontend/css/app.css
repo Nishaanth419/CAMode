@@ -1344,6 +1344,7 @@ body:not(.route-chat) #right-rail { display: none; }
 @keyframes entrance-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes area-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 [data-entrance="play"] #home-networth-value { animation: entrance-in var(--dur-move) var(--ease) both; }
 #home-stats.is-loading { visibility: hidden; }
 [data-entrance="play"] #home-stats { animation: entrance-in var(--dur-fade) var(--ease) 650ms both; }
@@ -2696,7 +2697,6 @@ body.gate-open #app { visibility: hidden; }
 .goal-ask:hover { background: var(--accent-glow); }
 .goal-panel { display: grid; gap: 16px; min-width: 0; padding: 16px; border-radius: 12px; background: var(--surface-2); font-size: 14px; line-height: 20px; }
 .goal-panel[hidden] { display: none; }
-@keyframes panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .goal-panel:not([hidden]) { animation: panel-in var(--dur-fade) var(--ease); }
 .goal-panel .goal-notes, .goal-panel .goal-alts, .goal-panel .goal-advice { font-size: 14px; line-height: 20px; }
 .goal-panel .fund-item, .goal-panel .data-table { background: var(--surface); }
@@ -2815,6 +2815,7 @@ body.gate-open #app { visibility: hidden; }
 /* Concentration: plain ruled rows, no card. */
 #portfolio-body .fact-list { gap: 0; }
 #portfolio-body .fact-list div { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 20px; }
+#portfolio-body .fact-list div:last-child { border-bottom: 0; }
 #portfolio-body .fact-list dd { font-variant-numeric: tabular-nums; }
 
 /* Markets: the two forms on the surface, then live questions in two columns. */
@@ -2839,10 +2840,10 @@ body.gate-open #app { visibility: hidden; }
 #activity-body .timeline-meta code, #activity-body .timeline-evidence code, #activity-body .evidence-note code { font-size: 12px; }
 #activity-body .timeline-index, #activity-body .timeline-time, #activity-body .timeline-details > summary { font-size: 12px; }
 #activity-body .trace-code { font-size: 12px; }
-/* Folding sections in a record open with a drawn chevron, not the browser's triangle. */
-.evidence-section > summary, .timeline-details > summary { display: flex; align-items: center; gap: 8px; list-style: none; }
-.evidence-section > summary::-webkit-details-marker, .timeline-details > summary::-webkit-details-marker { display: none; }
-.evidence-section > summary::before, .timeline-details > summary::before {
+/* Folding sections in a record on Activity open with a drawn chevron, not the browser's triangle. */
+#activity-body .evidence-section > summary, #activity-body .timeline-details > summary { display: flex; align-items: center; gap: 8px; list-style: none; }
+#activity-body .evidence-section > summary::-webkit-details-marker, #activity-body .timeline-details > summary::-webkit-details-marker { display: none; }
+#activity-body .evidence-section > summary::before, #activity-body .timeline-details > summary::before {
   width: 6px;
   height: 6px;
   flex-shrink: 0;
@@ -2852,13 +2853,13 @@ body.gate-open #app { visibility: hidden; }
   transform: translateX(-1px) rotate(-45deg);
   transition: transform var(--dur-move) var(--ease);
 }
-.evidence-section[open] > summary::before, .timeline-details[open] > summary::before { transform: translateY(-2px) rotate(45deg); }
+#activity-body .evidence-section[open] > summary::before, #activity-body .timeline-details[open] > summary::before { transform: translateY(-2px) rotate(45deg); }
 #activity-body .evidence-card .markdown-table-wrap { border: 0; border-radius: 0; background: none; }
 .activity-back .icon { width: 16px; height: 16px; margin-right: 6px; }
 /* Returns by fund: notes under a figure wrap, so the fund names keep their room. */
 #returns-body .data-table td .stat-sub { white-space: normal; }
 @container (min-width: 640px) {
-  #returns-body .data-table td:first-child { min-width: 200px; }
+  #returns-body .data-table:has(td[data-label="vs benchmark"]) td:first-child { min-width: 200px; }
   #returns-body .data-table td[data-label="vs benchmark"] { min-width: 160px; }
 }
 /* All chats: the search and New chat share one row beside the title. */
