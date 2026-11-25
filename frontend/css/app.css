@@ -64,6 +64,7 @@
   --shadow-sm: none;
   --shadow-md: 0 16px 40px rgba(10, 10, 10, .08);
   --shadow-lg: 0 24px 64px rgba(10, 10, 10, .12);
+  --scrim: rgba(10, 10, 10, .4);
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -150,6 +151,7 @@
   --shadow-sm: none;
   --shadow-md: 0 16px 40px rgba(0, 0, 0, .5);
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, .7);
+  --scrim: rgba(0, 0, 0, .65);
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -1175,7 +1177,7 @@ body:not(.route-chat) #right-rail { display: none; }
     inset: 0;
     z-index: 25;
     display: block;
-    background: rgba(10, 10, 10, .4);
+    background: var(--scrim);
   }
   #sidebar-scrim[hidden] { display: none !important; }
   .chat-delete { opacity: 1; }
@@ -1401,8 +1403,7 @@ body:not(.route-chat) #right-rail { display: none; }
 }
 @starting-style { .confirm-dialog[open] { opacity: 0; transform: scale(.98); } }
 .confirm-dialog form { padding: 20px; }
-.confirm-dialog::backdrop { background: rgba(10, 10, 10, .4); }
-:root[data-theme="dark"] .confirm-dialog::backdrop { background: rgba(0, 0, 0, .65); }
+.confirm-dialog::backdrop { background: var(--scrim); }
 .confirm-dialog h2 { margin: 0 0 8px; font-size: 18px; line-height: 24px; }
 .confirm-dialog p { margin: 0 0 16px; color: var(--text-soft); font-size: 14px; line-height: 20px; }
 .confirm-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -1426,7 +1427,7 @@ body:not(.route-chat) #right-rail { display: none; }
 }
 .command-dialog[open] { display: flex; flex-direction: column; }
 @starting-style { .command-dialog[open] { opacity: 0; transform: scale(.98); } }
-.command-dialog::backdrop { background: rgba(0, 0, 0, .6); opacity: 1; transition: opacity var(--dur-fade) var(--ease); }
+.command-dialog::backdrop { background: var(--scrim); opacity: 1; transition: opacity var(--dur-fade) var(--ease); }
 @starting-style { .command-dialog[open]::backdrop { opacity: 0; } }
 .command-search { display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--text-muted); }
 .command-search input {
@@ -1652,10 +1653,9 @@ body.gate-open #app { visibility: hidden; }
 .profile-dialog[open] { opacity: 1; transform: translateX(0); }
 @starting-style { .profile-dialog[open] { opacity: 0; transform: translateX(100%); } }
 .goal-dialog { width: min(560px, 100%); }
-.profile-dialog::backdrop { background: rgba(10, 10, 10, .4); opacity: 0; transition: opacity var(--dur-fade) var(--ease), overlay var(--dur-move) allow-discrete, display var(--dur-move) allow-discrete; }
+.profile-dialog::backdrop { background: var(--scrim); opacity: 0; transition: opacity var(--dur-fade) var(--ease), overlay var(--dur-move) allow-discrete, display var(--dur-move) allow-discrete; }
 .profile-dialog[open]::backdrop { opacity: 1; }
 @starting-style { .profile-dialog[open]::backdrop { opacity: 0; } }
-:root[data-theme="dark"] .profile-dialog::backdrop { background: rgba(0, 0, 0, .65); }
 .profile-dialog form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 24px; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 /* The head stays in view while the panel scrolls; the form's 24px padding is pulled back out. */
@@ -2617,7 +2617,7 @@ body.gate-open #app { visibility: hidden; }
 
 .rail-note { display: block; font-size: 12px; opacity: 0.7; margin-top: 2px; }
 
-.broker-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid #d9a441; border-radius: 8px; background: rgba(217, 164, 65, 0.12); font-size: 14px; }
+.broker-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; background: var(--amber-soft); font-size: 14px; }
 .broker-banner-actions { display: inline-flex; align-items: center; gap: 8px; }
 .broker-banner-dismiss { border: 0; background: none; color: inherit; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
 .rail-note.is-warn { color: var(--warning-text); opacity: 1; }

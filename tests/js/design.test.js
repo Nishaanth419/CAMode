@@ -1246,3 +1246,14 @@ test('Activity rows do not change colour on hover (only their links and buttons 
   assert.doesNotMatch(readCss(), /\.activity-item:hover/);
   assert.doesNotMatch(readJs('pages.js'), /function panel\(/);
 });
+
+test('scrims and the broker banner use tokens, not colour literals', () => {
+  const css = readCss();
+  assert.equal((css.match(/--scrim:/g) || []).length, 2);
+  for (const m of css.matchAll(/([^{}]*::backdrop|#sidebar-scrim)\s*\{([^}]*)\}/g)) {
+    assert.doesNotMatch(m[2], /rgba?\(|#[0-9a-f]{3,6}/i, m[1].trim());
+  }
+  const banner = ruleBody(css, '.broker-banner');
+  assert.doesNotMatch(banner, /rgba?\(|#[0-9a-f]{3,6}|border:/i);
+  assert.match(banner, /background:\s*var\(--amber-soft\)/);
+});
