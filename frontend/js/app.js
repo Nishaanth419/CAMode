@@ -1316,7 +1316,7 @@ function renderBrokers(brokers) {
       ? `<button class="gate-secondary" type="button" disabled title="${escHtml(LIMIT_NOTE)}">Connect</button>`
       : brokerButtons(broker);
     return `<div class="broker-item"><div class="connection-row">
-      <span class="broker-head">${brokerLogoHtml(broker.broker, broker.name, broker.logo)}<span><button class="broker-name" type="button" data-broker-tools="${escHtml(broker.broker)}" aria-expanded="${open}" title="Show the tools ${escHtml(broker.name)}'s server exposes"><strong>${escHtml(broker.name)}</strong><span aria-hidden="true">${open ? '▾' : '▸'}</span></button><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span></span>
+      <span class="broker-head">${brokerLogoHtml(broker.broker, broker.name, broker.logo)}<span><button class="broker-name" type="button" data-broker-tools="${escHtml(broker.broker)}" aria-expanded="${open}" title="Show the tools ${escHtml(broker.name)}'s server exposes"><strong>${escHtml(broker.name)}</strong>${open ? '<svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-down"></use></svg>' : '<svg class="icon" aria-hidden="true"><use href="/icons.svg?v=4#ph-caret-right"></use></svg>'}</button><small>${escHtml(brokerStatusLabel(broker.status, broker.holdingsAt))}</small></span></span>
       <span class="broker-actions">${actions}</span>
     </div>${open ? brokerToolsPanel(broker.broker) : ''}</div>`;
   }).join('');

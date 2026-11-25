@@ -115,10 +115,6 @@ function portfolioAccess() {
 }
 
 /* ── Shared building blocks ─────────────────────────────────────────── */
-function panel(title, body, { action = '', className = '' } = {}) {
-  return `<section class="panel ${className}"><div class="rail-head"><h2>${escHtml(title)}</h2>${action}</div>${body}</section>`;
-}
-
 // A section on the canvas (batch 4 pages): heading row with optional actions, then the body.
 function pageSection(title, body, { id = '', actions = '', className = '' } = {}) {
   const label = id ? ` aria-labelledby="${id}"` : '';

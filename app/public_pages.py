@@ -100,7 +100,7 @@ def _page(
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/public.css?v=4" />
+  <link rel="stylesheet" href="/css/public.css?v=5" />
 {head}</head>
 <body>
   <main class="{page_class}">
@@ -198,7 +198,7 @@ def admin_page() -> str:
         body=body,
         is_indexable=False,
         is_wide=True,
-        head='  <link rel="stylesheet" href="/css/admin.css?v=2" />\n  <script src="/js/admin.js?v=4" defer></script>\n',
+        head='  <link rel="stylesheet" href="/css/admin.css?v=3" />\n  <script src="/js/admin.js?v=5" defer></script>\n',
     )
 
 

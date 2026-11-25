@@ -14,7 +14,7 @@
 
 /* Controls: inputs outlined; buttons are the outlined secondary style, hover changes the background only. */
 button, select, input[type=search], input[type=text] {
-  min-height: 36px;
+  min-height: 40px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -67,10 +67,7 @@ button:hover { background: var(--surface-2); }
 
 /* Confirmation dialog (admin.js askAdmin): floating chrome, so it alone has a shadow. */
 .admin-dialog { width: min(420px, calc(100% - 32px)); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); }
-.admin-dialog::backdrop { background: rgba(10, 10, 10, .4); }
-@media (prefers-color-scheme: dark) {
-  .admin-dialog::backdrop { background: rgba(0, 0, 0, .65); }
-}
+.admin-dialog::backdrop { background: var(--scrim); }
 .admin-dialog form { display: grid; gap: 16px; padding: 24px; }
 .admin-dialog h2 { margin: 0; font-size: 18px; line-height: 28px; }
 .admin-dialog p { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 20px; }
