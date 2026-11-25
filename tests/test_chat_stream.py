@@ -1,353 +1,587 @@
-"""The streamed answer: the provider call's streaming twin, the draft side channel and the SSE route."""
-
-from __future__ import annotations
-
-import asyncio
 import json
 
-import httpx
-import pytest
-from starlette.requests import Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-from app import agent, chat_stream, main
-from app.agent import AgentRunError
-
-REAL_CLIENT = httpx.AsyncClient
-URL = "https://provider.test/v1/chat/completions"
+from app import tasks
+from app.chat_stream import ProgressMapper, response_event, sse
 
 
-def sse_body(*chunks, done: bool = True) -> bytes:
-    lines = [f"data: {chunk if isinstance(chunk, str) else json.dumps(chunk)}\n\n" for chunk in chunks]
-    if done:
-        lines.append("data: [DONE]\n\n")
-    return "".join(lines).encode()
+def _mapper(*tools):
+    m = ProgressMapper()
+    m.start()
+    m.map("contract", {"contract": tasks.TaskContract("account_data", allowed_tools=frozenset(tools))})
+    return m
 
 
-def delta(**fields):
-    return {"choices": [{"index": 0, "delta": fields, "finish_reason": None}]}
+def test_sse_frames_one_event():
+    assert sse("progress", {"seq": 1}) == b'event: progress\ndata: {"seq":1}\n\n'
 
 
-def finish(reason: str, **extra):
-    return {"choices": [{"index": 0, "delta": {}, "finish_reason": reason}], **extra}
+def test_start_is_seq_zero():
+    assert ProgressMapper().start() == {"seq": 0, "kind": "start"}
 
 
-def transport(body: bytes, status: int = 200, seen: list | None = None) -> httpx.MockTransport:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if seen is not None:
-            seen.append(json.loads(request.content))
-        return httpx.Response(status, content=body, headers={"Content-Type": "text/event-stream"})
-    return httpx.MockTransport(handler)
+def test_tool_name_is_kept_only_when_offered():
+    m = _mapper("get_portfolio_snapshot")
+    assert m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {}, "source": "local"}) == {
+        "seq": 1, "kind": "tool_call", "name": "get_portfolio_snapshot", "source": "saved"}
+    assert "name" not in m.map("tool_call", {"name": "made_up_tool", "arguments": {}, "source": "local"})
 
 
-async def stream(body: bytes, status: int = 200, seen: list | None = None):
-    events: list[tuple[str, str]] = []
-    async with REAL_CLIENT(transport=transport(body, status, seen)) as client:
-        response = await agent._streamed_post(client, URL, {}, {"model": "m", "messages": []}, lambda kind, text: events.append((kind, text)))
-    return response, events
+def test_contract_parts_are_remembered():
+    m = ProgressMapper()
+    part = tasks.TaskContract("goal_calculation", allowed_tools=frozenset({"calculate_goal_plan"}))
+    m.map("contract", {"contract": tasks.TaskContract("multi_step", parts=(part,))})
+    assert m.map("tool_call", {"name": "calculate_goal_plan", "arguments": {}, "source": "local"})["name"] == "calculate_goal_plan"
 
 
-@pytest.mark.asyncio
-async def test_content_split_over_chunks_becomes_one_message():
-    response, events = await stream(sse_body(delta(content="Hel"), delta(content="lo "), delta(content="there"), finish("stop")))
-    message = response.json()["choices"][0]
-    assert message["message"] == {"role": "assistant", "content": "Hello there"}
-    assert message["finish_reason"] == "stop"
-    assert events == [("discard", ""), ("text", "Hel"), ("text", "lo "), ("text", "there")]
+def test_sources_per_tool_kind():
+    m = _mapper()
+    src = lambda name, args=None, source="local": m.map("tool_call", {"name": name, "arguments": args or {}, "source": source})["source"]
+    assert src("get_networth", source="indmoney") == "indmoney"
+    assert src("get_broker_holdings", {"broker": "zerodha"}) == "broker:zerodha"
+    assert src("call_broker_tool", '{"broker":"zerodha"}') == "broker:zerodha"
+    assert src("get_broker_holdings", {"broker": "nope"}) == "broker"
+    assert src("get_broker_holdings", "not json") == "broker"
+    assert src("calculate") == "analysis"
+    assert src("get_portfolio_snapshot") == "saved"
 
 
-@pytest.mark.asyncio
-async def test_request_asks_for_a_stream_with_usage():
-    seen: list = []
-    await stream(sse_body(finish("stop")), seen=seen)
-    assert seen[0]["stream"] is True and seen[0]["stream_options"] == {"include_usage": True}
+def test_progress_never_carries_arguments_results_or_figures():
+    m = _mapper("get_portfolio_snapshot")
+    mapped = [
+        m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {"amount": 125000}, "source": "local"}),
+        m.map("tool_result", {"name": "get_portfolio_snapshot", "result": "₹1,25,000"}),
+        m.map("retry", {"reason": "no_account_tool", "detail": "worth ₹1,25,000"}),
+        m.map("plan", {"stage": "initial", "reason": "125000 rupees"}),
+    ]
+    text = json.dumps(mapped)
+    assert "125000" not in text and "1,25,000" not in text
+    for item in mapped:
+        assert set(item) <= {"seq", "kind", "name", "source", "status"}
 
 
-@pytest.mark.asyncio
-async def test_tool_call_split_by_index_is_assembled():
-    first = delta(tool_calls=[{"index": 0, "id": "c1", "type": "function", "function": {"name": "get_", "arguments": ""}}])
-    second = delta(tool_calls=[{"index": 0, "function": {"name": "holdings", "arguments": '{"a":'}}])
-    third = delta(tool_calls=[{"index": 0, "function": {"arguments": "1}"}}, {"index": 1, "id": "c2", "function": {"name": "x", "arguments": "{}"}}])
-    response, _ = await stream(sse_body(first, second, third, finish("tool_calls")))
-    message = response.json()["choices"][0]["message"]
-    assert message["content"] is None
-    assert [(call["id"], call["function"]["name"], call["function"]["arguments"]) for call in message["tool_calls"]] == [
-        ("c1", "get_holdings", '{"a":1}'), ("c2", "x", "{}")]
+def test_free_text_names_are_dropped():
+    m = _mapper()
+    assert "name" not in m.map("retry", {"reason": "Your balance is 5 lakh"})
 
 
-@pytest.mark.asyncio
-async def test_tool_call_in_one_chunk_without_index_is_kept():
-    whole = delta(tool_calls=[{"id": "c1", "type": "function", "function": {"name": "t", "arguments": '{"q":2}'}}])
-    response, _ = await stream(sse_body(whole, finish("tool_calls")))
-    assert response.json()["choices"][0]["message"]["tool_calls"][0]["function"] == {"name": "t", "arguments": '{"q":2}'}
+def test_tool_result_status_and_planned_step_name():
+    m = _mapper("get_portfolio_snapshot")
+    m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {}, "source": "local", "step": "s1"})
+    assert m.map("tool_result", {"error_kind": "failed"})["status"] == "failed"
+    assert m.map("tool_result", {"errorKind": "auth"})["status"] == "failed"
+    planned = m.map("tool_result", {"step": "s1", "result": "x"})
+    assert planned["status"] == "ok" and planned["name"] == "get_portfolio_snapshot"
+    assert m.map("tool_result", {"name": "get_portfolio_snapshot", "error": "boom"})["status"] == "failed"
 
 
-@pytest.mark.asyncio
-async def test_finish_reason_length_and_usage_match_the_plain_response():
-    usage = {"prompt_tokens": 11, "completion_tokens": 7}
-    response, _ = await stream(sse_body(delta(content="cut"), finish("length"), {"choices": [], "usage": usage}))
-    plain = httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "cut"}, "finish_reason": "length"}], "usage": usage})
-    assert agent._completion_summary(response, 1) == agent._completion_summary(plain, 1)
-    assert agent._completion_summary(response, 1)["prompt_tokens"] == 11
+def test_simple_events():
+    m = ProgressMapper()
+    assert m.map("route", {"category": "account_data", "source": "model"}) == {"seq": 0, "kind": "route", "name": "account_data"}
+    assert m.map("context", {"items": ["a goal"]}) == {"seq": 1, "kind": "context"}
+    assert m.map("model_call", {"provider": "x"}) == {"seq": 2, "kind": "model_call"}
+    assert m.map("validation", {"check": "numbers", "outcome": "ok"}) == {"seq": 3, "kind": "validation", "name": "numbers"}
+    assert m.waiting() == {"seq": 4, "kind": "waiting"}
 
 
-@pytest.mark.asyncio
-async def test_groq_usage_is_read_and_missing_usage_is_left_out():
-    response, _ = await stream(sse_body(delta(content="x"), finish("stop", x_groq={"usage": {"prompt_tokens": 3, "completion_tokens": 2}})))
-    assert agent._completion_summary(response, 1)["completion_tokens"] == 2
-    response, _ = await stream(sse_body(delta(content="x"), finish("stop")))
-    assert "usage" not in response.json()
-    assert agent._completion_summary(response, 1)["prompt_tokens"] is None
+def test_unsent_events_map_to_none():
+    m = ProgressMapper()
+    for event in ("content", "model_result", "plan_stop", "done", "error", "other"):
+        assert m.map(event, {}) is None
 
 
-@pytest.mark.asyncio
-async def test_reasoning_is_never_sent_to_the_sink():
-    response, events = await stream(sse_body(
-        delta(reasoning="thinking about it"), delta(reasoning_content="more"), delta(content="Answer"), finish("stop")))
-    assert [text for kind, text in events if kind == "text"] == ["Answer"]
-    assert "thinking" not in response.text
+def test_response_event_for_an_answer():
+    response = PlainTextResponse("Hello", headers={
+        "X-Agent-Trace": json.dumps([{"kind": "route"}]), "X-Agent-Run": "r1", "X-Questions-Remaining": "4",
+        "X-Credits-Remaining": "90", "X-Credits-Charged": "2"})
+    assert response_event(response) == ("answer", {
+        "text": "Hello", "trace": [{"kind": "route"}], "runId": "r1", "questionsRemaining": 4,
+        "creditsRemaining": 90, "creditsCharged": 2})
+    assert response_event(PlainTextResponse("Hi")) == ("answer", {"text": "Hi", "trace": []})
 
 
-@pytest.mark.asyncio
-async def test_discard_comes_first_and_again_when_tool_calls_follow_text():
-    call = delta(tool_calls=[{"index": 0, "id": "c", "function": {"name": "t", "arguments": "{}"}}])
-    _, events = await stream(sse_body(delta(content="Let me look"), call, finish("tool_calls")))
-    assert [kind for kind, _ in events] == ["discard", "text", "discard"]
+def test_response_event_for_a_failure():
+    response = JSONResponse({"error": "busy", "modelBusy": True, "retryAfterSeconds": 5}, status_code=503)
+    assert response_event(response) == ("error", {"status": 503, "trace": [], "error": "busy", "modelBusy": True, "retryAfterSeconds": 5})
 
 
-@pytest.mark.asyncio
-async def test_mid_stream_dict_error_is_a_400_the_groq_check_detects():
-    error = {"error": {"code": "tool_use_failed", "message": "bad", "failed_generation": "<function=get_holdings>"}}
-    response, events = await stream(sse_body(delta(content="part"), error))
-    assert response.status_code == 400
-    assert agent._failed_tool_generation(response) == "<function=get_holdings>"
-    assert events[-1] == ("discard", "")
+def _two_calls(m, key):
+    m.map("tool_call", {"name": "get_portfolio_snapshot", "arguments": {}, "source": "local", **({"step": "s1"} if key else {})})
+    m.map("tool_call", {"name": "get_networth", "arguments": {}, "source": "indmoney", **({"step": "s2"} if key else {})})
 
 
-@pytest.mark.asyncio
-async def test_mid_stream_string_error_is_a_500_that_matches():
-    response, _ = await stream(sse_body({"error": "error parsing tool call: raw='x'"}))
-    assert response.status_code == 500 and "error parsing tool call" in response.text
+def test_planned_results_in_reverse_order_keep_their_own_name_and_source():
+    m = _mapper("get_portfolio_snapshot", "get_networth")
+    _two_calls(m, True)
+    second = m.map("tool_result", {"step": "s2"})
+    first = m.map("tool_result", {"step": "s1"})
+    assert (second["name"], second["source"]) == ("get_networth", "indmoney")
+    assert (first["name"], first["source"]) == ("get_portfolio_snapshot", "saved")
 
 
-@pytest.mark.asyncio
-async def test_non_success_upstream_keeps_status_and_body():
-    response, events = await stream(b'{"error":{"message":"nope"}}', status=401)
-    assert response.status_code == 401 and response.json()["error"]["message"] == "nope"
-    assert events == [("discard", "")]
+def test_graph_results_in_reverse_order_keep_their_own_source():
+    m = _mapper("get_portfolio_snapshot", "get_networth")
+    _two_calls(m, False)
+    second = m.map("tool_result", {"name": "get_networth"})
+    first = m.map("tool_result", {"name": "get_portfolio_snapshot"})
+    assert (second["name"], second["source"]) == ("get_networth", "indmoney")
+    assert (first["name"], first["source"]) == ("get_portfolio_snapshot", "saved")
 
 
-@pytest.mark.asyncio
-async def test_a_sink_that_raises_does_not_break_the_stream():
-    def broken(kind: str, text: str) -> None:
-        raise RuntimeError("sink down")
-    async with REAL_CLIENT(transport=transport(sse_body(delta(content="ok"), finish("stop")))) as client:
-        response = await agent._streamed_post(client, URL, {}, {}, broken)
-    assert response.json()["choices"][0]["message"]["content"] == "ok"
+# ── The streaming route ─────────────────────────────────────────────────────────
+
+import asyncio  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+
+from app import chat_stream, limits, main, model_gate, plans, users  # noqa: E402
+from app.agent import AgentResult, AgentRunError  # noqa: E402
+
+STREAM = {"Accept": "text/event-stream"}
 
 
-# ── The agent loops ────────────────────────────────────────────────────────────
-
-def patch_provider(monkeypatch, handler):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **kwargs: REAL_CLIENT(transport=httpx.MockTransport(handler), **kwargs))
+def new_chat(client, agent_type="finance"):
+    return client.post("/api/chats", json={"agentType": agent_type}).json()["id"]
 
 
-@pytest.mark.asyncio
-async def test_previous_loop_streams_and_the_content_event_is_the_guarded_text(monkeypatch):
-    seen: list = []
-    raw = "A budget tracks income and spending."
-
-    def handler(request):
-        body = json.loads(request.content)
-        seen.append(body)
-        return httpx.Response(200, content=sse_body(
-            delta(content="A budget tracks "), delta(content="income and spending."), finish("stop")))
-    patch_provider(monkeypatch, handler)
-    drafts: list[tuple[str, str]] = []
-    events = [event async for event in agent.stream_agent(
-        "What is a budget?", "https://unused", None, [], "finance", "openai", on_draft=lambda kind, text: drafts.append((kind, text)))]
-    assert "".join(text for kind, text in drafts if kind == "text") == raw
-    assert ("content", {"text": raw}) in events
-    assert all(name != "delta" for name, _ in events)
-    assert seen[0]["stream"] is True
-
-
-@pytest.mark.asyncio
-async def test_previous_loop_sends_no_stream_key_without_a_sink(monkeypatch):
-    seen: list = []
-
-    def handler(request):
-        seen.append(json.loads(request.content))
-        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "A budget plan."}, "finish_reason": "stop"}]})
-    patch_provider(monkeypatch, handler)
-    answer = await agent.run_agent("What is a budget?", "https://unused", None, [], "finance", "openai")
-    assert answer == "A budget plan." and "stream" not in seen[0]
-
-
-@pytest.mark.asyncio
-async def test_provider_call_streams_and_matches_the_plain_completion(monkeypatch):
-    message = {"role": "assistant", "content": "Done."}
-    config = {"model": "m", "label": "Test", "base_url": "https://provider.test/v1", "api_key": "k", "timeout": 5}
-    plain_client = REAL_CLIENT(transport=httpx.MockTransport(
-        lambda request: httpx.Response(200, json={"choices": [{"message": message, "finish_reason": "stop"}]})))
-    streamed_client = REAL_CLIENT(transport=transport(sse_body(delta(content="Do"), delta(content="ne."), finish("stop"))))
-
-    async def completion(client, on_draft):
-        return [item async for item in agent._provider_call(
-            client, config, "openai", [{"role": "user", "content": "hi"}], None, 1, 0, {"done": True}, on_draft)][-1]
-    drafts: list[tuple[str, str]] = []
-    async with plain_client, streamed_client:
-        plain = await completion(plain_client, None)
-        streamed = await completion(streamed_client, lambda kind, text: drafts.append((kind, text)))
-    assert streamed == plain
-    assert "".join(text for kind, text in drafts if kind == "text") == "Done."
-
-
-# ── The route ──────────────────────────────────────────────────────────────────
-
-SSE = {"Accept": "text/event-stream"}
-
-
-def parse_events(text: str) -> list[tuple[str, dict]]:
-    out = []
-    for block in text.split("\n\n"):
+def parse_events(raw: bytes) -> list[tuple[str, dict]]:
+    events = []
+    for block in raw.decode("utf-8").split("\n\n"):
         lines = [line for line in block.split("\n") if line and not line.startswith(":")]
-        if lines:
-            out.append((lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: "))))
-    return out
+        if not lines:
+            continue
+        name = next(line[len("event: "):] for line in lines if line.startswith("event: "))
+        data = "\n".join(line[len("data: "):] for line in lines if line.startswith("data: "))
+        events.append((name, json.loads(data)))
+    return events
 
 
-def post(client, chat, headers=None, message="What is diversification?"):
-    return client.post("/api/chat", headers=headers or {}, json={"message": message, "chatId": chat["id"], "agentType": "finance"})
+def stream_raw(client, chat_id, message="What is diversification?", agent_type="finance"):
+    with client.stream("POST", "/api/chat", headers=STREAM,
+                       json={"message": message, "chatId": chat_id, "agentType": agent_type}) as response:
+        return response, response.read()
 
 
-class Answer(str):
-    trace = [{"type": "model", "model": "m"}]
-
-
-@pytest.fixture
-def chat_id(client, signed_in):
-    return client.post("/api/chats", json={"agentType": "finance"}).json()
-
-
-def test_stream_sends_deltas_a_reset_after_text_then_one_answer(client, chat_id, monkeypatch):
-    async def fake(*args, on_draft=None, **kwargs):
-        on_draft("discard", "")  # before any text: no reset
-        on_draft("text", "First ")
-        on_draft("text", "try")
-        on_draft("discard", "")
-        on_draft("discard", "")  # nothing sent since the last reset
-        on_draft("text", "Final")
-        return Answer("Final answer.")
-    monkeypatch.setattr(main, "run_agent", fake)
-    response = post(client, chat_id, SSE)
+def stream_ask(client, chat_id, message="What is diversification?", agent_type="finance"):
+    response, raw = stream_raw(client, chat_id, message, agent_type)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.headers["cache-control"] == "no-cache" and response.headers["x-accel-buffering"] == "no"
-    names = [name for name, _ in parse_events(response.text)]
-    assert names == ["delta", "delta", "reset", "delta", "answer"]
-    assert response.text.startswith(": open")
-    saved = client.get(f"/api/chats/{chat_id['id']}").json()
-    assert [item["content"] for item in saved["messages"]] == ["What is diversification?", "Final answer."]
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+    return parse_events(raw)
 
 
-def test_answer_event_equals_the_plain_body_and_headers(client, chat_id, monkeypatch):
-    async def fake(*args, **kwargs):
-        return Answer("Same words.")
-    monkeypatch.setattr(main, "run_agent", fake)
-    plain = post(client, chat_id)
-    streamed = post(client, chat_id, SSE)
-    assert isinstance(plain.text, str) and plain.headers["content-type"].startswith("text/plain")
-    (name, data), = parse_events(streamed.text)
-    assert name == "answer" and data["text"] == plain.text == "Same words."
-    assert data["trace"] == plain.headers["x-agent-trace"]
+def answer_with(monkeypatch, reply="Diversification spreads risk.", events=(("route", {"category": "general_finance"}),)):
+    calls = []
+
+    async def fake_run_agent(message, *args, **kwargs):
+        calls.append(kwargs)
+        for event in events:
+            kwargs["on_event"](*event)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    return calls
 
 
-def test_stream_pre_start_failures_keep_their_json_status(client, chat_id, monkeypatch):
-    missing = client.post("/api/chat", headers=SSE, json={"message": "hi", "chatId": "nope", "agentType": "finance"})
-    assert missing.status_code == 404 and missing.headers["content-type"].startswith("application/json")
-    wrong = client.post("/api/chat", headers=SSE, json={"message": "hi", "chatId": chat_id["id"], "agentType": "portfolio"})
-    assert wrong.status_code == 409
-    user = client.get("/api/session").json()["user"]
-    main._chats_in_flight.add(user["id"])
-    busy = post(client, chat_id, SSE)
-    assert busy.status_code == 429 and busy.json()["chatInFlight"] is True
-    assert user["id"] in main._chats_in_flight  # a refused request must not free someone else's slot
+@pytest.fixture(autouse=True)
+def _no_streams_left():
+    yield
+    main._stream_tasks.clear()
 
 
-@pytest.mark.parametrize("code, status, key", [("model_busy", 503, "modelBusy"), ("chat_deadline", 504, "chatDeadline"), ("provider_error", 502, "code")])
-def test_failures_after_the_start_are_error_events(client, chat_id, monkeypatch, code, status, key):
-    async def fake(*args, **kwargs):
-        raise AgentRunError("boom", [], code=code, retry_after=7)
-    monkeypatch.setattr(main, "run_agent", fake)
-    plain = post(client, chat_id)
-    (name, data), = parse_events(post(client, chat_id, SSE).text)
-    assert name == "error" and data["status"] == status == plain.status_code
-    assert key in data and data["error"] == plain.json()["error"]
+def test_wants_stream_reads_the_accept_header():
+    class Fake:
+        def __init__(self, accept):
+            self.headers = {"accept": accept} if accept is not None else {}
+
+    assert main.wants_stream(Fake("text/event-stream"))
+    assert main.wants_stream(Fake("text/event-stream, */*"))
+    assert not main.wants_stream(Fake("*/*"))
+    assert not main.wants_stream(Fake(None))
 
 
-def test_keepalive_comment_is_sent_while_the_model_works(client, chat_id, monkeypatch):
+def test_streamed_answer_sends_start_progress_then_one_answer(client, signed_in, monkeypatch):
+    answer_with(monkeypatch)
+
+    events = stream_ask(client, new_chat(client))
+
+    assert [name for name, _ in events] == ["progress", "progress", "answer"]
+    assert events[0][1] == {"seq": 0, "kind": "start"}
+    assert events[1][1] == {"seq": 1, "kind": "route", "name": "general_finance"}
+    assert events[-1][1]["text"] == "Diversification spreads risk."
+    assert main._chats_in_flight == set() and main._stream_tasks == set()
+
+
+def test_streamed_answer_matches_the_plain_answer(client, signed_in, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "5")
+    trace = [{"kind": "route", "category": "general_finance", "result_preview": "kept out"}]
+    run_events = [{"seq": 1, "atMs": 0, "kind": "route", "category": "general_finance"}]
+
+    async def fake_run_agent(message, *args, **kwargs):
+        return AgentResult("Diversification spreads risk.", trace, events=run_events)
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    chat_id = new_chat(client)
+
+    plain = client.post("/api/chat", json={"message": "What is diversification?", "chatId": chat_id, "agentType": "finance"})
+    name, streamed = stream_ask(client, chat_id)[-1]
+
+    assert plain.status_code == 200 and name == "answer"
+    assert streamed["text"] == plain.text
+    assert streamed["trace"] == json.loads(plain.headers["X-Agent-Trace"])
+    assert streamed["runId"] and plain.headers["X-Agent-Run"]
+    assert int(plain.headers["X-Questions-Remaining"]) == 4 and streamed["questionsRemaining"] == 3
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert saved[-1]["content"] == "Diversification spreads risk." and saved[-1]["runId"] == streamed["runId"]
+
+
+def test_without_the_accept_header_the_answer_is_plain_text(client, signed_in, monkeypatch):
+    calls = answer_with(monkeypatch, events=())
+
+    response = client.post("/api/chat", json={"message": "What is diversification?", "chatId": new_chat(client), "agentType": "finance"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "Diversification spreads risk."
+    assert "X-Agent-Trace" in response.headers
+    assert "on_event" not in calls[0]  # the plain path reports no progress
+
+
+def test_pre_start_failures_keep_their_status_codes(client, signed_in, monkeypatch):
+    calls = answer_with(monkeypatch)
+    chat_id = new_chat(client)
+
+    main._chats_in_flight.add(signed_in["id"])
+    response, raw = stream_raw(client, chat_id)
+    assert response.status_code == 429 and json.loads(raw)["chatInFlight"] is True
+    main._chats_in_flight.clear()
+
+    response, raw = stream_raw(client, chat_id, agent_type="portfolio")
+    assert response.status_code == 409 and response.headers["content-type"].startswith("application/json")
+    assert main._chats_in_flight == set()
+
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "1")
+    assert stream_ask(client, chat_id)[-1][0] == "answer"
+    response, raw = stream_raw(client, chat_id)
+    assert response.status_code == 429 and json.loads(raw)["dailyLimitReached"] is True
+    assert main._chats_in_flight == set()
+
+    monkeypatch.delenv("DAILY_QUESTION_LIMIT")
+    plans.set_plan(signed_in["id"], "individual")
+    from tests.test_credits import MONTHLY, set_used
+    set_used(signed_in["id"], used=MONTHLY)
+    response, raw = stream_raw(client, chat_id)
+    assert response.status_code == 402 and json.loads(raw)["creditsExhausted"] is True
+    assert main._chats_in_flight == set()
+    assert len(calls) == 1
+
+
+def test_pre_start_exception_releases_the_in_flight_guard(client, signed_in, monkeypatch):
+    async def broken(*args, **kwargs):
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(main, "_prepare_chat", broken)
+
+    with pytest.raises(RuntimeError):
+        stream_raw(client, new_chat(client))
+    assert main._chats_in_flight == set()
+
+
+def test_a_busy_model_after_start_is_an_error_event(client, signed_in, monkeypatch):
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
+    answer_with(monkeypatch, AgentRunError("The assistant is busy. Try again in about 20 seconds.", [],
+                                           code="model_busy", retry_after=20))
+
+    events = stream_ask(client, new_chat(client))
+
+    name, data = events[-1]
+    assert name == "error"
+    assert data["status"] == 503 and data["modelBusy"] is True and data["retryAfterSeconds"] == 20
+    assert data["trace"] == [] and "busy" in data["error"]
+    assert limits.questions_used(signed_in["id"], now=limits.local_now()) == 0
+
+
+def test_a_deadline_after_start_is_an_error_event(client, signed_in, monkeypatch):
+    answer_with(monkeypatch, AgentRunError("The answer took longer than 240 seconds.", [], code="chat_deadline"))
+
+    name, data = stream_ask(client, new_chat(client))[-1]
+
+    assert name == "error" and data["status"] == 504 and data["chatDeadline"] is True
+
+
+def test_the_streamed_run_is_cut_off_at_the_chat_budget(client, signed_in, monkeypatch):
+    monkeypatch.setenv("CHAT_DEADLINE_SECONDS", "0.05")
+    monkeypatch.setattr(main, "CHAT_BACKSTOP_GRACE_SECONDS", 0.05)
+
+    async def stuck(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(main, "run_agent", stuck)
+    started = time.monotonic()
+
+    name, data = stream_ask(client, new_chat(client))[-1]
+
+    assert name == "error" and data["status"] == 504 and data["chatDeadline"] is True
+    assert time.monotonic() - started < 2
+
+
+def test_indmoney_auth_failure_retries_then_asks_to_reconnect(client, signed_in, monkeypatch):
+    from tests.test_api import connect_user_to_indmoney
+
+    connect_user_to_indmoney(signed_in["id"])
+    chat_id = new_chat(client, "portfolio")
+    tokens = []
+
+    async def fake_user_access_token(user_id, *, force_refresh=False):
+        return "fresh-token" if force_refresh else "stale-token"
+
+    async def fake_run_agent(message, mcp_url, token, *args, **kwargs):
+        tokens.append(token)
+        kwargs["on_event"]("route", {"category": "account_data"})
+        raise AgentRunError('MCP tools/call failed for "get_networth": 401 ', [], auth_failed=True)
+
+    monkeypatch.setattr(users, "user_access_token", fake_user_access_token)
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    events = stream_ask(client, chat_id, message="What is my net worth?", agent_type="portfolio")
+
+    assert tokens == ["stale-token", "fresh-token"]
+    assert [name for name, _ in events] == ["progress", "progress", "progress", "error"]
+    assert [data["seq"] for _, data in events[:3]] == [0, 1, 2]
+    name, data = events[-1]
+    assert data["status"] == 401 and data["loginUrl"] == "/auth/indmoney/connect"
+    assert main._chats_in_flight == set()
+
+
+def test_keepalive_when_nothing_happens(client, signed_in, monkeypatch):
     monkeypatch.setattr(chat_stream, "KEEPALIVE_SECONDS", 0.05)
 
-    async def fake(*args, **kwargs):
-        await asyncio.sleep(0.3)
-        return Answer("Late.")
-    monkeypatch.setattr(main, "run_agent", fake)
-    text = post(client, chat_id, SSE).text
-    assert ": keepalive" in text and parse_events(text)[-1][0] == "answer"
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(0.2)
+        return "Diversification spreads risk."
+
+    monkeypatch.setattr(main, "run_agent", slow)
+
+    response, raw = stream_raw(client, new_chat(client))
+
+    assert b": keepalive\n\n" in raw
+    assert parse_events(raw)[-1][0] == "answer"
 
 
-def test_a_sink_failure_in_the_route_does_not_fail_the_answer(client, chat_id, monkeypatch):
-    async def fake(*args, on_draft=None, **kwargs):
-        on_draft("text", "x")
-        return Answer("Fine.")
-    monkeypatch.setattr(main, "run_agent", fake)
-    assert parse_events(post(client, chat_id, SSE).text)[-1][1]["text"] == "Fine."
+def test_a_waiting_model_slot_is_a_progress_event(client, signed_in, monkeypatch):
+    async def waits(*args, **kwargs):
+        model_gate._wait_listener.get()()
+        return "Diversification spreads risk."
+
+    monkeypatch.setattr(main, "run_agent", waits)
+
+    events = stream_ask(client, new_chat(client))
+
+    assert events[1] == ("progress", {"seq": 1, "kind": "waiting"})
 
 
-def test_without_the_accept_header_the_route_is_plain_text(client, chat_id, monkeypatch):
-    async def fake(*args, **kwargs):
-        assert "on_draft" not in kwargs
-        return Answer("Plain.")
-    monkeypatch.setattr(main, "run_agent", fake)
-    response = post(client, chat_id)
-    assert response.headers["content-type"].startswith("text/plain") and response.text == "Plain."
+def test_progress_events_have_only_allowed_keys(client, signed_in, monkeypatch):
+    from app import tasks
+
+    contract = tasks.TaskContract("account_data", allowed_tools=frozenset({"get_portfolio_snapshot"}))
+    answer_with(monkeypatch, events=(
+        ("route", {"category": "general_finance"}),
+        ("contract", {"contract": contract}),
+        ("model_call", {"attempt": 1, "messages": ["secret"]}),
+        ("tool_call", {"name": "get_portfolio_snapshot", "arguments": {"amount": 125000}, "source": "local"}),
+        ("tool_result", {"name": "get_portfolio_snapshot", "result": "₹1,25,000"}),
+        ("content", {"text": "worth ₹1,25,000"}),
+        ("validation", {"check": "numbers", "detail": "125000"}),
+    ))
+
+    events = stream_ask(client, new_chat(client))
+
+    progress = [data for name, data in events if name == "progress"]
+    assert [item["kind"] for item in progress] == ["start", "route", "model_call", "tool_call", "tool_result", "validation"]
+    for item in progress:
+        assert set(item) <= {"seq", "kind", "name", "source", "status"}
+    assert "125000" not in json.dumps(progress) and "1,25,000" not in json.dumps(progress)
 
 
-def test_unexpected_exception_is_a_generic_error_event(client, chat_id, monkeypatch):
-    async def fake(*args, **kwargs):
-        raise ValueError("secret detail")
-    monkeypatch.setattr(main, "run_agent", fake)
-    text = post(client, chat_id, SSE).text
-    assert "secret detail" not in text
+def test_in_flight_is_released_after_a_streamed_failure(client, signed_in, monkeypatch):
+    answer_with(monkeypatch, RuntimeError("model crashed"))
+
+    name, data = stream_ask(client, new_chat(client))[-1]
+
+    assert name == "error" and data["status"] == 502 and "model crashed" not in json.dumps(data)
+    assert main._chats_in_flight == set()
+
+
+def test_a_task_that_raises_ends_with_the_failure_event(client, signed_in, monkeypatch):
+    async def broken(prepared, on_event=None):
+        raise RuntimeError("could not save")
+
+    monkeypatch.setattr(main, "_run_chat", broken)
+
+    name, data = stream_ask(client, new_chat(client))[-1]
+
+    assert (name, data) == ("error", {"status": 502, "trace": [], "error": main.chat_failure_message(None, "")})
+    assert main._chats_in_flight == set()
+
+
+def _wait_until(condition, seconds=2.0):
+    ends = time.monotonic() + seconds
+    while time.monotonic() < ends:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return condition()
+
+
+def test_a_disconnect_still_saves_the_answer(client, signed_in, monkeypatch):
+    """The browser goes away after the first event: the answer is still saved and the slot confirmed."""
+    monkeypatch.setenv("DAILY_QUESTION_LIMIT", "3")
+    release = threading.Event()
+
+    async def slow(*args, **kwargs):
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return "Diversification spreads risk."
+
+    monkeypatch.setattr(main, "run_agent", slow)
+    chat_id = new_chat(client)
+    body = json.dumps({"message": "What is diversification?", "chatId": chat_id, "agentType": "finance"}).encode()
+    cookie = "; ".join(f"{name}={value}" for name, value in client.cookies.items())
+    sent: list[dict] = []
+
+    async def disconnect_after_first_event():
+        first_chunk = asyncio.Event()
+        delivered = False
+
+        async def receive():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            await first_chunk.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            sent.append(message)
+            if message["type"] == "http.response.body" and message.get("body"):
+                first_chunk.set()
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+            "path": "/api/chat", "raw_path": b"/api/chat", "root_path": "", "query_string": b"",
+            "headers": [(b"host", b"testserver"), (b"content-type", b"application/json"),
+                        (b"accept", b"text/event-stream"), (b"cookie", cookie.encode()),
+                        (b"content-length", str(len(body)).encode())],
+            "client": ("testclient", 50000), "server": ("testserver", 80), "state": {},
+        }
+        await main.app(scope, receive, send)
+
+    client.portal.call(disconnect_after_first_event)
+
+    assert sent[0]["status"] == 200
+    assert parse_events(b"".join(m.get("body", b"") for m in sent[1:]))[0][1] == {"seq": 0, "kind": "start"}
+    assert len(main._stream_tasks) == 1 and main._chats_in_flight == {signed_in["id"]}  # still answering
+
+    release.set()
+    assert _wait_until(lambda: not main._stream_tasks)
+
+    assert main._chats_in_flight == set()
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert saved[-1]["content"] == "Diversification spreads risk."
+    assert limits.questions_used(signed_in["id"], now=limits.local_now()) == 1
 
 
 @pytest.mark.asyncio
-async def test_closing_the_stream_leaves_the_task_to_finish_and_save(client, chat_id, monkeypatch):
-    sid = client.cookies.get(main.SESSION_COOKIE)
-    request = Request({"type": "http", "headers": [(b"cookie", f"{main.SESSION_COOKIE}={sid}".encode())], "scheme": "http", "server": ("t", 80), "path": "/api/chat", "query_string": b""})
-    user = main.current_user(request)
+async def test_closing_the_event_stream_never_cancels_the_answer():
     release = asyncio.Event()
+    queue: asyncio.Queue[dict] = asyncio.Queue()
 
-    async def fake(*args, on_draft=None, **kwargs):
-        on_draft("text", "Hello")
+    async def answer():
+        queue.put_nowait({"seq": 1, "kind": "model_call"})
         await release.wait()
-        return Answer("Saved after the browser left.")
-    monkeypatch.setattr(main, "run_agent", fake)
-    confirmed: list = []
-    monkeypatch.setattr(main.limits, "confirm_question", lambda reservation: confirmed.append(reservation))
-    body = main.ChatRequest(message="Hi there", chatId=chat_id["id"], agentType="finance")
-    main._chats_in_flight.add(user["id"])  # what chat() does before handing off
-    started = await main._start_streamed_chat(body, request, user, "Hi there", "openai")
-    assert not isinstance(started, main.Response)
-    stream, task = started
-    events = stream.events(task)
-    assert await events.__anext__() == ": open\n\n"
-    assert "Hello" in await events.__anext__()
-    await events.aclose()  # the browser left
-    assert not task.done() and user["id"] in main._chats_in_flight
+        return PlainTextResponse("Saved anyway.")
+
+    task = asyncio.create_task(answer())
+    stream = chat_stream.events(task, queue, {"seq": 0, "kind": "start"}, {"status": 502})
+
+    assert await anext(stream) == sse("progress", {"seq": 0, "kind": "start"})
+    assert await anext(stream) == sse("progress", {"seq": 1, "kind": "model_call"})
+    pending = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.01)
+    pending.cancel()  # the client went away while the stream was waiting
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    await stream.aclose()
+
+    assert not task.done()
     release.set()
+    assert bytes((await task).body) == b"Saved anyway."
+
+
+@pytest.mark.asyncio
+async def test_the_event_stream_drains_progress_before_the_final_event(monkeypatch):
+    monkeypatch.setattr(chat_stream, "KEEPALIVE_SECONDS", 5)
+    queue: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def answer():
+        for seq in (1, 2, 3):
+            queue.put_nowait({"seq": seq, "kind": "model_call"})
+        return PlainTextResponse("Done.")
+
+    task = asyncio.create_task(answer())
     await task
-    assert user["id"] not in main._chats_in_flight
-    assert confirmed
-    assert main.chats.read_chat(user, chat_id["id"])["messages"][-1]["content"] == "Saved after the browser left."
+    chunks = [chunk async for chunk in chat_stream.events(task, queue, {"seq": 0, "kind": "start"}, {"status": 502})]
+
+    events = parse_events(b"".join(chunks))
+    assert [data.get("seq") for _, data in events[:-1]] == [0, 1, 2, 3]
+    assert events[-1] == ("answer", {"text": "Done.", "trace": []})
+
+
+@pytest.mark.asyncio
+async def test_a_failed_task_ends_the_stream_with_the_failure_event():
+    async def answer():
+        raise RuntimeError("boom")
+
+    task = asyncio.create_task(answer())
+    chunks = [chunk async for chunk in chat_stream.events(task, asyncio.Queue(), {"seq": 0, "kind": "start"},
+                                                          {"status": 502, "trace": [], "error": "Try again."})]
+
+    assert parse_events(b"".join(chunks))[-1] == ("error", {"status": 502, "trace": [], "error": "Try again."})
+
+
+async def _shutdown_with(monkeypatch, task):
+    monkeypatch.setattr(main.db, "claim_single_process", lambda: None)
+    monkeypatch.setenv("SNAPSHOT_SCHEDULER_ENABLED", "false")
+    main._stream_tasks.add(task)
+    async with main.lifespan(main.app):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_a_streamed_answer_still_running(monkeypatch):
+    finished = []
+
+    async def slow():
+        await asyncio.sleep(0.2)
+        finished.append(True)
+
+    await _shutdown_with(monkeypatch, asyncio.create_task(slow()))
+    assert finished == [True]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_wait_is_bounded_and_logged(monkeypatch, caplog):
+    monkeypatch.setattr(main, "STREAM_SHUTDOWN_WAIT_SECONDS", 0.05)
+    task = asyncio.create_task(asyncio.sleep(30))
+    started = time.monotonic()
+    with caplog.at_level("WARNING", logger="ca_mode"):
+        await _shutdown_with(monkeypatch, task)
+    assert time.monotonic() - started < 2
+    assert any("chat_stream_tasks_unfinished_at_shutdown" in r.getMessage() for r in caplog.records)
+    task.cancel()

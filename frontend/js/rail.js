@@ -110,7 +110,7 @@ function renderRailChats() {
     railChats.innerHTML = railMessage('Your other conversations show here.');
     return;
   }
-  railChats.innerHTML = `<ul class="rail-chat-list">${recent.map((chat) => `<li><button class="rail-chat" type="button" data-rail-chat="${escHtml(chat.id)}" title="${escHtml(chat.title || 'New chat')}">${escHtml(chat.title || 'New chat')}</button></li>`).join('')}</ul>`;
+  railChats.innerHTML = `<ul class="rail-chat-list">${recent.map((chat) => `<li><button class="rail-chat" type="button" data-rail-chat="${escHtml(chat.id)}" title="${escHtml(chat.title || 'New chat')}"><span class="rail-chat-title">${escHtml(chat.title || 'New chat')}</span><span class="rail-chat-day">${escHtml(relativeDay(chat.updatedAt))}</span></button></li>`).join('')}</ul>`;
 }
 
 railChats.addEventListener('click', (event) => {

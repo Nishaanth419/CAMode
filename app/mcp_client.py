@@ -1,4 +1,11 @@
-"""Small Streamable HTTP MCP client used for INDmoney tool discovery/calls."""
+"""Small Streamable HTTP MCP client used for INDmoney tool discovery/calls.
+
+Only the read-only tools in ``IMPORTANT_PORTFOLIO_TOOL_NAMES`` are ever offered
+(``filter_portfolio_tools()`` drops everything else the server exposes, write tools included).
+``McpAuthError`` (HTTP 401 or auth-failure text) is the only error that triggers a token
+refresh; ``McpToolError`` (an ``isError`` result the model can fix) goes back to the model.
+A broker's server is called with ``token=None`` and must never raise ``McpAuthError``.
+"""
 
 from __future__ import annotations
 

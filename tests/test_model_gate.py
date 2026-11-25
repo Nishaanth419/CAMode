@@ -132,3 +132,55 @@ async def test_a_busy_model_ends_the_answer_with_model_busy(monkeypatch):
     assert failed.value.code == "model_busy"
     assert failed.value.retry_after >= 5
     holder.cancel()
+
+
+@pytest.mark.asyncio
+async def test_wait_listener_is_told_when_the_slot_is_taken(monkeypatch):
+    monkeypatch.setenv("MODEL_CONCURRENCY", "1")
+    told = []
+    holder = asyncio.create_task(model_gate.call("ollama", lambda: slow(0.1)))
+    await asyncio.sleep(0.01)
+
+    async def waiting_call():
+        with model_gate.chat_budget(5), model_gate.wait_listener(lambda: told.append(1)):
+            return await model_gate.call("ollama", lambda: slow(0))
+
+    assert (await waiting_call()).is_success
+    await holder
+    assert told == [1]
+
+
+@pytest.mark.asyncio
+async def test_wait_listener_is_quiet_when_a_slot_is_free(monkeypatch):
+    monkeypatch.setenv("MODEL_CONCURRENCY", "1")
+    told = []
+    with model_gate.chat_budget(5), model_gate.wait_listener(lambda: told.append(1)):
+        await model_gate.call("ollama", lambda: slow(0))
+    assert told == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_wait_listener_never_fails_the_call(monkeypatch):
+    monkeypatch.setenv("MODEL_CONCURRENCY", "1")
+    holder = asyncio.create_task(model_gate.call("ollama", lambda: slow(0.1)))
+    await asyncio.sleep(0.01)
+
+    def broken():
+        raise RuntimeError("boom")
+
+    with model_gate.chat_budget(5), model_gate.wait_listener(broken):
+        response = await model_gate.call("ollama", lambda: slow(0))
+    await holder
+    assert response.is_success
+
+
+@pytest.mark.asyncio
+async def test_cloud_providers_never_call_the_wait_listener(monkeypatch):
+    monkeypatch.setenv("MODEL_CONCURRENCY", "1")
+    told = []
+    holder = asyncio.create_task(model_gate.call("ollama", lambda: slow(0.1)))
+    await asyncio.sleep(0.01)
+    with model_gate.wait_listener(lambda: told.append(1)):
+        await model_gate.call("openai", lambda: slow(0))
+    await holder
+    assert told == []

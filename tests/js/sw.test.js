@@ -101,3 +101,8 @@ test('API, auth and other files are never answered from the cache', async () => 
   assert.equal(await worker.dispatch('fetch', { request: worker.request('/brokers/zerodha.png') }), undefined);
   assert.equal(await worker.dispatch('fetch', { request: { url: 'https://cdn.plot.ly/plotly.js', method: 'GET', mode: 'no-cors' } }), undefined);
 });
+
+test('the icon sprite is part of the cached shell', () => {
+  assert.match(SOURCE, /APP_SHELL = \[[^\]]*'\/icons\.svg'/);
+  assert.match(SOURCE, /APP_SHELL = \[[^\]]*'\/js\/shell\.js'/);
+});

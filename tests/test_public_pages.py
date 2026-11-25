@@ -199,3 +199,15 @@ def test_shell_template_is_read_once():
     public_pages.app_shell(ORIGIN)
 
     assert public_pages._shell_template.cache_info().misses == 1
+
+
+@pytest.mark.parametrize("path", ["/privacy", "/terms", "/pricing", "/no-such-page"])
+def test_public_pages_load_geist_and_the_new_theme_colours(client, path):
+    html = client.get(path).text
+
+    assert "family=Geist:wght@400;500;600;700" in html
+    assert '<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)"' in html
+    assert 'content="#000000" media="(prefers-color-scheme: dark)"' in html
+    assert "/css/public.css?v=5" in html
+    assert "#0a1a15" not in html
+    assert "#f4f7f5" not in html

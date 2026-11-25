@@ -10,7 +10,7 @@ model or proxy timeout. Instead:
   slot, later calls of the same answer wait as long as its budget allows, so an answer is not abandoned
   halfway. Cloud providers are not queued here.
 - **A budget per chat.** ``chat_budget()`` (``main.chat``) gives the whole answer ``CHAT_DEADLINE_SECONDS``
-  (240), below the proxy's timeout; every model call is cut off when it runs out (``DeadlineReached``).
+  (240; streamed answers keep the connection alive, so only a silent non-streamed request needs it below the proxy's timeout); every model call is cut off when it runs out (``DeadlineReached``).
   ``call_deadline()`` narrows it further for a stretch of the answer (the general agent's own deadline).
 - **The last good call.** ``status()`` reports when a model call last succeeded, for the admin page.
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import math
 import os
 import time
@@ -31,6 +32,8 @@ from dataclasses import dataclass
 from typing import Any, Final, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 # Queued: the one local model. Cloud providers scale on their side.
 GATED_PROVIDERS: Final = frozenset({"ollama"})
@@ -84,6 +87,9 @@ class _Budget:
 
 _budget: contextvars.ContextVar[_Budget | None] = contextvars.ContextVar("model_budget", default=None)
 _call_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("model_call_deadline", default=None)
+_wait_listener: contextvars.ContextVar[Callable[[], None] | None] = contextvars.ContextVar(
+    "model_wait_listener", default=None
+)
 # asyncio primitives belong to one event loop; the tests start several.
 _slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = weakref.WeakKeyDictionary()
 _last_success: dict[str, float] = {}
@@ -108,6 +114,16 @@ def call_deadline(deadline: float | None) -> Iterator[None]:
         yield
     finally:
         _call_deadline.reset(token)
+
+
+@contextmanager
+def wait_listener(callback: Callable[[], None] | None) -> Iterator[None]:
+    """Tell ``callback`` once per model call inside this block that has to wait for a slot; None changes nothing."""
+    token = _wait_listener.set(callback)
+    try:
+        yield
+    finally:
+        _wait_listener.reset(token)
 
 
 def remaining() -> float | None:
@@ -148,6 +164,12 @@ async def call(provider: str, request: Callable[[], Awaitable[T]]) -> T:
             wait, busy = queue_seconds(), True
             if left is not None and left < wait:
                 wait, busy = left, False
+        listener = _wait_listener.get()
+        if listener is not None and semaphore.locked():
+            try:
+                listener()
+            except Exception:
+                logger.warning("model_wait_listener_failed", exc_info=True)
         _waiting += 1
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=wait)

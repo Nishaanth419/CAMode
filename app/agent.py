@@ -1,4 +1,16 @@
-"""OpenAI-compatible provider chat loop with INDmoney MCP tools."""
+"""OpenAI-compatible provider chat loop with INDmoney MCP tools.
+
+Conventions kept here because nothing else states them:
+
+- The model quotes tool figures and never computes; ``_number_warning()`` flags amounts
+  that match no tool result, message or saved context.
+- Only ``McpAuthError`` ends a request as an auth failure (``AgentRunError.auth_failed``);
+  callers check that flag, never the message text, before refreshing the INDmoney token.
+  Other tool failures go back to the model as error tool results.
+- Task contracts observe an answer and never change it; the one enforced rule is that an
+  account-data question needs an account tool.
+- A trace is capped by ``bounded_trace()`` and redacted by ``redact_trace_text()``.
+"""
 
 from __future__ import annotations
 
@@ -1840,18 +1852,40 @@ class _TraceBuilder:
                            **({"detail": recorded["detail"]} if recorded.get("detail") else {})})
 
 
+def _notifier(on_event: Callable[[str, dict[str, Any]], None] | None) -> Callable[[str, dict[str, Any]], None]:
+    """Wrap a progress listener so it can never fail the answer; the first failure is logged, once."""
+    failed = False
+
+    def notify(event_type: str, payload: dict[str, Any]) -> None:
+        nonlocal failed
+        if on_event is None:
+            return
+        try:
+            on_event(event_type, payload)
+        except Exception:
+            if not failed:
+                failed = True
+                logger.warning("agent_event_listener_failed", exc_info=True)
+
+    return notify
+
+
 def _contract_verdict(
     contract: tasks.TaskContract | None, recorder: RunRecorder, answer: str, trace: _TraceBuilder,
+    notify: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any] | None:
     """Evaluate the run against its contract and record the result as a validation event and trace step."""
     if contract is None:
         return None
     verdict = tasks.evaluate(contract, tasks.facts_from_events(recorder.events, answer))
     failed = [f"{item['check']}: {item.get('detail', item['outcome'])}" for item in verdict["checks"] if item["outcome"] == "failed"]
-    recorded = recorder.add("validation", {
+    check = {
         "check": "task_contract", "outcome": "passed" if verdict["status"] == "met" else "failed",
         "detail": f"{contract.task}: " + ("; ".join(failed) if failed else "met"),
-    })
+    }
+    recorded = recorder.add("validation", check)
+    if notify:
+        notify("validation", check)
     if recorded and contract.task != "refusal":  # A fixed refusal needs no check step under it.
         trace.add_check(recorded)
     return verdict
@@ -1868,9 +1902,14 @@ async def run_agent(
     context: PortfolioContext | None = None,
     saved_context: SavedContext | None = None,
     plan_parts: Sequence[str] = (),
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
     on_draft: DraftSink | None = None,
 ) -> AgentResult:
-    """Collect the answer, the trace, the recorded events and the contract verdict from the agent event stream."""
+    """Collect the answer, the trace, the recorded events and the contract verdict from the agent event stream.
+
+    `on_event` hears every `(event_type, payload)` as it happens, then the task-contract validation; a listener
+    that raises is logged once and never changes the answer."""
+    notify = _notifier(on_event)
     answer_parts: list[str] = []
     recorder = RunRecorder()
     trace = _TraceBuilder()
@@ -1885,13 +1924,14 @@ async def run_agent(
             contract = payload["contract"]
         recorded = recorder.add(event_type, payload)
         trace.add(event_type, payload, recorded)
+        notify(event_type, payload)
         if event_type == "content":
             answer_parts.append(payload.get("text", ""))
         elif event_type == "error":
             last_error = payload
     trace.finish_model_step("completed")
     answer = "".join(answer_parts)
-    verdict = _contract_verdict(contract, recorder, answer, trace)
+    verdict = _contract_verdict(contract, recorder, answer, trace, notify)
     if not answer:
         auth_failed = bool(last_error and last_error.get("auth_failed"))
         code = (last_error or {}).get("code")

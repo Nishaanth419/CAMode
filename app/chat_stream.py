@@ -1,37 +1,149 @@
-"""Server-sent events for ``POST /api/chat`` when the browser asks for ``text/event-stream``.
-
-The answer text streams as the model writes it (``delta``), then the checked, saved answer replaces the draft
-(``answer``). A draft can be void (a retry, tool calls after preface text): ``reset`` clears it. A failure after
-the stream started is an ``error`` event carrying the status and body the plain route would have returned.
-
-Draft text is answer text the person sees anyway, but it is never logged, and no tool arguments or results
-are ever put in an event. The plain route is unchanged when the header is absent.
-"""
-
+"""Progress events for a streamed chat answer: map agent events to safe dicts and frame server-sent events."""
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Final
 
-from fastapi import Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi import Response
 
-logger = logging.getLogger("ca_mode.chat_stream")
+from . import analysis_tools, brokers
 
-KEEPALIVE_SECONDS: float = 15
-HEADERS: Final = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-GENERIC_ERROR: Final = "Something went wrong while answering. Try again."
+KEEPALIVE_SECONDS: Final = 15
+KEEPALIVE: Final = b": keepalive\n\n"
+STREAM_EVENT: Final = "_event"  # marks a queued delta/reset; progress items never carry it
 
-
-def wants_stream(request: Request) -> bool:
-    return "text/event-stream" in request.headers.get("accept", "").lower()
+_IDENTIFIER: Final = re.compile(r"^[a-z0-9_]{1,40}$")
+_BROKER_TOOLS: Final = frozenset({"get_broker_holdings", "call_broker_tool"})
 
 
-def sse(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=True, separators=(',', ':'))}\n\n"
+def sse(event: str, data: dict[str, Any]) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode("utf-8")
+
+
+def _identifier(value: Any) -> str | None:
+    """A short fixed identifier (never free text), else None."""
+    return value if isinstance(value, str) and _IDENTIFIER.match(value) else None
+
+
+def _broker_id(arguments: Any) -> str | None:
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return None
+    broker = arguments.get("broker") if isinstance(arguments, dict) else None
+    return broker if isinstance(broker, str) and broker in brokers.BROKERS else None
+
+
+class ProgressMapper:
+    """Turns agent events into progress dicts holding only seq, kind, name, source and status."""
+
+    def __init__(self) -> None:
+        self._seq = 0
+        self._allowed: set[str] = set()
+        self._last_call: dict[str, Any] = {}
+        self._calls: dict[str, dict[str, Any]] = {}
+
+    def _next(self, kind: str, **fields: Any) -> dict[str, Any]:
+        item = {"seq": self._seq, "kind": kind, **{k: v for k, v in fields.items() if v is not None}}
+        self._seq += 1
+        return item
+
+    def start(self) -> dict[str, Any]:
+        return self._next("start")
+
+    def waiting(self) -> dict[str, Any]:
+        return self._next("waiting")
+
+    def _remember(self, contract: Any) -> None:
+        self._allowed.update(getattr(contract, "allowed_tools", ()) or ())
+        for part in getattr(contract, "parts", ()) or ():
+            self._remember(part)
+
+    def _source(self, name: str, data: dict[str, Any]) -> str:
+        if name in _BROKER_TOOLS:
+            broker = _broker_id(data.get("arguments"))
+            return f"broker:{broker}" if broker else "broker"
+        if data.get("source") == "indmoney":
+            return "indmoney"
+        if name in analysis_tools.ANALYSIS_TOOL_NAMES:
+            return "analysis"
+        return "saved"
+
+    def map(self, event: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        if event == "contract":
+            self._remember(data.get("contract"))
+            return None
+        if event == "route":
+            return self._next("route", name=_identifier(data.get("category")))
+        if event in ("context", "model_call"):
+            return self._next(event)
+        if event == "retry":
+            return self._next("retry", name=_identifier(data.get("reason")))
+        if event == "validation":
+            return self._next("validation", name=_identifier(data.get("check")))
+        if event == "plan":
+            return self._next("plan", name=_identifier(data.get("stage")))
+        if event == "tool_call":
+            name = str(data.get("name", ""))
+            source = self._source(name, data)
+            self._last_call = {"name": name, "source": source}
+            # Results can arrive in another order than calls, so remember each by its step (planned runs) or name.
+            key = data.get("step") if isinstance(data.get("step"), str) else name
+            self._calls[key] = self._last_call
+            return self._next("tool_call", name=name if name in self._allowed else None, source=source)
+        if event == "tool_result":
+            key = data.get("step") if isinstance(data.get("step"), str) else data.get("name")
+            call = self._calls.get(key) if isinstance(key, str) else None
+            if call is None and not isinstance(key, str):
+                call = self._last_call
+            call = call or {}
+            name = call.get("name") or (data.get("name") if isinstance(data.get("name"), str) else "")
+            source = call.get("source") or self._source(name, {})
+            failed = any(data.get(key) for key in ("error", "error_kind", "errorKind"))
+            return self._next("tool_result", name=name if name in self._allowed else None, source=source,
+                              status="failed" if failed else "ok")
+        return None
+
+
+class DraftMapper:
+    """Turns the draft side channel (``DraftSink``) into ``delta`` / ``reset`` queue items.
+
+    A discard becomes a ``reset`` only when text was sent since the last one. Text is the answer the person sees
+    anyway; it is never logged."""
+
+    def __init__(self, put: Callable[[dict[str, Any]], None]) -> None:
+        self._put = put
+        self._drafting = False
+
+    def __call__(self, kind: str, text: str = "") -> None:
+        if kind == "text" and text:
+            self._drafting = True
+            self._put({STREAM_EVENT: "delta", "text": text})
+        elif kind == "discard" and self._drafting:
+            self._drafting = False
+            self._put({STREAM_EVENT: "reset"})
+
+
+def frame(item: dict[str, Any]) -> bytes:
+    """One queued item as an event: ``delta`` / ``reset`` carry their name, everything else is ``progress``."""
+    if STREAM_EVENT in item:
+        return sse(item[STREAM_EVENT], {k: v for k, v in item.items() if k != STREAM_EVENT})
+    return sse("progress", item)
+
+
+def parse_trace_header(value: str | None) -> list[dict[str, Any]]:
+    """Inverse of ``main.trace_header()``: the compact trace, or [] when absent or unreadable."""
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _int_header(response: Response, name: str) -> int | None:
@@ -41,59 +153,51 @@ def _int_header(response: Response, name: str) -> int | None:
         return None
 
 
-def final_event(outcome: Response | BaseException | None) -> tuple[str, dict[str, Any]]:
-    """The ``answer`` or ``error`` event for what the chat run ended with."""
-    if isinstance(outcome, PlainTextResponse):
-        data: dict[str, Any] = {"text": bytes(outcome.body).decode("utf-8", errors="replace"),
-                                "trace": outcome.headers.get("X-Agent-Trace", "[]")}
-        if run_id := outcome.headers.get("X-Agent-Run"):
+def response_event(response: Response) -> tuple[str, dict[str, Any]]:
+    """The one final event for the chat route's finished response."""
+    body = bytes(response.body).decode("utf-8", errors="replace")
+    trace = parse_trace_header(response.headers.get("X-Agent-Trace"))
+    if response.status_code == 200 and "json" not in response.headers.get("content-type", ""):
+        data: dict[str, Any] = {"text": body, "trace": trace}
+        if run_id := response.headers.get("X-Agent-Run"):
             data["runId"] = run_id
         for key, header in (("questionsRemaining", "X-Questions-Remaining"), ("creditsRemaining", "X-Credits-Remaining"),
                             ("creditsCharged", "X-Credits-Charged")):
-            if (value := _int_header(outcome, header)) is not None:
-                data[key] = value
+            if (number := _int_header(response, header)) is not None:
+                data[key] = number
         return "answer", data
-    if isinstance(outcome, JSONResponse):
+    try:
+        details = json.loads(body)
+    except ValueError:
+        details = {}
+    return "error", {"status": response.status_code, "trace": trace, **(details if isinstance(details, dict) else {})}
+
+
+async def events(
+    task: asyncio.Task[Response], queue: asyncio.Queue[dict[str, Any]], first: dict[str, Any], failure: dict[str, Any],
+) -> AsyncIterator[bytes]:
+    """The stream for one answer: ``first``, queued progress, keepalives, then one ``answer`` or ``error`` event.
+
+    Closing or cancelling this generator (the browser went away) never cancels ``task``: it finishes and saves.
+    """
+    yield sse("progress", first)
+    while True:
+        while not queue.empty():
+            yield frame(queue.get_nowait())
+        if task.done():
+            break
+        getter = asyncio.ensure_future(queue.get())
         try:
-            body = json.loads(bytes(outcome.body))
-        except ValueError:
-            body = {}
-        body = body if isinstance(body, dict) else {}
-        return "error", {"status": outcome.status_code, **body, "trace": outcome.headers.get("X-Agent-Trace", "")}
-    if isinstance(outcome, BaseException):
-        logger.error("chat_stream_failed", exc_info=(type(outcome), outcome, outcome.__traceback__))
-    return "error", {"status": 500, "error": GENERIC_ERROR, "trace": ""}
-
-
-class AnswerStream:
-    """The queue between the answer's background task and the response that sends its events."""
-
-    def __init__(self) -> None:
-        self.queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-        self.drafting = False  # text has been sent since the last reset
-
-    def on_draft(self, kind: str, text: str) -> None:
-        """The agent's ``DraftSink``: text becomes ``delta``; a discard becomes ``reset`` only if text was sent."""
-        if kind == "text":
-            self.drafting = True
-            self.queue.put_nowait(("event", sse("delta", {"text": text})))
-        elif kind == "discard" and self.drafting:
-            self.drafting = False
-            self.queue.put_nowait(("event", sse("reset", {})))
-
-    def finish(self, outcome: Response | BaseException | None) -> None:
-        self.queue.put_nowait(("final", outcome))
-
-    async def events(self, task: asyncio.Task[Any] | None = None) -> AsyncIterator[str]:
-        """SSE text until the final event. Closing this generator (the browser left) never stops the task."""
-        yield ": open\n\n"
-        while True:
-            try:
-                kind, item = await asyncio.wait_for(self.queue.get(), KEEPALIVE_SECONDS)
-            except TimeoutError:
-                yield ": keepalive\n\n"
-                continue
-            if kind == "final":
-                yield sse(*final_event(item))
-                return
-            yield item
+            # asyncio.wait never cancels what it waits on, so a cancelled stream leaves the task running.
+            done, _ = await asyncio.wait({getter, task}, timeout=KEEPALIVE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not getter.done():
+                getter.cancel()
+        if getter.done() and not getter.cancelled():
+            yield frame(getter.result())
+        elif not done:
+            yield KEEPALIVE
+    if task.cancelled() or task.exception() is not None:
+        yield sse("error", failure)
+    else:
+        yield sse(*response_event(task.result()))

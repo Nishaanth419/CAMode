@@ -1,48 +1,81 @@
-/* Admin page (/admin), on top of public.css. */
-:root { --warn: #a15c00; --danger: #b42318; --muted-bg: rgba(15, 42, 32, .05); }
-@media (prefers-color-scheme: dark) {
-  :root { --warn: #f0b45a; --danger: #ff8a7a; --muted-bg: rgba(255, 255, 255, .05); }
-}
+/* Admin page (/admin), on top of public.css and its tokens. */
 .public-page-wide { max-width: 1240px; }
 .public-page-wide > #admin section { max-width: none; }
-.admin-muted { color: var(--text-soft); font-size: 14px; }
-.admin-error { color: var(--danger); font-size: 14px; }
-.admin-message { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: var(--muted-bg); }
-.admin-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 16px; }
-.admin-signin { max-width: 520px; }
+.admin-muted { color: var(--text-soft); font-size: 14px; line-height: 20px; }
+.admin-error { color: var(--loss-text); font-size: 14px; line-height: 20px; }
+.admin-message { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: var(--surface); color: var(--text); font-size: 14px; line-height: 20px; }
+.admin-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
 
-button, select, input[type=search] {
-  font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+/* Sign-in: a centred column on the canvas, like the app's sign-in. */
+.admin-signin { display: grid; justify-items: center; gap: 12px; width: min(400px, 100%); margin: 32px auto 0; text-align: center; }
+.admin-signin h2, .admin-signin p { margin: 0; }
+.admin-signin p { font-size: 14px; line-height: 20px; }
+.admin-signin .public-button { margin: 8px 0 0; }
+
+/* Controls: inputs outlined; buttons are the outlined secondary style, hover changes the background only. */
+button, select, input[type=search], input[type=text] {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
 }
-button { cursor: pointer; }
-button:hover { border-color: var(--accent); }
-button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.admin-danger { color: var(--danger); }
-.admin-danger:hover { border-color: var(--danger); }
+select, input[type=search], input[type=text] { border-radius: 6px; }
+button { cursor: pointer; font-weight: 500; }
+button:hover { background: var(--surface-2); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.admin-danger { border-color: var(--danger-border); background: transparent; color: var(--loss-text); }
+.admin-danger:hover { background: var(--red-soft); }
+.admin-primary { border-color: transparent; background: var(--accent); color: var(--accent-ink); }
+.admin-primary:hover { background: var(--accent-3); }
 
-.admin-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 0 0 14px; }
-.admin-tile { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
-.admin-tile strong { font-size: 26px; line-height: 1.2; font-variant-numeric: tabular-nums; }
-.admin-tile-label { color: var(--text-soft); font-size: 13px; }
+/* Totals: one surface block of figures, like the app's KPI strip. */
+.admin-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 24px; margin: 0 0 32px; padding: 24px; border-radius: 12px; background: var(--surface); }
+.admin-tile { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.admin-tile strong { color: var(--text); font-size: 24px; font-weight: 600; line-height: 32px; font-variant-numeric: tabular-nums; }
+.admin-tile-label { color: var(--text-soft); font-size: 12px; line-height: 16px; }
+.admin-tile .admin-muted { color: var(--text-muted); font-size: 12px; line-height: 16px; }
 
-.admin-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; }
+/* Profiles: the app's data table. */
+.admin-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
 .admin-section-head h2 { margin: 0; }
 .admin-section-head input { min-width: 0; width: min(280px, 100%); }
-.admin-table-wrap { overflow-x: auto; margin: 0 -20px; padding: 0 20px; }
-.admin-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 14px; }
-.admin-table th { text-align: left; font-weight: 600; color: var(--text-soft); padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.admin-table td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.admin-table tr:last-child td { border-bottom: 0; }
-.admin-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.admin-table-wrap { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+.admin-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 14px; line-height: 20px; font-variant-numeric: tabular-nums; }
+.admin-table th { padding: 12px; border-bottom: 1px solid var(--line); color: var(--text-soft); font-size: 12px; font-weight: 500; line-height: 16px; text-align: left; white-space: nowrap; }
+.admin-table td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.admin-table tbody tr:last-child td { border-bottom: 0; }
+.admin-table tbody tr:hover { background: var(--surface); }
+.admin-table td strong { font-weight: 600; }
+.admin-table .admin-muted { color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .admin-actions button { white-space: nowrap; }
 .admin-badges { display: flex; flex-wrap: wrap; gap: 4px; }
-.admin-badge { padding: 2px 8px; border-radius: 999px; background: var(--muted-bg); font-size: 12px; white-space: nowrap; }
-.admin-badge-warn { color: var(--warn); }
+.admin-badge { padding: 2px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text-soft); font-size: 12px; font-weight: 500; line-height: 16px; white-space: nowrap; }
+.admin-badge-warn { color: var(--warning-text); }
 
-.admin-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.admin-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 32px; margin-top: 32px; }
 .admin-columns section { margin: 0; }
-.admin-columns p { margin: 0 0 12px; }
+.admin-columns p { margin: 0 0 12px; font-size: 14px; line-height: 20px; }
 .admin-views { list-style: none; margin: 0; padding: 0; }
-.admin-views li { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.admin-views li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 20px; font-variant-numeric: tabular-nums; }
 .admin-views li:last-child { border-bottom: 0; }
+
+/* Confirmation dialog (admin.js askAdmin): floating chrome, so it alone has a shadow. */
+.admin-dialog { width: min(420px, calc(100% - 32px)); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); }
+.admin-dialog::backdrop { background: var(--scrim); }
+.admin-dialog form { display: grid; gap: 16px; padding: 24px; }
+.admin-dialog h2 { margin: 0; font-size: 18px; line-height: 28px; }
+.admin-dialog p { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 20px; }
+.admin-field { display: grid; gap: 8px; color: var(--text-soft); font-size: 12px; line-height: 16px; }
+.admin-field input { width: 100%; min-height: 40px; }
+.admin-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.admin-dialog-actions button { min-height: 40px; padding: 0 16px; }
+
+@media (forced-colors: active) {
+  .admin-tiles, .admin-dialog { border: 1px solid CanvasText; }
+}
