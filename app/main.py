@@ -12,6 +12,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Final, Literal
 from urllib.parse import quote, urlencode, urlsplit
@@ -19,12 +20,12 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
+from . import accounts, admin, agent_runs, backup, benchmarks, broker_history, broker_oauth, brokers, cas, chat_stream, chats, credits, db, fund_data, goal_planning, goal_portfolio, goal_suitability, investigations, limits, logos, logs, memory, mf_ledger, mf_returns, mf_tax, model_gate, page_views, plans, privacy, public_pages, sealing, snapshots, unlock, users, vault
 from .agent import AgentRunError, PortfolioContext, configured_providers, default_provider, run_agent
 from .context import observed_sources, request_text, retrieve_context, task_parts, wants_goal_calculator
 from .chats import MAX_CHATS_PER_USER, MAX_HISTORY_MESSAGES
@@ -2006,16 +2007,30 @@ async def chat(body: ChatRequest, request: Request):
             status_code=429, headers={"Retry-After": str(CHAT_IN_FLIGHT_RETRY_SECONDS)},
         )
     _chats_in_flight.add(user["id"])
+    handed_off = False
     try:
+        if chat_stream.wants_stream(request):
+            started = await _start_streamed_chat(body, request, user, message, provider)
+            if isinstance(started, Response):
+                return started
+            handed_off = True  # the answer's task now owns the in-flight slot
+            stream, task = started
+            return StreamingResponse(stream.events(task), media_type="text/event-stream", headers=chat_stream.HEADERS)
         # The whole answer (classifier, model calls, tools, a token-refresh retry) shares one time budget.
         with model_gate.chat_budget():
-            return await _answer_chat(body, request, user, message, provider)
+            prepared = await _prepare_chat(body, request, user, message, provider)
+            if isinstance(prepared, Response):
+                return prepared
+            return await _run_chat(prepared)
     finally:
-        _chats_in_flight.discard(user["id"])
+        if not handed_off:
+            _chats_in_flight.discard(user["id"])
 
 
 # Profiles with an answer being worked on (this process only; CA Mode runs one worker).
 _chats_in_flight: set[str] = set()
+# Streamed answers' tasks: they outlive the request when the browser leaves, and finish and save the answer.
+_chat_tasks: set[asyncio.Task[None]] = set()
 CHAT_IN_FLIGHT_RETRY_SECONDS: Final = 5
 # Past the model budget, tool calls (INDmoney's own timeouts) may still be finishing; then the request ends.
 CHAT_BACKSTOP_GRACE_SECONDS: Final = 20
@@ -2036,7 +2051,60 @@ async def _run_agent_within_budget(*args: Any, **kwargs: Any) -> Any:
         ) from None
 
 
-async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str):
+@dataclass(slots=True)
+class PreparedChat:
+    """A chat that passed every check and holds a daily-question reservation; ``_run_chat`` must run (or release) it."""
+    body: ChatRequest
+    user: dict[str, Any]
+    message: str
+    provider: str
+    data: dict[str, Any]
+    history: list[dict[str, Any]]
+    saved_context: Any
+    token: str | None
+    context: PortfolioContext | None
+    reservation: limits.Reservation | None
+    monthly_credits: int
+
+
+async def _start_streamed_chat(
+    body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str,
+) -> tuple[chat_stream.AnswerStream, asyncio.Task[None]] | Response:
+    """Check the chat like the plain route, then answer it in a task that outlives a browser that leaves.
+
+    Returns the pre-start failure (same status and body as the plain route) or the stream and its task; the task
+    then owns the in-flight slot, its own time budget and the reservation, and always ends the stream.
+    """
+    with model_gate.chat_budget():
+        prepared = await _prepare_chat(body, request, user, message, provider)
+    if isinstance(prepared, Response):
+        return prepared
+    stream = chat_stream.AnswerStream()
+
+    async def work() -> None:
+        outcome: Response | BaseException | None = None
+        try:
+            with model_gate.chat_budget():  # the budget is per task; the copied context is not relied on
+                outcome = await _run_chat(prepared, on_draft=stream.on_draft)
+        except Exception as exc:
+            outcome = exc
+        finally:
+            _chats_in_flight.discard(user["id"])
+            stream.finish(outcome)
+
+    try:
+        task = asyncio.create_task(work())
+    except BaseException:
+        limits.release_question(user["id"], prepared.reservation)
+        raise
+    _chat_tasks.add(task)
+    task.add_done_callback(_chat_tasks.discard)
+    return stream, task
+
+
+async def _prepare_chat(
+    body: ChatRequest, request: Request, user: dict[str, Any], message: str, provider: str,
+) -> PreparedChat | Response:
     data = chats.read_chat(user, body.chatId)
     if data is None:
         return JSONResponse({"error": "Chat not found in this account."}, status_code=404)
@@ -2082,13 +2150,25 @@ async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any]
         except credits.CreditsExhausted as exc:
             limits.release_question(user["id"], reservation)
             return credits_exhausted(exc)
+    return PreparedChat(
+        body=body, user=user, message=message, provider=provider, data=data, history=history, saved_context=saved_context,
+        token=token, context=context, reservation=reservation, monthly_credits=monthly_credits,
+    )
+
+
+async def _run_chat(prepared: PreparedChat, *, on_draft: Any = None):
+    """Run the agent for a prepared chat and return the plain route's response; ``on_draft`` streams the answer text."""
+    body, user, message, provider, data = prepared.body, prepared.user, prepared.message, prepared.provider, prepared.data
+    history, saved_context, token, context = prepared.history, prepared.saved_context, prepared.token, prepared.context
+    reservation, monthly_credits = prepared.reservation, prepared.monthly_credits
+    draft = {"on_draft": on_draft} if on_draft else {}
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
     answered = False
     try:
         try:
             answer = await _run_agent_within_budget(
                 message, MCP_RESOURCE, token, history, body.agentType, provider, context=context, saved_context=saved_context,
-                plan_parts=task_parts(message),
+                plan_parts=task_parts(message), **draft,
             )
         except Exception as exc:
             if body.agentType == "portfolio" and is_indmoney_auth_error(exc):
@@ -2101,7 +2181,7 @@ async def _answer_chat(body: ChatRequest, request: Request, user: dict[str, Any]
                 try:
                     answer = await _run_agent_within_budget(
                         message, MCP_RESOURCE, refreshed_token, history, body.agentType, provider,
-                        context=context, saved_context=saved_context, plan_parts=task_parts(message),
+                        context=context, saved_context=saved_context, plan_parts=task_parts(message), **draft,
                     )
                 except Exception as retry_exc:
                     if is_indmoney_auth_error(retry_exc):

@@ -117,9 +117,64 @@
     }
   }
 
+  // The answer streams in as server-sent events (event: name, data: one line of JSON). push() takes the text of
+  // each network chunk and returns the events completed so far; flush() returns a last event the stream ended
+  // without a blank line after. Comment lines (": keepalive") and events with bad JSON are skipped.
+  function createSseParser() {
+    let buffer = '';
+    function parse(block) {
+      let event = 'message';
+      const data = [];
+      for (const line of block.split('\n')) {
+        if (!line || line.startsWith(':')) continue;
+        const colon = line.indexOf(':');
+        const field = colon === -1 ? line : line.slice(0, colon);
+        const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+        if (field === 'event') event = value;
+        else if (field === 'data') data.push(value);
+      }
+      if (!data.length) return null;
+      try {
+        return { event, data: JSON.parse(data.join('\n')) };
+      } catch {
+        return null;
+      }
+    }
+    function drain(final) {
+      const normalized = buffer.replace(/\r\n?/g, '\n');
+      const blocks = normalized.split('\n\n');
+      buffer = final ? '' : blocks.pop();
+      return blocks.map(parse).filter(Boolean);
+    }
+    return {
+      push(chunk) {
+        buffer += chunk;
+        // A CR at the end may be the first half of a CRLF: keep it for the next chunk.
+        const held = buffer.endsWith('\r') ? '\r' : '';
+        if (held) buffer = buffer.slice(0, -1);
+        const events = drain(false);
+        buffer += held;
+        return events;
+      },
+      flush() {
+        return drain(true);
+      },
+    };
+  }
+
+  // The text shown while an answer is still being written. A fenced block (a chart spec or code) is not shown
+  // until the answer is final, because the server swaps in real chart data and may replace code: a finished
+  // block becomes a one-line placeholder and an unfinished one is cut off.
+  const DRAFT_PLACEHOLDER = '*Chart or table appears when the answer is ready*';
+  function draftAnswerText(text) {
+    const closed = String(text || '').replace(/```[\s\S]*?```/g, `\n\n${DRAFT_PLACEHOLDER}\n\n`);
+    const open = closed.indexOf('```');
+    return (open === -1 ? closed : closed.slice(0, open)).replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   const api = {
     NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
-    isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
+    isComposingEnter, parseChartSpec, extractChartBlocks, withPending, createSseParser, draftAnswerText,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

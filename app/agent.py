@@ -25,6 +25,11 @@ from .mcp_client import (
 
 logger = logging.getLogger("ca_mode.agent")
 
+# Receives the draft of the answer while the model writes it: ``("text", piece)`` for each piece of content and
+# ``("discard", "")`` when what was sent so far is void (a new model call, or tool calls after preface text).
+# It is a side channel, not an agent event, so drafts never reach the recorded run or the trace.
+DraftSink = Callable[[str, str], None]
+
 FINANCE_ONLY_NOTICE = "I can help with finance questions and portfolio analysis. Ask me about budgeting, saving, banking, investing concepts, financial products, or your connected portfolio."
 CODE_REFUSAL_NOTICE = "I can answer finance questions, but I can’t write or debug code. " + FINANCE_ONLY_NOTICE
 
@@ -1122,9 +1127,98 @@ def _agent_graph_enabled() -> bool:
     return os.getenv("AGENT_GRAPH_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
 
+def _send_draft(sink: DraftSink, kind: str, text: str = "") -> None:
+    try:
+        sink(kind, text)
+    except Exception:  # noqa: BLE001  a broken sink must never fail the answer; the text is never logged
+        logger.warning("draft_sink_failed", extra={"kind": kind})
+
+
+def _stream_error_response(error: Any, request: httpx.Request | None) -> httpx.Response:
+    """The response a non-streamed call would have returned for an error the provider sent inside the stream."""
+    if isinstance(error, dict):
+        return httpx.Response(400, json={"error": error}, request=request)
+    return httpx.Response(500, json={"error": str(error)}, request=request)
+
+
+async def _streamed_post(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str], payload: dict[str, Any], sink: DraftSink,
+) -> httpx.Response:
+    """The streaming twin of ``client.post``: sends the content to ``sink`` as it arrives and returns the
+    response a non-streamed call would have given (one assistant message, its tool calls, finish reason, usage),
+    so every helper that reads a response works unchanged. Run it inside ``model_gate.call`` so the model slot
+    and the deadline last until the last token."""
+    _send_draft(sink, "discard")
+    body = payload | {"stream": True, "stream_options": {"include_usage": True}}
+    async with client.stream("POST", url, headers=headers, json=body) as resp:
+        if not resp.is_success:
+            raw = await resp.aread()
+            return httpx.Response(resp.status_code, content=raw, headers=resp.headers, request=resp.request)
+        parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        finish_reason: Any = None
+        usage: Any = None
+        text_sent = False
+        async for line in resp.aiter_lines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            if chunk.get("error"):
+                _send_draft(sink, "discard")
+                return _stream_error_response(chunk["error"], resp.request)
+            chunk_usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage")
+            if isinstance(chunk_usage, dict):
+                usage = chunk_usage
+            choices = chunk.get("choices")
+            choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            piece = delta.get("content")
+            if isinstance(piece, str) and piece:
+                parts.append(piece)
+                text_sent = True
+                _send_draft(sink, "text", piece)
+            for position, call in enumerate(delta.get("tool_calls") or []):
+                if not isinstance(call, dict):
+                    continue
+                if text_sent:
+                    text_sent = False
+                    _send_draft(sink, "discard")
+                index = call.get("index") if isinstance(call.get("index"), int) else position
+                entry = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                if call.get("id"):
+                    entry["id"] = call["id"]
+                if call.get("type"):
+                    entry["type"] = call["type"]
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                if isinstance(function.get("name"), str):
+                    entry["function"]["name"] += function["name"]
+                if isinstance(function.get("arguments"), str):
+                    entry["function"]["arguments"] += function["arguments"]
+        text = "".join(parts)
+        message: dict[str, Any] = {"role": "assistant", "content": text or None}
+        if calls:
+            message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        completion: dict[str, Any] = {"choices": [{"index": 0, "message": message, "finish_reason": finish_reason}]}
+        if isinstance(usage, dict):
+            completion["usage"] = usage
+        return httpx.Response(200, json=completion, request=resp.request)
+
+
 async def _provider_call(
     client: httpx.AsyncClient, config: dict[str, Any], provider: str, messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None, attempt: int, current_user_index: int, checked: dict[str, bool],
+    on_draft: DraftSink | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """One model call; yields ``model_call`` / ``model_result`` and ends with ``("_completion", {...})``.
 
@@ -1145,10 +1239,10 @@ async def _provider_call(
         payload["tool_choice"] = "auto"
     yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": attempt}
     try:
-        response = await model_gate.call(provider, lambda: client.post(
-            f"{config['base_url']}/chat/completions",
-            headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
-            json=payload,
+        url = f"{config['base_url']}/chat/completions"
+        headers = {"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"}
+        response = await model_gate.call(provider, lambda: (
+            _streamed_post(client, url, headers, payload, on_draft) if on_draft else client.post(url, headers=headers, json=payload)
         ))
     except model_gate.ModelBusy as exc:
         yield "_completion", {"ok": False, **_busy_error(exc)}
@@ -1198,7 +1292,7 @@ async def _graph_answer(
     *, message: str, messages: list[dict[str, Any]], current_user_index: int, runner: _ToolRunner,
     client: httpx.AsyncClient, config: dict[str, Any], provider: str, agent_type: str,
     saved_context: SavedContext | None, context_checked: bool, model_tools: list[dict[str, Any]],
-    store: analysis_tools.ResultStore,
+    store: analysis_tools.ResultStore, on_draft: DraftSink | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Answer an account question with the general agent (``agent_graph``); it ends with ``content`` or ``error``."""
     from . import agent_graph  # LangGraph is imported only when the agent runs.
@@ -1208,7 +1302,8 @@ async def _graph_answer(
 
     async def model_call(work: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> AsyncIterator[AgentEvent]:
         attempts[0] += 1
-        async for event in _provider_call(client, config, provider, work, tools, attempts[0], current_user_index, checked):
+        async for event in _provider_call(
+                client, config, provider, work, tools, attempts[0], current_user_index, checked, on_draft):
             yield event
 
     def guard(content: str, sources: list[dict[str, Any]], finish_reason: Any) -> tuple[str, list[AgentEvent]]:
@@ -1239,6 +1334,7 @@ async def stream_agent(
     saved_context: SavedContext | None = None,
     force_account_data: bool = False,
     plan_parts: Sequence[str] = (),
+    on_draft: DraftSink | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """
     Async generator that yields ``(event, data)`` tuples.
@@ -1250,6 +1346,9 @@ async def stream_agent(
     ``plan_parts`` (``context.task_parts()``) names the kinds of task in a message with several; when
     Portfolio Analyzer gets an account question with a goal tool offered, the answer is planned
     (``planner``) and falls back to the ordinary loop when the plan fails its checks.
+    ``on_draft`` (a ``DraftSink``) receives the answer text as the model writes it: the ordinary loop and the
+    general agent stream their model calls to it; the planner, the router and model calls inside tools do not.
+    It never adds events, so recorded runs are the same with or without it.
 
     Event types (``agent_events.RunRecorder`` records them):
       • route        – { category, source, model?, duration_ms }  how the request was classified
@@ -1389,7 +1488,7 @@ async def stream_agent(
                 async for event in _graph_answer(
                     message=message, messages=messages, current_user_index=current_user_index, runner=runner, client=client,
                     config=config, provider=provider, agent_type=agent_type, saved_context=saved_context,
-                    context_checked=context_checked, model_tools=model_tools, store=store,
+                    context_checked=context_checked, model_tools=model_tools, store=store, on_draft=on_draft,
                 ):
                     yield event
                 return
@@ -1427,10 +1526,11 @@ async def stream_agent(
 
                 yield "model_call", {"provider": config["label"], "model": config["model"], "attempt": attempt}
                 try:
-                    response = await model_gate.call(provider, lambda: client.post(
-                        f"{config['base_url']}/chat/completions",
-                        headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
-                        json=payload,
+                    url = f"{config['base_url']}/chat/completions"
+                    headers = {"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"}
+                    response = await model_gate.call(provider, lambda: (
+                        _streamed_post(client, url, headers, payload, on_draft) if on_draft
+                        else client.post(url, headers=headers, json=payload)
                     ))
                 except model_gate.ModelBusy as exc:
                     yield "error", _busy_error(exc)
@@ -1472,7 +1572,7 @@ async def stream_agent(
                         yield "retry", {"reason": "rerun_with_live_tools", "detail": f"invalid tool call naming {named}"}
                         async for event in stream_agent(
                             message, mcp_url, token, history, agent_type, provider,
-                            context=context, saved_context=saved_context, force_account_data=True,
+                            context=context, saved_context=saved_context, force_account_data=True, on_draft=on_draft,
                         ):
                             yield event
                         return
@@ -1530,7 +1630,7 @@ async def stream_agent(
                         yield "retry", {"reason": "rerun_with_live_tools", "detail": "the model wrote a tool call as text"}
                         async for event in stream_agent(
                             message, mcp_url, token, history, agent_type, provider,
-                            context=context, saved_context=saved_context, force_account_data=True,
+                            context=context, saved_context=saved_context, force_account_data=True, on_draft=on_draft,
                         ):
                             yield event
                         return
@@ -1768,6 +1868,7 @@ async def run_agent(
     context: PortfolioContext | None = None,
     saved_context: SavedContext | None = None,
     plan_parts: Sequence[str] = (),
+    on_draft: DraftSink | None = None,
 ) -> AgentResult:
     """Collect the answer, the trace, the recorded events and the contract verdict from the agent event stream."""
     answer_parts: list[str] = []
@@ -1778,7 +1879,7 @@ async def run_agent(
 
     async for event_type, payload in stream_agent(
         message, mcp_url, token, history, agent_type, provider, context=context, saved_context=saved_context,
-        plan_parts=plan_parts,
+        plan_parts=plan_parts, **({"on_draft": on_draft} if on_draft else {}),
     ):
         if event_type == "contract":
             contract = payload["contract"]

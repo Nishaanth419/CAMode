@@ -1824,7 +1824,7 @@ function addTypingIndicator() {
     <div class="message-main">
       <p class="message-meta">${escHtml(answerMeta())}</p>
       <div class="message-body">
-        <div class="typing-indicator" role="status" aria-label="Answering"><span></span><span></span><span></span></div>
+        <div class="typing-indicator" role="status" aria-label="Answering"><span aria-hidden="true">$</span><span aria-hidden="true">$</span><span aria-hidden="true">$</span></div>
       </div>
     </div>`;
   messages.appendChild(div);
@@ -1862,12 +1862,30 @@ async function sendMessage(text) {
     try {
       res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ message: text, chatId, agentType: selectedAgent, aiProvider: selectedProvider }),
       });
     } catch { /* The connection dropped: the server may still save the answer. */ }
 
-    if (!res || !res.ok) {
+    // The server streams the answer as events: read them to the end. A failure after the stream started becomes
+    // the response the plain route would have sent (same status and body), so the handling below is unchanged.
+    let streamed = null;
+    if (res && res.ok && (res.headers.get('Content-Type') || '').startsWith('text/event-stream')) {
+      const outcome = await readAnswerStream(res);
+      if (outcome && outcome.answer) {
+        streamed = outcome.answer;
+      } else if (outcome && outcome.error) {
+        const { trace: errorTrace, ...errorBody } = outcome.error;
+        res = new Response(JSON.stringify(errorBody), {
+          status: Number(errorBody.status) || 500,
+          headers: { 'Content-Type': 'application/json', 'X-Agent-Trace': errorTrace || '' },
+        });
+      } else {
+        res = null; // The stream ended with no answer: the server may still save it.
+      }
+    }
+
+    if (!streamed && (!res || !res.ok)) {
       const err = res ? await res.json().catch(() => ({})) : {};
       if (lostChatResponse(res ? res.status : 0, err)) {
         // A proxy timed out or the connection dropped, but the server keeps answering and saves the answer
@@ -1934,11 +1952,23 @@ async function sendMessage(text) {
       throw Object.assign(new Error(plainError(res.status, err)), { trace, runId: err.runId });
     }
 
+    if (streamed) {
+      const trace = parseTraceHeader(streamed.trace);
+      showAnswerLimits(streamed.questionsRemaining ?? null, streamed.creditsRemaining ?? null);
+      removeTypingIndicator();
+      const msgDiv = addMessage('assistant', '', trace, streamed.runId || null, { answer: true });
+      const bodyDiv = msgDiv.querySelector('.message-body');
+      bodyDiv.innerHTML = streamed.text.trim() === ''
+        ? '<em>The model returned no text. Check the local server logs for details.</em>'
+        : renderMarkdown(streamed.text.trim());
+      renderPlotlyCharts(bodyDiv);
+      scrollToBottom();
+      await upgradeTraceFromSavedChat(msgDiv);
+      return;
+    }
+
     const trace = parseTraceHeader(res.headers.get('X-Agent-Trace'));
-    const questionsLeft = res.headers.get('X-Questions-Remaining');
-    if (questionsLeft !== null) updateQuestionsLeft(Number(questionsLeft));
-    const creditsLeft = res.headers.get('X-Credits-Remaining');
-    if (creditsLeft !== null) updateCreditsLeft(Number(creditsLeft));
+    showAnswerLimits(res.headers.get('X-Questions-Remaining'), res.headers.get('X-Credits-Remaining'));
     removeTypingIndicator();
     const msgDiv = addMessage('assistant', '', trace, res.headers.get('X-Agent-Run'), { answer: true });
     const bodyDiv = msgDiv.querySelector('.message-body');
@@ -1965,20 +1995,7 @@ async function sendMessage(text) {
     }
     renderPlotlyCharts(bodyDiv);
 
-    await refreshChats();
-    try {
-      const savedResponse = await fetch('/api/chats/' + encodeURIComponent(activeChatId));
-      if (savedResponse.ok) {
-        const savedChat = await savedResponse.json();
-        const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
-        if (savedAssistant?.trace?.length) {
-          const currentTrace = msgDiv.querySelector('.chat-trace');
-          if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace, { runId: savedAssistant.runId });
-          msgDiv.querySelector('.message-meta').textContent = answerMeta(savedAssistant.trace);
-          if (msgDiv === messages.querySelector('.message.assistant:last-child')) setLatestAnswer(savedAssistant.trace);
-        }
-      }
-    } catch { /* The compact trace from the response header is still visible. */ }
+    await upgradeTraceFromSavedChat(msgDiv);
   } catch (err) {
     removeTypingIndicator();
     addMessage('assistant',
@@ -1991,6 +2008,87 @@ async function sendMessage(text) {
     setBusy(false);
     scrollToBottom();
   }
+}
+
+// Remaining questions and credits after an answer (null: the server did not say).
+function showAnswerLimits(questionsLeft, creditsLeft) {
+  if (questionsLeft !== null) updateQuestionsLeft(Number(questionsLeft));
+  if (creditsLeft !== null) updateCreditsLeft(Number(creditsLeft));
+}
+
+// After an answer: refresh the chat list and swap the compact trace for the saved, fuller one.
+async function upgradeTraceFromSavedChat(msgDiv) {
+  await refreshChats();
+  try {
+    const savedResponse = await fetch('/api/chats/' + encodeURIComponent(activeChatId));
+    if (savedResponse.ok) {
+      const savedChat = await savedResponse.json();
+      const savedAssistant = [...(savedChat.messages || [])].reverse().find(item => item.role === 'assistant');
+      if (savedAssistant?.trace?.length) {
+        const currentTrace = msgDiv.querySelector('.chat-trace');
+        if (currentTrace) currentTrace.outerHTML = renderChatTrace(savedAssistant.trace, { runId: savedAssistant.runId });
+        msgDiv.querySelector('.message-meta').textContent = answerMeta(savedAssistant.trace);
+        if (msgDiv === messages.querySelector('.message.assistant:last-child')) setLatestAnswer(savedAssistant.trace);
+      }
+    }
+  } catch { /* The compact trace from the response is still visible. */ }
+}
+
+// Read the answer's events. The draft shows as plain markdown (no charts or code until the answer is final) and
+// is replaced by the answer. Returns { answer }, { error } or null when the stream ended with neither.
+async function readAnswerStream(res) {
+  const parser = createSseParser();
+  const decoder = new TextDecoder();
+  let draft = '';
+  let draftDiv = null;
+  let frame = 0;
+  const paint = () => {
+    frame = 0;
+    if (draftDiv) draftDiv.querySelector('.message-body').innerHTML = renderMarkdown(draftAnswerText(draft));
+    scrollToBottom();
+  };
+  const dropDraft = () => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    if (draftDiv) draftDiv.remove();
+    draftDiv = null;
+    draft = '';
+  };
+  const handle = (item) => {
+    if (item.event === 'delta' && typeof item.data.text === 'string') {
+      if (!draftDiv) {
+        removeTypingIndicator();
+        draftDiv = addMessage('assistant', '');
+      }
+      draft += item.data.text;
+      if (!frame) frame = requestAnimationFrame(paint);
+    } else if (item.event === 'reset') {
+      dropDraft();
+      if (!document.getElementById('typing-indicator')) addTypingIndicator();
+    } else if (item.event === 'answer') {
+      return { answer: item.data };
+    } else if (item.event === 'error') {
+      return { error: item.data };
+    }
+    return undefined;
+  };
+  try {
+    const reader = res.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      const events = done ? [...parser.push(decoder.decode()), ...parser.flush()] : parser.push(decoder.decode(value, { stream: true }));
+      for (const item of events) {
+        const outcome = handle(item);
+        if (outcome) {
+          dropDraft();
+          return outcome;
+        }
+      }
+      if (done) break;
+    }
+  } catch { /* The connection dropped mid-answer. */ }
+  dropDraft();
+  return null;
 }
 
 // After a lost chat response, re-read the chat until its saved answer shows up or the server's own answer
