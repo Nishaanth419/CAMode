@@ -176,6 +176,16 @@
     return parser.end();
   }
 
+  // The text shown while an answer is still being written. A fenced block (a chart spec or code) is not shown
+  // until the answer is final, because the server swaps in real chart data and may replace code: a finished
+  // block becomes a one-line placeholder and an unfinished one is cut off.
+  const DRAFT_PLACEHOLDER = '*Chart or table appears when the answer is ready*';
+  function draftAnswerText(text) {
+    const closed = String(text || '').replace(/```[\s\S]*?```/g, `\n\n${DRAFT_PLACEHOLDER}\n\n`);
+    const open = closed.indexOf('```');
+    return (open === -1 ? closed : closed.slice(0, open)).replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   // Copy of every in-app confirmation (app.js confirmAction() shows it). Text only: it goes in with textContent.
   const CONFIRMS = Object.freeze({
     deleteStatement: Object.freeze({ title: 'Delete this statement?', body: 'Its holdings are removed from CA Mode.', confirmLabel: 'Delete statement', danger: true }),
@@ -346,7 +356,7 @@
   }
 
   const api = {
-    withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
+    withViewTransition, CONFIRMS, confirmCopy, createSseParser, readEventStream, draftAnswerText, NETWORK_ERROR, GENERIC_ERROR, plainError, errorText, lostChatResponse, savedAnswerFor,
     isComposingEnter, parseChartSpec, extractChartBlocks, withPending,
     SIDEBAR_KEY, readSidebarState, saveSidebarState, initialSidebarState, shortcutFor, shortcutLabel,
     commandResults, moveActive, commandWaitsForAnswer, staggerDelays, ENTRANCE_KEY, claimEntrance, tabIndicator,

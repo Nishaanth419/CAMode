@@ -1895,6 +1895,38 @@ function brokerNamesById() {
     .map((broker) => [broker.broker, broker.name]));
 }
 
+// The answer as the model writes it (`delta` events): plain markdown in its own message, repainted at most once per
+// frame, with no charts or code until the final answer replaces it. `reset` throws the draft away and shows the
+// typing indicator again (a retry, or the model went on to call tools).
+const chatDraft = { div: null, text: '', frame: 0 };
+
+function paintDraft() {
+  chatDraft.frame = 0;
+  if (chatDraft.div) chatDraft.div.querySelector('.message-body').innerHTML = renderMarkdown(draftAnswerText(chatDraft.text));
+  scrollToBottom();
+}
+
+function dropDraft() {
+  if (chatDraft.frame) cancelAnimationFrame(chatDraft.frame);
+  if (chatDraft.div) chatDraft.div.remove();
+  Object.assign(chatDraft, { div: null, text: '', frame: 0 });
+}
+
+function showDraft(name, data) {
+  if (name === 'reset') {
+    dropDraft();
+    if (!document.getElementById('typing-indicator')) addTypingIndicator();
+    return;
+  }
+  if (typeof data?.text !== 'string') return;
+  if (!chatDraft.div) {
+    removeTypingIndicator();
+    chatDraft.div = addMessage('assistant', '');
+  }
+  chatDraft.text += data.text;
+  if (!chatDraft.frame) chatDraft.frame = requestAnimationFrame(paintDraft);
+}
+
 // Show a finished answer: the plain response (body and X-* headers) and the stream's `answer` event both end here.
 async function renderChatAnswer({ text, trace, runId, questionsRemaining, creditsRemaining }) {
   if (questionsRemaining !== null && questionsRemaining !== undefined) updateQuestionsLeft(Number(questionsRemaining));
@@ -2017,9 +2049,11 @@ async function sendMessage(text) {
       try {
         await readEventStream(res.body, (name, data) => {
           if (name === 'progress') setTypingProgress(progressLabel(data, brokerNames) + '…');
+          else if (name === 'delta' || name === 'reset') showDraft(name, data);
           else if ((name === 'answer' || name === 'error') && !final) final = { name, data };
         });
       } catch { /* Cut off mid-stream: look for the saved answer below. */ }
+      dropDraft(); // The answer (or error, or the saved answer) replaces whatever draft was showing.
       // A stream that ended (cleanly, inside an event or with a read error) before its answer or error.
       lost = !final;
     } else if (res && !res.ok) {
@@ -2068,6 +2102,7 @@ async function sendMessage(text) {
       creditsRemaining: res.headers.get('X-Credits-Remaining'),
     });
   } catch (err) {
+    dropDraft();
     removeTypingIndicator();
     addMessage('assistant',
       `<span style="color:var(--error)">⚠ ${escHtml(errorText(err))}</span>${err.connectLink || ''}`,

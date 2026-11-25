@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Final
 
 from fastapi import Response
@@ -13,6 +13,7 @@ from . import analysis_tools, brokers
 
 KEEPALIVE_SECONDS: Final = 15
 KEEPALIVE: Final = b": keepalive\n\n"
+STREAM_EVENT: Final = "_event"  # marks a queued delta/reset; progress items never carry it
 
 _IDENTIFIER: Final = re.compile(r"^[a-z0-9_]{1,40}$")
 _BROKER_TOOLS: Final = frozenset({"get_broker_holdings", "call_broker_tool"})
@@ -108,6 +109,32 @@ class ProgressMapper:
         return None
 
 
+class DraftMapper:
+    """Turns the draft side channel (``DraftSink``) into ``delta`` / ``reset`` queue items.
+
+    A discard becomes a ``reset`` only when text was sent since the last one. Text is the answer the person sees
+    anyway; it is never logged."""
+
+    def __init__(self, put: Callable[[dict[str, Any]], None]) -> None:
+        self._put = put
+        self._drafting = False
+
+    def __call__(self, kind: str, text: str = "") -> None:
+        if kind == "text" and text:
+            self._drafting = True
+            self._put({STREAM_EVENT: "delta", "text": text})
+        elif kind == "discard" and self._drafting:
+            self._drafting = False
+            self._put({STREAM_EVENT: "reset"})
+
+
+def frame(item: dict[str, Any]) -> bytes:
+    """One queued item as an event: ``delta`` / ``reset`` carry their name, everything else is ``progress``."""
+    if STREAM_EVENT in item:
+        return sse(item[STREAM_EVENT], {k: v for k, v in item.items() if k != STREAM_EVENT})
+    return sse("progress", item)
+
+
 def parse_trace_header(value: str | None) -> list[dict[str, Any]]:
     """Inverse of ``main.trace_header()``: the compact trace, or [] when absent or unreadable."""
     if not value:
@@ -156,7 +183,7 @@ async def events(
     yield sse("progress", first)
     while True:
         while not queue.empty():
-            yield sse("progress", queue.get_nowait())
+            yield frame(queue.get_nowait())
         if task.done():
             break
         getter = asyncio.ensure_future(queue.get())
@@ -167,7 +194,7 @@ async def events(
             if not getter.done():
                 getter.cancel()
         if getter.done() and not getter.cancelled():
-            yield sse("progress", getter.result())
+            yield frame(getter.result())
         elif not done:
             yield KEEPALIVE
     if task.cancelled() or task.exception() is not None:

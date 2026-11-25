@@ -2069,11 +2069,13 @@ async def _stream_chat(body: ChatRequest, request: Request, user: dict[str, Any]
         if (item := mapper.map(event, data)) is not None:
             queue.put_nowait(item)
 
+    on_draft = chat_stream.DraftMapper(queue.put_nowait)
+
     async def answer() -> Response:
         try:
             # Inside the task, so the run sees this budget and listener (context variables are copied at creation).
             with model_gate.chat_budget(), model_gate.wait_listener(lambda: queue.put_nowait(mapper.waiting())):
-                return await _run_chat(prepared, on_event)
+                return await _run_chat(prepared, on_event, on_draft)
         finally:
             _chats_in_flight.discard(user["id"])
 
@@ -2184,15 +2186,20 @@ async def _prepare_chat(
     )
 
 
-async def _run_chat(prepared: PreparedChat, on_event: Callable[[str, dict], None] | None = None) -> Response:
+async def _run_chat(
+    prepared: PreparedChat, on_event: Callable[[str, dict], None] | None = None,
+    on_draft: Callable[[str, str], None] | None = None,
+) -> Response:
     """Run the agent for a prepared chat and build the response; owns the daily slot (confirm or release).
 
-    ``on_event`` is passed to every agent run only when set, so callers without progress reporting are unchanged.
+    ``on_event`` and ``on_draft`` (the answer text as the model writes it) are passed to every agent run only when
+    set, so callers without a stream are unchanged.
     """
     body, user, message, provider = prepared.body, prepared.user, prepared.message, prepared.provider
     data, history, saved_context, context = prepared.data, prepared.history, prepared.saved_context, prepared.context
     reservation, monthly_credits = prepared.reservation, prepared.monthly_credits
-    progress = {"on_event": on_event} if on_event is not None else {}
+    progress = {**({"on_event": on_event} if on_event is not None else {}),
+                **({"on_draft": on_draft} if on_draft is not None else {})}
     # The slot goes back unless an answer is returned (failures, reconnect prompts, cancelled requests).
     answered = False
     try:
