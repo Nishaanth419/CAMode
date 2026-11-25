@@ -65,7 +65,7 @@
     const opener = document.activeElement;
     const titleId = `admin-dialog-title-${Date.now()}`;
     const input = copy.field ? el('input', { type: 'text', autocomplete: 'off', spellcheck: 'false' }) : null;
-    const cancel = el('button', { type: 'button', class: 'admin-secondary', onclick: () => dialog.close('cancel') }, 'Cancel');
+    const cancel = el('button', { type: 'button', onclick: () => dialog.close('cancel') }, 'Cancel');
     const accept = el('button', { type: 'submit', value: 'confirm', class: copy.danger ? 'admin-danger' : 'admin-primary' }, copy.confirmLabel);
     const dialog = el('dialog', { class: 'admin-dialog', 'aria-labelledby': titleId },
       el('form', { method: 'dialog' },

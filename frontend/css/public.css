@@ -20,6 +20,7 @@
   --red-soft: rgba(181, 72, 58, 0.12);
   --danger-border: rgba(181, 72, 58, 0.45);
   --shadow-lg: 0 24px 64px rgba(10, 10, 10, .12);
+  --scrim: rgba(10, 10, 10, .4);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -39,6 +40,7 @@
     --red-soft: rgba(224, 122, 106, 0.12);
     --danger-border: rgba(224, 122, 106, 0.45);
     --shadow-lg: 0 24px 64px rgba(0, 0, 0, .7);
+    --scrim: rgba(0, 0, 0, .65);
   }
 }
 * { box-sizing: border-box; }

@@ -1078,7 +1078,6 @@ test('Activity: rows and records are borderless surfaces', () => {
   for (const selector of ['#activity-body .evidence-card', '.run-card']) {
     assert.match(ruleBody(css, selector), /padding:\s*24px/, selector);
   }
-  assert.match(ruleBody(css, '.activity-item:hover'), /background:\s*var\(--surface-2\)/);
   assert.match(ruleBody(css, '.skeleton-row span'), /animation:\s*skeleton-fade/);
   // Sections inside a record are separated by space, not rules; their summaries read at 16px.
   assert.deepEqual(visibleBorderIn(css, '#activity-body .evidence-section'), []);
@@ -1186,8 +1185,8 @@ test('Activity records: no arrow glyphs and no browser disclosure triangles', ()
   const css = readCss();
   assert.doesNotMatch(readJs('pages.js'), /← All activity/);
   assert.match(readJs('pages.js'), /#ph-caret-left"><\/use><\/svg>All activity/);
-  assert.match(css, /#activity-body \.evidence-section > summary::-webkit-details-marker, #activity-body \.timeline-details > summary::-webkit-details-marker \{ display: none; \}/);
-  assert.match(css, /#activity-body \.evidence-section > summary, #activity-body \.timeline-details > summary \{[^}]*list-style: none;/);
+  assert.match(css, /\.chat-trace > summary::-webkit-details-marker, \.evidence-section > summary::-webkit-details-marker, \.timeline-details > summary::-webkit-details-marker \{ display: none; \}/);
+  assert.match(css, /\.chat-trace > summary, \.evidence-section > summary, \.timeline-details > summary \{[^}]*list-style: none;/);
 });
 
 test('public page footers space their links apart', () => {
@@ -1201,4 +1200,49 @@ test('every moving keyframe is defined before the reduced-motion block, so its f
   for (const match of css.matchAll(/@keyframes ([\w-]+) \{([^@]*?)\}\s*\}/g)) {
     if (match.index > block && /transform/.test(match[2])) assert.fail(`@keyframes ${match[1]} moves and comes after the reduced-motion block`);
   }
+});
+
+// Batch 5: leftovers of the old design.
+test('disclosures are drawn chevrons: no text triangles in CSS content or app scripts', () => {
+  const glyphs = /[▸▾▶◂◀▴]/;
+  for (const m of readCss().matchAll(/content:\s*"([^"]*)"/g)) assert.doesNotMatch(m[1], glyphs, `content "${m[1]}"`);
+  for (const file of ['app.js', 'pages.js', 'trace.js', 'ui.js', 'rail.js', 'shell.js', 'admin.js']) {
+    const code = readJs(file).replace(/^\s*\/\/.*$/gm, '');
+    assert.doesNotMatch(code, glyphs, `${file} has a text disclosure glyph`);
+  }
+  const css = readCss();
+  assert.match(css, /\.chat-trace > summary::before, \.evidence-section > summary::before/);
+  assert.match(css, /\.data-zone > summary::after, \.danger-zone > summary::after \{[^}]*border-right: 1\.5px solid currentColor/);
+  assert.match(readJs('app.js'), /<button class="broker-name"[^`]*#ph-caret-down[^`]*#ph-caret-right/);
+});
+
+test('the chat trace and the compact evidence card are borderless surfaces', () => {
+  const css = readCss();
+  assert.doesNotMatch(ruleBody(css, '.chat-trace'), /border:/);
+  assert.doesNotMatch(ruleBody(css, '.evidence-card'), /border:/);
+});
+
+test('the brand mark is the brass one everywhere: icons are flat brass, no green', () => {
+  const root = path.join(FRONTEND, '..');
+  for (const file of ['frontend/icon.svg', 'assets/brand/icon-maskable.svg', 'assets/brand/og-image.svg']) {
+    const svg = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.match(svg, /#C2A66B/, file);
+    assert.doesNotMatch(svg, /2fa36b|1b6b45|123a2c|linearGradient/i, file);
+  }
+  assert.doesNotMatch(fs.readFileSync(path.join(FRONTEND, 'manifest.webmanifest'), 'utf8'), /f4f7f5/i);
+});
+
+test('admin: controls are 40px, the dialog backdrop is a token, no dead classes', () => {
+  const admin = readCss('admin.css');
+  assert.doesNotMatch(admin, /min-height:\s*36px/);
+  assert.doesNotMatch(admin, /rgba\(/);
+  assert.match(admin, /\.admin-dialog::backdrop \{ background: var\(--scrim\); \}/);
+  const pub = readCss('public.css');
+  assert.equal((pub.match(/--scrim:/g) || []).length, 2);
+  assert.doesNotMatch(readJs('admin.js'), /admin-secondary/);
+});
+
+test('Activity rows do not change colour on hover (only their links and buttons react); dead panel() is gone', () => {
+  assert.doesNotMatch(readCss(), /\.activity-item:hover/);
+  assert.doesNotMatch(readJs('pages.js'), /function panel\(/);
 });
