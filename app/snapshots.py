@@ -19,7 +19,7 @@ import os
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time as dt_time, timedelta, timezone, tzinfo
-from typing import Any
+from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -29,7 +29,7 @@ from .agent import LocalTool, PortfolioContext
 from .db import connect_db
 from .sealing import ProfileKeys
 from .mcp_client import call_mcp_tool, fetch_mcp_session, filter_portfolio_tools
-from .portfolio_math import HOLDINGS_PREFIX, all_holdings, asset_types_held, compute_metrics, name_matches
+from .portfolio_math import HOLDINGS_PREFIX, all_holdings, asset_types_held, compute_metrics, held_codes, name_matches
 
 logger = logging.getLogger("ca_mode.snapshots")
 
@@ -514,6 +514,38 @@ def _snapshot_payload(snapshot: dict[str, Any], *, include_all_holdings: bool = 
     return payload
 
 
+MAX_HOLDING_MATCHES: Final = 10
+MAX_HELD_NAMES: Final = 80  # Names listed when nothing matches, so the model can pick the right one.
+_HOLDING_KEYS: Final = ("name", "code", "asset_type", "broker", "units", "unit_price_inr", "current_value_inr",
+                        "invested_inr", "pnl_inr", "pnl_pct", "share_of_portfolio_pct", "one_day_change_inr")
+HOLDING_CODE_NOTE: Final = (
+    "code is INDmoney's own identifier for the holding: an IND_STOCK code starting INDS is its ind_key and an MF code "
+    "is its get_mf_funds_details fund_id, so use it directly instead of lookup_ind_keys. Other codes (ISINs, "
+    "symbols) need a lookup.")
+
+HOLDING_LIVE_NOTE: Final = (
+    "These values are from the saved snapshot at capturedAt (before the market opens), so one_day_change_inr is the "
+    "previous session's move. For today's, live or current price or move, call get_indian_stocks_details with the "
+    "INDS codes (Indian stocks and ETFs), get_us_stocks_details with the symbols (US stocks) or get_mf_funds_details "
+    "with the fund codes (latest NAV), and say the time of the live data.")
+
+
+def _holding_payload(snapshot: dict[str, Any], wanted: str) -> dict[str, Any]:
+    """The saved holdings whose name matches ``wanted`` (every asset type), in full; every held name when none does."""
+    rows = all_holdings(snapshot["results"])
+    found = [{key: row[key] for key in _HOLDING_KEYS if row.get(key) is not None}
+             for row in rows if name_matches(wanted, str(row.get("name") or "")) or wanted.upper() == str(row.get("code") or "").upper()]
+    payload: dict[str, Any] = {"available": True, "asOfDate": snapshot["asOfDate"], "capturedAt": _iso(snapshot["capturedAt"]),
+                               "holding": wanted, "holdings": found[:MAX_HOLDING_MATCHES], "codeNote": HOLDING_CODE_NOTE,
+                               "liveNote": HOLDING_LIVE_NOTE}
+    if len(found) > MAX_HOLDING_MATCHES:
+        payload["moreMatches"] = len(found) - MAX_HOLDING_MATCHES
+    if not found:
+        payload["message"] = f"No saved holding matches {wanted!r}; held names are listed in `held`."
+        payload["held"] = [str(row.get("name")) for row in rows if row.get("name")][:MAX_HELD_NAMES]
+    return payload
+
+
 def portfolio_figures(snapshot: dict[str, Any], user_id: str) -> dict[str, Any]:
     """The snapshot's computed figures plus every holding in full, for the app's portfolio pages.
 
@@ -538,7 +570,11 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
         snapshot = latest_snapshot(user_id, requested, keys=keys)
         if snapshot is None:
             return json.dumps({"available": False, "message": "No saved snapshot for that date. Use the live INDmoney tools instead."})
-        payload = _snapshot_payload(snapshot, include_all_holdings=arguments.get("include_all_holdings") is True)
+        holding = arguments.get("holding")
+        if isinstance(holding, str) and holding.strip():
+            payload = _holding_payload(snapshot, holding.strip())
+        else:
+            payload = _snapshot_payload(snapshot, include_all_holdings=arguments.get("include_all_holdings") is True)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     async def get_networth_history(arguments: dict[str, Any]) -> str:
@@ -584,7 +620,9 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
                 "class, market cap and broker, concentration, top holdings, USD amounts, and data_notes. Call this first "
                 "for net worth, P&L, allocation, holdings, broker or concentration questions, and say when it was "
                 "captured. Pass include_all_holdings=true to list every holding (e.g. grouped by broker); otherwise "
-                "only the 10 largest are listed. Pass `date` (YYYY-MM-DD) for the snapshot on or before that day. "
+                "only the 10 largest are listed. When the user names something they hold (a stock, fund, ticker or short "
+                "form), pass `holding` with that name to get the matching holdings of every asset type in full, with "
+                "the code to use in INDmoney's detail tools. Pass `date` (YYYY-MM-DD) for the snapshot on or before that day. "
                 "Do not use it for live prices, intraday moves, SIPs, watchlists or options; use the live INDmoney "
                 "tools for those."
             ),
@@ -593,6 +631,7 @@ def snapshot_tools(user_id: str, keys: ProfileKeys) -> list[LocalTool]:
                 "properties": {
                     "date": {"type": "string", "description": "Optional YYYY-MM-DD; defaults to the latest snapshot."},
                     "include_all_holdings": {"type": "boolean", "description": "List every holding, not just the 10 largest."},
+                    "holding": {"type": "string", "description": "Optional: a name the user gave for one of their holdings; returns only the holdings that match it."},
                 },
                 "additionalProperties": False,
             },
@@ -870,9 +909,11 @@ def portfolio_context(
             local_tools.append(mf_tax_tool(
                 lambda fy: mf_tax.tax_for(user["id"], keys, local_now().date(), fy, slab)))
     local_tools.extend(extra_tools)
+    latest = latest_snapshot(user["id"], keys=keys)
     return PortfolioContext(
         local_tools=tuple(local_tools),
-        profile_context=_with_line(snapshot_context(latest_snapshot(user["id"], keys=keys)), extra_profile_context),
+        profile_context=_with_line(snapshot_context(latest), extra_profile_context),
+        held=held_codes(latest["results"]) if latest else {},
         cached_mcp_tools=fresh_cached_mcp_tools(user),
         on_mcp_tools=lambda tools: users.cache_mcp_tools(user["id"], filter_portfolio_tools(tools)),
     )

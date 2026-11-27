@@ -1530,3 +1530,19 @@ async def test_run_agent_without_on_event_is_unchanged(monkeypatch):
     monkeypatch.setattr(agent, "stream_agent", _fake_stream(_ANSWER_EVENTS))
     result = await agent.run_agent("q", "url", None, [])
     assert str(result) == "answer text"
+
+
+@pytest.mark.asyncio
+async def test_lookup_candidates_the_user_holds_are_marked(monkeypatch):
+    async def fake_call(url, token, protocol, session_id, name, arguments, *, client=None):
+        return json.dumps([{"ind_key": "122639", "name": "Parag Parikh Conservative Hybrid Fund"},
+                           {"ind_key": "120503", "name": "Parag Parikh Flexi Cap Fund"}])
+
+    monkeypatch.setattr(agent, "call_mcp_tool", fake_call)
+    context = agent.PortfolioContext(held={"120503": "Parag Parikh Flexi Cap Fund Direct Growth"})
+    runner = agent._ToolRunner(mcp_url="https://mcp", token="t", local_tools={}, tool_schemas={}, offers_live_tools=True,
+                               context=context, session={"protocolVersion": "v", "sessionId": "s"}, mcp_client=None)
+
+    run = await runner.run("lookup_ind_keys", {"names": ["Parag Parikh fund"], "filter_type": "MF"})
+
+    assert [row.get("held") for row in json.loads(run.content)] == [None, True]

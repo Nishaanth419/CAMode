@@ -21,7 +21,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, AsyncIterator, Final
@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import analysis_tools, charts, model_gate, number_check, planner, router, tasks, tool_results
+from . import analysis_tools, charts, model_gate, number_check, planner, portfolio_math, router, tasks, tool_results
 from .agent_events import REDACTED, RunRecorder, redact_trace_text, summarize  # noqa: F401 (re-exported)
 from .mcp_client import (
     IMPORTANT_PORTFOLIO_TOOL_NAMES, McpAuthError, McpToolError, call_mcp_tool, fetch_mcp_session, filter_portfolio_tools,
@@ -459,12 +459,14 @@ class PortfolioContext:
     ``cached_mcp_tools`` lets the agent offer INDmoney tools without opening an MCP
     session; the session is then opened only if the model actually calls one.
     ``on_mcp_tools`` receives a freshly fetched tool list so callers can cache it.
+    ``held`` maps each saved holding's code to its name; ``lookup_ind_keys`` candidates the user holds are marked.
     """
 
     local_tools: Sequence[LocalTool] = ()
     profile_context: str | None = None
     cached_mcp_tools: list[dict[str, Any]] | None = None
     on_mcp_tools: Callable[[list[dict[str, Any]]], None] | None = field(default=None, compare=False)
+    held: Mapping[str, str] = field(default_factory=dict, compare=False)
 
 
 # The only local tools the Finance Agent may be given: goal planning needs no account access.
@@ -792,6 +794,8 @@ class _ToolRunner:
             return _ToolRun({"name": name, "error": _error_text(exc), "error_kind": "unavailable"},
                             tool_results.error_payload("unavailable", f"INDmoney could not provide {name}: {_error_text(exc)}"))
         result_str = str(result)
+        if name == "lookup_ind_keys" and self._context is not None and self._context.held:
+            result_str = portfolio_math.mark_held(result_str, dict(self._context.held))
         if name == charts.OHLC_TOOL_NAME:
             self.ohlc_results.append(result_str)
         return _ToolRun({"name": name, "result": result_str[:4000] + ("…" if len(result_str) > 4000 else "")}, result_str)
