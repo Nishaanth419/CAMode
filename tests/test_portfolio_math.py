@@ -87,6 +87,8 @@ def test_top_holdings_and_all_holdings():
     assert "all_holdings" not in top and len(every["all_holdings"]) == 15
     assert "top_holdings" not in every and "by_asset_class" not in every
     assert set(every["all_holdings"][0]) <= set(portfolio_math.COMPACT_HOLDING_FIELDS.values())
+    # The code (an INDS ind_key, a scheme id) is what the detail tools take, so the model never looks a holding up by name.
+    assert [row["code"] for row in every["all_holdings"][:2]] == ["S14", "S13"]
 
 
 @pytest.mark.parametrize("results", [{}, {"networth_snapshot": "not json"}, {"networth_holdings:MF": "{}"}])
@@ -152,3 +154,62 @@ def test_name_matches_ignores_filler_words_spacing_and_order(query):
 @pytest.mark.parametrize("query", ["Motilal Oswal Smallcap Direct Growth", "fund", "", "  - "])
 def test_name_matches_needs_every_meaningful_word(query):
     assert not portfolio_math.name_matches(query, "Motilal Oswal Midcap Fund - Direct Plan - Growth Option")
+
+
+@pytest.mark.parametrize(("query", "name"), [
+    # Plan and option words the name does not carry at all (INDmoney's short scheme names).
+    ("Parag Parikh Flexi Cap Direct Growth", "Parag Parikh Flexi Cap Fund"),
+    ("HDFC Index Fund Nifty 50 Plan Direct Growth", "HDFC Index Fund Nifty 50"),
+    # Company suffixes on either side.
+    ("Tata Consultancy Services Limited", "Tata Consultancy Services Ltd"),
+    ("Infosys Ltd", "Infosys"),
+    # "and" for "&", and short forms of a word.
+    ("Mirae Asset Large and Midcap", "Mirae Asset Large & Midcap Fund"),
+    ("ICICI Pru Bluechip", "ICICI Prudential Bluechip Fund"),
+    ("ICICI Pru Life", "ICICI Prudential Life Insurance Company Ltd"),
+    # A ticker-style acronym of the name.
+    ("TCS", "Tata Consultancy Services Ltd"),
+])
+def test_name_matches_reads_common_indian_name_variants(query, name):
+    assert portfolio_math.name_matches(query, name)
+
+
+@pytest.mark.parametrize(("query", "name"), [
+    ("Parag Parikh Flexi Cap Direct Growth", "Parag Parikh Flexi Cap Fund - Regular Plan - Growth"),
+    ("Parag Parikh Flexi Cap Direct Growth", "Parag Parikh Flexi Cap Fund - Direct Plan - IDCW"),
+    ("HDFC Bank", "HDFC Life Insurance Company Ltd"),
+    ("TCS", "Tata Steel Ltd"),
+    ("ICICI Pru Life", "ICICI Prudential Bluechip Fund"),
+    ("Ltd", "Infosys Ltd"),
+])
+def test_name_matches_still_tells_plans_and_companies_apart(query, name):
+    assert not portfolio_math.name_matches(query, name)
+
+
+HELD = {"120503": "Parag Parikh Flexi Cap Fund Direct Growth", "INDS01200": "ICICI Prudential Life Insurance Company Ltd"}
+
+
+def test_mark_held_flags_the_lookup_candidates_the_user_holds():
+    reply = json.dumps([{"ind_key": "122639", "name": "Parag Parikh Conservative Hybrid Fund"},
+                        {"ind_key": "120503", "name": "Parag Parikh Flexi Cap Fund"},
+                        {"ind_key": "inds01200", "name": "ICICI Prudential Life Insurance"}])
+
+    marked = json.loads(portfolio_math.mark_held(reply, HELD))
+
+    assert [row.get("held") for row in marked] == [None, True, True]
+    assert marked[1]["heldAs"] == "Parag Parikh Flexi Cap Fund Direct Growth"
+
+
+@pytest.mark.parametrize("reply", [
+    json.dumps([{"ind_key": "INDS1", "name": "Alpha"}]),  # nothing held
+    json.dumps({"error": "validation_error"}),
+    "not json",
+])
+def test_mark_held_leaves_other_replies_unchanged(reply):
+    assert portfolio_math.mark_held(reply, HELD) == reply
+    assert portfolio_math.mark_held(json.dumps([{"ind_key": "120503"}]), {}) == json.dumps([{"ind_key": "120503"}])
+
+
+def test_held_codes_maps_each_holding_code_to_its_name():
+    held = portfolio_math.held_codes(indmoney_sample.results())
+    assert held["120503"] == "Parag Parikh Flexi Cap Fund" and held["TCS"] == "Tata Consultancy Services"

@@ -187,6 +187,23 @@ def test_snapshot_local_tools_return_latest_and_history():
     assert "networthSnapshot" not in history["points"][0]
 
 
+def test_snapshot_tool_finds_a_named_holding_in_every_asset_type():
+    user_id = make_user()
+    snapshots.store_snapshot(user_id, datetime.now(IST), indmoney_sample.results(), {})
+    tool = next(tool for tool in snapshots.snapshot_tools(user_id, ProfileKeys()) if tool.name == "get_portfolio_snapshot")
+    find = lambda name: json.loads(asyncio.run(tool.handler({"holding": name})))  # noqa: E731
+
+    tcs, fund, missing = find("TCS"), find("Parag Parikh Flexi Cap Direct Growth"), find("Nippon Small Cap")
+
+    assert [(row["name"], row["code"], row["asset_type"]) for row in tcs["holdings"]] == [
+        ("Tata Consultancy Services", "TCS", "IND_STOCK")]
+    assert [row["code"] for row in fund["holdings"]] == ["120503"] and fund["holdings"][0]["units"] == 4000.5
+    assert missing["holdings"] == [] and "Infosys" in missing["held"]
+    assert "figures" not in tcs and tcs["capturedAt"]
+    # Snapshot values are from the 09:00 capture; the result says how to get today's price instead.
+    assert "get_indian_stocks_details" in tcs["liveNote"] and "get_mf_funds_details" in tcs["liveNote"]
+
+
 def test_networth_history_falls_back_to_raw_text_and_samples():
     user_id = make_user()
     today = datetime.now(IST).replace(hour=9, minute=0, second=0, microsecond=0)
@@ -313,3 +330,11 @@ def test_run_scheduler_runs_housekeeping(monkeypatch):
 
     asyncio.run(run())
     assert seen == [at(13, 9)]
+
+
+def test_portfolio_context_carries_the_held_codes():
+    user_id = make_user()
+    assert snapshots.portfolio_context(users.get_user(user_id)).held == {}
+    snapshots.store_snapshot(user_id, datetime.now(IST), indmoney_sample.results(), {})
+    held = snapshots.portfolio_context(users.get_user(user_id)).held
+    assert held["120503"] == "Parag Parikh Flexi Cap Fund" and held["AAPL"] == "Apple"

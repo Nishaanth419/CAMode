@@ -24,7 +24,7 @@ from typing import Any, Final
 HOLDINGS_PREFIX: Final = "networth_holdings:"
 # Fields kept per row, under shorter names, when every holding is listed (small context budgets).
 COMPACT_HOLDING_FIELDS: Final = {
-    "name": "name", "asset_type": "type", "broker": "broker", "current_value_inr": "value_inr",
+    "name": "name", "code": "code", "asset_type": "type", "broker": "broker", "current_value_inr": "value_inr",
     "invested_inr": "invested_inr", "pnl_inr": "pnl_inr", "pnl_pct": "pnl_pct",
     "share_of_portfolio_pct": "share_of_portfolio_pct", "current_value_usd": "value_usd",
 }
@@ -279,18 +279,64 @@ def compute_metrics(results: dict[str, str], *, include_all_holdings: bool = Fal
     return metrics
 
 
-# Words a fund name may carry or leave out ("Fund - Direct Plan - Growth Option" vs "Direct Growth").
-_FILLER_WORDS: Final = frozenset({"fund", "plan", "option", "scheme", "the", "of"})
+# Words a fund or company name may carry or leave out ("Fund - Direct Plan - Growth Option" vs "Direct Growth",
+# "Infosys Ltd" vs "Infosys", "Large and Midcap" vs "Large & Midcap").
+_FILLER_WORDS: Final = frozenset({"fund", "plan", "option", "scheme", "the", "of", "and", "ltd", "limited"})
+# Plan and payout words: a query word from a group counts only when the name names that group at all, so
+# "Direct Growth" finds INDmoney's short "Parag Parikh Flexi Cap Fund" but never its Regular or IDCW plan.
+_PLAN_GROUPS: Final = (frozenset({"direct", "regular"}),
+                       frozenset({"growth", "idcw", "dividend", "payout", "reinvestment", "bonus"}))
+_MIN_SHORT_FORM: Final = 3  # "pru" for "prudential"; shorter words must match whole.
 
 
 def _name_words(text: str) -> list[str]:
     return [word for word in re.findall(r"[a-z0-9]+", str(text).lower()) if word not in _FILLER_WORDS]
 
 
+def _word_in(word: str, words: list[str]) -> bool:
+    return word in words or (len(word) >= _MIN_SHORT_FORM and any(other.startswith(word) for other in words))
+
+
 def name_matches(query: str, name: str) -> bool:
     """True when every meaningful word of ``query`` is in ``name``, ignoring case, punctuation, filler words and
-    order, or when they run together the same way ("mid cap" and "Midcap"). A query of filler words alone matches nothing."""
+    order, or when they run together the same way ("mid cap" and "Midcap"). A query word may be the start of a
+    name word ("Pru" for "Prudential"), a one-word query may be the name's initials ("TCS"), and plan words
+    ("Direct", "Growth") count only when the name has words of that kind. A query of filler words alone matches nothing."""
     wanted, words = _name_words(query), _name_words(name)
     if not wanted:
         return False
-    return "".join(wanted) in "".join(words) or set(wanted) <= set(words)
+    if "".join(wanted) in "".join(words):
+        return True
+    if len(wanted) == 1 and len(words) > 1 and wanted[0] == "".join(word[0] for word in words):
+        return True
+    named_groups = [group for group in _PLAN_GROUPS if group & set(words)]
+    required = [word for word in wanted
+                if not any(word in group for group in _PLAN_GROUPS) or any(word in group for group in named_groups)]
+    return bool(required) and all(_word_in(word, words) for word in required)
+
+
+def held_codes(results: dict[str, str]) -> dict[str, str]:
+    """Each holding's ``investment_code`` (upper-cased) mapped to its name, for marking lookups the user holds."""
+    return {str(row["code"]).strip().upper(): str(row.get("name") or "")
+            for row in all_holdings(results) if str(row.get("code") or "").strip()}
+
+
+def mark_held(reply: str, held: dict[str, str]) -> str:
+    """``lookup_ind_keys``'s reply with ``held: true`` and ``heldAs`` (the holding's name) on each candidate whose
+    ind_key is one of ``held``'s codes, so the model picks the scheme or share the user owns rather than a near
+    namesake. Any other reply, or one with no held candidate, comes back unchanged."""
+    if not held:
+        return reply
+    try:
+        rows = json.loads(reply)
+    except ValueError:
+        return reply
+    if not isinstance(rows, list):
+        return reply
+    marked = False
+    for row in rows:
+        name = held.get(str(row.get("ind_key") or "").strip().upper()) if isinstance(row, dict) else None
+        if name is not None:
+            row.update(held=True, heldAs=name)
+            marked = True
+    return json.dumps(rows, ensure_ascii=False) if marked else reply
