@@ -1246,3 +1246,14 @@ test('Activity rows do not change colour on hover (only their links and buttons 
   assert.doesNotMatch(readCss(), /\.activity-item:hover/);
   assert.doesNotMatch(readJs('pages.js'), /function panel\(/);
 });
+
+test('app dialog backdrops and the broker banner use tokens, not colour literals', () => {
+  const css = readCss('app.css');
+  assert.equal((css.match(/--scrim:/g) || []).length, 2);
+  for (const name of ['confirm-dialog', 'command-dialog', 'profile-dialog']) {
+    assert.match(css, new RegExp(`\\.${name}::backdrop \\{ background: var\\(--scrim\\);`));
+  }
+  assert.doesNotMatch(css, /::backdrop \{ background: rgba\(/);
+  const banner = css.match(/\.broker-banner \{[^}]*\}/)[0];
+  assert.doesNotMatch(banner, /#[0-9a-f]{3,6}|rgba\(/i);
+});
